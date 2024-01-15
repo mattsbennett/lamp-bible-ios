@@ -8,4 +8,4 @@ Add `default.realm`` to project root, build in Xcode.
 
 ## License
 
-[CC BY-NC 4.0 DEED](https://creativecommons.org/licenses/by-nc/4.0/)
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
