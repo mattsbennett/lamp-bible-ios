@@ -1,0 +1,26 @@
+PODS:
+  - FontBlaster (5.3.0)
+  - Realm (10.45.2):
+    - Realm/Headers (= 10.45.2)
+  - Realm/Headers (10.45.2)
+  - RealmSwift (10.45.2):
+    - Realm (= 10.45.2)
+
+DEPENDENCIES:
+  - FontBlaster
+  - RealmSwift (~> 10)
+
+SPEC REPOS:
+  trunk:
+    - FontBlaster
+    - Realm
+    - RealmSwift
+
+SPEC CHECKSUMS:
+  FontBlaster: 941f89d735a29e1c7d24e7a90d3e16939ef1609a
+  Realm: bc4fc31783a0b3e355edca05f167f6a49c544dc2
+  RealmSwift: 234003b5fdb187c4b439d478662636d62a1f9de0
+
+PODFILE CHECKSUM: 2279fa9ebbb6c723e20364f4a17d2e81fdd16b87
+
+COCOAPODS: 1.12.1
