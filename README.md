@@ -4,7 +4,7 @@ A Bible reading companion app.
 
 ## Build
 
-Add `default.realm` to project root, build in Xcode.
+Add `default.realm` to `./Lamp Bible`, build in Xcode.
 
 ## License
 
