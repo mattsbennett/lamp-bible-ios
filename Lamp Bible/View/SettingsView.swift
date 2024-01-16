@@ -17,7 +17,7 @@ struct SettingsView: View {
     @State var showingNotificationAlert = false
     let plans: Results<Plan>
     let externalApps: [ExternalBibleApp]
-    
+
     init(
         user: User,
         externalApps: [ExternalBibleApp],
@@ -31,42 +31,31 @@ struct SettingsView: View {
         _planViewRefreshID = planViewRefreshId
         _planWpm = State(initialValue: planWpm)
     }
-    
+
     func scheduleRecurringNotification(at date: Date) {
-        let currentDate = Date()
         let calendar = Calendar.current
         let content = UNMutableNotificationContent()
         let hour = calendar.component(.hour, from: date)
         let minute = calendar.component(.minute, from: date)
-        let plansMetaData = PlansMetaData(plans: plans, date: currentDate)
-        var readingDescriptions: [String] = []
-        
-        plansMetaData.planMetaData.indices.forEach { index in
-            let planMetaData = plansMetaData.planMetaData[index]
-            
-            if (user.plans.filter("id == \(planMetaData.id)").count > 0) {
-                readingDescriptions.append(planMetaData.description)
-            }
-        }
-        
-        content.title = "Today's readings"
-        content.body = readingDescriptions.joined(separator: "; ")
-        
+
+        content.title = "Bible Reading Reminder"
+        content.body = "It's time for your daily Bible reading"
+
         var dateComponents = DateComponents()
         dateComponents.hour = hour
         dateComponents.minute = minute
-        
+
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-        
+
         let request = UNNotificationRequest(identifier: "recurringNotification", content: content, trigger: trigger)
-        
+
         UNUserNotificationCenter.current().add(request)
     }
-    
+
     func unscheduleRecurringNotification() {
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
     }
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -90,7 +79,7 @@ struct SettingsView: View {
                                         // Handle the inability to thaw the object
                                         return
                                     }
-                                    
+
                                     thawedUser.planExternalBible = app.name
                                     generator.notificationOccurred(.success)
                                 }
@@ -297,7 +286,7 @@ struct SettingsView: View {
 
 struct SettingsViewPreview: View {
     @State var previewUUID = UUID()
-    
+
     var body: some View {
         SettingsView(
             user: RealmManager.shared.realm.objects(User.self).first!,
