@@ -155,14 +155,14 @@ struct ReaderView: View {
                     .gesture(
                         DragGesture()
                             .onEnded { gesture in
-                                if gesture.translation.width < -100 {
+                                if gesture.translation.width < -150 {
                                     // Perform action for left swipe
                                     if readingMetaData == nil {
                                         loadVerses(loadingCase: LOADING_NEXT_CHAPTER)
                                     } else if currentReadingIndex < readingMetaData!.count - 1 {
                                         currentReadingIndex += 1
                                     }
-                                } else if gesture.translation.width > 100 {
+                                } else if gesture.translation.width > 150 {
                                     // Perform action for right swipe
                                     if readingMetaData == nil {
                                         loadVerses(loadingCase: LOADING_PREV_CHAPTER)
