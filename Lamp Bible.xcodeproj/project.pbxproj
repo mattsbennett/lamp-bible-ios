@@ -21,6 +21,9 @@
 		B84968D42AF72D5F00955089 /* PlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968D32AF72D5F00955089 /* PlanView.swift */; };
 		B84968DA2AF9FDEA00955089 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968D92AF9FDEA00955089 /* SettingsView.swift */; };
 		B84968DE2AFB3D4000955089 /* ExternalBibleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968DD2AFB3D4000955089 /* ExternalBibleApp.swift */; };
+		B851FFD12B79D1AA00C74C1D /* ConditionalStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */; };
+		B851FFD32B7B1BCF00C74C1D /* ReadingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD22B7B1BCF00C74C1D /* ReadingsView.swift */; };
+		B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD42B7B221700C74C1D /* WrappingHStack.swift */; };
 		B85F179A2B52691100EC047B /* default.realm in Resources */ = {isa = PBXBuildFile; fileRef = B85F17992B52691100EC047B /* default.realm */; };
 		B861BF002B436452001CA38E /* CrossReferenceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
@@ -78,6 +81,9 @@
 		B84968D32AF72D5F00955089 /* PlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanView.swift; sourceTree = "<group>"; };
 		B84968D92AF9FDEA00955089 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B84968DD2AFB3D4000955089 /* ExternalBibleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalBibleApp.swift; sourceTree = "<group>"; };
+		B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConditionalStack.swift; sourceTree = "<group>"; };
+		B851FFD22B7B1BCF00C74C1D /* ReadingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingsView.swift; sourceTree = "<group>"; };
+		B851FFD42B7B221700C74C1D /* WrappingHStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WrappingHStack.swift; sourceTree = "<group>"; };
 		B85F17992B52691100EC047B /* default.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = default.realm; sourceTree = "<group>"; };
 		B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossReferenceListView.swift; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
@@ -175,6 +181,7 @@
 			children = (
 				B861BF012B43655D001CA38E /* BookListView.swift */,
 				B8210A9A2B549ED7008341F0 /* ChapterListView.swift */,
+				B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */,
 				B885E4182ADB47E50066F0A0 /* ContentView.swift */,
 				B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */,
 				B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */,
@@ -182,10 +189,12 @@
 				B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */,
 				B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */,
 				B84968D32AF72D5F00955089 /* PlanView.swift */,
+				B851FFD22B7B1BCF00C74C1D /* ReadingsView.swift */,
 				B82BBB852B4CF238002248CC /* ReaderBottomToolbarView.swift */,
 				B82BBB832B4CCEC5002248CC /* ReaderNavigationToolbarView.swift */,
 				B8FC33472B3F4AC7009C544D /* ReaderView.swift */,
 				B84968D92AF9FDEA00955089 /* SettingsView.swift */,
+				B851FFD42B7B221700C74C1D /* WrappingHStack.swift */,
 			);
 			path = View;
 			sourceTree = "<group>";
@@ -493,16 +502,19 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B851FFD12B79D1AA00C74C1D /* ConditionalStack.swift in Sources */,
 				B82BBB842B4CCEC5002248CC /* ReaderNavigationToolbarView.swift in Sources */,
 				B84968DA2AF9FDEA00955089 /* SettingsView.swift in Sources */,
 				B8210AA02B54A6CE008341F0 /* Utilities.swift in Sources */,
 				B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */,
 				B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */,
+				B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */,
 				B8210A992B549E80008341F0 /* CrossReferenceDetailView.swift in Sources */,
 				B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */,
 				B82BBB882B4D0679002248CC /* PlanDateToolbarView.swift in Sources */,
 				B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */,
 				B84968DE2AFB3D4000955089 /* ExternalBibleApp.swift in Sources */,
+				B851FFD32B7B1BCF00C74C1D /* ReadingsView.swift in Sources */,
 				B861BF022B43655D001CA38E /* BookListView.swift in Sources */,
 				B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */,
 				B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */,
@@ -690,7 +702,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.3;
+				MARKETING_VERSION = 1.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.neus.Lamp-Bible";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -722,7 +734,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.3;
+				MARKETING_VERSION = 1.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.neus.Lamp-Bible";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

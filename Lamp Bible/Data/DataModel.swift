@@ -201,7 +201,6 @@ class ReadingRange: RealmSwiftObject, Decodable, Identifiable {
     @Persisted var end: Int?
 }
 
-
 class User: RealmSwiftObject, Identifiable {
     @Persisted var plans = RealmSwift.List<Plan>()
     @Persisted var planInAppBible = true
@@ -217,8 +216,28 @@ class User: RealmSwiftObject, Identifiable {
     @Persisted var readerTranslation: Translation? = nil
     @Persisted var readerCrossReferenceSort = "r"
     @Persisted var readerFontSize: Float = 16
+    @Persisted var completedReadings = RealmSwift.List<CompletedReading>()
     
     let defaultTranslationId = 3
+
+    func addCompletedReading(id: String) {
+        self.completedReadings.append(CompletedReading(id: id))
+    }
+
+    func removeCompletedReading(id: String) {
+        if let completedReading = RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(id)'").first {
+            RealmManager.shared.realm.delete(completedReading)
+        }
+    }
+}
+
+class CompletedReading: RealmSwiftObject, Identifiable {
+    @Persisted(primaryKey: true) var id: String
+
+    convenience init(id: String) {
+        self.init()
+        self.id = id
+    }
 }
 
 // Helper methods -------------------------------------------------------------

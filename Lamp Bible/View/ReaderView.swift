@@ -150,6 +150,18 @@ struct ReaderView: View {
                         }
                         .onChange(of: currentReadingIndex) {
                             loadVerses(loadingCase: LOADING_READING)
+                            
+                            if let readingId = readingMetaData?[currentReadingIndex].id {
+                                if RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(readingId)'").count == 0 {
+                                    try! RealmManager.shared.realm.write {
+                                        guard let thawedUser = user.thaw() else {
+                                            // Handle the inability to thaw the object
+                                            return
+                                        }
+                                        thawedUser.addCompletedReading(id: readingId)
+                                    }
+                                }
+                            }
                         }
                     }
                     .gesture(
@@ -218,6 +230,18 @@ struct ReaderView: View {
                 initialScrollItem = "top"
                 currentReadingIndex = 0
                 loadVerses(loadingCase: LOADING_READING)
+
+                if let readingId = readingMetaData?[0].id {
+                    if RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(readingId)'").count == 0 {
+                        try! RealmManager.shared.realm.write {
+                            guard let thawedUser = user.thaw() else {
+                                // Handle the inability to thaw the object
+                                return
+                            }
+                            thawedUser.addCompletedReading(id: readingId)
+                        }
+                    }
+                }
             } else {
                 loadVerses(loadingCase: LOADING_CURRENT)
 

@@ -35,10 +35,13 @@ class PlanMetaData {
             let readingTimeReading = Int(ceil(Double(readingWordCount) / user.planWpm))
             let book = RealmManager.shared.realm.objects(Book.self).filter("id == \(verses.first!.b)").first
             let genre = RealmManager.shared.realm.objects(Genre.self).filter("id == \(book!.genre)").first!.name
+            let year = Calendar.iso8601.component(.year, from: date)
+            let id = "\(id)_\(day)_\(index)_\(year)"
             readingTimeAcc += readingTimeReading
             readingMetaDataInit.append(
                 ReadingMetaData(
-                    id: index,
+                    id: id,
+                    index: index,
                     readingTime: readingTimeReading,
                     description: description!,
                     genre: genre,
@@ -54,15 +57,20 @@ class PlanMetaData {
 }
 
 class ReadingMetaData {
-    let id: Int
+    // Unique reading id across all plans and years of the format
+    // "{planId}_{planDay}_r{eadingIndex}_{year)" also used as primary key
+    // for CompletedReading
+    let id: String
+    let index: Int
     let readingTime: Int
     let description: String
     let genre: String
     let sv: Int
     let ev: Int
     
-    init(id: Int, readingTime: Int, description: String, genre: String, sv: Int, ev: Int) {
+    init(id: String, index: Int, readingTime: Int, description: String, genre: String, sv: Int, ev: Int) {
         self.id = id
+        self.index = index
         self.readingTime = readingTime
         self.description = description
         self.genre = genre

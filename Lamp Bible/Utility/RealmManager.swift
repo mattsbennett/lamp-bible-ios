@@ -24,7 +24,10 @@ class RealmManager {
             try! fileManager.copyItem(at: bundledRealmPath, to: destinationURL)
         }
 
-        let copyConfig = Realm.Configuration(fileURL: destinationURL)
+        let copyConfig = Realm.Configuration(
+            fileURL: destinationURL,
+            schemaVersion: 1
+        )
         
         realm = try! Realm(configuration: copyConfig)
         
