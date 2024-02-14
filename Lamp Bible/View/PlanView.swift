@@ -24,129 +24,37 @@ struct PlanView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack {
-                if user.plans.count > 0 {
-                    ScrollView {
-                        ScrollViewReader { proxy in
-                            VStack(alignment: .leading) {
-                                ForEach(plans) { plan in
-                                    let planMetaData = plansMetaData.planMetaData.first(where: { $0.id == plan.id })!
-                                    let readings = planMetaData.readingMetaData
-                                    if (user.plans.filter("id == \(plan.id)").count > 0) {
-                                        Spacer().id(plan.name)
-                                        VStack(alignment: .leading) {
-                                            HStack {
-                                                VStack(alignment: .leading) {
-                                                    Text(plan.name)
-                                                        .font(.title2)
-                                                        .fontWeight(.black)
-                                                    HStack {
-                                                        if user.planInAppBible {
-                                                            NavigationLink(
-                                                                destination: ReaderView(
-                                                                    user: RealmManager.shared.realm.objects(User.self).first!,
-                                                                    date: $date,
-                                                                    readingMetaData: readings
-                                                                )
-                                                            ) {
-                                                                VStack {
-                                                                    Image(systemName: "book.circle.fill")
-                                                                        .font(.system(size: 52))
-                                                                        .frame(width: 57, height: 57)
-                                                                        .foregroundColor(.accentColor)
-                                                                }
-                                                            }
-                                                        }
-                                                        VStack(alignment: .leading) {
-                                                            Text(planMetaData.description)
-                                                                .font(.system(size: 16))
-                                                            Label("\(planMetaData.readingTime)", systemImage: "clock").font(.caption).foregroundStyle(Color.secondary)
-                                                        }
-                                                        .frame(minHeight: 44)
-                                                    }
-                                                    .padding(.bottom, 10)
-                                                }
-                                            }
-                                        }
-                                        .onChange(of: date) {
-                                            proxy.scrollTo(plan.name)
-                                        }
-                                        .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 20))
-                                        ScrollView(.horizontal) {
-                                            ScrollViewReader { proxy in
-                                                HStack {
-                                                    ForEach(readings.indices, id: \.self) { index in
-                                                        let readingMetaData = planMetaData.readingMetaData.first(where: { $0.id == index })!
-                                                        VStack(alignment: .leading) {
+                                                        if readings.count > 0 {
                                                             HStack {
-                                                                Label {
-                                                                    Text("Portion")
-                                                                } icon: {
-                                                                    HStack {
-                                                                        ForEach(0..<index + 1, id: \.self) { _ in
-                                                                            Image("lampflame.fill")
-                                                                                .font(.system(size: 16))
-                                                                                .padding(.trailing, -11)
-                                                                                .padding(.leading, -3)
+                                                                if user.planInAppBible {
+                                                                    NavigationLink(
+                                                                        destination: ReaderView(
+                                                                            user: RealmManager.shared.realm.objects(User.self).first!,
+                                                                            date: $date,
+                                                                            readingMetaData: readings
+                                                                        )
+                                                                    ) {
+                                                                        VStack {
+                                                                            Image(systemName: "book.circle.fill")
+                                                                                .font(.system(size: 52))
+                                                                                .frame(width: 57, height: 57)
+                                                                                .foregroundColor(.accentColor)
                                                                         }
                                                                     }
-                                                                }.labelStyle(TrailingIconLabelStyle())
-                                                            }
-                                                            .font(.caption)
-                                                            .foregroundStyle(Color.secondary)
-                                                            HStack {
-                                                                Text(readingMetaData.description).font(.body)
-                                                                Spacer()
-                                                                if user.planExternalBible != nil && user.planExternalBible != "None" {
-                                                                    Button {
-                                                                        let app = externalBibleApps.first(where: { $0.name == user.planExternalBible })
-                                                                        if let url = app?.getFullUrl(sv: readingMetaData.sv, ev: readingMetaData.ev) {
-                                                                            if UIApplication.shared.canOpenURL(url) {
-                                                                                UIApplication.shared.open(url)
-                                                                            }
-                                                                        }
-                                                                    } label: {
-                                                                        ZStack {
-                                                                            Circle()
-                                                                                .stroke(Color.accentColor, lineWidth: 2)
-                                                                            Image("book.and.external.fill")
-                                                                                .foregroundColor(Color.accentColor)
-                                                                                .font(.title3)
-                                                                        }
-                                                                    }
-                                                                    .frame(width: 57, height: 57)
-                                                                    .clipShape(Circle())
-                                                                    .foregroundColor(.accentColor)
                                                                 }
+                                                                VStack(alignment: .leading) {
+                                                                    Text(planMetaData.description)
+                                                                        .font(.system(size: 16))
+                                                                    Label("\(planMetaData.readingTime)", systemImage: "clock").font(.caption).foregroundStyle(Color.secondary)
+                                                                }
+                                                                .frame(minHeight: 44)
                                                             }
-                                                            .padding(.vertical)
-                                                            Spacer()
-                                                            HStack {
-                                                                Label("\(readingMetaData.genre)", systemImage: "bookmark.fill")
-                                                                Spacer()
-                                                                Label("\(readingMetaData.readingTime)", systemImage: "clock").labelStyle(TrailingIconLabelStyle())
-                                                            }
-                                                            .font(.caption)
-                                                            .foregroundStyle(Color.secondary)
+                                                            .padding(.bottom, 10)
+                                                        } else {
+                                                            Text("No readings for today")
+                                                                .padding(EdgeInsets(top: 10, leading: 0, bottom: 0, trailing: 0))
+                                                                .foregroundStyle(Color.secondary)
                                                         }
-                                                        .id(index)
-                                                        .frame(minWidth: 200, maxWidth: 350)
-                                                        .padding()
-                                                        .background(
-                                                            RoundedRectangle(cornerRadius: 15)
-                                                                .fill(Color.clear)
-                                                                .overlay(
-                                                                    RoundedRectangle(cornerRadius: 15)
-                                                                        .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
-                                                                )
-                                                        )
-                                                        .onChange(of: date) {
-                                                            proxy.scrollTo(0)
-                                                        }
-                                                    }
-                                                    Spacer().frame(width: 15)
-                                                }
                                                 .frame(maxWidth: .infinity)
                                             }
                                         }
