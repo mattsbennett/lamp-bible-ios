@@ -73,17 +73,17 @@ class Plan: RealmSwiftObject, Decodable, Identifiable {
     @Persisted var shortDescription: String
     @Persisted var fullDescription: String
     @Persisted var plan: RealmSwift.List<PlanDay>
-    
+
     func getPlanDay(date: Date) -> Int {
         let year = Calendar.iso8601.component(.year, from: date)
         var day = Calendar.iso8601.ordinality(of: .day, in: .year, for: date)!
-        
+
         if !year.isALeapYear && day >= 60 {
             // Plans include 366 days (for leap years), but on non-leap-years,
             // we need to skip the extra day (day 60 (Feb 29))
             day = day + 1
         }
-        
+
         return day
     }
 }
@@ -91,17 +91,17 @@ class Plan: RealmSwiftObject, Decodable, Identifiable {
 class PlanDay: RealmSwiftObject, Decodable, Identifiable {
     @Persisted(indexed: true) var day: Int
     @Persisted var readings: RealmSwift.List<Reading>
-    
+
     func getReadingsDescription() -> String {
         var readingsDescription = ""
-        
+
         self.readings.indices.forEach { index in
             let (_, _, description) = readings[index].getVerseRange()
             let trailingComma = index == self.readings.indices.count - 1 ? "" : ", "
-            
+
             readingsDescription += description! + trailingComma
         }
-        
+
         return readingsDescription
     }
 }
@@ -110,7 +110,7 @@ class Reading: RealmSwiftObject, Decodable, Identifiable {
     @Persisted var book: ReadingRange?
     @Persisted var chapter: ReadingRange?
     @Persisted var verse: ReadingRange?
-    
+
     func getVerseRange() -> (sv: Int?, ev: Int?, description: String?) {
         var startBook: String? = nil
         var startBookName: String? = nil
@@ -133,32 +133,32 @@ class Reading: RealmSwiftObject, Decodable, Identifiable {
             startBook = String(self.book!.start!)
             endBook = String(self.book!.end!)
         }
-        
+
         if self.chapter != nil && self.chapter!.start != nil {
             startChapter = String(self.chapter!.start!)
             paddedStartChapter = String(format: "%03d", self.chapter!.start!)
             endChapter = String(self.chapter!.end!)
             paddedEndChapter = String(format: "%03d", self.chapter!.end!)
         }
-        
+
         if self.verse != nil && self.verse!.start != nil {
             startVerse = String(self.verse!.start!)
             paddedStartVerse = String(format: "%03d", self.verse!.start!)
             endVerse = String(self.verse!.end!)
             paddedEndVerse = String(format: "%03d", self.verse!.end!)
         }
-        
+
         if startBook != nil {
             startBookName = RealmManager.shared.realm.objects(Book.self).filter("id == \(startBook ?? "1")").first!.name
             sv = startBook
             sv! += paddedStartChapter ?? "001"
             sv! += paddedStartVerse ?? "001"
         }
-        
+
         if endBook != nil {
             let book = RealmManager.shared.realm.objects(Book.self).filter("id == \(endBook ?? "1")").first
             endBookName = book!.name
-            
+
             // If there's no end verse specified, need to make it the last verse of the endChapter
             if paddedEndVerse == nil {
                 let endChapterVerseId = RealmManager.shared.realm.objects(Verse.self).filter("tr == \(translationId) && b == \(book!.id) && c == \(self.chapter!.end ?? 1)").last!.id
@@ -169,18 +169,18 @@ class Reading: RealmSwiftObject, Decodable, Identifiable {
                 ev! += paddedEndVerse ?? "001"
             }
         }
-        
+
         if startBook != nil && endBook != nil {
             description = startBookName!
-            
+
             if startChapter != nil {
                 description! += " " + startChapter!
             }
-            
+
             if startVerse != nil {
                 description! += ":" + startVerse!
             }
-            
+
             if startBook != endBook {
                 description! += " - " + endBookName!
             } else if endChapter != nil && endVerse != nil && startChapter == endChapter {
@@ -191,7 +191,7 @@ class Reading: RealmSwiftObject, Decodable, Identifiable {
                 description! += "-" + endChapter! + ":" + endVerse!
             }
         }
-        
+
         return (Int(sv!), Int(ev!), description)
     }
 }
@@ -217,7 +217,7 @@ class User: RealmSwiftObject, Identifiable {
     @Persisted var readerCrossReferenceSort = "r"
     @Persisted var readerFontSize: Float = 16
     @Persisted var completedReadings = RealmSwift.List<CompletedReading>()
-    
+
     let defaultTranslationId = 3
 
     func addCompletedReading(id: String) {
@@ -239,6 +239,4 @@ class CompletedReading: RealmSwiftObject, Identifiable {
         self.id = id
     }
 }
-
-// Helper methods -------------------------------------------------------------
 
