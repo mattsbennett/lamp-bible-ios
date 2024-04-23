@@ -12,7 +12,6 @@
 		B8210A992B549E80008341F0 /* CrossReferenceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */; };
 		B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9A2B549ED7008341F0 /* ChapterListView.swift */; };
 		B8210AA02B54A6CE008341F0 /* Utilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9F2B54A6CE008341F0 /* Utilities.swift */; };
-		B82B7ED02B805CEC00D4095E /* v1.realm in Resources */ = {isa = PBXBuildFile; fileRef = B82B7ECF2B805CEC00D4095E /* v1.realm */; };
 		B82BBB842B4CCEC5002248CC /* ReaderNavigationToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82BBB832B4CCEC5002248CC /* ReaderNavigationToolbarView.swift */; };
 		B82BBB862B4CF238002248CC /* ReaderBottomToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82BBB852B4CF238002248CC /* ReaderBottomToolbarView.swift */; };
 		B82BBB882B4D0679002248CC /* PlanDateToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */; };
@@ -35,6 +34,7 @@
 		B885E4322ADB47ED0066F0A0 /* Lamp_BibleUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */; };
 		B885E4342ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
+		B89F20C22BD75DD000A3B842 /* v2.realm in Resources */ = {isa = PBXBuildFile; fileRef = B89F20C12BD75DD000A3B842 /* v2.realm */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
 		B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33412B3E3852009C544D /* RealmManager.swift */; };
 		B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33472B3F4AC7009C544D /* ReaderView.swift */; };
@@ -72,7 +72,6 @@
 		B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossReferenceDetailView.swift; sourceTree = "<group>"; };
 		B8210A9A2B549ED7008341F0 /* ChapterListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterListView.swift; sourceTree = "<group>"; };
 		B8210A9F2B54A6CE008341F0 /* Utilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Utilities.swift; sourceTree = "<group>"; };
-		B82B7ECF2B805CEC00D4095E /* v1.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v1.realm; sourceTree = "<group>"; };
 		B82BBB832B4CCEC5002248CC /* ReaderNavigationToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderNavigationToolbarView.swift; sourceTree = "<group>"; };
 		B82BBB852B4CF238002248CC /* ReaderBottomToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderBottomToolbarView.swift; sourceTree = "<group>"; };
 		B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanDateToolbarView.swift; sourceTree = "<group>"; };
@@ -99,6 +98,7 @@
 		B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lamp_BibleUITestsLaunchTests.swift; sourceTree = "<group>"; };
 		B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Lamp-Bible-Info.plist"; sourceTree = SOURCE_ROOT; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
+		B89F20C12BD75DD000A3B842 /* v2.realm */ = {isa = PBXFileReference; lastKnownFileType = file; name = v2.realm; path = "../../../../SynologyDrive/Work/Personal/Lamp Bible/schema/seed_data/versioned_realms/v2.realm"; sourceTree = "<group>"; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
 		B8FC33412B3E3852009C544D /* RealmManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealmManager.swift; sourceTree = "<group>"; };
 		B8FC33472B3F4AC7009C544D /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
@@ -225,9 +225,9 @@
 		B885E4152ADB47E40066F0A0 /* Lamp Bible */ = {
 			isa = PBXGroup;
 			children = (
+				B89F20C12BD75DD000A3B842 /* v2.realm */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
-				B82B7ECF2B805CEC00D4095E /* v1.realm */,
 				B885E41C2ADB47ED0066F0A0 /* Preview Content */,
 				B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */,
 				B8210A9C2B54A4D7008341F0 /* Data */,
@@ -371,10 +371,10 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B82B7ED02B805CEC00D4095E /* v1.realm in Resources */,
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
+				B89F20C22BD75DD000A3B842 /* v2.realm in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -702,7 +702,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.5;
+				MARKETING_VERSION = 1.0.6;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.neus.Lamp-Bible";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -734,7 +734,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.5;
+				MARKETING_VERSION = 1.0.6;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.neus.Lamp-Bible";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

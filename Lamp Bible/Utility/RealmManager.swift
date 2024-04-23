@@ -15,18 +15,27 @@ class RealmManager {
 
     private init() {
         // Initialize the Realm instance
-        let bundledRealmPath = Bundle.main.url(forResource: "v1", withExtension: "realm")!
+        let bundledRealmPath = Bundle.main.url(forResource: "v2", withExtension: "realm")!
         let fileManager = FileManager.default
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let destinationURL = documentsURL.appendingPathComponent("v1.realm")
-        let previousDestinationURL = documentsURL.appendingPathComponent("default.realm")
+        let destinationURL = documentsURL.appendingPathComponent("v2.realm")
+        let v0DestinationURL = documentsURL.appendingPathComponent("default.realm")
+        let v1DestinationURL = documentsURL.appendingPathComponent("v1.realm")
         var oldUser: User? = nil
 
-        // Query the user data we need to keep from the old/previous realm
-        if fileManager.fileExists(atPath: previousDestinationURL.path) {
+        // Query the user data we need to keep from the old realm
+        if fileManager.fileExists(atPath: v0DestinationURL.path) {
             let oldConfig = Realm.Configuration(
-                fileURL: previousDestinationURL,
+                fileURL: v0DestinationURL,
                 schemaVersion: 1
+            )
+
+            oldRealm = try! Realm(configuration: oldConfig)
+            oldUser = oldRealm!.objects(User.self).first!
+        } else if fileManager.fileExists(atPath: v1DestinationURL.path) {
+            let oldConfig = Realm.Configuration(
+                fileURL: v1DestinationURL,
+                schemaVersion: 2
             )
 
             oldRealm = try! Realm(configuration: oldConfig)
@@ -80,9 +89,11 @@ class RealmManager {
             }
         }
 
-        // Now that we've 'copied' over the old user data, we can remove the previous realm file
-        if fileManager.fileExists(atPath: previousDestinationURL.path) {
-            try! fileManager.removeItem(atPath: previousDestinationURL.path)
+        // Now that we've 'copied' over the old user data, we can remove the old realm file
+        if fileManager.fileExists(atPath: v0DestinationURL.path) {
+            try! fileManager.removeItem(atPath: v0DestinationURL.path)
+        } else if fileManager.fileExists(atPath: v1DestinationURL.path) {
+            try! fileManager.removeItem(atPath: v1DestinationURL.path)
         }
     }
 }
