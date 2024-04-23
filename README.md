@@ -4,7 +4,7 @@ A Bible reading companion app.
 
 ## Build
 
-Add `v1.realm` to `./Lamp Bible`, build in Xcode.
+Add latest `{version}.realm` to `./Lamp Bible`, build in Xcode.
 
 ### Updating Bundled Realm Database
 
