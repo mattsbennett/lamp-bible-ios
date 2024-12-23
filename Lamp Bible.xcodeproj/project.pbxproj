@@ -26,6 +26,7 @@
 		B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD42B7B221700C74C1D /* WrappingHStack.swift */; };
 		B861BF002B436452001CA38E /* CrossReferenceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
+		B87FA99A2D1A23D2008B2297 /* v3.realm in Resources */ = {isa = PBXBuildFile; fileRef = B87FA9992D1A23D2008B2297 /* v3.realm */; };
 		B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */; };
 		B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4182ADB47E50066F0A0 /* ContentView.swift */; };
 		B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */; };
@@ -34,7 +35,6 @@
 		B885E4322ADB47ED0066F0A0 /* Lamp_BibleUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */; };
 		B885E4342ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
-		B89F20C22BD75DD000A3B842 /* v2.realm in Resources */ = {isa = PBXBuildFile; fileRef = B89F20C12BD75DD000A3B842 /* v2.realm */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
 		B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33412B3E3852009C544D /* RealmManager.swift */; };
 		B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33472B3F4AC7009C544D /* ReaderView.swift */; };
@@ -86,6 +86,7 @@
 		B851FFD42B7B221700C74C1D /* WrappingHStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WrappingHStack.swift; sourceTree = "<group>"; };
 		B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossReferenceListView.swift; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
+		B87FA9992D1A23D2008B2297 /* v3.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v3.realm; sourceTree = "<group>"; };
 		B885E4132ADB47E40066F0A0 /* Lamp Bible.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Lamp Bible.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampBibleApp.swift; sourceTree = "<group>"; };
 		B885E4182ADB47E50066F0A0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -98,7 +99,6 @@
 		B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lamp_BibleUITestsLaunchTests.swift; sourceTree = "<group>"; };
 		B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Lamp-Bible-Info.plist"; sourceTree = SOURCE_ROOT; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
-		B89F20C12BD75DD000A3B842 /* v2.realm */ = {isa = PBXFileReference; lastKnownFileType = file; name = v2.realm; path = "../../../../SynologyDrive/Work/Personal/Lamp Bible/schema/seed_data/versioned_realms/v2.realm"; sourceTree = "<group>"; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
 		B8FC33412B3E3852009C544D /* RealmManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealmManager.swift; sourceTree = "<group>"; };
 		B8FC33472B3F4AC7009C544D /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
@@ -225,9 +225,9 @@
 		B885E4152ADB47E40066F0A0 /* Lamp Bible */ = {
 			isa = PBXGroup;
 			children = (
-				B89F20C12BD75DD000A3B842 /* v2.realm */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
+				B87FA9992D1A23D2008B2297 /* v3.realm */,
 				B885E41C2ADB47ED0066F0A0 /* Preview Content */,
 				B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */,
 				B8210A9C2B54A4D7008341F0 /* Data */,
@@ -371,10 +371,10 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B87FA99A2D1A23D2008B2297 /* v3.realm in Resources */,
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
-				B89F20C22BD75DD000A3B842 /* v2.realm in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -702,7 +702,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.6;
+				MARKETING_VERSION = 1.0.7;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.neus.Lamp-Bible";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -734,7 +734,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.6;
+				MARKETING_VERSION = 1.0.7;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.neus.Lamp-Bible";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
