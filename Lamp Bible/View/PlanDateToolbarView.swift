@@ -30,13 +30,12 @@ struct PlanDateToolbarView: ToolbarContent {
                 .onTapGesture {
                     showingDatePicker.toggle()
                 }
-                .popover(
-                    isPresented: $showingDatePicker, attachmentAnchor: .point(.bottom), arrowEdge: .bottom
+                .sheet(
+                    isPresented: $showingDatePicker
                 ) {
                     NavigationStack {
                         DatePicker(selection: $date, displayedComponents: [.date]){
                         }
-                            .padding(.top, -80)
                             .datePickerStyle(.graphical)
                             .toolbar {
                                 ToolbarItem(placement: .cancellationAction) {
@@ -56,8 +55,8 @@ struct PlanDateToolbarView: ToolbarContent {
                                 }
                             }
                         }
-                        .presentationCompactAdaptation(.popover)
-                        .frame(minWidth: 315, minHeight: 350)
+                        .presentationDetents([.height(455)])
+                        .presentationDragIndicator(.visible)
                         .padding()
                 }
         }
