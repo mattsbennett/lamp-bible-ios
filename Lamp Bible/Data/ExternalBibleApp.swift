@@ -21,9 +21,11 @@ struct ExternalBibleApp: Identifiable, Hashable {
         let (startVerse, startChapter, startBook) = splitVerseId(sv)
         let (endVerse, endChapter, endBook) = splitVerseId(ev)
         let startBookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(startBook)").first!
+        let endBookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(endBook)").first!
         let startBookOsis = startBookObj.osisParatextAbbreviation
         let startBookName = startBookObj.name.lowercased().trimmingCharacters(in: .whitespaces)
-        let endBookName = RealmManager.shared.realm.objects(Book.self).filter("id == \(endBook)").first!.name.lowercased().trimmingCharacters(in: .whitespaces)
+        let endBookName = endBookObj.name.lowercased().trimmingCharacters(in: .whitespaces)
+        let endBookOsis = endBookObj.osisParatextAbbreviation
         var path = ""
 
         switch self.name {
@@ -31,7 +33,7 @@ struct ExternalBibleApp: Identifiable, Hashable {
                 // @todo Accordance uses zero-indexed verses (e.g. for Psalms where verse
                 // 0 is the superscript) so we should use only chapters when possible
                 // (i.e. when we just have a book/chapter range)
-                path += "\(startBookName)_\(startChapter):\(startVerse)-\(endBookName)_\(endChapter):\(endVerse)"
+                path += "\(startBookOsis)_\(startChapter):\(startVerse)-\(endBookOsis)_\(endChapter):\(endVerse)"
             case "e-Sword LT":
                 path += "\(startBookName).\(startChapter):\(startVerse)"
             case "Logos":
