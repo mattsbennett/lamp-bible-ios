@@ -105,18 +105,19 @@ struct PlanView: View {
                                     }
                                     Spacer()
                                 }
-                                .gesture(
-                                    DragGesture()
-                                        .onEnded { gesture in
-                                            if gesture.translation.width < -200 {
-                                                // Perform action for left swipe
-                                                date = Calendar.current.date(byAdding: .day, value: 1, to: date)!
-                                            } else if gesture.translation.width > 200 {
-                                                // Perform action for right swipe
-                                                date = Calendar.current.date(byAdding: .day, value: -1, to: date)!
-                                            }
-                                        }
-                                )
+//                                iOS 18 broke gestures on scrollviews
+//                                .gesture(
+//                                    DragGesture()
+//                                        .onEnded { gesture in
+//                                            if gesture.translation.width < -200 {
+//                                                // Perform action for left swipe
+//                                                date = Calendar.current.date(byAdding: .day, value: 1, to: date)!
+//                                            } else if gesture.translation.width > 200 {
+//                                                // Perform action for right swipe
+//                                                date = Calendar.current.date(byAdding: .day, value: -1, to: date)!
+//                                            }
+//                                        }
+//                                )
                             }
                         }
                     } else {
