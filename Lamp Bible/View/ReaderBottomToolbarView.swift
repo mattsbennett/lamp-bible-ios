@@ -26,7 +26,7 @@ struct ReaderBottomToolbarView: ToolbarContent {
                     }) {
                         Image(systemName: "chevron.left")
                     }
-                    .padding(.vertical)
+                    .frame(width: 44, height: 44)
                     .disabled(currentReadingIndex == 0)
                 }
             }
@@ -53,7 +53,8 @@ struct ReaderBottomToolbarView: ToolbarContent {
                     Text(metaData[currentReadingIndex].description)
                         .font(.system(size: 16))
                 }
-                .padding(.top, 5)
+                .padding(.top, 2.5)
+                .padding(.bottom, 2.5)
             }
             ToolbarItem(placement: .bottomBar) {
                 Spacer()
@@ -65,7 +66,7 @@ struct ReaderBottomToolbarView: ToolbarContent {
                     }) {
                         Image(systemName: "chevron.right")
                     }
-                    .padding(.vertical)
+                    .frame(width: 44, height: 44)
                     .disabled(currentReadingIndex == metaData.count - 1)
                 }
             }
@@ -73,13 +74,14 @@ struct ReaderBottomToolbarView: ToolbarContent {
             let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
             let (_, lastChapter, lastBook) = splitVerseId(translation.verses.last!.id)
             let (_, firstChapter, firstBook) = splitVerseId(translation.verses.first!.id)
+            
             ToolbarItem(placement: .bottomBar) {
                 Button(action: {
                     loadPrev()
                 }) {
                     Image(systemName: "chevron.left")
                 }
-                .padding(.vertical)
+                .frame(width: 44, height: 44)
                 .disabled(currentBook == firstBook && currentChapter == firstChapter)
             }
             ToolbarItem(placement: .bottomBar) {
@@ -91,7 +93,7 @@ struct ReaderBottomToolbarView: ToolbarContent {
                 }) {
                     Image(systemName: "chevron.right")
                 }
-                .padding(.vertical)
+                .frame(width: 44, height: 44)
                 .disabled(currentBook == lastBook && currentChapter == lastChapter)
             }
         }

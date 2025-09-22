@@ -15,13 +15,14 @@ class RealmManager {
 
     private init() {
         // Initialize the Realm instance
-        let bundledRealmPath = Bundle.main.url(forResource: "v3", withExtension: "realm")!
+        let bundledRealmPath = Bundle.main.url(forResource: "v4", withExtension: "realm")!
         let fileManager = FileManager.default
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let destinationURL = documentsURL.appendingPathComponent("v3.realm")
+        let destinationURL = documentsURL.appendingPathComponent("v4.realm")
         let v0DestinationURL = documentsURL.appendingPathComponent("default.realm")
         let v1DestinationURL = documentsURL.appendingPathComponent("v1.realm")
         let v2DestinationURL = documentsURL.appendingPathComponent("v2.realm")
+        let v3DestinationURL = documentsURL.appendingPathComponent("v3.realm")
         var oldUser: User? = nil
 
         // Query the user data we need to keep from the old realm
@@ -44,6 +45,14 @@ class RealmManager {
         } else if fileManager.fileExists(atPath: v2DestinationURL.path) {
             let oldConfig = Realm.Configuration(
                 fileURL: v2DestinationURL,
+                schemaVersion: 2
+            )
+
+            oldRealm = try! Realm(configuration: oldConfig)
+            oldUser = oldRealm!.objects(User.self).first!
+        } else if fileManager.fileExists(atPath: v3DestinationURL.path) {
+            let oldConfig = Realm.Configuration(
+                fileURL: v3DestinationURL,
                 schemaVersion: 2
             )
 
@@ -105,6 +114,8 @@ class RealmManager {
             try! fileManager.removeItem(atPath: v1DestinationURL.path)
         } else if fileManager.fileExists(atPath: v2DestinationURL.path) {
             try! fileManager.removeItem(atPath: v2DestinationURL.path)
+        } else if fileManager.fileExists(atPath: v3DestinationURL.path) {
+            try! fileManager.removeItem(atPath: v3DestinationURL.path)
         }
     }
 }

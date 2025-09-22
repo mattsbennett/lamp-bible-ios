@@ -17,6 +17,14 @@ struct PlanView: View {
     @Environment(\.colorScheme) var colorScheme
     let plans: Results<Plan>
     
+    private var iOS26OrLater: Bool {
+        if #available(iOS 26, *) {
+            return true
+        } else {
+            return false
+        }
+    }
+
     init(user: User, plans: Results<Plan>, date: Date = Date.now) {
         self.plans = plans
         self.user = user
@@ -80,7 +88,7 @@ struct PlanView: View {
                                                 proxy.scrollTo(plan.name)
                                             }
                                             .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 20))
-                                            
+
                                             if geometry.size.width < 600 {
                                                 ReadingsView(
                                                     user: RealmManager.shared.realm.objects(User.self).first!,
@@ -97,7 +105,7 @@ struct PlanView: View {
                                                 )
                                                 .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
                                             }
-                                            
+
                                             if plan.id != user.plans.last!.id {
                                                 Divider()
                                             }
@@ -152,52 +160,59 @@ struct PlanView: View {
                     PlanDateToolbarView(date: $date, showingDatePicker: $showingDatePicker)
                 }
                 .toolbar {
-                    ToolbarItemGroup(placement: .bottomBar) {
-                        Spacer()
-                        
-                        NavigationLink(destination: PlanPickerView(plans: plans)) {
-                            VStack {
-                                Image(systemName: "calendar")
-                                    .font(.callout)
-                                    .padding(EdgeInsets(top: 1, leading: 0, bottom: 0.5, trailing: 0))
-                                Text("Plans")
-                                    .font(.caption2)
+                    ToolbarItem(placement: .bottomBar) {
+                        HStack {
+                            Spacer()
+                            
+                            NavigationLink(destination: PlanPickerView(plans: plans)) {
+                                VStack {
+                                    Image(systemName: "calendar")
+                                        .padding(EdgeInsets(top: 1, leading: 0, bottom: 0.5, trailing: 0))
+                                        .foregroundColor(.accentColor)
+                                    Text("Plans")
+                                        .font(.caption2)
+                                        .foregroundColor(iOS26OrLater ? .secondary : .red)
+                                }
                             }
-                        }
-                        
-                        Spacer()
-                        
-                        NavigationLink(destination: ReaderView(
-                            user: RealmManager.shared.realm.objects(User.self).first!,
-                            date: $date
-                        )) {
-                            VStack {
-                                Image(systemName: "book.fill")
-                                    .font(.callout)
-                                    .padding(EdgeInsets(top: 1.5, leading: 0, bottom: 2, trailing: 0))
-                                Text("Read")
-                                    .font(.caption2)
+                            
+                            Spacer()
+                            
+                            NavigationLink(destination: ReaderView(
+                                user: RealmManager.shared.realm.objects(User.self).first!,
+                                date: $date
+                            )) {
+                                VStack {
+                                    Image(systemName: "book.fill")
+                                        .padding(EdgeInsets(top: 1.5, leading: 0, bottom: 2, trailing: 0))
+                                        .foregroundColor(.accentColor)
+                                    Text("Read")
+                                        .font(.caption2)
+                                        .foregroundColor(iOS26OrLater ? .secondary : .red)
+                                }
                             }
-                        }
-                        
-                        Spacer()
-                        
-                        NavigationLink(destination: SettingsView(
-                            user: user,
-                            externalApps: externalBibleApps,
-                            plans: plans,
-                            planViewRefreshId: $planViewRefreshId
-                        )) {
-                            VStack {
-                                Image(systemName: "gear")
-                                    .font(.callout)
-                                    .padding(EdgeInsets(top: 1, leading: 0, bottom: 0.1, trailing: 0))
-                                Text("Settings")
-                                    .font(.caption2)
+                            
+                            Spacer()
+                            
+                            NavigationLink(destination: SettingsView(
+                                user: user,
+                                externalApps: externalBibleApps,
+                                plans: plans,
+                                planViewRefreshId: $planViewRefreshId
+                            )) {
+                                VStack {
+                                    Image(systemName: "gear")
+                                        .font(.callout)
+                                        .padding(EdgeInsets(top: 1, leading: 0, bottom: 0.1, trailing: 0))
+                                        .foregroundColor(.accentColor)
+                                    Text("Settings")
+                                        .font(.caption2)
+                                        .foregroundColor(iOS26OrLater ? .secondary : .red)
+                                }
                             }
+                            
+                            Spacer()
                         }
-                        
-                        Spacer()
+                        .padding(.vertical, 8)
                     }
                 }
             }
