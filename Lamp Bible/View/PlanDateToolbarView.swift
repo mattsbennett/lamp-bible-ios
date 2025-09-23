@@ -17,56 +17,60 @@ struct PlanDateToolbarView: ToolbarContent {
                 date = Calendar.current.date(byAdding: .day, value: -1, to: date)!
             } label: {
                 Text(Image(systemName: "chevron.left"))
+                    .padding(.vertical, 8)
             }
-            .padding(.vertical)
         }
         ToolbarItem(placement: .principal) {
-            HStack {
-                Text(Image(systemName: "calendar"))
-                Text(date, format: (Calendar.current.dateComponents([.year], from: date).year! == Calendar.current.dateComponents([.year], from: Date.now).year!) ? .dateTime.weekday(.wide).day().month(.wide) : .dateTime.weekday().day().month().year()
-                )
-            }
-                .foregroundColor(.accentColor)
-                .onTapGesture {
-                    showingDatePicker.toggle()
+            Button {
+                showingDatePicker.toggle()
+            } label: {
+                HStack {
+                    Text(Image(systemName: "calendar"))
+                        .foregroundColor(.accentColor)
+                    Text(date, format: (Calendar.current.dateComponents([.year], from: date).year! == Calendar.current.dateComponents([.year], from: Date.now).year!) ? .dateTime.weekday(.wide).day().month(.wide) : .dateTime.weekday().day().month().year()
+                    )
                 }
-                .sheet(
-                    isPresented: $showingDatePicker
-                ) {
-                    NavigationStack {
-                        DatePicker(selection: $date, displayedComponents: [.date]){
-                        }
-                            .datePickerStyle(.graphical)
-                            .toolbar {
-                                ToolbarItem(placement: .cancellationAction) {
-                                    Button {
-                                        date = Date.now
-                                        showingDatePicker = false
-                                    } label: {
-                                        Text("Today")
-                                    }
+                .padding(.vertical, 6)
+                .padding(.horizontal, 1)
+            }
+            .modifier(ConditionalGlassButtonStyle())
+            .sheet(
+                isPresented: $showingDatePicker
+            ) {
+                NavigationStack {
+                    DatePicker(selection: $date, displayedComponents: [.date]){
+                    }
+                        .datePickerStyle(.graphical)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button {
+                                    date = Date.now
+                                    showingDatePicker = false
+                                } label: {
+                                    Text("Today")
                                 }
-                                ToolbarItem(placement: .confirmationAction) {
-                                    Button {
-                                        showingDatePicker = false
-                                    } label: {
-                                        Text("Done")
-                                    }
+                            }
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button {
+                                    showingDatePicker = false
+                                } label: {
+                                    Text("Done")
                                 }
                             }
                         }
-                        .presentationDetents([.height(455)])
-                        .presentationDragIndicator(.visible)
-                        .padding()
-                }
+                    }
+                    .presentationDetents([.height(455)])
+                    .presentationDragIndicator(.visible)
+                    .padding()
+            }
         }
         ToolbarItem(placement: .confirmationAction) {
             Button {
                 date = Calendar.current.date(byAdding: .day, value: 1, to: date)!
             } label: {
                 Text(Image(systemName: "chevron.right"))
+                    .padding(.vertical, 8)
             }
-            .padding(.vertical)
         }
     }
 }

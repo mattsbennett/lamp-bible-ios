@@ -161,13 +161,10 @@ struct PlanView: View {
                 }
                 .toolbar {
                     ToolbarItem(placement: .bottomBar) {
-                        HStack {
-                            Spacer()
-                            
+                        HStack(spacing: 40) {
                             NavigationLink(destination: PlanPickerView(plans: plans)) {
-                                VStack {
+                                VStack(spacing: 2) {
                                     Image(systemName: "calendar")
-                                        .padding(EdgeInsets(top: 1, leading: 0, bottom: 0.5, trailing: 0))
                                         .foregroundColor(.accentColor)
                                     Text("Plans")
                                         .font(.caption2)
@@ -175,15 +172,12 @@ struct PlanView: View {
                                 }
                             }
                             
-                            Spacer()
-                            
                             NavigationLink(destination: ReaderView(
                                 user: RealmManager.shared.realm.objects(User.self).first!,
                                 date: $date
                             )) {
-                                VStack {
+                                VStack(spacing: 2) {
                                     Image(systemName: "book.fill")
-                                        .padding(EdgeInsets(top: 1.5, leading: 0, bottom: 2, trailing: 0))
                                         .foregroundColor(.accentColor)
                                     Text("Read")
                                         .font(.caption2)
@@ -191,28 +185,24 @@ struct PlanView: View {
                                 }
                             }
                             
-                            Spacer()
-                            
                             NavigationLink(destination: SettingsView(
                                 user: user,
                                 externalApps: externalBibleApps,
                                 plans: plans,
                                 planViewRefreshId: $planViewRefreshId
                             )) {
-                                VStack {
+                                VStack(spacing: 2) {
                                     Image(systemName: "gear")
                                         .font(.callout)
-                                        .padding(EdgeInsets(top: 1, leading: 0, bottom: 0.1, trailing: 0))
                                         .foregroundColor(.accentColor)
                                     Text("Settings")
                                         .font(.caption2)
                                         .foregroundColor(iOS26OrLater ? .secondary : .red)
                                 }
                             }
-                            
-                            Spacer()
                         }
                         .padding(.vertical, 8)
+                        .padding(.horizontal, 20)
                     }
                 }
             }

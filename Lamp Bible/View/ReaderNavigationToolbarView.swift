@@ -27,20 +27,26 @@ struct ReaderNavigationToolbarView: ToolbarContent {
             }
         }
         ToolbarItem(placement: .principal) {
-            Menu {
-                ForEach(RealmManager.shared.realm.objects(Translation.self)) { trans in
-                    Button("\(trans.name) (\(trans.abbreviation))") {
-                        translation = trans
+            Button {
+                // This button action is handled by the menu
+            } label: {
+                Menu {
+                    ForEach(RealmManager.shared.realm.objects(Translation.self)) { trans in
+                        Button("\(trans.name) (\(trans.abbreviation))") {
+                            translation = trans
+                        }
+                    }
+                } label: {
+                    VStack {
+                        let currentVerse = RealmManager.shared.realm.objects(Verse.self).filter("id == \(currentVerseId)").first
+                        let book = RealmManager.shared.realm.objects(Book.self).filter("id == \(currentVerse!.b)").first
+                        Text(translation.abbreviation).bold().font(.system(size: 14))
+                        Text(book!.name + " \(currentVerse!.c)").font(.caption2).foregroundStyle(Color.primary)
                     }
                 }
-            } label: {
-                VStack {
-                    let currentVerse = RealmManager.shared.realm.objects(Verse.self).filter("id == \(currentVerseId)").first
-                    let book = RealmManager.shared.realm.objects(Book.self).filter("id == \(currentVerse!.b)").first
-                    Text(translation.abbreviation).bold()
-                    Text(book!.name + " \(currentVerse!.c)").font(.caption).foregroundStyle(Color.primary)
-                }
+                .padding(.horizontal, 4)
             }
+            .modifier(ConditionalGlassButtonStyle())
         }
         ToolbarItem(placement: .confirmationAction) {
             HStack {
