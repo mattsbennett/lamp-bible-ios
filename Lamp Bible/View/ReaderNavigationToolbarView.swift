@@ -71,7 +71,9 @@ struct ReaderNavigationToolbarView: ToolbarContent {
                                 }
                             }
                         } label: {
-                            Label("Smaller Text", systemImage: "textformat.size.smaller").labelStyle(.iconOnly)
+                            Label("Smaller Text", systemImage: "textformat.size.smaller")
+                                .labelStyle(.iconOnly)
+                                .foregroundColor(.primary)
                         }
                         .disabled(user.readerFontSize == 12)
                         Spacer()
@@ -88,7 +90,9 @@ struct ReaderNavigationToolbarView: ToolbarContent {
                                 }
                             }
                         } label: {
-                            Label("Larger Text", systemImage: "textformat.size.larger").labelStyle(.iconOnly)
+                            Label("Larger Text", systemImage: "textformat.size.larger")
+                                .labelStyle(.iconOnly)
+                                .foregroundColor(.primary)
                         }
                         .disabled(user.readerFontSize == 30)
                         Spacer()

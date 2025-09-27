@@ -12,7 +12,7 @@ struct PlanDateToolbarView: ToolbarContent {
     @Binding var showingDatePicker: Bool
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
+        ToolbarItem(placement: .topBarLeading) {
             Button {
                 date = Calendar.current.date(byAdding: .day, value: -1, to: date)!
             } label: {
@@ -24,14 +24,15 @@ struct PlanDateToolbarView: ToolbarContent {
             Button {
                 showingDatePicker.toggle()
             } label: {
-                HStack {
+                HStack(spacing: 4) {
                     Text(Image(systemName: "calendar"))
-                        .foregroundColor(.accentColor)
+                        .font(.system(size: 17))
+                        .foregroundColor(Calendar.current.isDate(date, inSameDayAs: Date.now) ? .accentColor : .primary)
                     Text(date, format: (Calendar.current.dateComponents([.year], from: date).year! == Calendar.current.dateComponents([.year], from: Date.now).year!) ? .dateTime.weekday(.wide).day().month(.wide) : .dateTime.weekday().day().month().year()
                     )
+                        .font(.system(size: 16))
                 }
                 .padding(.vertical, 6)
-                .padding(.horizontal, 1)
             }
             .modifier(ConditionalGlassButtonStyle())
             .sheet(
@@ -49,6 +50,7 @@ struct PlanDateToolbarView: ToolbarContent {
                                 } label: {
                                     Text("Today")
                                 }
+                                .tint(.accentColor)
                             }
                             ToolbarItem(placement: .confirmationAction) {
                                 Button {
@@ -64,7 +66,7 @@ struct PlanDateToolbarView: ToolbarContent {
                     .padding()
             }
         }
-        ToolbarItem(placement: .confirmationAction) {
+        ToolbarItem(placement: .topBarTrailing) {
             Button {
                 date = Calendar.current.date(byAdding: .day, value: 1, to: date)!
             } label: {

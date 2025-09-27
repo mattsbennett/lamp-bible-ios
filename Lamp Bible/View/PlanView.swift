@@ -16,7 +16,7 @@ struct PlanView: View {
     @State private var plansMetaData: PlansMetaData
     @Environment(\.colorScheme) var colorScheme
     let plans: Results<Plan>
-    
+
     private var iOS26OrLater: Bool {
         if #available(iOS 26, *) {
             return true
@@ -163,41 +163,43 @@ struct PlanView: View {
                     ToolbarItem(placement: .bottomBar) {
                         HStack(spacing: 40) {
                             NavigationLink(destination: PlanPickerView(plans: plans)) {
-                                VStack(spacing: 2) {
+                                VStack(spacing: 4) {
                                     Image(systemName: "calendar")
+                                        .font(.title3)
                                         .foregroundColor(.accentColor)
                                     Text("Plans")
                                         .font(.caption2)
-                                        .foregroundColor(iOS26OrLater ? .secondary : .red)
+                                        .foregroundColor(iOS26OrLater ? .primary : .red)
                                 }
                             }
-                            
+
                             NavigationLink(destination: ReaderView(
                                 user: RealmManager.shared.realm.objects(User.self).first!,
                                 date: $date
                             )) {
-                                VStack(spacing: 2) {
+                                VStack(spacing: 4) {
                                     Image(systemName: "book.fill")
+                                        .font(.title3)
                                         .foregroundColor(.accentColor)
                                     Text("Read")
                                         .font(.caption2)
-                                        .foregroundColor(iOS26OrLater ? .secondary : .red)
+                                        .foregroundColor(iOS26OrLater ? .primary : .red)
                                 }
                             }
-                            
+
                             NavigationLink(destination: SettingsView(
                                 user: user,
                                 externalApps: externalBibleApps,
                                 plans: plans,
                                 planViewRefreshId: $planViewRefreshId
                             )) {
-                                VStack(spacing: 2) {
+                                VStack(spacing: 3) {
                                     Image(systemName: "gear")
-                                        .font(.callout)
+                                        .font(.title3)
                                         .foregroundColor(.accentColor)
                                     Text("Settings")
                                         .font(.caption2)
-                                        .foregroundColor(iOS26OrLater ? .secondary : .red)
+                                        .foregroundColor(iOS26OrLater ? .primary : .red)
                                 }
                             }
                         }
