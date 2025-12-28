@@ -18,6 +18,7 @@ struct SplitReaderView: View {
     @State private var currentChapter: Int = 1
     @State private var currentVerse: Int = 1
     @State private var scrollToVerse: Int? = nil
+    @State private var requestScrollToVerseId: Int? = nil
     @SceneStorage("readerCurrentVerseId") private var currentVerseId: Int = 1001001
 
     // Resizable panel state
@@ -58,7 +59,7 @@ struct SplitReaderView: View {
             currentChapter = chapter
             currentVerse = verse
 
-            // Scroll-link: when verse changes, scroll notes panel to matching section
+            // Scroll-link: when verse changes, scroll tool panel to matching section
             // Only auto-scroll if chapter didn't change (to avoid jumping during chapter navigation)
             if !chapterChanged {
                 scrollToVerse = verse
@@ -94,7 +95,7 @@ struct SplitReaderView: View {
                                 }
                         )
 
-                    notesPanelContent
+                    toolPanelContent
                         .frame(width: rightPanelWidth)
                 }
                 .onAppear {
@@ -123,7 +124,7 @@ struct SplitReaderView: View {
                                 }
                         )
 
-                    notesPanelContent
+                    toolPanelContent
                         .frame(height: bottomPanelHeight)
                 }
                 .onAppear {
@@ -174,24 +175,30 @@ struct SplitReaderView: View {
             user: user,
             date: $date,
             readingMetaData: readingMetaData,
-            onVerseAction: handleVerseAction
+            onVerseAction: handleVerseAction,
+            requestScrollToVerseId: $requestScrollToVerseId
         )
     }
 
     @ViewBuilder
-    private var notesPanelContent: some View {
-        NotesPanelView(
+    private var toolPanelContent: some View {
+        ToolPanelView(
             book: currentBook,
             chapter: currentChapter,
+            currentVerse: currentVerse,
             scrollToVerse: $scrollToVerse,
-            user: user
+            user: user,
+            onNavigateToVerse: { verse in
+                // Request the Bible panel to scroll to this verse
+                requestScrollToVerseId = currentBook * 1000000 + currentChapter * 1000 + verse
+            }
         )
     }
 
     private func handleVerseAction(verse: Int, action: VerseAction) {
         switch action {
         case .addNote:
-            // Show notes panel and scroll to verse
+            // Show tool panel and scroll to verse
             if !user.notesPanelVisible {
                 try? RealmManager.shared.realm.write {
                     guard let thawedUser = user.thaw() else { return }

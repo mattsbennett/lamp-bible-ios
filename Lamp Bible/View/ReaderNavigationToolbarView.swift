@@ -14,10 +14,10 @@ struct ReaderNavigationToolbarView: ToolbarContent {
     @Binding var readingMetaData: [ReadingMetaData]?
     @Binding var translation: Translation
     @Binding var currentVerseId: Int
-    @Binding var showingDisplayOptions: Bool
     @Binding var showingBookPicker: Bool
+    @Binding var showingOptionsMenu: Bool
     let readerDismiss: DismissAction
-    
+
     var body: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
             Button {
@@ -28,97 +28,96 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         }
         ToolbarItem(placement: .principal) {
             Button {
-                // This button action is handled by the menu
+                if readingMetaData == nil {
+                    showingBookPicker = true
+                }
             } label: {
-                Menu {
-                    ForEach(RealmManager.shared.realm.objects(Translation.self)) { trans in
-                        Button("\(trans.name) (\(trans.abbreviation))") {
-                            translation = trans
-                        }
-                    }
-                } label: {
-                    VStack {
-                        let currentVerse = RealmManager.shared.realm.objects(Verse.self).filter("id == \(currentVerseId)").first
-                        let book = RealmManager.shared.realm.objects(Book.self).filter("id == \(currentVerse!.b)").first
-                        Text(translation.abbreviation).bold().font(.system(size: 14))
-                        Text(book!.name + " \(currentVerse!.c)").font(.caption2).foregroundStyle(Color.primary)
-                    }
+                VStack {
+                    let currentVerse = RealmManager.shared.realm.objects(Verse.self).filter("id == \(currentVerseId)").first
+                    let book = RealmManager.shared.realm.objects(Book.self).filter("id == \(currentVerse!.b)").first
+                    Text(translation.abbreviation).bold().font(.system(size: 14))
+                    Text(book!.name + " \(currentVerse!.c)").font(.caption2).foregroundStyle(Color.primary)
                 }
                 .padding(.horizontal, 4)
             }
+            .disabled(readingMetaData != nil)
             .modifier(ConditionalGlassButtonStyle())
         }
         ToolbarItem(placement: .confirmationAction) {
-            HStack {
-                // Notes toggle button (only shown when notes are enabled)
-                if user.notesEnabled {
-                    Button {
-                        try! RealmManager.shared.realm.write {
-                            guard let thawedUser = user.thaw() else { return }
-                            thawedUser.notesPanelVisible.toggle()
-                        }
-                    } label: {
-                        Image(systemName: user.notesPanelVisible ? "note.text" : "note.text.badge.plus")
-                    }
-                }
-
-                Button {
-                    showingDisplayOptions = true
-                } label: {
-                    Text(Image(systemName: "textformat.size"))
-                }
-                .popover(
-                    isPresented: $showingDisplayOptions, attachmentAnchor: .point(UnitPoint(x: 0.5, y: 0)), arrowEdge: .bottom
-                ) {
-                    HStack {
-                        Spacer()
+            Button {
+                showingOptionsMenu = true
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .popover(isPresented: $showingOptionsMenu) {
+                VStack(alignment: .leading, spacing: 8) {
+                    // Tools toggle (only shown when notes are enabled)
+                    if user.notesEnabled {
                         Button {
-                            if user.readerFontSize >= 14 {
+                            try! RealmManager.shared.realm.write {
+                                guard let thawedUser = user.thaw() else { return }
+                                thawedUser.notesPanelVisible.toggle()
+                            }
+                        } label: {
+                            Label(
+                                user.notesPanelVisible ? "Hide Tools" : "Show Tools",
+                                systemImage: user.notesPanelVisible ? "rectangle.portrait" : "inset.filled.bottomhalf.rectangle.portrait"
+                            )
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .cornerRadius(14)
+                    }
+
+                    // Font size controls - compact row
+                    HStack(spacing: 0) {
+                        Button {
+                            if user.readerFontSize > 12 {
                                 try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else {
-                                        // Handle the inability to thaw the object
-                                        return
-                                    }
+                                    guard let thawedUser = user.thaw() else { return }
                                     thawedUser.readerFontSize = thawedUser.readerFontSize - 2
                                 }
                             }
                         } label: {
-                            Label("Smaller Text", systemImage: "textformat.size.smaller")
-                                .labelStyle(.iconOnly)
-                                .foregroundColor(.primary)
+                            Image(systemName: "textformat.size.smaller")
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .contentShape(Rectangle())
                         }
-                        .disabled(user.readerFontSize == 12)
-                        Spacer()
+                        .buttonStyle(.plain)
+                        .disabled(user.readerFontSize <= 12)
+
                         Divider()
-                        Spacer()
+                            .frame(height: 20)
+
                         Button {
-                            if user.readerFontSize <= 28 {
+                            if user.readerFontSize < 30 {
                                 try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else {
-                                        // Handle the inability to thaw the object
-                                        return
-                                    }
+                                    guard let thawedUser = user.thaw() else { return }
                                     thawedUser.readerFontSize = thawedUser.readerFontSize + 2
                                 }
                             }
                         } label: {
-                            Label("Larger Text", systemImage: "textformat.size.larger")
-                                .labelStyle(.iconOnly)
-                                .foregroundColor(.primary)
+                            Image(systemName: "textformat.size.larger")
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .contentShape(Rectangle())
                         }
-                        .disabled(user.readerFontSize == 30)
-                        Spacer()
+                        .buttonStyle(.plain)
+                        .disabled(user.readerFontSize >= 30)
                     }
-                    .presentationCompactAdaptation(.popover)
-                    .frame(minWidth: 180, minHeight: 35)
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                    .cornerRadius(14)
                 }
-                if readingMetaData == nil {
-                    Button {
-                        showingBookPicker = true
-                    } label: {
-                        Text(Image(systemName: "line.3.horizontal"))
-                    }
-                }
+                .font(.body)
+                .fontWeight(.regular)
+                .padding(12)
+                .background(Color(UIColor.systemGroupedBackground))
+                .presentationCompactAdaptation(.popover)
             }
         }
     }

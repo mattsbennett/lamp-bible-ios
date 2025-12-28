@@ -8,6 +8,57 @@
 import Foundation
 import RealmSwift
 import SwiftUI
+import UIKit
+
+// MARK: - Selectable Text View
+
+struct SelectableText: UIViewRepresentable {
+    let text: String
+    let fontSize: CGFloat
+    let lineSpacing: CGFloat
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = lineSpacing
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: fontSize),
+            .paragraphStyle: paragraphStyle,
+            .foregroundColor: UIColor.label
+        ]
+
+        textView.attributedText = NSAttributedString(string: text, attributes: attributes)
+        textView.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width > 0 else { return nil }
+        let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: size.height)
+    }
+}
+
+// Preference key to track verse positions for scroll-linking
+struct VersePositionPreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGFloat] = [:]
+
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
 
 struct ReaderView: View {
     @Environment(\.dismiss) var dismiss
@@ -18,13 +69,14 @@ struct ReaderView: View {
     @State private var isLoading: Bool = false
     @State private var showingBookPicker: Bool = false
     @State private var showingCrossReferenceSheet: Bool = false
-    @State private var showingDisplayOptions: Bool = false
+    @State private var showingOptionsMenu: Bool = false
     @State private var crossReferenceVerse: Verse? = nil
     @State private var verses: Results<Verse>
     @State private var initialScrollItem: String? = nil
     @State private var translation: Translation
-    @State private var showingTranslationPopover: Bool = false
     @SceneStorage("readerCurrentVerseId") var currentVerseId: Int = 1001001
+    @State private var scrollDebounceTask: Task<Void, Never>?
+    @Binding var requestScrollToVerseId: Int?
 
     let LOADING_NEXT_CHAPTER = "next_chapter"
     let LOADING_PREV_CHAPTER = "prev_chapter"
@@ -40,7 +92,8 @@ struct ReaderView: View {
         readingMetaData: [ReadingMetaData]? = nil,
         translation: Translation = RealmManager.shared.realm.objects(User.self).first!.readerTranslation!,
         verses: Results<Verse> = RealmManager.shared.realm.objects(Verse.self).filter("id == -1"),
-        onVerseAction: ((Int, VerseAction) -> Void)? = nil
+        onVerseAction: ((Int, VerseAction) -> Void)? = nil,
+        requestScrollToVerseId: Binding<Int?> = .constant(nil)
     ) {
         self.user = user
         _date = date
@@ -48,6 +101,7 @@ struct ReaderView: View {
         _translation = State(initialValue: translation)
         _verses = State(initialValue: verses)
         self.onVerseAction = onVerseAction
+        _requestScrollToVerseId = requestScrollToVerseId
     }
     
     @ViewBuilder
@@ -153,25 +207,28 @@ struct ReaderView: View {
                                     .frame(width: 5)
                                     .id("v_spacer_\(verse.id)")
                                 verseButton(verse: verse, hasCrossRefs: isCrossRefs)
-                                Text(verse.t)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .multilineTextAlignment(.leading)
-                                    .lineSpacing(10)
-                                    .padding(.horizontal, 15)
-                                    .id("v_text_\(verse.id)")
-                                    .font(.system(size: CGFloat(user.readerFontSize)))
-                                    // onAppear affects scrolling performance, so only use it when
-                                    // there may be more than one chapter loaded (so header updates)
-                                    // or when notes panel is visible (for scroll-linking)
-                                    .if(readingMetaData != nil || (user.notesEnabled && user.notesPanelVisible)) { view in
-                                        view.onAppear {
-                                            currentVerseId = verse.id
+                                SelectableText(
+                                    text: verse.t,
+                                    fontSize: CGFloat(user.readerFontSize),
+                                    lineSpacing: 10
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 15)
+                                .id("v_text_\(verse.id)")
+                                // Track verse position for scroll-linking
+                                .if(readingMetaData != nil || (user.notesEnabled && user.notesPanelVisible)) { view in
+                                    view.background(
+                                        GeometryReader { geo in
+                                            Color.clear.preference(
+                                                key: VersePositionPreferenceKey.self,
+                                                value: [verse.id: geo.frame(in: .named("readerScroll")).minY]
+                                            )
                                         }
-                                    }
-                                    .if(verse.id == verses.last!.id) { view in
-                                        view.padding(.bottom, 20)
-                                    }
+                                    )
+                                }
+                                .if(verse.id == verses.last!.id) { view in
+                                    view.padding(.bottom, 20)
+                                }
                             }
                         }
                         .onChange(of: initialScrollItem) {
@@ -189,7 +246,7 @@ struct ReaderView: View {
                         }
                         .onChange(of: currentReadingIndex) {
                             loadVerses(loadingCase: LOADING_READING)
-                            
+
                             if let readingId = readingMetaData?[currentReadingIndex].id {
                                 if RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(readingId)'").count == 0 {
                                     try! RealmManager.shared.realm.write {
@@ -200,6 +257,14 @@ struct ReaderView: View {
                                         thawedUser.addCompletedReading(id: readingId)
                                     }
                                 }
+                            }
+                        }
+                        .onChange(of: requestScrollToVerseId) {
+                            if let verseId = requestScrollToVerseId {
+                                withAnimation {
+                                    proxy.scrollTo(String(verseId), anchor: .top)
+                                }
+                                requestScrollToVerseId = nil
                             }
                         }
                     }
@@ -226,6 +291,24 @@ struct ReaderView: View {
 //                    )
                 }
             }
+            .coordinateSpace(name: "readerScroll")
+            .onPreferenceChange(VersePositionPreferenceKey.self) { positions in
+                // Debounce: cancel any pending update and schedule a new one
+                scrollDebounceTask?.cancel()
+                scrollDebounceTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 150_000_000) // 150ms
+                    guard !Task.isCancelled else { return }
+
+                    // Find the verse closest to the top of the viewport (smallest positive Y)
+                    let topVerse = positions
+                        .filter { $0.value >= -50 } // Allow slightly above viewport
+                        .min { $0.value < $1.value }
+
+                    if let verseId = topVerse?.key, verseId != currentVerseId {
+                        currentVerseId = verseId
+                    }
+                }
+            }
             .navigationBarBackButtonHidden(true)
             .toolbar {
                 ReaderBottomToolbarView(
@@ -248,15 +331,16 @@ struct ReaderView: View {
                     readingMetaData: $readingMetaData,
                     translation: $translation,
                     currentVerseId: $currentVerseId,
-                    showingDisplayOptions: $showingDisplayOptions,
                     showingBookPicker: $showingBookPicker,
+                    showingOptionsMenu: $showingOptionsMenu,
                     readerDismiss: dismiss
                 )
             }
             .sheet(isPresented: $showingBookPicker) {
                 BookListView(
                     currentVerseId: $currentVerseId,
-                    showingBookPicker: $showingBookPicker
+                    showingBookPicker: $showingBookPicker,
+                    translation: $translation
                 ) {
                     loadVerses(loadingCase: LOADING_CURRENT)
                 }

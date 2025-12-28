@@ -53,7 +53,7 @@ struct LockConflictView: View {
                 Button {
                     onAction(.editAnyway)
                 } label: {
-                    Label("Edit Anyway", systemImage: "pencil")
+                    Label("Edit Anyway", systemImage: "square.and.pencil")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)

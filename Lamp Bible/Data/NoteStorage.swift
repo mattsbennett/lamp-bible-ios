@@ -76,7 +76,7 @@ struct NoteSection: Identifiable {
             }
             return "Verse \(start)"
         }
-        return "General Notes"
+        return ""
     }
 
     var isGeneral: Bool {
