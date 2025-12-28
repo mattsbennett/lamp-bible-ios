@@ -27,6 +27,13 @@
 		B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD42B7B221700C74C1D /* WrappingHStack.swift */; };
 		B861BF002B436452001CA38E /* CrossReferenceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
+		B87B2AC92F007FF1006DC53D /* v5.realm in Resources */ = {isa = PBXBuildFile; fileRef = B87B2AC82F007FF1006DC53D /* v5.realm */; };
+		B87B2ACB2F00819E006DC53D /* ICloudNoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */; };
+		B87B2ACD2F0081BD006DC53D /* NoteParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACC2F0081BD006DC53D /* NoteParser.swift */; };
+		B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */; };
+		B87B2AD12F008237006DC53D /* NotesPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD02F008237006DC53D /* NotesPanelView.swift */; };
+		B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD22F008243006DC53D /* SplitReaderView.swift */; };
+		B87B2AD52F009CCC006DC53D /* NoteConflictViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */; };
 		B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */; };
 		B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4182ADB47E50066F0A0 /* ContentView.swift */; };
 		B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */; };
@@ -87,6 +94,14 @@
 		B851FFD42B7B221700C74C1D /* WrappingHStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WrappingHStack.swift; sourceTree = "<group>"; };
 		B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossReferenceListView.swift; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
+		B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Lamp Bible.entitlements"; sourceTree = "<group>"; };
+		B87B2AC82F007FF1006DC53D /* v5.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v5.realm; sourceTree = "<group>"; };
+		B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudNoteStorage.swift; sourceTree = "<group>"; };
+		B87B2ACC2F0081BD006DC53D /* NoteParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteParser.swift; sourceTree = "<group>"; };
+		B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteStorage.swift; sourceTree = "<group>"; };
+		B87B2AD02F008237006DC53D /* NotesPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesPanelView.swift; sourceTree = "<group>"; };
+		B87B2AD22F008243006DC53D /* SplitReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitReaderView.swift; sourceTree = "<group>"; };
+		B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictViews.swift; sourceTree = "<group>"; };
 		B885E4132ADB47E40066F0A0 /* Lamp Bible.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Lamp Bible.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampBibleApp.swift; sourceTree = "<group>"; };
 		B885E4182ADB47E50066F0A0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -162,6 +177,9 @@
 				B8FC333D2B3E2CAF009C544D /* DataModel.swift */,
 				B84968DD2AFB3D4000955089 /* ExternalBibleApp.swift */,
 				B8210A962B549ADD008341F0 /* ViewModel.swift */,
+				B87B2ACC2F0081BD006DC53D /* NoteParser.swift */,
+				B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */,
+				B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */,
 			);
 			path = Data;
 			sourceTree = "<group>";
@@ -185,6 +203,8 @@
 				B885E4182ADB47E50066F0A0 /* ContentView.swift */,
 				B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */,
 				B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */,
+				B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */,
+				B87B2AD02F008237006DC53D /* NotesPanelView.swift */,
 				B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */,
 				B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */,
 				B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */,
@@ -194,6 +214,7 @@
 				B82BBB832B4CCEC5002248CC /* ReaderNavigationToolbarView.swift */,
 				B8FC33472B3F4AC7009C544D /* ReaderView.swift */,
 				B84968D92AF9FDEA00955089 /* SettingsView.swift */,
+				B87B2AD22F008243006DC53D /* SplitReaderView.swift */,
 				B851FFD42B7B221700C74C1D /* WrappingHStack.swift */,
 			);
 			path = View;
@@ -225,9 +246,11 @@
 		B885E4152ADB47E40066F0A0 /* Lamp Bible */ = {
 			isa = PBXGroup;
 			children = (
+				B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
 				B819B1532E80DB6900D39F04 /* v4.realm */,
+				B87B2AC82F007FF1006DC53D /* v5.realm */,
 				B885E41C2ADB47ED0066F0A0 /* Preview Content */,
 				B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */,
 				B8210A9C2B54A4D7008341F0 /* Data */,
@@ -371,6 +394,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B87B2AC92F007FF1006DC53D /* v5.realm in Resources */,
 				B819B1542E80DB6900D39F04 /* v4.realm in Resources */,
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
@@ -514,10 +538,13 @@
 				B82BBB842B4CCEC5002248CC /* ReaderNavigationToolbarView.swift in Sources */,
 				B84968DA2AF9FDEA00955089 /* SettingsView.swift in Sources */,
 				B8210AA02B54A6CE008341F0 /* Utilities.swift in Sources */,
+				B87B2AD12F008237006DC53D /* NotesPanelView.swift in Sources */,
 				B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */,
 				B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */,
 				B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */,
+				B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */,
 				B8210A992B549E80008341F0 /* CrossReferenceDetailView.swift in Sources */,
+				B87B2AD52F009CCC006DC53D /* NoteConflictViews.swift in Sources */,
 				B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */,
 				B82BBB882B4D0679002248CC /* PlanDateToolbarView.swift in Sources */,
 				B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */,
@@ -527,11 +554,14 @@
 				B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */,
 				B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */,
 				B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */,
+				B87B2ACD2F0081BD006DC53D /* NoteParser.swift in Sources */,
 				B861BF002B436452001CA38E /* CrossReferenceListView.swift in Sources */,
 				B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */,
 				B82BBB862B4CF238002248CC /* ReaderBottomToolbarView.swift in Sources */,
 				B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */,
+				B87B2ACB2F00819E006DC53D /* ICloudNoteStorage.swift in Sources */,
 				B84968D42AF72D5F00955089 /* PlanView.swift in Sources */,
+				B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */,
 				B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -694,6 +724,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Lamp Bible/Lamp Bible.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -727,6 +758,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Lamp Bible/Lamp Bible.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;

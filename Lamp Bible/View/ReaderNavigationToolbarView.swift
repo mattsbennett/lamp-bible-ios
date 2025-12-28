@@ -50,6 +50,18 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         }
         ToolbarItem(placement: .confirmationAction) {
             HStack {
+                // Notes toggle button (only shown when notes are enabled)
+                if user.notesEnabled {
+                    Button {
+                        try! RealmManager.shared.realm.write {
+                            guard let thawedUser = user.thaw() else { return }
+                            thawedUser.notesPanelVisible.toggle()
+                        }
+                    } label: {
+                        Image(systemName: user.notesPanelVisible ? "note.text" : "note.text.badge.plus")
+                    }
+                }
+
                 Button {
                     showingDisplayOptions = true
                 } label: {

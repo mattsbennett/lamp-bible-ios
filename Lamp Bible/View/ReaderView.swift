@@ -31,21 +31,69 @@ struct ReaderView: View {
     let LOADING_CURRENT = "current"
     let LOADING_TRANSLATION = "translation"
     let LOADING_READING = "reading"
-    
+
+    var onVerseAction: ((Int, VerseAction) -> Void)?
+
     init(
         user: User,
         date: Binding<Date>,
         readingMetaData: [ReadingMetaData]? = nil,
         translation: Translation = RealmManager.shared.realm.objects(User.self).first!.readerTranslation!,
-        verses: Results<Verse> = RealmManager.shared.realm.objects(Verse.self).filter("id == -1")
+        verses: Results<Verse> = RealmManager.shared.realm.objects(Verse.self).filter("id == -1"),
+        onVerseAction: ((Int, VerseAction) -> Void)? = nil
     ) {
         self.user = user
         _date = date
         _readingMetaData = State(initialValue: readingMetaData)
         _translation = State(initialValue: translation)
         _verses = State(initialValue: verses)
+        self.onVerseAction = onVerseAction
     }
     
+    @ViewBuilder
+    private func verseButton(verse: Verse, hasCrossRefs: Bool) -> some View {
+        if user.notesEnabled {
+            // When notes are enabled, show a menu with options
+            Menu {
+                Button {
+                    onVerseAction?(verse.v, .addNote)
+                } label: {
+                    Label("Add Note", systemImage: "note.text.badge.plus")
+                }
+
+                if hasCrossRefs {
+                    Button {
+                        crossReferenceVerse = verse
+                        showingCrossReferenceSheet = true
+                    } label: {
+                        Label("Cross References", systemImage: "arrow.triangle.branch")
+                    }
+                }
+            } label: {
+                Text("\(verse.v)")
+                    .font(.system(size: CGFloat(user.readerFontSize)))
+                    .foregroundStyle(hasCrossRefs ? .accentColor : Color.secondary)
+            }
+            .padding(.trailing, -20)
+            .frame(width: user.readerFontSize > 22 ? 35 : 20)
+            .fixedSize(horizontal: true, vertical: false)
+            .id("v_button_\(verse.id)")
+        } else {
+            // Original behavior: tap to show cross references
+            Button("\(verse.v)") {
+                crossReferenceVerse = verse
+                showingCrossReferenceSheet = true
+            }
+            .padding(.trailing, -20)
+            .frame(width: user.readerFontSize > 22 ? 35 : 20)
+            .fixedSize(horizontal: true, vertical: false)
+            .font(.system(size: CGFloat(user.readerFontSize)))
+            .id("v_button_\(verse.id)")
+            .foregroundStyle(hasCrossRefs ? .accentColor : Color.secondary)
+            .disabled(!hasCrossRefs)
+        }
+    }
+
     func loadVerses(loadingCase: String) {
         let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
 
@@ -104,17 +152,7 @@ struct ReaderView: View {
                                 Spacer()
                                     .frame(width: 5)
                                     .id("v_spacer_\(verse.id)")
-                                Button("\(verse.v)") {
-                                    crossReferenceVerse = verse
-                                    showingCrossReferenceSheet = true
-                                }
-                                    .padding(.trailing, -20)
-                                    .frame(width: user.readerFontSize > 22 ? 35 : 20)
-                                    .fixedSize(horizontal: true, vertical: false)
-                                    .font(.system(size: CGFloat(user.readerFontSize)))
-                                    .id("v_button_\(verse.id)")
-                                    .foregroundStyle(isCrossRefs ? .accentColor : Color.secondary)
-                                    .disabled(!isCrossRefs)
+                                verseButton(verse: verse, hasCrossRefs: isCrossRefs)
                                 Text(verse.t)
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -125,7 +163,8 @@ struct ReaderView: View {
                                     .font(.system(size: CGFloat(user.readerFontSize)))
                                     // onAppear affects scrolling performance, so only use it when
                                     // there may be more than one chapter loaded (so header updates)
-                                    .if(readingMetaData != nil) { view in
+                                    // or when notes panel is visible (for scroll-linking)
+                                    .if(readingMetaData != nil || (user.notesEnabled && user.notesPanelVisible)) { view in
                                         view.onAppear {
                                             currentVerseId = verse.id
                                         }

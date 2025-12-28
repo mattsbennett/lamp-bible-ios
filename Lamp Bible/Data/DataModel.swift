@@ -218,6 +218,11 @@ class User: RealmSwiftObject, Identifiable {
     @Persisted var readerFontSize: Float = 16
     @Persisted var completedReadings = RealmSwift.List<CompletedReading>()
 
+    // Notes settings
+    @Persisted var notesEnabled: Bool = false
+    @Persisted var notesPanelVisible: Bool = false
+    @Persisted var notesPanelOrientation: String = "bottom"  // "bottom" or "right"
+
     let defaultTranslationId = 3
 
     func addCompletedReading(id: String) {

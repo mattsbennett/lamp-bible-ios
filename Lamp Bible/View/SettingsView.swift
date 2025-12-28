@@ -15,6 +15,8 @@ struct SettingsView: View {
     @State var planWpm: Double
     @State var notificationTime: Date = Date.now
     @State var showingNotificationAlert = false
+    @State var iCloudAvailable: Bool = false
+    @Environment(\.horizontalSizeClass) var horizontalSizeClass
     let plans: Results<Plan>
     let externalApps: [ExternalBibleApp]
 
@@ -215,6 +217,44 @@ struct SettingsView: View {
                 .onChange(of: user.planNotificationDate) { oldValue, newValue in
                     unscheduleRecurringNotification()
                     scheduleRecurringNotification(at: newValue)
+                }
+                Section {
+                    Toggle(isOn: $user.notesEnabled) {
+                        Text("Enable Notes")
+                    }.tint(.accentColor)
+
+                    if user.notesEnabled {
+                        // iCloud status indicator
+                        HStack {
+                            Text("Storage")
+                            Spacer()
+                            if iCloudAvailable {
+                                Text("iCloud Drive").foregroundStyle(.secondary)
+                                Image(systemName: "checkmark.icloud.fill")
+                                    .foregroundStyle(.green)
+                            } else {
+                                Text("Not Available").foregroundStyle(.secondary)
+                                Image(systemName: "xmark.icloud")
+                                    .foregroundStyle(.red)
+                            }
+                        }
+
+                        // Panel orientation picker (only on iPad)
+                        if horizontalSizeClass != .compact {
+                            Picker("Notes Panel Position", selection: $user.notesPanelOrientation) {
+                                Text("Bottom").tag("bottom")
+                                Text("Right").tag("right")
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Notes")
+                } footer: {
+                    Text("Notes are stored in iCloud Drive and sync across your devices.")
+                }
+                .headerProminence(.increased)
+                .task {
+                    iCloudAvailable = await ICloudNoteStorage.shared.isAvailable()
                 }
                 Section {
                     ForEach(RealmManager.shared.realm.objects(Translation.self)) { translation in

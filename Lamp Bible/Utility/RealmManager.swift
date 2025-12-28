@@ -15,14 +15,15 @@ class RealmManager {
 
     private init() {
         // Initialize the Realm instance
-        let bundledRealmPath = Bundle.main.url(forResource: "v4", withExtension: "realm")!
+        let bundledRealmPath = Bundle.main.url(forResource: "v5", withExtension: "realm")!
         let fileManager = FileManager.default
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let destinationURL = documentsURL.appendingPathComponent("v4.realm")
+        let destinationURL = documentsURL.appendingPathComponent("v5.realm")
         let v0DestinationURL = documentsURL.appendingPathComponent("default.realm")
         let v1DestinationURL = documentsURL.appendingPathComponent("v1.realm")
         let v2DestinationURL = documentsURL.appendingPathComponent("v2.realm")
         let v3DestinationURL = documentsURL.appendingPathComponent("v3.realm")
+        let v4DestinationURL = documentsURL.appendingPathComponent("v4.realm")
         var oldUser: User? = nil
 
         // Query the user data we need to keep from the old realm
@@ -58,6 +59,24 @@ class RealmManager {
 
             oldRealm = try! Realm(configuration: oldConfig)
             oldUser = oldRealm!.objects(User.self).first!
+        } else if fileManager.fileExists(atPath: v4DestinationURL.path) {
+            let oldConfig = Realm.Configuration(
+                fileURL: v4DestinationURL,
+                schemaVersion: 3,
+                migrationBlock: { migration, oldSchemaVersion in
+                    if oldSchemaVersion < 3 {
+                        // Add new notes properties with default values
+                        migration.enumerateObjects(ofType: User.className()) { oldObject, newObject in
+                            newObject!["notesEnabled"] = false
+                            newObject!["notesPanelVisible"] = false
+                            newObject!["notesPanelOrientation"] = "bottom"
+                        }
+                    }
+                }
+            )
+
+            oldRealm = try! Realm(configuration: oldConfig)
+            oldUser = oldRealm!.objects(User.self).first!
         }
 
         // Copy the Realm file to the destination URL
@@ -65,7 +84,7 @@ class RealmManager {
             try! fileManager.copyItem(at: bundledRealmPath, to: destinationURL)
         }
 
-        let config = Realm.Configuration(fileURL: destinationURL, schemaVersion: 2)
+        let config = Realm.Configuration(fileURL: destinationURL, schemaVersion: 3)
 
         realm = try! Realm(configuration: config)
 
@@ -84,6 +103,8 @@ class RealmManager {
                 newUser.planNotificationDate = oldUser!.planNotificationDate
                 newUser.readerCrossReferenceSort = oldUser!.readerCrossReferenceSort
                 newUser.readerFontSize = oldUser!.readerFontSize
+                // Notes properties only exist in v5+ schemas, use defaults for older migrations
+                // (new User() already has default values for these)
 
                 // Object properties cannot be assigned, must be recreated so pointers
                 // don't point to old realm objects
@@ -116,6 +137,8 @@ class RealmManager {
             try! fileManager.removeItem(atPath: v2DestinationURL.path)
         } else if fileManager.fileExists(atPath: v3DestinationURL.path) {
             try! fileManager.removeItem(atPath: v3DestinationURL.path)
+        } else if fileManager.fileExists(atPath: v4DestinationURL.path) {
+            try! fileManager.removeItem(atPath: v4DestinationURL.path)
         }
     }
 }

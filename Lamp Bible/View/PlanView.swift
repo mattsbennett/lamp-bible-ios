@@ -54,7 +54,7 @@ struct PlanView: View {
                                                             HStack {
                                                                 if user.planInAppBible {
                                                                     NavigationLink(
-                                                                        destination: ReaderView(
+                                                                        destination: SplitReaderView(
                                                                             user: RealmManager.shared.realm.objects(User.self).first!,
                                                                             date: $date,
                                                                             readingMetaData: readings
@@ -173,7 +173,7 @@ struct PlanView: View {
                                 }
                             }
 
-                            NavigationLink(destination: ReaderView(
+                            NavigationLink(destination: SplitReaderView(
                                 user: RealmManager.shared.realm.objects(User.self).first!,
                                 date: $date
                             )) {
