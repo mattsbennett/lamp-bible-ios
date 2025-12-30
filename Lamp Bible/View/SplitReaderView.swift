@@ -14,14 +14,29 @@ struct SplitReaderView: View {
     @Binding var date: Date
     var readingMetaData: [ReadingMetaData]?
 
-    @State private var currentBook: Int = 1
-    @State private var currentChapter: Int = 1
-    @State private var currentVerse: Int = 1
     @State private var scrollToVerse: Int? = nil
     @State private var requestScrollToVerseId: Int? = nil
+    @State private var requestScrollAnimated: Bool = true
     @SceneStorage("readerCurrentVerseId") private var currentVerseId: Int = 1001001
+    @State private var lastVerseId: Int = 0  // Track previous value for change detection
+    @State private var suppressScrollLink: Bool = false
+    @AppStorage("toolPanelScrollLinked") private var isScrollLinked: Bool = true
+    @State private var hasUserScrolled: Bool = false
 
-    // Resizable panel state
+    // Derived from currentVerseId - always in sync
+    private var currentBook: Int {
+        currentVerseId / 1000000
+    }
+    private var currentChapter: Int {
+        (currentVerseId % 1000000) / 1000
+    }
+    private var currentVerse: Int {
+        currentVerseId % 1000
+    }
+
+    // Resizable panel state - persisted across sessions
+    @SceneStorage("toolPanelBottomHeightV2") private var storedBottomPanelHeight: Double = 0
+    @SceneStorage("toolPanelRightWidthV2") private var storedRightPanelWidth: Double = 0
     @State private var bottomPanelHeight: CGFloat = 0
     @State private var rightPanelWidth: CGFloat = 350
     @State private var isDragging: Bool = false
@@ -46,30 +61,42 @@ struct SplitReaderView: View {
 
     var body: some View {
         Group {
-            if user.notesEnabled && user.notesPanelVisible {
+            if user.notesPanelVisible {
                 splitView
             } else {
                 readerContent
             }
         }
-        .onChange(of: currentVerseId) { _, newValue in
-            let (verse, chapter, book) = splitVerseId(newValue)
-            let chapterChanged = currentChapter != chapter || currentBook != book
-            currentBook = book
-            currentChapter = chapter
-            currentVerse = verse
+        .onChange(of: currentVerseId) { oldValue, newValue in
+            let (_, oldChapter, oldBook) = splitVerseId(oldValue)
+            let (newVerse, newChapter, newBook) = splitVerseId(newValue)
+            let chapterChanged = oldChapter != newChapter || oldBook != newBook
 
             // Scroll-link: when verse changes, scroll tool panel to matching section
-            // Only auto-scroll if chapter didn't change (to avoid jumping during chapter navigation)
-            if !chapterChanged {
-                scrollToVerse = verse
+            // Only auto-scroll after initial load, if chapter didn't change, not suppressed, and scroll linking is enabled
+            if hasUserScrolled && !chapterChanged && !suppressScrollLink && isScrollLinked {
+                scrollToVerse = newVerse
             }
+            // Reset suppress flag
+            suppressScrollLink = false
         }
         .onAppear {
-            let (verse, chapter, book) = splitVerseId(currentVerseId)
-            currentBook = book
-            currentChapter = chapter
-            currentVerse = verse
+            // Enable scroll linking after initial load completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                hasUserScrolled = true
+            }
+        }
+        .task {
+            // Check iCloud availability and disable notes if not available
+            if user.notesEnabled {
+                let isAvailable = await ICloudNoteStorage.shared.isAvailable()
+                if !isAvailable {
+                    try? RealmManager.shared.realm.write {
+                        guard let thawedUser = user.thaw() else { return }
+                        thawedUser.notesEnabled = false
+                    }
+                }
+            }
         }
     }
 
@@ -92,6 +119,7 @@ struct SplitReaderView: View {
                                 }
                                 .onEnded { _ in
                                     isDragging = false
+                                    storedRightPanelWidth = Double(rightPanelWidth)
                                 }
                         )
 
@@ -99,8 +127,11 @@ struct SplitReaderView: View {
                         .frame(width: rightPanelWidth)
                 }
                 .onAppear {
-                    if rightPanelWidth == 350 {
-                        rightPanelWidth = min(350, geometry.size.width * 0.4)
+                    if storedRightPanelWidth != 0 {
+                        rightPanelWidth = CGFloat(storedRightPanelWidth)
+                    } else {
+                        // Default to 1/3 of viewport width
+                        rightPanelWidth = min(350, geometry.size.width / 3)
                     }
                 }
             }
@@ -121,6 +152,7 @@ struct SplitReaderView: View {
                                 }
                                 .onEnded { _ in
                                     isDragging = false
+                                    storedBottomPanelHeight = Double(bottomPanelHeight)
                                 }
                         )
 
@@ -128,8 +160,11 @@ struct SplitReaderView: View {
                         .frame(height: bottomPanelHeight)
                 }
                 .onAppear {
-                    if bottomPanelHeight == 0 {
-                        bottomPanelHeight = geometry.size.height * 0.4
+                    if storedBottomPanelHeight != 0 {
+                        bottomPanelHeight = CGFloat(storedBottomPanelHeight)
+                    } else {
+                        // Default to 1/3 of viewport height
+                        bottomPanelHeight = geometry.size.height / 3
                     }
                 }
             }
@@ -176,7 +211,9 @@ struct SplitReaderView: View {
             date: $date,
             readingMetaData: readingMetaData,
             onVerseAction: handleVerseAction,
-            requestScrollToVerseId: $requestScrollToVerseId
+            requestScrollToVerseId: $requestScrollToVerseId,
+            requestScrollAnimated: $requestScrollAnimated,
+            visibleVerseId: $currentVerseId
         )
     }
 
@@ -188,8 +225,19 @@ struct SplitReaderView: View {
             currentVerse: currentVerse,
             scrollToVerse: $scrollToVerse,
             user: user,
-            onNavigateToVerse: { verse in
-                // Request the Bible panel to scroll to this verse
+            onNavigateToVerse: { verseId in
+                // Suppress scroll-link to prevent tool pane from scrolling away
+                suppressScrollLink = true
+                // Request the Bible panel to scroll to this verse (no animation for direct navigation)
+                requestScrollAnimated = false
+                requestScrollToVerseId = verseId
+            },
+            onVisibleVerseChanged: { verse in
+                // Only scroll-link after user has scrolled (prevents scroll on initial load)
+                guard hasUserScrolled else { return }
+                // Scroll Bible pane to match tool pane's visible verse (animated for scroll-linking)
+                suppressScrollLink = true
+                requestScrollAnimated = true
                 requestScrollToVerseId = currentBook * 1000000 + currentChapter * 1000 + verse
             }
         )

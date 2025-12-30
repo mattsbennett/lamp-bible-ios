@@ -219,9 +219,13 @@ class User: RealmSwiftObject, Identifiable {
     @Persisted var completedReadings = RealmSwift.List<CompletedReading>()
 
     // Notes settings
-    @Persisted var notesEnabled: Bool = false
+    @Persisted var notesEnabled: Bool = true
     @Persisted var notesPanelVisible: Bool = false
     @Persisted var notesPanelOrientation: String = "bottom"  // "bottom" or "right"
+
+    // Lexicon settings
+    @Persisted var greekLexicon: String = "strongs"  // "strongs" or "dodson"
+    @Persisted var hebrewLexicon: String = "strongs"  // "strongs" or "bdb" (Brown-Driver-Briggs)
 
     let defaultTranslationId = 3
 
@@ -243,5 +247,127 @@ class CompletedReading: RealmSwiftObject, Identifiable {
         self.init()
         self.id = id
     }
+}
+
+// MARK: - Treasury of Scripture Knowledge (TSKe)
+
+class TSKBook: RealmSwiftObject, Decodable, Identifiable {
+    // Book ID (1-66)
+    @Persisted(primaryKey: true) var b: Int
+    // Book introduction text
+    @Persisted var t: String
+}
+
+class TSKChapter: RealmSwiftObject, Identifiable {
+    // Book ID (1-66)
+    @Persisted(indexed: true) var b: Int
+    // Chapter number
+    @Persisted var c: Int
+    // Segments as JSON string (array of text/ref segments)
+    // Text segments: {"t": "plain text"}
+    // Ref segments: {"sv": verseId} or {"sv": startId, "ev": endId}
+    @Persisted var segmentsJson: String
+
+    var id: String { "\(b)_\(c)" }
+}
+
+class TSKVerse: RealmSwiftObject, Identifiable {
+    // Verse ID (format: bbcccvvv e.g. 1001001)
+    @Persisted(primaryKey: true) var id: Int
+    // Topics/headings for this verse
+    @Persisted var topics: RealmSwift.List<TSKTopic>
+}
+
+class TSKTopic: RealmSwiftObject, Identifiable {
+    // Topic heading (e.g., "in the hold", "Reciprocal")
+    @Persisted var h: String
+    // Segments as JSON string (array of text/ref segments)
+    // Text segments: {"t": "text"} or {"t": "text", "i": true} for italic
+    // Ref segments: {"sv": verseId} or {"sv": startId, "ev": endId}
+    @Persisted var segmentsJson: String
+
+    var id: String { UUID().uuidString }
+}
+
+class TSKRef: RealmSwiftObject, Decodable, Identifiable {
+    // Start verse ID (format: bbcccvvv)
+    @Persisted var sv: Int
+    // End verse ID (for ranges, nil if single verse)
+    @Persisted var ev: Int?
+    // Note/comment (optional)
+    @Persisted var n: String?
+
+    var id: String { UUID().uuidString }
+}
+
+// MARK: - Strong's Lexicons
+
+class StrongsGreek: RealmSwiftObject, Identifiable {
+    // Strong's number (e.g., "G18")
+    @Persisted(primaryKey: true) var id: String
+    // Greek word (lemma)
+    @Persisted var lemma: String
+    // Transliteration
+    @Persisted var xlit: String?
+    // Definition
+    @Persisted var def: String?
+    // KJV usage
+    @Persisted var kjv: String?
+    // Derivation/etymology
+    @Persisted var deriv: String?
+}
+
+class StrongsHebrew: RealmSwiftObject, Identifiable {
+    // Strong's number (e.g., "H1")
+    @Persisted(primaryKey: true) var id: String
+    // Hebrew word (lemma)
+    @Persisted var lemma: String
+    // Transliteration
+    @Persisted var xlit: String?
+    // Pronunciation
+    @Persisted var pron: String?
+    // Definition
+    @Persisted var def: String?
+    // KJV usage
+    @Persisted var kjv: String?
+    // Derivation/etymology
+    @Persisted var deriv: String?
+}
+
+class DodsonGreek: RealmSwiftObject, Identifiable {
+    // Strong's number (e.g., "G18")
+    @Persisted(primaryKey: true) var id: String
+    // Greek word with grammatical info (e.g., "ἀγάπη, ης, ἡ")
+    @Persisted var lemma: String
+    // Definition
+    @Persisted var def: String?
+    // Brief definition/gloss
+    @Persisted var short: String?
+}
+
+class BDBEntry: RealmSwiftObject, Identifiable {
+    // BDB entry ID (e.g., "a.ac.aa")
+    @Persisted(primaryKey: true) var id: String
+    // Primary Hebrew word (lemma)
+    @Persisted(indexed: true) var lemma: String
+    // Part of speech (e.g., "vb", "n.m", "n.pr.m")
+    @Persisted var pos: String?
+    // Entry type (e.g., "root")
+    @Persisted var type: String?
+    // Top-level definitions (joined with "; ")
+    @Persisted var defs: String?
+    // Verb stems for verbs (joined with ", ")
+    @Persisted var stems: String?
+    // Full senses data as JSON string (for complex nested display)
+    @Persisted var sensesJson: String?
+    // Sample verse references (joined with ", ")
+    @Persisted var refs: String?
+}
+
+class BDBMapping: RealmSwiftObject, Identifiable {
+    // Strong's number (e.g., "H1")
+    @Persisted(primaryKey: true) var id: String
+    // BDB entry IDs that match this Strong's number (joined with ",")
+    @Persisted var bdbEntryIds: String
 }
 

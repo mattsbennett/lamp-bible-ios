@@ -353,6 +353,101 @@ class ICloudNoteStorage: NoteStorage {
         }
     }
 
+    // MARK: - Sync Status
+
+    enum SyncStatus {
+        case synced
+        case syncing
+        case notSynced
+        case notAvailable
+    }
+
+    struct OverallSyncStatus {
+        let synced: Int
+        let syncing: Int
+        let notSynced: Int
+        let total: Int
+
+        var allSynced: Bool { synced == total && total > 0 }
+        var hasPending: Bool { syncing > 0 || notSynced > 0 }
+    }
+
+    func getOverallSyncStatus() async -> OverallSyncStatus {
+        guard let notesDir = notesDirectoryURL else {
+            return OverallSyncStatus(synced: 0, syncing: 0, notSynced: 0, total: 0)
+        }
+
+        guard fileManager.fileExists(atPath: notesDir.path) else {
+            return OverallSyncStatus(synced: 0, syncing: 0, notSynced: 0, total: 0)
+        }
+
+        var synced = 0
+        var syncing = 0
+        var notSynced = 0
+
+        do {
+            let files = try fileManager.contentsOfDirectory(at: notesDir, includingPropertiesForKeys: nil)
+
+            for var file in files where file.pathExtension == "md" {
+                // Clear cached resource values to get fresh status
+                file.removeCachedResourceValue(forKey: .ubiquitousItemIsUploadedKey)
+                file.removeCachedResourceValue(forKey: .ubiquitousItemIsUploadingKey)
+
+                let resourceValues = try file.resourceValues(forKeys: [
+                    .ubiquitousItemIsUploadedKey,
+                    .ubiquitousItemIsUploadingKey
+                ])
+
+                if resourceValues.ubiquitousItemIsUploading == true {
+                    syncing += 1
+                } else if resourceValues.ubiquitousItemIsUploaded == true {
+                    synced += 1
+                } else {
+                    notSynced += 1
+                }
+            }
+        } catch {
+            // Ignore errors
+        }
+
+        return OverallSyncStatus(synced: synced, syncing: syncing, notSynced: notSynced, total: synced + syncing + notSynced)
+    }
+
+    func getSyncStatus(book: Int, chapter: Int) async -> SyncStatus {
+        guard let notesDir = notesDirectoryURL else {
+            return .notAvailable
+        }
+
+        var fileURL = notesDir.appendingPathComponent(fileName(book: book, chapter: chapter))
+
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return .synced // No file means nothing to sync
+        }
+
+        // Clear cached resource values to get fresh status
+        fileURL.removeCachedResourceValue(forKey: .ubiquitousItemIsUploadedKey)
+        fileURL.removeCachedResourceValue(forKey: .ubiquitousItemIsUploadingKey)
+        fileURL.removeCachedResourceValue(forKey: .ubiquitousItemUploadingErrorKey)
+
+        do {
+            let resourceValues = try fileURL.resourceValues(forKeys: [
+                .ubiquitousItemIsUploadedKey,
+                .ubiquitousItemIsUploadingKey,
+                .ubiquitousItemUploadingErrorKey
+            ])
+
+            if resourceValues.ubiquitousItemIsUploading == true {
+                return .syncing
+            } else if resourceValues.ubiquitousItemIsUploaded == true {
+                return .synced
+            } else {
+                return .notSynced
+            }
+        } catch {
+            return .notAvailable
+        }
+    }
+
     /// Force iCloud to check for updates in the container
     func forceSync() async {
         guard let notesDir = notesDirectoryURL else { return }

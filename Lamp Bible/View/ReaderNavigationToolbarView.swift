@@ -17,6 +17,7 @@ struct ReaderNavigationToolbarView: ToolbarContent {
     @Binding var showingBookPicker: Bool
     @Binding var showingOptionsMenu: Bool
     let readerDismiss: DismissAction
+    var onHideToolbars: (() -> Void)? = nil
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
@@ -51,8 +52,24 @@ struct ReaderNavigationToolbarView: ToolbarContent {
             }
             .popover(isPresented: $showingOptionsMenu) {
                 VStack(alignment: .leading, spacing: 8) {
-                    // Tools toggle (only shown when notes are enabled)
-                    if user.notesEnabled {
+                    // Hide toolbars and tools grouped together
+                    VStack(alignment: .leading, spacing: 0) {
+                        if let hideToolbars = onHideToolbars {
+                            Button {
+                                showingOptionsMenu = false
+                                hideToolbars()
+                            } label: {
+                                Label("Hide Toolbars", systemImage: "eye.slash")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+
+                            Divider()
+                        }
+
                         Button {
                             try! RealmManager.shared.realm.write {
                                 guard let thawedUser = user.thaw() else { return }
@@ -69,9 +86,9 @@ struct ReaderNavigationToolbarView: ToolbarContent {
                         .buttonStyle(.plain)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
-                        .background(Color(UIColor.secondarySystemGroupedBackground))
-                        .cornerRadius(14)
                     }
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                    .cornerRadius(14)
 
                     // Font size controls - compact row
                     HStack(spacing: 0) {

@@ -48,6 +48,30 @@ func splitVerseId(_ number: Int) -> (Int, Int, Int) {
     let verse = number % 1000
     let chapter = (number / 1000) % 1000
     let book = number / 1000000
-    
+
     return (verse, chapter, book)
+}
+
+func getPrevBookVerses(verseId: Int, verses: RealmSwift.List<Verse>) -> Results<Verse> {
+    let (_, _, currentBook) = splitVerseId(verseId)
+    // Find the first verse of the previous book
+    if let firstVerseOfPrevBook = verses.filter("b < \(currentBook)").last {
+        let (_, _, prevBook) = splitVerseId(firstVerseOfPrevBook.id)
+        // Return chapter 1 of the previous book
+        return verses.filter("b == \(prevBook) && c == 1")
+    }
+    // If no previous book, stay on current
+    return verses.filter("id == \(verseId)")
+}
+
+func getNextBookVerses(verseId: Int, verses: RealmSwift.List<Verse>) -> Results<Verse> {
+    let (_, _, currentBook) = splitVerseId(verseId)
+    // Find the first verse of the next book
+    if let firstVerseOfNextBook = verses.filter("b > \(currentBook)").first {
+        let (_, _, nextBook) = splitVerseId(firstVerseOfNextBook.id)
+        // Return chapter 1 of the next book
+        return verses.filter("b == \(nextBook) && c == 1")
+    }
+    // If no next book, stay on current
+    return verses.filter("id == \(verseId)")
 }

@@ -16,7 +16,9 @@ struct SettingsView: View {
     @State var notificationTime: Date = Date.now
     @State var showingNotificationAlert = false
     @State var iCloudAvailable: Bool = false
+    @State var syncStatus: ICloudNoteStorage.OverallSyncStatus?
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
+    @AppStorage("showStrongsHints") private var showStrongsHints: Bool = false
     let plans: Results<Plan>
     let externalApps: [ExternalBibleApp]
 
@@ -219,44 +221,6 @@ struct SettingsView: View {
                     scheduleRecurringNotification(at: newValue)
                 }
                 Section {
-                    Toggle(isOn: $user.notesEnabled) {
-                        Text("Enable Notes")
-                    }.tint(.accentColor)
-
-                    if user.notesEnabled {
-                        // iCloud status indicator
-                        HStack {
-                            Text("Storage")
-                            Spacer()
-                            if iCloudAvailable {
-                                Text("iCloud Drive").foregroundStyle(.secondary)
-                                Image(systemName: "checkmark.icloud.fill")
-                                    .foregroundStyle(.green)
-                            } else {
-                                Text("Not Available").foregroundStyle(.secondary)
-                                Image(systemName: "xmark.icloud")
-                                    .foregroundStyle(.red)
-                            }
-                        }
-
-                        // Panel orientation picker (only on iPad)
-                        if horizontalSizeClass != .compact {
-                            Picker("Notes Panel Position", selection: $user.notesPanelOrientation) {
-                                Text("Bottom").tag("bottom")
-                                Text("Right").tag("right")
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Notes")
-                } footer: {
-                    Text("Notes are stored in iCloud Drive and sync across your devices.")
-                }
-                .headerProminence(.increased)
-                .task {
-                    iCloudAvailable = await ICloudNoteStorage.shared.isAvailable()
-                }
-                Section {
                     ForEach(RealmManager.shared.realm.objects(Translation.self)) { translation in
                         HStack{
                             Button {
@@ -284,6 +248,134 @@ struct SettingsView: View {
                     }
                 }
                 .headerProminence(.increased)
+
+                // MARK: - Tool Settings
+                Section {
+                    Toggle(isOn: $user.notesEnabled) {
+                        Text("Enable Notes")
+                    }.tint(.accentColor)
+
+                    if user.notesEnabled {
+                        // iCloud status indicator
+                        HStack {
+                            Text("Storage")
+                            Spacer()
+                            if iCloudAvailable {
+                                Text("iCloud Drive").foregroundStyle(.secondary)
+                                Image(systemName: "checkmark.icloud.fill")
+                                    .foregroundStyle(.green)
+                            } else {
+                                Text("Not Available").foregroundStyle(.secondary)
+                                Image(systemName: "xmark.icloud")
+                                    .foregroundStyle(.red)
+                            }
+                        }
+
+                        // Sync status
+                        if iCloudAvailable, let status = syncStatus {
+                            HStack {
+                                Text("Sync Status")
+                                Spacer()
+                                if status.total == 0 {
+                                    Text("No notes").foregroundStyle(.secondary)
+                                } else if status.allSynced {
+                                    Text("All synced").foregroundStyle(.secondary)
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                } else if status.syncing > 0 {
+                                    Text("Syncing \(status.syncing)...").foregroundStyle(.secondary)
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                } else if status.notSynced > 0 {
+                                    Text("\(status.notSynced) pending").foregroundStyle(.secondary)
+                                    Image(systemName: "exclamationmark.icloud")
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                        }
+
+                        // Panel orientation picker (only on iPad)
+                        if horizontalSizeClass != .compact {
+                            Picker("Panel Position", selection: $user.notesPanelOrientation) {
+                                Text("Bottom").tag("bottom")
+                                Text("Right").tag("right")
+                            }
+                        }
+                    }
+                } header: {
+                    VStack(alignment: .leading) {
+                        Text("Tool Settings").padding(.bottom, 8).padding(.top, 15)
+                        Text("Notes").font(.system(size: 12)).textCase(.uppercase).foregroundStyle(Color.secondary).padding(.bottom, -5)
+                    }
+                } footer: {
+                    if iCloudAvailable {
+                        Text("Notes are stored in iCloud Drive and sync across your devices.")
+                    } else {
+                        Text("iCloud Drive is not available. Check your network connection or enable iCloud Drive for Lamp Bible in Settings → Apple Account → iCloud → Saved to iCloud.")
+                    }
+                }
+                .headerProminence(.increased)
+                .task {
+                    iCloudAvailable = await ICloudNoteStorage.shared.isAvailable()
+                    if iCloudAvailable {
+                        syncStatus = await ICloudNoteStorage.shared.getOverallSyncStatus()
+                    }
+                }
+                Section {
+                    Toggle(isOn: $showStrongsHints) {
+                        Text("Show Word Hints")
+                    }.tint(.accentColor)
+                } header: {
+                    Text("Lexicons")
+                } footer: {
+                    Text("Show visual hints for words with Strong's numbers in supported translations (BSB, KJV). Tap any word/phrase to view definitions.")
+                }
+                Section {
+                    let greekLexicons = ["strongs", "dodson"]
+                    let greekLexiconNames = ["Strong's Greek", "Dodson"]
+                    ForEach(greekLexicons.indices, id: \.self) { index in
+                        HStack {
+                            Button {
+                                try! RealmManager.shared.realm.write {
+                                    guard let thawedUser = user.thaw() else { return }
+                                    thawedUser.greekLexicon = greekLexicons[index]
+                                    generator.notificationOccurred(.success)
+                                }
+                            } label: {
+                                Text(greekLexiconNames[index]).tint(.primary)
+                            }
+                            Spacer()
+                            if user.greekLexicon == greekLexicons[index] {
+                                Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Default Greek Lexicon")
+                }
+                Section {
+                    let hebrewLexicons = ["strongs", "bdb"]
+                    let hebrewLexiconNames = ["Strong's Hebrew", "Brown-Driver-Briggs"]
+                    ForEach(hebrewLexicons.indices, id: \.self) { index in
+                        HStack {
+                            Button {
+                                try! RealmManager.shared.realm.write {
+                                    guard let thawedUser = user.thaw() else { return }
+                                    thawedUser.hebrewLexicon = hebrewLexicons[index]
+                                    generator.notificationOccurred(.success)
+                                }
+                            } label: {
+                                Text(hebrewLexiconNames[index]).tint(.primary)
+                            }
+                            Spacer()
+                            if user.hebrewLexicon == hebrewLexicons[index] {
+                                Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Default Hebrew Lexicon")
+                }
                 Section {
                     let sorts = ["r","sv"]
                     let sortNames = ["Relevance","Verse"]

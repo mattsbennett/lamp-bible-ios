@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		13350B121503A4344D2C14B5 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A0BB31BAAADBFFB0E149DF1 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework */; };
-		B819B1542E80DB6900D39F04 /* v4.realm in Resources */ = {isa = PBXBuildFile; fileRef = B819B1532E80DB6900D39F04 /* v4.realm */; };
 		B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A962B549ADD008341F0 /* ViewModel.swift */; };
 		B8210A992B549E80008341F0 /* CrossReferenceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */; };
 		B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9A2B549ED7008341F0 /* ChapterListView.swift */; };
@@ -27,13 +26,18 @@
 		B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD42B7B221700C74C1D /* WrappingHStack.swift */; };
 		B861BF002B436452001CA38E /* CrossReferenceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
-		B87B2AC92F007FF1006DC53D /* v5.realm in Resources */ = {isa = PBXBuildFile; fileRef = B87B2AC82F007FF1006DC53D /* v5.realm */; };
 		B87B2ACB2F00819E006DC53D /* ICloudNoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */; };
 		B87B2ACD2F0081BD006DC53D /* NoteParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACC2F0081BD006DC53D /* NoteParser.swift */; };
 		B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */; };
 		B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD02F008237006DC53D /* ToolPanelView.swift */; };
 		B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD22F008243006DC53D /* SplitReaderView.swift */; };
 		B87B2AD52F009CCC006DC53D /* NoteConflictViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */; };
+		B87B2AD72F01FAE7006DC53D /* NavigationHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */; };
+		B87B2AD92F022EEE006DC53D /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD82F022EEE006DC53D /* SearchView.swift */; };
+		B87B2ADB2F022F00006DC53D /* SearchResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ADA2F022F00006DC53D /* SearchResult.swift */; };
+		B87B2AF12F037B3A006DC53D /* StrongsParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AF02F037B3A006DC53D /* StrongsParser.swift */; };
+		B87B2AFD2F03881D006DC53D /* LexiconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AFC2F03881D006DC53D /* LexiconView.swift */; };
+		B87B2B152F03BEDB006DC53D /* v7.realm in Resources */ = {isa = PBXBuildFile; fileRef = B87B2B142F03BEDB006DC53D /* v7.realm */; };
 		B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */; };
 		B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4182ADB47E50066F0A0 /* ContentView.swift */; };
 		B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */; };
@@ -75,7 +79,6 @@
 		6EE8E26A9CB57A497B453132 /* Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig"; path = "Target Support Files/Pods-Lamp Bible-Lamp BibleUITests/Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig"; sourceTree = "<group>"; };
 		92DDDDBA1FB50EC67ADF2767 /* Pods-Lamp BibleTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp BibleTests.debug.xcconfig"; path = "Target Support Files/Pods-Lamp BibleTests/Pods-Lamp BibleTests.debug.xcconfig"; sourceTree = "<group>"; };
 		AA1177D0A8D0C66B61AF6D5A /* Pods-Lamp Bible.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible.debug.xcconfig"; path = "Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible.debug.xcconfig"; sourceTree = "<group>"; };
-		B819B1532E80DB6900D39F04 /* v4.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v4.realm; sourceTree = "<group>"; };
 		B8210A962B549ADD008341F0 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModel.swift; sourceTree = "<group>"; };
 		B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossReferenceDetailView.swift; sourceTree = "<group>"; };
 		B8210A9A2B549ED7008341F0 /* ChapterListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterListView.swift; sourceTree = "<group>"; };
@@ -95,13 +98,18 @@
 		B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossReferenceListView.swift; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
 		B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Lamp Bible.entitlements"; sourceTree = "<group>"; };
-		B87B2AC82F007FF1006DC53D /* v5.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v5.realm; sourceTree = "<group>"; };
 		B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudNoteStorage.swift; sourceTree = "<group>"; };
 		B87B2ACC2F0081BD006DC53D /* NoteParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteParser.swift; sourceTree = "<group>"; };
 		B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteStorage.swift; sourceTree = "<group>"; };
 		B87B2AD02F008237006DC53D /* ToolPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolPanelView.swift; sourceTree = "<group>"; };
 		B87B2AD22F008243006DC53D /* SplitReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitReaderView.swift; sourceTree = "<group>"; };
 		B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictViews.swift; sourceTree = "<group>"; };
+		B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationHistory.swift; sourceTree = "<group>"; };
+		B87B2AD82F022EEE006DC53D /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		B87B2ADA2F022F00006DC53D /* SearchResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResult.swift; sourceTree = "<group>"; };
+		B87B2AF02F037B3A006DC53D /* StrongsParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrongsParser.swift; sourceTree = "<group>"; };
+		B87B2AFC2F03881D006DC53D /* LexiconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LexiconView.swift; sourceTree = "<group>"; };
+		B87B2B142F03BEDB006DC53D /* v7.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v7.realm; sourceTree = "<group>"; };
 		B885E4132ADB47E40066F0A0 /* Lamp Bible.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Lamp Bible.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampBibleApp.swift; sourceTree = "<group>"; };
 		B885E4182ADB47E50066F0A0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -179,6 +187,7 @@
 				B8210A962B549ADD008341F0 /* ViewModel.swift */,
 				B87B2ACC2F0081BD006DC53D /* NoteParser.swift */,
 				B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */,
+				B87B2ADA2F022F00006DC53D /* SearchResult.swift */,
 				B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */,
 			);
 			path = Data;
@@ -188,8 +197,10 @@
 			isa = PBXGroup;
 			children = (
 				B82DA2222B450B4100E8AC49 /* Extensions.swift */,
+				B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */,
 				B8FC33412B3E3852009C544D /* RealmManager.swift */,
 				B8210A9F2B54A6CE008341F0 /* Utilities.swift */,
+				B87B2AF02F037B3A006DC53D /* StrongsParser.swift */,
 			);
 			path = Utility;
 			sourceTree = "<group>";
@@ -205,6 +216,7 @@
 				B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */,
 				B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */,
 				B87B2AD02F008237006DC53D /* ToolPanelView.swift */,
+				B87B2AFC2F03881D006DC53D /* LexiconView.swift */,
 				B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */,
 				B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */,
 				B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */,
@@ -213,6 +225,7 @@
 				B82BBB852B4CF238002248CC /* ReaderBottomToolbarView.swift */,
 				B82BBB832B4CCEC5002248CC /* ReaderNavigationToolbarView.swift */,
 				B8FC33472B3F4AC7009C544D /* ReaderView.swift */,
+				B87B2AD82F022EEE006DC53D /* SearchView.swift */,
 				B84968D92AF9FDEA00955089 /* SettingsView.swift */,
 				B87B2AD22F008243006DC53D /* SplitReaderView.swift */,
 				B851FFD42B7B221700C74C1D /* WrappingHStack.swift */,
@@ -249,8 +262,7 @@
 				B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
-				B819B1532E80DB6900D39F04 /* v4.realm */,
-				B87B2AC82F007FF1006DC53D /* v5.realm */,
+				B87B2B142F03BEDB006DC53D /* v7.realm */,
 				B885E41C2ADB47ED0066F0A0 /* Preview Content */,
 				B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */,
 				B8210A9C2B54A4D7008341F0 /* Data */,
@@ -394,8 +406,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B87B2AC92F007FF1006DC53D /* v5.realm in Resources */,
-				B819B1542E80DB6900D39F04 /* v4.realm in Resources */,
+				B87B2B152F03BEDB006DC53D /* v7.realm in Resources */,
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
@@ -536,10 +547,12 @@
 			files = (
 				B851FFD12B79D1AA00C74C1D /* ConditionalStack.swift in Sources */,
 				B82BBB842B4CCEC5002248CC /* ReaderNavigationToolbarView.swift in Sources */,
+				B87B2ADB2F022F00006DC53D /* SearchResult.swift in Sources */,
 				B84968DA2AF9FDEA00955089 /* SettingsView.swift in Sources */,
 				B8210AA02B54A6CE008341F0 /* Utilities.swift in Sources */,
 				B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */,
 				B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */,
+				B87B2AD72F01FAE7006DC53D /* NavigationHistory.swift in Sources */,
 				B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */,
 				B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */,
 				B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */,
@@ -548,13 +561,16 @@
 				B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */,
 				B82BBB882B4D0679002248CC /* PlanDateToolbarView.swift in Sources */,
 				B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */,
+				B87B2AD92F022EEE006DC53D /* SearchView.swift in Sources */,
 				B84968DE2AFB3D4000955089 /* ExternalBibleApp.swift in Sources */,
 				B851FFD32B7B1BCF00C74C1D /* ReadingsView.swift in Sources */,
+				B87B2AF12F037B3A006DC53D /* StrongsParser.swift in Sources */,
 				B861BF022B43655D001CA38E /* BookListView.swift in Sources */,
 				B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */,
 				B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */,
 				B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */,
 				B87B2ACD2F0081BD006DC53D /* NoteParser.swift in Sources */,
+				B87B2AFD2F03881D006DC53D /* LexiconView.swift in Sources */,
 				B861BF002B436452001CA38E /* CrossReferenceListView.swift in Sources */,
 				B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */,
 				B82BBB862B4CF238002248CC /* ReaderBottomToolbarView.swift in Sources */,
@@ -737,7 +753,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -771,7 +787,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
