@@ -76,6 +76,10 @@ struct SplitReaderView: View {
                 readerContent
             }
         }
+        // Ensure content/background extends behind any bottom toolbar so we don't
+        // see the underlying window's black background.
+        .background(Color(UIColor.systemBackground))
+        .ignoresSafeArea(.container, edges: .bottom)
         .onAppear {
             // Enable scroll linking after initial load completes
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -140,6 +144,10 @@ struct SplitReaderView: View {
                     }
                 )
             }
+            // Allow split content (including ToolPanelView) to extend behind the bottom toolbar
+            // so there isn't a blank/black strip under it.
+            .background(Color(UIColor.systemBackground))
+            .ignoresSafeArea(edges: .bottom)
             .onAppear {
                 if effectiveOrientation == "right" {
                     if storedRightPanelWidth != 0 {
