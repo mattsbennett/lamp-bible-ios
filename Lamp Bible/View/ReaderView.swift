@@ -60,7 +60,6 @@ struct ChapterTextView: UIViewRepresentable {
     let bookName: String
     let chapter: Int
     let showBookTitle: Bool
-    let notesEnabled: Bool
     let showStrongsHints: Bool
     let onAddNote: (Verse) -> Void
     let onShowCrossRefs: (Verse) -> Void
@@ -89,6 +88,8 @@ struct ChapterTextView: UIViewRepresentable {
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = UIEdgeInsets(top: 0, left: 15, bottom: 20, right: 15)
+        // Performance optimization: Draw on background thread
+        textView.layer.drawsAsynchronously = true
         textView.textContainer.lineFragmentPadding = 0
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -350,9 +351,7 @@ struct ChapterTextView: UIViewRepresentable {
             // Check if tapped on a verse number
             if let verseId = attributes[.verseId] as? Int {
                 if let verse = parent.verses.first(where: { $0.id == verseId }) {
-                    // Only show menu if there's something to show
                     let hasCrossRefs = parent.crossRefVerseIds.contains(verseId)
-                    guard parent.notesEnabled || hasCrossRefs else { return }
 
                     // Get the verse number's actual rect from layout
                     if let verseRange = verseNumberRanges[verseId] {
@@ -409,11 +408,9 @@ struct ChapterTextView: UIViewRepresentable {
 
             var actions: [UIAction] = []
 
-            if parent.notesEnabled {
-                actions.append(UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
-                    self?.parent.onAddNote(verse)
-                })
-            }
+            actions.append(UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
+                self?.parent.onAddNote(verse)
+            })
 
             if currentVerseHasCrossRefs {
                 actions.append(UIAction(title: "Cross References", image: UIImage(systemName: "arrow.triangle.branch")) { [weak self] _ in
@@ -512,6 +509,7 @@ struct ReaderView: View {
     @State private var translation: Translation
     @SceneStorage("readerCurrentVerseId") var currentVerseId: Int = 1001001
     @Binding var visibleVerseId: Int
+    @Binding var scrollOrigin: ScrollOrigin
     private let scrollDebouncer = ScrollDebouncer()
     @Binding var requestScrollToVerseId: Int?
     @Binding var requestScrollAnimated: Bool
@@ -520,7 +518,9 @@ struct ReaderView: View {
     @State private var animateScroll: Bool = true
     @StateObject private var positionTracker = VersePositionTracker()
     @State private var pendingScrollVerseId: Int? = nil  // Tracks verse to scroll to after positions update
+    @State private var scrollCleanupId: UUID = UUID() // To prevent race conditions in scroll cleanup
     @State private var isProgrammaticScroll: Bool = false  // Ignore scroll detection during programmatic scrolls
+    @State private var isUserDragging: Bool = false // Track active user interaction
     @State private var selectedStrongsWord: AnnotatedWord? = nil  // For Strong's popover
     @AppStorage("showStrongsHints") private var showStrongsHints: Bool = false
     @State private var toolbarsHidden: Bool = false  // Hide/show toolbars on tap
@@ -547,7 +547,8 @@ struct ReaderView: View {
         onVerseAction: ((Int, VerseAction) -> Void)? = nil,
         requestScrollToVerseId: Binding<Int?> = .constant(nil),
         requestScrollAnimated: Binding<Bool> = .constant(true),
-        visibleVerseId: Binding<Int> = .constant(1001001)
+        visibleVerseId: Binding<Int> = .constant(1001001),
+        scrollOrigin: Binding<ScrollOrigin> = .constant(.none)
     ) {
         self.user = user
         _date = date
@@ -555,6 +556,7 @@ struct ReaderView: View {
         _translation = State(initialValue: translation)
         _verses = State(initialValue: verses)
         _visibleVerseId = visibleVerseId
+        _scrollOrigin = scrollOrigin
         self.onVerseAction = onVerseAction
         _requestScrollToVerseId = requestScrollToVerseId
         _requestScrollAnimated = requestScrollAnimated
@@ -587,10 +589,14 @@ struct ReaderView: View {
         BookListView(
             currentVerseId: $currentVerseId,
             showingBookPicker: $showingBookPicker,
-            translation: $translation
-        ) {
-            loadVerses(loadingCase: LOADING_CURRENT)
-        }
+            translation: $translation,
+            loadVersesClosure: {
+                loadVerses(loadingCase: LOADING_CURRENT)
+            },
+            onTranslationChange: { newTranslationId in
+                loadVerses(loadingCase: LOADING_TRANSLATION, forTranslationId: newTranslationId)
+            }
+        )
     }
 
     @ViewBuilder
@@ -643,7 +649,7 @@ struct ReaderView: View {
         }
     }
 
-    func loadVerses(loadingCase: String, targetVerseId: Int? = nil) {
+    func loadVerses(loadingCase: String, targetVerseId: Int? = nil, forTranslationId: Int? = nil) {
         let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
 
         // Save current scroll position to history before navigating away
@@ -673,9 +679,13 @@ struct ReaderView: View {
                     verses = translation.verses.filter("b == \(targetBook) && c == \(targetChapter)")
                 }
             case LOADING_CURRENT:
-                fallthrough
-            case LOADING_TRANSLATION:
                 verses = translation.verses.filter("b == \(currentBook) && c == \(currentChapter)")
+            case LOADING_TRANSLATION:
+                // Use explicitly passed translation ID, or fall back to current translation
+                let translationId = forTranslationId ?? translation.id
+                if let freshTranslation = RealmManager.shared.realm.object(ofType: Translation.self, forPrimaryKey: translationId) {
+                    verses = freshTranslation.verses.filter("b == \(currentBook) && c == \(currentChapter)")
+                }
             default: break
         }
 
@@ -712,6 +722,10 @@ struct ReaderView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     ZStack(alignment: .topLeading) {
+                        // UIKit scroll spy for real-time scroll sync
+                        ReaderScrollSpy(versePositions: positionTracker.positions)
+                            .frame(width: 1, height: 1)
+
                         VStack(spacing: 0) {
                             Color.clear
                                 .frame(height: 1)
@@ -725,7 +739,6 @@ struct ReaderView: View {
                                 bookName: bookName,
                                 chapter: chapterNumber,
                                 showBookTitle: showBookTitle,
-                                notesEnabled: user.notesEnabled,
                                 showStrongsHints: showStrongsHints,
                                 onAddNote: { verse in
                                     onVerseAction?(verse.v, .addNote)
@@ -748,7 +761,7 @@ struct ReaderView: View {
                                 },
                                 onPositionsCalculated: nil
                             )
-                            .id("chapter_\(chapterNumber)")
+                            .id("chapter_\(chapterNumber)_\(translation.id)")
                         }
                         // Hidden scroll target - VStack positions the anchor at targetY
                         if let targetY = scrollTargetY {
@@ -766,16 +779,30 @@ struct ReaderView: View {
                     ScrollInfo(offset: geometry.contentOffset.y, topInset: geometry.contentInsets.top)
                 } action: { [self] _, newValue in
                     // Skip scroll detection entirely during programmatic scrolls
-                    guard !isProgrammaticScroll else { return }
+
+                    // If the other panel is in control and we aren't being actively dragged, yield
+                    if !isUserDragging && scrollOrigin == .toolPanel {
+                        return
+                    }
+
+                    // Otherwise, we claim control locally immediately (to prevent race conditions)
+                    if scrollOrigin != .bible {
+                        scrollOrigin = .bible
+                    }
 
                     // Capture values for the debounced closure
                     let offset = newValue.offset
                     let topInset = newValue.topInset
 
                     // Use lightweight debouncer instead of Task to avoid overhead
-                    scrollDebouncer.debounce(delay: 0.5) { [self] in
+                    scrollDebouncer.debounce(delay: 0.05) { [self] in
                         // Double-check flag in case it changed during debounce delay
                         guard !isProgrammaticScroll else { return }
+
+                        // Check yield condition again in case it changed
+                        if !isUserDragging && scrollOrigin == .toolPanel {
+                             return
+                        }
 
                         let versesArray = Array(verses)
                         guard !versesArray.isEmpty else { return }
@@ -803,6 +830,9 @@ struct ReaderView: View {
                         }
 
                         if let verseId = foundVerseId, verseId != currentVerseId {
+                            // Enforce our claim
+                            scrollOrigin = .bible
+
                             currentVerseId = verseId
                             visibleVerseId = verseId
                             // Update history position as user scrolls
@@ -810,6 +840,19 @@ struct ReaderView: View {
                         }
                     }
                 }
+                .simultaneousGesture(
+                    DragGesture()
+                        .onChanged { _ in
+                            isUserDragging = true
+                            // Immediate claim on interaction start
+                            if scrollOrigin != .bible {
+                                scrollOrigin = .bible
+                            }
+                        }
+                        .onEnded { _ in
+                            isUserDragging = false
+                        }
+                )
                 .onChange(of: initialScrollItem) {
                     guard initialScrollItem != nil else { return }
                     isProgrammaticScroll = true
@@ -831,9 +874,6 @@ struct ReaderView: View {
                         isLoading = false
                     }
                 }
-                .onChange(of: translation) {
-                    loadVerses(loadingCase: LOADING_TRANSLATION)
-                }
                 .onChange(of: currentReadingIndex) {
                     loadVerses(loadingCase: LOADING_READING)
 
@@ -848,8 +888,10 @@ struct ReaderView: View {
                         }
                     }
                 }
+
                 .onChange(of: requestScrollToVerseId) {
                     if let verseId = requestScrollToVerseId {
+                        isProgrammaticScroll = true // Ensure we flag this early
                         let (_, targetChapter, targetBook) = splitVerseId(verseId)
                         let (_, currentCh, currentBk) = splitVerseId(currentVerseId)
                         // Use the requested animation setting
@@ -860,32 +902,62 @@ struct ReaderView: View {
                             loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: verseId)
                         } else {
                             // Same chapter, just scroll
+                            var didScroll = false
                             if let yPos = positionTracker.positions[verseId] {
                                 scrollTargetY = max(0, yPos + 1 - 20)
+                                didScroll = true
+                            } else {
+                                // Fallback: try to find nearest verse position
+                                let targetVerse = verseId % 1000
+                                let positions = positionTracker.positions
+                                if !positions.isEmpty {
+                                    // Find the closest verse that we have a position for
+                                    let sortedVerses = positions.keys.sorted()
+                                    if let closestId = sortedVerses.last(where: { ($0 % 1000) <= targetVerse }) ?? sortedVerses.first,
+                                       let yPos = positions[closestId] {
+                                        scrollTargetY = max(0, yPos + 1 - 20)
+                                        didScroll = true
+                                    }
+                                }
+                            }
+                            // If scroll failed, still reset scrollOrigin to prevent it from getting stuck
+                            if !didScroll {
+                                isProgrammaticScroll = false
+                                if scrollOrigin == .toolPanel {
+                                    scrollOrigin = .none
+                                }
                             }
                         }
                         requestScrollToVerseId = nil
                     }
                 }
                 .onChange(of: scrollTargetY) {
-                    if scrollTargetY != nil {
+                    if let targetY = scrollTargetY {
                         // Block scroll detection during programmatic scroll
                         isProgrammaticScroll = true
                         scrollDebouncer.cancel()
 
+                        // Generate a new ID for this scroll job
+                        let jobId = UUID()
+                        scrollCleanupId = jobId
+
                         // Small delay for anchor view to render
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            guard scrollCleanupId == jobId else { return }
+
                             if animateScroll {
-                                withAnimation(.easeOut(duration: 0.3)) {
+                                withAnimation(.easeOut(duration: 0.2)) {
                                     proxy.scrollTo("scrollTarget", anchor: .top)
                                 }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    guard scrollCleanupId == jobId else { return }
                                     scrollTargetY = nil
                                     isProgrammaticScroll = false
                                 }
                             } else {
                                 proxy.scrollTo("scrollTarget", anchor: .top)
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                    guard scrollCleanupId == jobId else { return }
                                     scrollTargetY = nil
                                     animateScroll = true
                                     isProgrammaticScroll = false

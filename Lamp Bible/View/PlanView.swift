@@ -34,186 +34,236 @@ struct PlanView: View {
     var body: some View {
         GeometryReader { geometry in
             NavigationStack {
-                VStack {
-                    if user.plans.count > 0 {
-                        ScrollView {
-                            ScrollViewReader { proxy in
-                                VStack(alignment: .leading) {
-                                    ForEach(plans) { plan in
-                                        let planMetaData = plansMetaData.planMetaData.first(where: { $0.id == plan.id })!
-                                        let readings = planMetaData.readingMetaData
-                                        if (user.plans.filter("id == \(plan.id)").count > 0) {
-                                            Spacer().id(plan.name)
-                                            VStack(alignment: .leading) {
-                                                HStack {
-                                                    VStack(alignment: .leading) {
-                                                        Text(plan.name)
-                                                            .font(.title2)
-                                                            .fontWeight(.black)
-                                                        if readings.count > 0 {
-                                                            HStack {
-                                                                if user.planInAppBible {
-                                                                    NavigationLink(
-                                                                        destination: SplitReaderView(
-                                                                            user: RealmManager.shared.realm.objects(User.self).first!,
-                                                                            date: $date,
-                                                                            readingMetaData: readings
-                                                                        )
-                                                                    ) {
-                                                                        VStack {
-                                                                            Image(systemName: "book.circle.fill")
-                                                                                .font(.system(size: 52))
-                                                                                .frame(width: 57, height: 57)
-                                                                                .foregroundColor(.accentColor)
-                                                                        }
-                                                                    }
-                                                                }
-                                                                VStack(alignment: .leading) {
-                                                                    Text(planMetaData.description)
-                                                                        .font(.system(size: 16))
-                                                                    Label("\(planMetaData.readingTime)", systemImage: "clock").font(.caption).foregroundStyle(Color.secondary)
-                                                                }
-                                                                .frame(minHeight: 44)
-                                                            }
-                                                            .padding(.bottom, 10)
-                                                        } else {
-                                                            Text("No readings for today")
-                                                                .padding(EdgeInsets(top: 10, leading: 0, bottom: 0, trailing: 0))
-                                                                .foregroundStyle(Color.secondary)
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            .onChange(of: date) {
-                                                proxy.scrollTo(plan.name)
-                                            }
-                                            .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 20))
-
-                                            if geometry.size.width < 600 {
-                                                ReadingsView(
-                                                    user: RealmManager.shared.realm.objects(User.self).first!,
-                                                    planMetaData: planMetaData,
-                                                    stackHorizontally: false
-                                                )
-                                                .frame(maxWidth: .infinity)
-                                                .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
-                                            } else {
-                                                ReadingsView(
-                                                    user: RealmManager.shared.realm.objects(User.self).first!,
-                                                    planMetaData: planMetaData,
-                                                    stackHorizontally: true
-                                                )
-                                                .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
-                                            }
-
-                                            if plan.id != user.plans.last!.id {
-                                                Divider()
-                                            }
-                                        }
-                                    }
-                                    Spacer()
-                                }
-//                                iOS 18 broke gestures on scrollviews
-//                                .gesture(
-//                                    DragGesture()
-//                                        .onEnded { gesture in
-//                                            if gesture.translation.width < -200 {
-//                                                // Perform action for left swipe
-//                                                date = Calendar.current.date(byAdding: .day, value: 1, to: date)!
-//                                            } else if gesture.translation.width > 200 {
-//                                                // Perform action for right swipe
-//                                                date = Calendar.current.date(byAdding: .day, value: -1, to: date)!
-//                                            }
-//                                        }
-//                                )
-                            }
-                        }
-                    } else {
-                        VStack {
-                            Spacer()
-                            NavigationLink(destination: PlanPickerView(plans: plans)) {
-                                HStack {
-                                    Text(Image(systemName: "plus.circle.fill"))
-                                    Text("Reading plan")
-                                }.font(.title2)
-                            }
-                            Spacer()
-                        }
-                        .frame(maxHeight: .infinity, alignment: .center)
+                mainContent(geometry: geometry)
+                    .onChange(of: planViewRefreshId) {
+                        plansMetaData = PlansMetaData(plans: plans, date: date)
                     }
-                }
-                .onChange(of: planViewRefreshId) {
-                    // This seems like a hack, but on returning from SettingsView, we need to refresh
-                    // plansMetaData for reading time estimates to take effect
-                    plansMetaData = PlansMetaData(plans: plans, date: date)
-                }
-                .onChange(of: date) {
-                    plansMetaData = PlansMetaData(plans: plans, date: date)
-                }
-                .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSCalendarDayChanged)) { _ in
-                    // Update the date to the current date if day has changed
-                    date = Date()
-                }
-                .frame(maxWidth: .infinity)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    PlanDateToolbarView(date: $date, showingDatePicker: $showingDatePicker)
-                }
-                .toolbar {
-                    ToolbarItem(placement: .bottomBar) {
-                        HStack(spacing: 40) {
-                            NavigationLink(destination: PlanPickerView(plans: plans)) {
-                                VStack(spacing: 4) {
-                                    Image(systemName: "calendar")
-                                        .font(.title3)
-                                        .foregroundColor(.accentColor)
-                                    Text("Plans")
-                                        .font(.caption2)
-                                        .foregroundColor(iOS26OrLater ? .primary : .red)
+                    .onChange(of: date) {
+                        plansMetaData = PlansMetaData(plans: plans, date: date)
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSCalendarDayChanged)) { _ in
+                        date = Date()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        PlanDateToolbarView(date: $date, showingDatePicker: $showingDatePicker)
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .bottomBar) {
+                            HStack(spacing: 25) {
+                                NavigationLink(destination: PlanPickerView(plans: plans)) {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "calendar")
+                                            .font(.title3)
+                                            .foregroundColor(.accentColor)
+                                        Text("Plans")
+                                            .font(.caption2)
+                                            .foregroundColor(iOS26OrLater ? .primary : .red)
+                                    }
                                 }
-                            }
 
-                            NavigationLink(destination: SplitReaderView(
-                                user: RealmManager.shared.realm.objects(User.self).first!,
-                                date: $date
-                            )) {
-                                VStack(spacing: 4) {
-                                    Image(systemName: "book.fill")
-                                        .font(.title3)
-                                        .foregroundColor(.accentColor)
-                                    Text("Read")
-                                        .font(.caption2)
-                                        .foregroundColor(iOS26OrLater ? .primary : .red)
+                                NavigationLink(destination: SplitReaderView(
+                                    user: RealmManager.shared.realm.objects(User.self).first!,
+                                    date: $date
+                                )) {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "book.fill")
+                                            .font(.title3)
+                                            .foregroundColor(.accentColor)
+                                        Text("Read")
+                                            .font(.caption2)
+                                            .foregroundColor(iOS26OrLater ? .primary : .red)
+                                    }
                                 }
-                            }
 
-                            NavigationLink(destination: SettingsView(
-                                user: user,
-                                externalApps: externalBibleApps,
-                                plans: plans,
-                                planViewRefreshId: $planViewRefreshId
-                            )) {
-                                VStack(spacing: 3) {
-                                    Image(systemName: "gear")
-                                        .font(.title3)
-                                        .foregroundColor(.accentColor)
-                                    Text("Settings")
-                                        .font(.caption2)
-                                        .foregroundColor(iOS26OrLater ? .primary : .red)
+                                NavigationLink(destination: SearchView()) {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "magnifyingglass")
+                                            .font(.title3)
+                                            .foregroundColor(.accentColor)
+                                        Text("Search")
+                                            .font(.caption2)
+                                            .foregroundColor(iOS26OrLater ? .primary : .red)
+                                    }
+                                }
+
+                                NavigationLink(destination: SettingsView(
+                                    user: user,
+                                    externalApps: externalBibleApps,
+                                    plans: plans,
+                                    planViewRefreshId: $planViewRefreshId
+                                )) {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "gear")
+                                            .font(.title3)
+                                            .foregroundColor(.accentColor)
+                                        Text("Settings")
+                                            .font(.caption2)
+                                            .foregroundColor(iOS26OrLater ? .primary : .red)
+                                    }
                                 }
                             }
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 20)
                         }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 20)
+                    }
+            }
+        }
+    }
+
+    // MARK: - Main Content
+
+    @ViewBuilder
+    private func mainContent(geometry: GeometryProxy) -> some View {
+        VStack {
+            if user.plans.count > 0 {
+                plansScrollView(geometry: geometry)
+            } else {
+                emptyStateView
+            }
+        }
+    }
+
+    // MARK: - Empty State
+
+    @ViewBuilder
+    private var emptyStateView: some View {
+        VStack {
+            Spacer()
+            NavigationLink(destination: PlanPickerView(plans: plans)) {
+                HStack {
+                    Text(Image(systemName: "plus.circle.fill"))
+                    Text("Reading plan")
+                }.font(.title2)
+            }
+            Spacer()
+        }
+        .frame(maxHeight: .infinity, alignment: .center)
+    }
+
+    // MARK: - Plans Scroll View
+
+    @ViewBuilder
+    private func plansScrollView(geometry: GeometryProxy) -> some View {
+        ScrollView {
+            ScrollViewReader { proxy in
+                VStack(alignment: .leading) {
+                    ForEach(plans) { plan in
+                        planSection(plan: plan, geometry: geometry, proxy: proxy)
+                    }
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    // MARK: - Plan Section
+
+    @ViewBuilder
+    private func planSection(plan: Plan, geometry: GeometryProxy, proxy: ScrollViewProxy) -> some View {
+        let planMetaData = plansMetaData.planMetaData.first(where: { $0.id == plan.id })!
+        let readings = planMetaData.readingMetaData
+
+        if user.plans.filter("id == \(plan.id)").count > 0 {
+            Spacer().id(plan.name)
+
+            planHeader(plan: plan, planMetaData: planMetaData, readings: readings)
+                .onChange(of: date) {
+                    proxy.scrollTo(plan.name)
+                }
+                .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 20))
+
+            readingsContent(planMetaData: planMetaData, geometry: geometry)
+
+            if plan.id != user.plans.last!.id {
+                Divider()
+            }
+        }
+    }
+
+    // MARK: - Plan Header
+
+    @ViewBuilder
+    private func planHeader(plan: Plan, planMetaData: PlanMetaData, readings: [ReadingMetaData]) -> some View {
+        VStack(alignment: .leading) {
+            HStack {
+                VStack(alignment: .leading) {
+                    Text(plan.name)
+                        .font(.title2)
+                        .fontWeight(.black)
+
+                    if readings.count > 0 {
+                        readingsRow(planMetaData: planMetaData, readings: readings)
+                    } else {
+                        Text("No readings for today")
+                            .padding(EdgeInsets(top: 10, leading: 0, bottom: 0, trailing: 0))
+                            .foregroundStyle(Color.secondary)
                     }
                 }
             }
         }
     }
+
+    // MARK: - Readings Row
+
+    @ViewBuilder
+    private func readingsRow(planMetaData: PlanMetaData, readings: [ReadingMetaData]) -> some View {
+        HStack {
+            if user.planInAppBible {
+                NavigationLink(
+                    destination: SplitReaderView(
+                        user: RealmManager.shared.realm.objects(User.self).first!,
+                        date: $date,
+                        readingMetaData: readings
+                    )
+                ) {
+                    VStack {
+                        Image(systemName: "book.circle.fill")
+                            .font(.system(size: 52))
+                            .frame(width: 57, height: 57)
+                            .foregroundColor(.accentColor)
+                    }
+                }
+            }
+            VStack(alignment: .leading) {
+                Text(planMetaData.description)
+                    .font(.system(size: 16))
+                Label("\(planMetaData.readingTime)", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+            }
+            .frame(minHeight: 44)
+        }
+        .padding(.bottom, 10)
+    }
+
+    // MARK: - Readings Content
+
+    @ViewBuilder
+    private func readingsContent(planMetaData: PlanMetaData, geometry: GeometryProxy) -> some View {
+        if geometry.size.width < 600 {
+            ReadingsView(
+                user: RealmManager.shared.realm.objects(User.self).first!,
+                planMetaData: planMetaData,
+                stackHorizontally: false
+            )
+            .frame(maxWidth: .infinity)
+            .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
+        } else {
+            ReadingsView(
+                user: RealmManager.shared.realm.objects(User.self).first!,
+                planMetaData: planMetaData,
+                stackHorizontally: true
+            )
+            .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
+        }
+    }
+
 }
 
-// Make a struct that conforms to the LabelStyle protocol,
-//and return a view that has the title and icon switched in a HStack
+// MARK: - Trailing Icon Label Style
+
 struct TrailingIconLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack {

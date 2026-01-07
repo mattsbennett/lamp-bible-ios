@@ -37,7 +37,6 @@
 		B87B2ADB2F022F00006DC53D /* SearchResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ADA2F022F00006DC53D /* SearchResult.swift */; };
 		B87B2AF12F037B3A006DC53D /* StrongsParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AF02F037B3A006DC53D /* StrongsParser.swift */; };
 		B87B2AFD2F03881D006DC53D /* LexiconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AFC2F03881D006DC53D /* LexiconView.swift */; };
-		B87B2B152F03BEDB006DC53D /* v7.realm in Resources */ = {isa = PBXBuildFile; fileRef = B87B2B142F03BEDB006DC53D /* v7.realm */; };
 		B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */; };
 		B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4182ADB47E50066F0A0 /* ContentView.swift */; };
 		B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */; };
@@ -45,6 +44,19 @@
 		B885E4282ADB47ED0066F0A0 /* Lamp_BibleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */; };
 		B885E4322ADB47ED0066F0A0 /* Lamp_BibleUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */; };
 		B885E4342ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */; };
+		B89229552F05FE1900A58F81 /* DevotionalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229542F05FE1900A58F81 /* DevotionalView.swift */; };
+		B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229562F05FE2100A58F81 /* ModuleManagerView.swift */; };
+		B89229592F05FE3100A58F81 /* MarkdownConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229582F05FE3100A58F81 /* MarkdownConverter.swift */; };
+		B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */; };
+		B892295D2F05FE4200A58F81 /* ModuleDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */; };
+		B892295F2F05FE4600A58F81 /* ModuleModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892295E2F05FE4600A58F81 /* ModuleModels.swift */; };
+		B89229612F05FE4F00A58F81 /* ModuleSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229602F05FE4F00A58F81 /* ModuleSearch.swift */; };
+		B89229632F05FE5600A58F81 /* ModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229622F05FE5600A58F81 /* ModuleStorage.swift */; };
+		B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */; };
+		B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */; };
+		B892298D2F08F5DB00A58F81 /* v7.realm in Resources */ = {isa = PBXBuildFile; fileRef = B892298C2F08F5DB00A58F81 /* v7.realm */; };
+		B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */; };
+		B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
 		B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33412B3E3852009C544D /* RealmManager.swift */; };
@@ -109,7 +121,6 @@
 		B87B2ADA2F022F00006DC53D /* SearchResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResult.swift; sourceTree = "<group>"; };
 		B87B2AF02F037B3A006DC53D /* StrongsParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrongsParser.swift; sourceTree = "<group>"; };
 		B87B2AFC2F03881D006DC53D /* LexiconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LexiconView.swift; sourceTree = "<group>"; };
-		B87B2B142F03BEDB006DC53D /* v7.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v7.realm; sourceTree = "<group>"; };
 		B885E4132ADB47E40066F0A0 /* Lamp Bible.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Lamp Bible.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampBibleApp.swift; sourceTree = "<group>"; };
 		B885E4182ADB47E50066F0A0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -121,6 +132,19 @@
 		B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lamp_BibleUITests.swift; sourceTree = "<group>"; };
 		B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lamp_BibleUITestsLaunchTests.swift; sourceTree = "<group>"; };
 		B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Lamp-Bible-Info.plist"; sourceTree = SOURCE_ROOT; };
+		B89229542F05FE1900A58F81 /* DevotionalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalView.swift; sourceTree = "<group>"; };
+		B89229562F05FE2100A58F81 /* ModuleManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleManagerView.swift; sourceTree = "<group>"; };
+		B89229582F05FE3100A58F81 /* MarkdownConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownConverter.swift; sourceTree = "<group>"; };
+		B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudModuleStorage.swift; sourceTree = "<group>"; };
+		B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleDatabase.swift; sourceTree = "<group>"; };
+		B892295E2F05FE4600A58F81 /* ModuleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleModels.swift; sourceTree = "<group>"; };
+		B89229602F05FE4F00A58F81 /* ModuleSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSearch.swift; sourceTree = "<group>"; };
+		B89229622F05FE5600A58F81 /* ModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleStorage.swift; sourceTree = "<group>"; };
+		B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSyncManager.swift; sourceTree = "<group>"; };
+		B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceParsingTests.swift; sourceTree = "<group>"; };
+		B892298C2F08F5DB00A58F81 /* v7.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v7.realm; sourceTree = "<group>"; };
+		B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSettingsView.swift; sourceTree = "<group>"; };
+		B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentaryRenderer.swift; sourceTree = "<group>"; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
 		B8FC33412B3E3852009C544D /* RealmManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealmManager.swift; sourceTree = "<group>"; };
@@ -184,6 +208,12 @@
 			children = (
 				B8FC333D2B3E2CAF009C544D /* DataModel.swift */,
 				B84968DD2AFB3D4000955089 /* ExternalBibleApp.swift */,
+				B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */,
+				B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */,
+				B892295E2F05FE4600A58F81 /* ModuleModels.swift */,
+				B89229602F05FE4F00A58F81 /* ModuleSearch.swift */,
+				B89229622F05FE5600A58F81 /* ModuleStorage.swift */,
+				B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */,
 				B8210A962B549ADD008341F0 /* ViewModel.swift */,
 				B87B2ACC2F0081BD006DC53D /* NoteParser.swift */,
 				B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */,
@@ -197,6 +227,8 @@
 			isa = PBXGroup;
 			children = (
 				B82DA2222B450B4100E8AC49 /* Extensions.swift */,
+				B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */,
+				B89229582F05FE3100A58F81 /* MarkdownConverter.swift */,
 				B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */,
 				B8FC33412B3E3852009C544D /* RealmManager.swift */,
 				B8210A9F2B54A6CE008341F0 /* Utilities.swift */,
@@ -209,11 +241,14 @@
 			isa = PBXGroup;
 			children = (
 				B861BF012B43655D001CA38E /* BookListView.swift */,
+				B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */,
 				B8210A9A2B549ED7008341F0 /* ChapterListView.swift */,
 				B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */,
 				B885E4182ADB47E50066F0A0 /* ContentView.swift */,
 				B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */,
 				B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */,
+				B89229542F05FE1900A58F81 /* DevotionalView.swift */,
+				B89229562F05FE2100A58F81 /* ModuleManagerView.swift */,
 				B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */,
 				B87B2AD02F008237006DC53D /* ToolPanelView.swift */,
 				B87B2AFC2F03881D006DC53D /* LexiconView.swift */,
@@ -262,7 +297,7 @@
 				B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
-				B87B2B142F03BEDB006DC53D /* v7.realm */,
+				B892298C2F08F5DB00A58F81 /* v7.realm */,
 				B885E41C2ADB47ED0066F0A0 /* Preview Content */,
 				B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */,
 				B8210A9C2B54A4D7008341F0 /* Data */,
@@ -284,6 +319,7 @@
 			isa = PBXGroup;
 			children = (
 				B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */,
+				B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */,
 			);
 			path = "Lamp BibleTests";
 			sourceTree = "<group>";
@@ -406,7 +442,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B87B2B152F03BEDB006DC53D /* v7.realm in Resources */,
+				B892298D2F08F5DB00A58F81 /* v7.realm in Resources */,
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
@@ -550,10 +586,13 @@
 				B87B2ADB2F022F00006DC53D /* SearchResult.swift in Sources */,
 				B84968DA2AF9FDEA00955089 /* SettingsView.swift in Sources */,
 				B8210AA02B54A6CE008341F0 /* Utilities.swift in Sources */,
+				B89229632F05FE5600A58F81 /* ModuleStorage.swift in Sources */,
 				B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */,
 				B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */,
+				B892295D2F05FE4200A58F81 /* ModuleDatabase.swift in Sources */,
 				B87B2AD72F01FAE7006DC53D /* NavigationHistory.swift in Sources */,
 				B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */,
+				B89229592F05FE3100A58F81 /* MarkdownConverter.swift in Sources */,
 				B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */,
 				B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */,
 				B8210A992B549E80008341F0 /* CrossReferenceDetailView.swift in Sources */,
@@ -563,9 +602,12 @@
 				B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */,
 				B87B2AD92F022EEE006DC53D /* SearchView.swift in Sources */,
 				B84968DE2AFB3D4000955089 /* ExternalBibleApp.swift in Sources */,
+				B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */,
 				B851FFD32B7B1BCF00C74C1D /* ReadingsView.swift in Sources */,
 				B87B2AF12F037B3A006DC53D /* StrongsParser.swift in Sources */,
 				B861BF022B43655D001CA38E /* BookListView.swift in Sources */,
+				B89229612F05FE4F00A58F81 /* ModuleSearch.swift in Sources */,
+				B892295F2F05FE4600A58F81 /* ModuleModels.swift in Sources */,
 				B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */,
 				B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */,
 				B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */,
@@ -575,9 +617,14 @@
 				B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */,
 				B82BBB862B4CF238002248CC /* ReaderBottomToolbarView.swift in Sources */,
 				B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */,
+				B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */,
+				B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */,
 				B87B2ACB2F00819E006DC53D /* ICloudNoteStorage.swift in Sources */,
 				B84968D42AF72D5F00955089 /* PlanView.swift in Sources */,
+				B89229552F05FE1900A58F81 /* DevotionalView.swift in Sources */,
+				B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */,
 				B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */,
+				B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */,
 				B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -586,6 +633,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */,
 				B885E4282ADB47ED0066F0A0 /* Lamp_BibleTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

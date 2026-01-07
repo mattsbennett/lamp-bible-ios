@@ -6,6 +6,7 @@ target 'Lamp Bible' do
   use_frameworks!
   pod 'FontBlaster'
   pod 'RealmSwift', '~>10'
+  pod 'GRDB.swift', '~>6.0'
 
   # Pods for Lamp Bible
 

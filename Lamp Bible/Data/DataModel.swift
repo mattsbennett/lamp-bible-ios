@@ -60,8 +60,11 @@ class Verse: RealmSwiftObject, Decodable, Identifiable {
     @Persisted var c: Int
     // Verse number
     @Persisted var v: Int
-    // Verse text
+    // Verse text (may contain Strong's annotations like {word|H1234})
     @Persisted var t: String
+    // Clean verse text for FTS (no Strong's annotations)
+    // Uses TEXT predicate for full-text search with native quote/phrase support
+    @Persisted var cleanText: String = ""
     // Translation ID
     @Persisted(indexed: true) var tr: Int
 }
@@ -218,15 +221,6 @@ class User: RealmSwiftObject, Identifiable {
     @Persisted var readerFontSize: Float = 16
     @Persisted var completedReadings = RealmSwift.List<CompletedReading>()
 
-    // Notes settings
-    @Persisted var notesEnabled: Bool = true
-    @Persisted var notesPanelVisible: Bool = false
-    @Persisted var notesPanelOrientation: String = "bottom"  // "bottom" or "right"
-
-    // Lexicon settings
-    @Persisted var greekLexicon: String = "strongs"  // "strongs" or "dodson"
-    @Persisted var hebrewLexicon: String = "strongs"  // "strongs" or "bdb" (Brown-Driver-Briggs)
-
     let defaultTranslationId = 3
 
     func addCompletedReading(id: String) {
@@ -345,29 +339,28 @@ class DodsonGreek: RealmSwiftObject, Identifiable {
     @Persisted var short: String?
 }
 
-class BDBEntry: RealmSwiftObject, Identifiable {
-    // BDB entry ID (e.g., "a.ac.aa")
+class BDBHebrew: RealmSwiftObject, Identifiable {
+    // BDB entry ID (e.g., "BDB871", "BDB6195")
     @Persisted(primaryKey: true) var id: String
-    // Primary Hebrew word (lemma)
+    // Hebrew word (lemma)
     @Persisted(indexed: true) var lemma: String
-    // Part of speech (e.g., "vb", "n.m", "n.pr.m")
+    // Homograph number (1=I, 2=II, 3=III, etc.) - nil if not a homograph
+    @Persisted var homograph: Int?
+    // Part of speech (e.g., "noun masculine", "verb")
     @Persisted var pos: String?
-    // Entry type (e.g., "root")
-    @Persisted var type: String?
-    // Top-level definitions (joined with "; ")
-    @Persisted var defs: String?
-    // Verb stems for verbs (joined with ", ")
-    @Persisted var stems: String?
-    // Full senses data as JSON string (for complex nested display)
+    // Short gloss/meaning
+    @Persisted var gloss: String?
+    // Full definition with ⟦ref⟧ markers for verses, ⟨H123⟩ for Strong's, ⦃BDB123⦄ for BDB cross-refs
+    @Persisted var def: String?
+    // References as JSON string: [{"sv": 1001001, "ev": 1001002}, ...]
+    @Persisted var referencesJson: String?
+    // Senses as JSON string: [{"id": 1, "def": "...", "references": [...]}]
     @Persisted var sensesJson: String?
-    // Sample verse references (joined with ", ")
-    @Persisted var refs: String?
 }
 
-class BDBMapping: RealmSwiftObject, Identifiable {
-    // Strong's number (e.g., "H1")
+class StrongsToBDB: RealmSwiftObject, Identifiable {
+    // Strong's number (e.g., "H1", "H410")
     @Persisted(primaryKey: true) var id: String
-    // BDB entry IDs that match this Strong's number (joined with ",")
-    @Persisted var bdbEntryIds: String
+    // List of BDB IDs this Strong's number maps to
+    @Persisted var bdbIds: RealmSwift.List<String>
 }
-

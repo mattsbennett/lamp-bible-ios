@@ -13,8 +13,13 @@ struct BookListView: View {
     @Binding var showingBookPicker: Bool
     @Binding var translation: Translation
     let loadVersesClosure: () -> Void
+    var onTranslationChange: ((Int) -> Void)? = nil
 
-    @State private var showingTranslationPicker: Bool = false
+    @AppStorage("hiddenTranslations") private var hiddenTranslations: String = ""
+
+    private var orderedVisibleTranslations: [Translation] {
+        visibleTranslations(hiddenString: hiddenTranslations)
+    }
 
     var body: some View {
         NavigationView {
@@ -39,12 +44,23 @@ struct BookListView: View {
                     Button {
                         showingBookPicker = false
                     } label: {
-                        Text(Image(systemName: "xmark"))
+                        Image(systemName: "xmark")
                     }
                 }
                 ToolbarItem(placement: .principal) {
-                    Button {
-                        showingTranslationPicker = true
+                    Menu {
+                        ForEach(orderedVisibleTranslations) { trans in
+                            Button {
+                                translation = trans
+                                onTranslationChange?(trans.id)
+                            } label: {
+                                if trans.id == translation.id {
+                                    Label(trans.name, systemImage: "checkmark")
+                                } else {
+                                    Text(trans.name)
+                                }
+                            }
+                        }
                     } label: {
                         HStack(spacing: 4) {
                             Text(translation.abbreviation)
@@ -53,36 +69,6 @@ struct BookListView: View {
                         }
                     }
                     .modifier(ConditionalGlassButtonStyle())
-                    .popover(isPresented: $showingTranslationPicker) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(RealmManager.shared.realm.objects(Translation.self)) { trans in
-                                Button {
-                                    translation = trans
-                                    showingTranslationPicker = false
-                                } label: {
-                                    HStack {
-                                        Text("\(trans.name) (\(trans.abbreviation))")
-                                        Spacer()
-                                        if trans.id == translation.id {
-                                            Image(systemName: "checkmark")
-                                                .foregroundColor(.accentColor)
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-
-                                if trans.id != RealmManager.shared.realm.objects(Translation.self).last?.id {
-                                    Divider()
-                                }
-                            }
-                        }
-                        .padding(.vertical, 8)
-                        .presentationCompactAdaptation(.popover)
-                    }
                 }
             }
         }

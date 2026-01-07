@@ -14,7 +14,9 @@ struct SearchResult: Identifiable {
 
     var chapter: Int { verse.c }
     var verseNumber: Int { verse.v }
-    var text: String { stripStrongsAnnotations(verse.t) }
+    var text: String {
+        verse.cleanText.isEmpty ? stripStrongsAnnotations(verse.t) : verse.cleanText
+    }
 
     var referenceText: String {
         "\(bookName) \(chapter):\(verseNumber)"

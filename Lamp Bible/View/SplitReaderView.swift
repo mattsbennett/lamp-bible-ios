@@ -9,18 +9,28 @@ import Foundation
 import RealmSwift
 import SwiftUI
 
+/// Tracks who initiated the most recent scroll to prevent feedback loops
+/// Used by ReaderView for legacy compatibility
+enum ScrollOrigin: Equatable {
+    case none
+    case bible
+    case toolPanel
+}
+
 struct SplitReaderView: View {
     @ObservedRealmObject var user: User
     @Binding var date: Date
     var readingMetaData: [ReadingMetaData]?
+    var initialVerseId: Int? = nil
+    var initialTranslation: Translation? = nil
 
-    @State private var scrollToVerse: Int? = nil
     @State private var requestScrollToVerseId: Int? = nil
     @State private var requestScrollAnimated: Bool = true
     @SceneStorage("readerCurrentVerseId") private var currentVerseId: Int = 1001001
-    @State private var lastVerseId: Int = 0  // Track previous value for change detection
-    @State private var suppressScrollLink: Bool = false
+    @State private var hasAppliedInitialVerse: Bool = false
     @AppStorage("toolPanelScrollLinked") private var isScrollLinked: Bool = true
+    @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
+    @AppStorage("notesPanelOrientation") private var notesPanelOrientation: String = "bottom"
     @State private var hasUserScrolled: Bool = false
 
     // Derived from currentVerseId - always in sync
@@ -39,7 +49,6 @@ struct SplitReaderView: View {
     @SceneStorage("toolPanelRightWidthV2") private var storedRightPanelWidth: Double = 0
     @State private var bottomPanelHeight: CGFloat = 0
     @State private var rightPanelWidth: CGFloat = 350
-    @State private var isDragging: Bool = false
 
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
 
@@ -52,7 +61,7 @@ struct SplitReaderView: View {
         if isCompact {
             return "bottom"
         }
-        return user.notesPanelOrientation
+        return notesPanelOrientation
     }
 
     // Minimum and maximum sizes for panels
@@ -61,24 +70,11 @@ struct SplitReaderView: View {
 
     var body: some View {
         Group {
-            if user.notesPanelVisible {
+            if notesPanelVisible {
                 splitView
             } else {
                 readerContent
             }
-        }
-        .onChange(of: currentVerseId) { oldValue, newValue in
-            let (_, oldChapter, oldBook) = splitVerseId(oldValue)
-            let (newVerse, newChapter, newBook) = splitVerseId(newValue)
-            let chapterChanged = oldChapter != newChapter || oldBook != newBook
-
-            // Scroll-link: when verse changes, scroll tool panel to matching section
-            // Only auto-scroll after initial load, if chapter didn't change, not suppressed, and scroll linking is enabled
-            if hasUserScrolled && !chapterChanged && !suppressScrollLink && isScrollLinked {
-                scrollToVerse = newVerse
-            }
-            // Reset suppress flag
-            suppressScrollLink = false
         }
         .onAppear {
             // Enable scroll linking after initial load completes
@@ -86,84 +82,75 @@ struct SplitReaderView: View {
                 hasUserScrolled = true
             }
         }
-        .task {
-            // Check iCloud availability and disable notes if not available
-            if user.notesEnabled {
-                let isAvailable = await ICloudNoteStorage.shared.isAvailable()
-                if !isAvailable {
-                    try? RealmManager.shared.realm.write {
-                        guard let thawedUser = user.thaw() else { return }
-                        thawedUser.notesEnabled = false
-                    }
-                }
-            }
-        }
+        // Note: Scroll sync is now handled entirely by UIKit via ReaderScrollSpy and ScrollSyncCoordinator
     }
 
     @ViewBuilder
     private var splitView: some View {
-        if effectiveOrientation == "right" {
-            GeometryReader { geometry in
-                HStack(spacing: 0) {
-                    readerContent
-                        .frame(maxWidth: .infinity)
+        GeometryReader { geometry in
+            ZStack(alignment: .topLeading) {
+                // Layer 1: Content
+                if effectiveOrientation == "right" {
+                    HStack(spacing: 0) {
+                        readerContent
+                            .frame(maxWidth: .infinity)
 
-                    // Drag handle
-                    dragHandle(isVertical: true)
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    isDragging = true
-                                    let newWidth = rightPanelWidth - value.translation.width
-                                    rightPanelWidth = min(max(newWidth, minPanelSize), geometry.size.width * maxPanelRatio)
-                                }
-                                .onEnded { _ in
-                                    isDragging = false
-                                    storedRightPanelWidth = Double(rightPanelWidth)
-                                }
-                        )
+                        // Static Divider Space
+                        Rectangle()
+                            .fill(Color(UIColor.separator))
+                            .frame(width: 1)
+                            .padding(.horizontal, 5.5) // Total 12 width
+                            .frame(width: 12)
+                            .contentShape(Rectangle())
 
-                    toolPanelContent
-                        .frame(width: rightPanelWidth)
+                        toolPanelContent
+                            .frame(width: rightPanelWidth)
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        readerContent
+                            .frame(height: geometry.size.height - bottomPanelHeight - 12)
+
+                        // Static Divider Space
+                        Rectangle()
+                            .fill(Color(UIColor.separator))
+                            .frame(height: 1)
+                            .padding(.vertical, 5.5) // Total 12 height
+                            .frame(height: 12)
+                            .contentShape(Rectangle())
+
+                        toolPanelContent
+                            .frame(height: bottomPanelHeight)
+                    }
                 }
-                .onAppear {
+
+                // Layer 2: Interactive Drag Overlay
+                SplitDragOverlay(
+                    isVertical: effectiveOrientation == "right",
+                    panelSize: effectiveOrientation == "right" ? $rightPanelWidth : $bottomPanelHeight,
+                    containerSize: geometry.size,
+                    minPanelSize: minPanelSize,
+                    maxPanelRatio: maxPanelRatio,
+                    onDragEnd: { newSize in
+                        if effectiveOrientation == "right" {
+                            storedRightPanelWidth = Double(newSize)
+                        } else {
+                            storedBottomPanelHeight = Double(newSize)
+                        }
+                    }
+                )
+            }
+            .onAppear {
+                if effectiveOrientation == "right" {
                     if storedRightPanelWidth != 0 {
                         rightPanelWidth = CGFloat(storedRightPanelWidth)
                     } else {
-                        // Default to 1/3 of viewport width
                         rightPanelWidth = min(350, geometry.size.width / 3)
                     }
-                }
-            }
-        } else {
-            GeometryReader { geometry in
-                VStack(spacing: 0) {
-                    readerContent
-                        .frame(height: geometry.size.height - bottomPanelHeight - 12)
-
-                    // Drag handle
-                    dragHandle(isVertical: false)
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    isDragging = true
-                                    let newHeight = bottomPanelHeight - value.translation.height
-                                    bottomPanelHeight = min(max(newHeight, minPanelSize), geometry.size.height * maxPanelRatio)
-                                }
-                                .onEnded { _ in
-                                    isDragging = false
-                                    storedBottomPanelHeight = Double(bottomPanelHeight)
-                                }
-                        )
-
-                    toolPanelContent
-                        .frame(height: bottomPanelHeight)
-                }
-                .onAppear {
+                } else {
                     if storedBottomPanelHeight != 0 {
                         bottomPanelHeight = CGFloat(storedBottomPanelHeight)
                     } else {
-                        // Default to 1/3 of viewport height
                         bottomPanelHeight = geometry.size.height / 3
                     }
                 }
@@ -173,48 +160,43 @@ struct SplitReaderView: View {
 
     @ViewBuilder
     private func dragHandle(isVertical: Bool) -> some View {
-        if isVertical {
-            // Vertical divider with horizontal drag handle
-            ZStack {
-                Rectangle()
-                    .fill(Color(UIColor.separator))
-                    .frame(width: 1)
-
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(UIColor.systemGray3))
-                    .frame(width: 4, height: 40)
-            }
-            .frame(width: 12)
-            .contentShape(Rectangle())
-            .background(isDragging ? Color.accentColor.opacity(0.1) : Color.clear)
-        } else {
-            // Horizontal divider with vertical drag handle
-            ZStack {
-                Rectangle()
-                    .fill(Color(UIColor.separator))
-                    .frame(height: 1)
-
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color(UIColor.systemGray3))
-                    .frame(width: 40, height: 4)
-            }
-            .frame(height: 12)
-            .contentShape(Rectangle())
-            .background(isDragging ? Color.accentColor.opacity(0.1) : Color.clear)
-        }
+        EmptyView()
     }
 
     @ViewBuilder
     private var readerContent: some View {
-        ReaderView(
-            user: user,
-            date: $date,
-            readingMetaData: readingMetaData,
-            onVerseAction: handleVerseAction,
-            requestScrollToVerseId: $requestScrollToVerseId,
-            requestScrollAnimated: $requestScrollAnimated,
-            visibleVerseId: $currentVerseId
-        )
+        Group {
+            if let translation = initialTranslation {
+                ReaderView(
+                    user: user,
+                    date: $date,
+                    readingMetaData: readingMetaData,
+                    translation: translation,
+                    onVerseAction: handleVerseAction,
+                    requestScrollToVerseId: $requestScrollToVerseId,
+                    requestScrollAnimated: $requestScrollAnimated,
+                    visibleVerseId: $currentVerseId
+                )
+            } else {
+                ReaderView(
+                    user: user,
+                    date: $date,
+                    readingMetaData: readingMetaData,
+                    onVerseAction: handleVerseAction,
+                    requestScrollToVerseId: $requestScrollToVerseId,
+                    requestScrollAnimated: $requestScrollAnimated,
+                    visibleVerseId: $currentVerseId
+                )
+            }
+        }
+        .onAppear {
+            // Scroll to initial verse if provided
+            if let verseId = initialVerseId, !hasAppliedInitialVerse {
+                hasAppliedInitialVerse = true
+                requestScrollAnimated = false
+                requestScrollToVerseId = verseId
+            }
+        }
     }
 
     @ViewBuilder
@@ -223,22 +205,11 @@ struct SplitReaderView: View {
             book: currentBook,
             chapter: currentChapter,
             currentVerse: currentVerse,
-            scrollToVerse: $scrollToVerse,
             user: user,
             onNavigateToVerse: { verseId in
-                // Suppress scroll-link to prevent tool pane from scrolling away
-                suppressScrollLink = true
-                // Request the Bible panel to scroll to this verse (no animation for direct navigation)
+                // Direct navigation - bypass coordinator, just scroll reader
                 requestScrollAnimated = false
                 requestScrollToVerseId = verseId
-            },
-            onVisibleVerseChanged: { verse in
-                // Only scroll-link after user has scrolled (prevents scroll on initial load)
-                guard hasUserScrolled else { return }
-                // Scroll Bible pane to match tool pane's visible verse (animated for scroll-linking)
-                suppressScrollLink = true
-                requestScrollAnimated = true
-                requestScrollToVerseId = currentBook * 1000000 + currentChapter * 1000 + verse
             }
         )
     }
@@ -247,17 +218,131 @@ struct SplitReaderView: View {
         switch action {
         case .addNote:
             // Show tool panel and scroll to verse
-            if !user.notesPanelVisible {
-                try? RealmManager.shared.realm.write {
-                    guard let thawedUser = user.thaw() else { return }
-                    thawedUser.notesPanelVisible = true
-                }
+            if !notesPanelVisible {
+                notesPanelVisible = true
             }
-            scrollToVerse = verse
+            // Tool panel will pick up the verse from currentVerse
         case .viewCrossReferences:
             // Handled by ReaderView internally
             break
         }
+    }
+}
+
+struct SplitDragOverlay: View {
+    let isVertical: Bool
+    @Binding var panelSize: CGFloat
+    let containerSize: CGSize
+    let minPanelSize: CGFloat
+    let maxPanelRatio: CGFloat
+    let onDragEnd: (CGFloat) -> Void
+
+    @State private var dragOffset: CGFloat = 0
+    @State private var isDragging: Bool = false
+    @State private var initialPanelSize: CGFloat? = nil
+    @State private var lastUpdate: Date = Date.distantPast
+
+    // Constants matching the main view
+    private let handleThickness: CGFloat = 12
+    private let throttleInterval: TimeInterval = 0.032 // ~30fps
+
+    var body: some View {
+        ZStack {
+            // The Hit Area & Visual Handle
+            handleVisual
+                .position(handlePosition)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in
+                            if !isDragging {
+                                isDragging = true
+                                initialPanelSize = panelSize
+                            }
+
+                            let translation = isVertical ? value.translation.width : value.translation.height
+                            dragOffset = translation
+
+                            // Throttled update of the actual panel size
+                            let now = Date()
+                            if now.timeIntervalSince(lastUpdate) > throttleInterval {
+                                updatePanelSize(translation: translation)
+                                lastUpdate = now
+                            }
+                        }
+                        .onEnded { value in
+                            let translation = isVertical ? value.translation.width : value.translation.height
+                            updatePanelSize(translation: translation)
+
+                            // Persist final size
+                            if let finalSize = initialPanelSize {
+                                let newSize = calculateNewSize(baseSize: finalSize, translation: translation)
+                                onDragEnd(newSize)
+                            }
+
+                            isDragging = false
+                            dragOffset = 0
+                            initialPanelSize = nil
+                        }
+                )
+        }
+    }
+
+    private func calculateNewSize(baseSize: CGFloat, translation: CGFloat) -> CGFloat {
+        // Dragging left/up increases panel size (for right/bottom panels)
+        let newSize = baseSize - translation
+        return min(max(newSize, minPanelSize), (isVertical ? containerSize.width : containerSize.height) * maxPanelRatio)
+    }
+
+    private func updatePanelSize(translation: CGFloat) {
+        guard let baseSize = initialPanelSize else { return }
+        panelSize = calculateNewSize(baseSize: baseSize, translation: translation)
+    }
+
+    private var handlePosition: CGPoint {
+        let currentBaseSize = initialPanelSize ?? panelSize
+        // Calculate where the handle *should* be based on the drag, not the lagging panelSize
+        let visualPanelSize = calculateNewSize(baseSize: currentBaseSize, translation: dragOffset)
+
+        if isVertical {
+            let x = containerSize.width - visualPanelSize - (handleThickness / 2)
+            return CGPoint(x: x, y: containerSize.height / 2)
+        } else {
+            let y = containerSize.height - visualPanelSize - (handleThickness / 2)
+            return CGPoint(x: containerSize.width / 2, y: y)
+        }
+    }
+
+    private var handleVisual: some View {
+        Group {
+            if isVertical {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.clear) // Transparent hit area
+                        .frame(width: handleThickness)
+
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(UIColor.systemGray3))
+                        .frame(width: 4, height: 40)
+                }
+                .frame(width: handleThickness)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+            } else {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.clear) // Transparent hit area
+                        .frame(height: handleThickness)
+
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(UIColor.systemGray3))
+                        .frame(width: 40, height: 4)
+                }
+                .frame(height: handleThickness)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+            }
+        }
+        .background(isDragging ? Color.accentColor.opacity(0.1) : Color.clear)
     }
 }
 

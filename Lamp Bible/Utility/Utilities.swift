@@ -75,3 +75,62 @@ func getNextBookVerses(verseId: Int, verses: RealmSwift.List<Verse>) -> Results<
     // If no next book, stay on current
     return verses.filter("id == \(verseId)")
 }
+
+// MARK: - Module Visibility Helpers
+
+/// Parses a comma-separated string of hidden translation IDs into a Set
+func parseHiddenTranslationIds(_ hiddenString: String) -> Set<Int> {
+    Set(hiddenString.split(separator: ",").compactMap { Int($0) })
+}
+
+/// Parses a comma-separated string of hidden lexicon keys into a Set
+func parseHiddenLexiconKeys(_ hiddenString: String) -> Set<String> {
+    Set(hiddenString.split(separator: ",").map { String($0) })
+}
+
+/// Returns visible translations (excluding hidden ones), optionally ordered
+func visibleTranslations(hiddenString: String, orderString: String? = nil) -> [Translation] {
+    let hiddenIds = parseHiddenTranslationIds(hiddenString)
+    let all = Array(RealmManager.shared.realm.objects(Translation.self))
+    let visible = all.filter { !hiddenIds.contains($0.id) }
+
+    guard let orderString = orderString, !orderString.isEmpty else {
+        return visible
+    }
+
+    let storedOrder = orderString.split(separator: ",").compactMap { Int($0) }
+    var ordered: [Translation] = []
+
+    // First add items from stored order that still exist and are visible
+    for id in storedOrder {
+        if let translation = visible.first(where: { $0.id == id }) {
+            ordered.append(translation)
+        }
+    }
+
+    // Then append any visible items not in stored order
+    for translation in visible {
+        if !ordered.contains(where: { $0.id == translation.id }) {
+            ordered.append(translation)
+        }
+    }
+
+    return ordered
+}
+
+/// Returns visible lexicon entries for a Strong's number, filtered by hidden keys and ordered
+func visibleLexiconEntries(
+    for strongsNum: String,
+    orderString: String,
+    hiddenString: String
+) -> [LexiconEntry] {
+    let hiddenKeys = parseHiddenLexiconKeys(hiddenString)
+    let allEntries = LexiconLookup.sortedEntries(for: strongsNum, orderString: orderString)
+    return allEntries.filter { !hiddenKeys.contains($0.lexiconKey) }
+}
+
+/// Returns whether a lexicon key is hidden
+func isLexiconHidden(_ lexiconKey: String, hiddenString: String) -> Bool {
+    let hiddenKeys = parseHiddenLexiconKeys(hiddenString)
+    return hiddenKeys.contains(lexiconKey)
+}

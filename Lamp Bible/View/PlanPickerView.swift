@@ -56,7 +56,7 @@ struct PlanPickerView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button { dismiss() } label: {
-                    Text(Image(systemName: "arrow.backward"))
+                    Image(systemName: "arrow.backward")
                 }
             }
         }

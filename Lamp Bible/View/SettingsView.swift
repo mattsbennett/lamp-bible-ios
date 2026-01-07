@@ -7,6 +7,7 @@
 
 import RealmSwift
 import SwiftUI
+import GRDB
 
 struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
@@ -16,9 +17,10 @@ struct SettingsView: View {
     @State var notificationTime: Date = Date.now
     @State var showingNotificationAlert = false
     @State var iCloudAvailable: Bool = false
-    @State var syncStatus: ICloudNoteStorage.OverallSyncStatus?
+    @State var moduleSyncInProgress: Bool = false
+    @State var moduleCount: Int? = nil
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
-    @AppStorage("showStrongsHints") private var showStrongsHints: Bool = false
+    @AppStorage("notesPanelOrientation") private var notesPanelOrientation: String = "bottom"
     let plans: Results<Plan>
     let externalApps: [ExternalBibleApp]
 
@@ -64,26 +66,122 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 let generator = UINotificationFeedbackGenerator()
+
+                // MARK: - Tool Settings
+                Section {
+                    NavigationLink {
+                        ModuleSettingsView(user: user)
+                    } label: {
+                        Label("Module Settings", systemImage: "slider.horizontal.3")
+                    }
+
+                    NavigationLink {
+                        ModuleManagerView()
+                    } label: {
+                        Label("Module Manager", systemImage: "shippingbox")
+                    }
+
+                    // iCloud storage status
+                    HStack {
+                        Text("Storage")
+                        Spacer()
+                        if iCloudAvailable {
+                            Text("iCloud Drive").foregroundStyle(.secondary)
+                            Image(systemName: "checkmark.icloud.fill")
+                                .foregroundStyle(.green)
+                        } else {
+                            Text("Not Available").foregroundStyle(.secondary)
+                            Image(systemName: "xmark.icloud")
+                                .foregroundStyle(.red)
+                        }
+                    }
+
+                    // Sync status
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        if moduleSyncInProgress {
+                            Text("Syncing...").foregroundStyle(.secondary)
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        } else if let count = moduleCount {
+                            Text("\(count) module\(count == 1 ? "" : "s")").foregroundStyle(.secondary)
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        } else {
+                            Text("Not synced").foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // Manual sync button
+                    Button {
+                        Task {
+                            moduleSyncInProgress = true
+                            await ModuleSyncManager.shared.syncAll()
+                            moduleCount = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
+                            moduleSyncInProgress = false
+                        }
+                    } label: {
+                        HStack {
+                            Text("Sync Now")
+                            Spacer()
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                    .disabled(moduleSyncInProgress)
+                } header: {
+                    VStack(alignment: .leading) {
+                        Text("Tool Settings").padding(.bottom, 8).padding(.top, 15)
+                        Text("Modules").font(.system(size: 12)).textCase(.uppercase).foregroundStyle(Color.secondary).padding(.bottom, -5)
+                    }
+                } footer: {
+                    if iCloudAvailable {
+                        Text("Import and manage notes, dictionaries, commentaries, and devotionals synced via iCloud Drive.")
+                    } else {
+                        Text("iCloud Drive is not available. Check your network connection or enable iCloud Drive for Lamp Bible in Settings → Apple Account → iCloud → Saved to iCloud.")
+                    }
+                }
+                .headerProminence(.increased)
+                .task {
+                    iCloudAvailable = await ICloudNoteStorage.shared.isAvailable()
+                    moduleCount = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
+                }
+
+                // Notes panel (iPad only)
+                if horizontalSizeClass != .compact {
+                    Section {
+                        Picker("Panel Position", selection: $notesPanelOrientation) {
+                            Text("Bottom").tag("bottom")
+                            Text("Right").tag("right")
+                        }
+                    } header: {
+                        Text("Notes Panel")
+                    }
+                }
+
+                // MARK: - Reading Plan Settings
                 Section {
                     Toggle(isOn: $user.planInAppBible) {
                         Text("In-app Bible")
                     }.tint(.accentColor)
                 } header: {
-                    Text("Reading Plan Settings")
+                    VStack(alignment: .leading) {
+                        Text("Reading Plan Settings").padding(.bottom, 8).padding(.top, 15)
+                        Text("Bible Options").font(.system(size: 12)).textCase(.uppercase).foregroundStyle(Color.secondary).padding(.bottom, -5)
+                    }
                 } footer: {
-                    Text("Show the ") + Text(Image(systemName: "book.fill")) + Text(" button to open readings the in-app Bible")
+                    Text("Show the ") + Text(Image(systemName: "book.fill")) + Text(" button to open readings in the in-app Bible")
                 }
                 .headerProminence(.increased)
+
                 Section {
                     ForEach(externalApps) { app in
-                        HStack{
+                        HStack {
                             Button {
                                 try! RealmManager.shared.realm.write {
                                     guard let thawedUser = user.thaw() else {
-                                        // Handle the inability to thaw the object
                                         return
                                     }
-
                                     thawedUser.planExternalBible = app.name
                                     generator.notificationOccurred(.success)
                                 }
@@ -92,7 +190,7 @@ struct SettingsView: View {
                             }
                             .disabled(!app.scheme.isEmpty ? !UIApplication.shared.canOpenURL(URL(string: app.scheme)!) : false)
                             Spacer()
-                            if ( user.planExternalBible == app.name || (user.planExternalBible == nil && app.name == "None") ) {
+                            if (user.planExternalBible == app.name || (user.planExternalBible == nil && app.name == "None")) {
                                 Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)
                             }
                         }
@@ -102,6 +200,7 @@ struct SettingsView: View {
                 } footer: {
                     Text("Show the ") + Text(Image("book.and.external.fill")) + Text(" button to open readings in the selected Bible app.")
                 }
+
                 Section {
                     HStack {
                         Spacer()
@@ -112,7 +211,6 @@ struct SettingsView: View {
                         if !editing {
                             try! RealmManager.shared.realm.write {
                                 guard let thawedUser = user.thaw() else {
-                                    // Handle the inability to thaw the object
                                     return
                                 }
                                 thawedUser.planWpm = planWpm
@@ -126,7 +224,6 @@ struct SettingsView: View {
                         planWpm = aloudSetting
                         try! RealmManager.shared.realm.write {
                             guard let thawedUser = user.thaw() else {
-                                // Handle the inability to thaw the object
                                 return
                             }
                             thawedUser.planWpm = aloudSetting
@@ -135,24 +232,24 @@ struct SettingsView: View {
                         }
                     }
                     Button("Silent") {
-                        let slientSetting = 238.0
-                        planWpm = slientSetting
+                        let silentSetting = 238.0
+                        planWpm = silentSetting
                         try! RealmManager.shared.realm.write {
                             guard let thawedUser = user.thaw() else {
-                                // Handle the inability to thaw the object
                                 return
                             }
-                            thawedUser.planWpm = slientSetting
+                            thawedUser.planWpm = silentSetting
                             planViewRefreshID = UUID()
                             generator.notificationOccurred(.success)
                         }
                     }
                 } header: {
-                    Text("Reading rate (WPM)")
+                    Text("Reading Rate (WPM)")
                 } footer: {
                     Text("Adjust reading rate to achieve personalized accuracy in reading plan reading time estimates")
                 }
                 .listRowSeparator(.hidden)
+
                 Section {
                     Toggle(isOn: $user.planNotification) {
                         Text("Remind me daily")
@@ -162,7 +259,8 @@ struct SettingsView: View {
                 } header: {
                     Text("Daily Plan Reminder")
                 }
-                .alert("No reading plans", isPresented: $showingNotificationAlert) { NavigationLink(destination: PlanPickerView(plans: plans)) {
+                .alert("No reading plans", isPresented: $showingNotificationAlert) {
+                    NavigationLink(destination: PlanPickerView(plans: plans)) {
                         Button("Go to plans") {
                             showingNotificationAlert = false
                         }
@@ -172,14 +270,14 @@ struct SettingsView: View {
                     }
                 } message: {
                     Text("A reading plan must be selected before notifications can be enabled.")
-                }.textCase(nil)
+                }
+                .textCase(nil)
                 .onChange(of: user.planNotification) { oldValue, newValue in
                     if !oldValue && newValue {
                         if user.plans.count == 0 {
                             showingNotificationAlert = true
                             try! RealmManager.shared.realm.write {
                                 guard let thawedUser = user.thaw() else {
-                                    // Handle the inability to thaw the object
                                     return
                                 }
                                 thawedUser.planNotification = false
@@ -192,8 +290,6 @@ struct SettingsView: View {
                                     scheduleRecurringNotification(at: user.planNotificationDate)
                                 }
                             } else {
-                                // Notification permission has not been granted
-                                // You can handle this case accordingly
                                 UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
                                     if granted {
                                         DispatchQueue.main.async {
@@ -203,7 +299,6 @@ struct SettingsView: View {
                                         print(error.localizedDescription)
                                         try! RealmManager.shared.realm.write {
                                             guard let thawedUser = user.thaw() else {
-                                                // Handle the inability to thaw the object
                                                 return
                                             }
                                             thawedUser.planNotification = false
@@ -220,195 +315,13 @@ struct SettingsView: View {
                     unscheduleRecurringNotification()
                     scheduleRecurringNotification(at: newValue)
                 }
-                Section {
-                    ForEach(RealmManager.shared.realm.objects(Translation.self)) { translation in
-                        HStack{
-                            Button {
-                                try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else {
-                                        // Handle the inability to thaw the object
-                                        return
-                                    }
-                                    thawedUser.readerTranslation = translation
-                                    generator.notificationOccurred(.success)
-                                }
-                            } label: {
-                                Text(translation.name).tint(.primary)
-                            }
-                            Spacer()
-                            if (user.readerTranslation!.id == translation.id) {
-                                Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)
-                            }
-                        }
-                    }
-                } header: {
-                    VStack(alignment: .leading) {
-                        Text("Bible Settings").padding(.bottom, 8).padding(.top, 15)
-                        Text("Default Translation").font(.system(size: 12)).textCase(.uppercase).foregroundStyle(Color.secondary).padding(.bottom, -5)
-                    }
-                }
-                .headerProminence(.increased)
-
-                // MARK: - Tool Settings
-                Section {
-                    Toggle(isOn: $user.notesEnabled) {
-                        Text("Enable Notes")
-                    }.tint(.accentColor)
-
-                    if user.notesEnabled {
-                        // iCloud status indicator
-                        HStack {
-                            Text("Storage")
-                            Spacer()
-                            if iCloudAvailable {
-                                Text("iCloud Drive").foregroundStyle(.secondary)
-                                Image(systemName: "checkmark.icloud.fill")
-                                    .foregroundStyle(.green)
-                            } else {
-                                Text("Not Available").foregroundStyle(.secondary)
-                                Image(systemName: "xmark.icloud")
-                                    .foregroundStyle(.red)
-                            }
-                        }
-
-                        // Sync status
-                        if iCloudAvailable, let status = syncStatus {
-                            HStack {
-                                Text("Sync Status")
-                                Spacer()
-                                if status.total == 0 {
-                                    Text("No notes").foregroundStyle(.secondary)
-                                } else if status.allSynced {
-                                    Text("All synced").foregroundStyle(.secondary)
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.green)
-                                } else if status.syncing > 0 {
-                                    Text("Syncing \(status.syncing)...").foregroundStyle(.secondary)
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                } else if status.notSynced > 0 {
-                                    Text("\(status.notSynced) pending").foregroundStyle(.secondary)
-                                    Image(systemName: "exclamationmark.icloud")
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-                        }
-
-                        // Panel orientation picker (only on iPad)
-                        if horizontalSizeClass != .compact {
-                            Picker("Panel Position", selection: $user.notesPanelOrientation) {
-                                Text("Bottom").tag("bottom")
-                                Text("Right").tag("right")
-                            }
-                        }
-                    }
-                } header: {
-                    VStack(alignment: .leading) {
-                        Text("Tool Settings").padding(.bottom, 8).padding(.top, 15)
-                        Text("Notes").font(.system(size: 12)).textCase(.uppercase).foregroundStyle(Color.secondary).padding(.bottom, -5)
-                    }
-                } footer: {
-                    if iCloudAvailable {
-                        Text("Notes are stored in iCloud Drive and sync across your devices.")
-                    } else {
-                        Text("iCloud Drive is not available. Check your network connection or enable iCloud Drive for Lamp Bible in Settings → Apple Account → iCloud → Saved to iCloud.")
-                    }
-                }
-                .headerProminence(.increased)
-                .task {
-                    iCloudAvailable = await ICloudNoteStorage.shared.isAvailable()
-                    if iCloudAvailable {
-                        syncStatus = await ICloudNoteStorage.shared.getOverallSyncStatus()
-                    }
-                }
-                Section {
-                    Toggle(isOn: $showStrongsHints) {
-                        Text("Show Word Hints")
-                    }.tint(.accentColor)
-                } header: {
-                    Text("Lexicons")
-                } footer: {
-                    Text("Show visual hints for words with Strong's numbers in supported translations (BSB, KJV). Tap any word/phrase to view definitions.")
-                }
-                Section {
-                    let greekLexicons = ["strongs", "dodson"]
-                    let greekLexiconNames = ["Strong's Greek", "Dodson"]
-                    ForEach(greekLexicons.indices, id: \.self) { index in
-                        HStack {
-                            Button {
-                                try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else { return }
-                                    thawedUser.greekLexicon = greekLexicons[index]
-                                    generator.notificationOccurred(.success)
-                                }
-                            } label: {
-                                Text(greekLexiconNames[index]).tint(.primary)
-                            }
-                            Spacer()
-                            if user.greekLexicon == greekLexicons[index] {
-                                Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Default Greek Lexicon")
-                }
-                Section {
-                    let hebrewLexicons = ["strongs", "bdb"]
-                    let hebrewLexiconNames = ["Strong's Hebrew", "Brown-Driver-Briggs"]
-                    ForEach(hebrewLexicons.indices, id: \.self) { index in
-                        HStack {
-                            Button {
-                                try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else { return }
-                                    thawedUser.hebrewLexicon = hebrewLexicons[index]
-                                    generator.notificationOccurred(.success)
-                                }
-                            } label: {
-                                Text(hebrewLexiconNames[index]).tint(.primary)
-                            }
-                            Spacer()
-                            if user.hebrewLexicon == hebrewLexicons[index] {
-                                Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Default Hebrew Lexicon")
-                }
-                Section {
-                    let sorts = ["r","sv"]
-                    let sortNames = ["Relevance","Verse"]
-                    ForEach(sorts.indices, id: \.self) { index in
-                        HStack{
-                            Button {
-                                try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else {
-                                        // Handle the inability to thaw the object
-                                        return
-                                    }
-                                    thawedUser.readerCrossReferenceSort = sorts[index]
-                                    generator.notificationOccurred(.success)
-                                }
-                            } label: {
-                                Text(sortNames[index]).tint(.primary)
-                            }
-                            Spacer()
-                            if (user.readerCrossReferenceSort == sorts[index]) {
-                                Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Cross Reference Sort")
-                }
             }
             .navigationBarBackButtonHidden(true)
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: {
-                        Text(Image(systemName: "arrow.backward"))
+                        Image(systemName: "arrow.backward")
                     }
                 }
             }

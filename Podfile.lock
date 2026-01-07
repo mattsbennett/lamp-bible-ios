@@ -1,26 +1,32 @@
 PODS:
   - FontBlaster (5.3.0)
-  - Realm (10.54.2):
-    - Realm/Headers (= 10.54.2)
-  - Realm/Headers (10.54.2)
-  - RealmSwift (10.54.2):
-    - Realm (= 10.54.2)
+  - GRDB.swift (6.24.1):
+    - GRDB.swift/standard (= 6.24.1)
+  - GRDB.swift/standard (6.24.1)
+  - Realm (10.54.5):
+    - Realm/Headers (= 10.54.5)
+  - Realm/Headers (10.54.5)
+  - RealmSwift (10.54.5):
+    - Realm (= 10.54.5)
 
 DEPENDENCIES:
   - FontBlaster
+  - GRDB.swift (~> 6.0)
   - RealmSwift (~> 10)
 
 SPEC REPOS:
   trunk:
     - FontBlaster
+    - GRDB.swift
     - Realm
     - RealmSwift
 
 SPEC CHECKSUMS:
   FontBlaster: 941f89d735a29e1c7d24e7a90d3e16939ef1609a
-  Realm: 16852517a207e98cc6acba9336b56c30d06d84ad
-  RealmSwift: bca777b3904ee58a9b16036e1840012f03348060
+  GRDB.swift: 136dcb5d8dddca50aae3ba7d77475f79e7232cd8
+  Realm: ac6ab7d43b76db2bdb48bbd097019bb621d860b8
+  RealmSwift: 7c258367cc498594aa989b7d9620989a276ad7f4
 
-PODFILE CHECKSUM: 2279fa9ebbb6c723e20364f4a17d2e81fdd16b87
+PODFILE CHECKSUM: c33edd60711c158fbe914dc5c74d85a5d6f21639
 
-COCOAPODS: 1.15.2
+COCOAPODS: 1.16.2

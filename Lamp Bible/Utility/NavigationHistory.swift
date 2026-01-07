@@ -19,14 +19,17 @@ class NavigationHistory: ObservableObject {
     private let historyKey = "navigationHistory"
     private let indexKey = "navigationHistoryIndex"
 
+    /// Flag to prevent saving during loading
+    private var isLoading = false
+
     /// History stack - stores full verseIds (including verse position)
     @Published private(set) var history: [Int] = [] {
-        didSet { saveToUserDefaults() }
+        didSet { if !isLoading { saveToUserDefaults() } }
     }
 
     /// Current position in history (index into history array)
     @Published private(set) var currentIndex: Int = -1 {
-        didSet { saveToUserDefaults() }
+        didSet { if !isLoading { saveToUserDefaults() } }
     }
 
     /// Whether we can go back in history
@@ -55,6 +58,9 @@ class NavigationHistory: ObservableObject {
     }
 
     private func loadFromUserDefaults() {
+        isLoading = true
+        defer { isLoading = false }
+
         if let savedHistory = UserDefaults.standard.array(forKey: historyKey) as? [Int] {
             history = savedHistory
         }
@@ -91,7 +97,7 @@ class NavigationHistory: ObservableObject {
             return
         }
 
-        // Don't record if we're navigating to the same chapter
+        // Don't record if we're navigating to the same chapter as current
         if let currentEntry = current {
             let (_, currentChapter, currentBook) = splitVerseId(currentEntry)
             if book == currentBook && chapter == currentChapter {
@@ -99,9 +105,24 @@ class NavigationHistory: ObservableObject {
             }
         }
 
-        // If we're not at the end of history, truncate forward history
-        if currentIndex < history.count - 1 {
+        // Find ALL existing entries for the same book:chapter (for deduplication)
+        var indicesToRemove: [Int] = []
+        for (index, existingVerseId) in history.enumerated() {
+            let (_, existingChapter, existingBook) = splitVerseId(existingVerseId)
+            if existingBook == book && existingChapter == chapter {
+                indicesToRemove.append(index)
+            }
+        }
+
+        // Only truncate forward history if this is a NEW chapter (not already in history)
+        // This prevents losing history entries when navigating to an existing chapter
+        if indicesToRemove.isEmpty && currentIndex < history.count - 1 {
             history = Array(history.prefix(currentIndex + 1))
+        }
+
+        // Remove duplicates in reverse order to preserve indices
+        for index in indicesToRemove.reversed() {
+            history.remove(at: index)
         }
 
         // Add new entry with full verseId (preserving verse position)
@@ -172,10 +193,10 @@ class NavigationHistory: ObservableObject {
     /// - Returns: Array of (index, verseId, description) tuples
     func allHistory() -> [(index: Int, verseId: Int, description: String)] {
         return history.enumerated().compactMap { index, verseId in
-            let (_, chapter, book) = splitVerseId(verseId)
+            let (verse, chapter, book) = splitVerseId(verseId)
 
             if let bookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(book)").first {
-                return (index, verseId, "\(bookObj.name) \(chapter)")
+                return (index, verseId, "\(bookObj.name) \(chapter):\(verse)")
             }
             return nil
         }
@@ -192,10 +213,10 @@ class NavigationHistory: ObservableObject {
 
         return (startIndex..<endIndex).reversed().compactMap { index in
             let verseId = history[index]
-            let (_, chapter, book) = splitVerseId(verseId)
+            let (verse, chapter, book) = splitVerseId(verseId)
 
             if let bookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(book)").first {
-                return (verseId, "\(bookObj.name) \(chapter)")
+                return (verseId, "\(bookObj.name) \(chapter):\(verse)")
             }
             return nil
         }

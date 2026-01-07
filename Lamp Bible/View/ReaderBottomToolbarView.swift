@@ -181,7 +181,7 @@ struct InlineSearchBar: View {
                 Button {
                     onSubmit()
                 } label: {
-                    Image(systemName: "magnifyingglass")
+                    Image(systemName: "arrow.down.left.and.arrow.up.right")
                         .foregroundStyle(.secondary)
                         .font(.system(size: 15))
                 }

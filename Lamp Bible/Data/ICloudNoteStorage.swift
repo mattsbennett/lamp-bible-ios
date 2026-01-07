@@ -47,13 +47,7 @@ class ICloudNoteStorage: NoteStorage {
     func isAvailable() async -> Bool {
         let hasToken = fileManager.ubiquityIdentityToken != nil
         let hasContainer = containerURL != nil
-        print("[iCloud] isAvailable check - token: \(hasToken), container: \(hasContainer)")
-        if let url = containerURL {
-            print("[iCloud] Container URL: \(url.path)")
-        }
-        if let notesDir = notesDirectoryURL {
-            print("[iCloud] Notes directory URL: \(notesDir.path)")
-        }
+
         return hasToken && hasContainer
     }
 

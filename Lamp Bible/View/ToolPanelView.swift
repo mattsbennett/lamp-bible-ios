@@ -6,52 +6,574 @@
 //
 
 import Foundation
+import GRDB
 import RealmSwift
 import SwiftUI
+import UIKit
+
+// MARK: - Scroll Sync Coordinator
+
+/// Direct coordinator for scroll sync - bypasses SwiftUI state entirely
+class ScrollSyncCoordinator {
+    static let shared = ScrollSyncCoordinator()
+
+    // Registered scroll controllers
+    private weak var toolPanelController: (any ToolPanelScrollable)?
+
+    // Direct reader scroll view reference for UIKit-based scrolling
+    weak var readerScrollView: UIScrollView?
+    var readerVersePositions: [Int: CGFloat] = [:] // verseId -> yPosition
+
+    // Current state
+    private(set) var currentVerse: Int = 1
+    private(set) var activeScroller: ScrollSource = .none
+    private var lastReportedReaderVerse: Int = 0
+
+    // Check if scroll linking is enabled (reads from UserDefaults, defaults to true)
+    private var isScrollLinked: Bool {
+        // AppStorage defaults to true, so we need to match that behavior
+        if UserDefaults.standard.object(forKey: "toolPanelScrollLinked") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "toolPanelScrollLinked")
+    }
+
+    enum ScrollSource {
+        case none
+        case reader
+        case toolPanel
+    }
+
+    private init() {}
+
+    func registerToolPanel(_ controller: any ToolPanelScrollable) {
+        toolPanelController = controller
+    }
+
+    /// Called by reader when user scrolls - direct from UIKit
+    func readerDidScrollToVerse(_ verse: Int) {
+        guard isScrollLinked else { return }
+        guard activeScroller != .toolPanel else { return }
+        guard verse != currentVerse else { return }
+        currentVerse = verse
+        activeScroller = .reader
+        toolPanelController?.scrollToVerse(verse, animated: false)
+    }
+
+    /// Called by tool panel when user scrolls
+    func toolPanelDidScrollToVerse(_ verse: Int) {
+        guard isScrollLinked else { return }
+        guard activeScroller != .reader else { return }
+        guard verse != currentVerse else { return }
+        currentVerse = verse
+        activeScroller = .toolPanel
+
+        // Direct UIKit scroll - no SwiftUI state involved
+        scrollReaderToVerse(verse)
+    }
+
+    /// Scroll the reader directly via UIKit
+    private func scrollReaderToVerse(_ verse: Int) {
+        guard let scrollView = readerScrollView else { return }
+
+        // Build full verse ID from current book/chapter + verse
+        // Find matching position or closest preceding
+        var targetY: CGFloat?
+
+        // Try exact match first
+        for (verseId, yPos) in readerVersePositions {
+            let v = verseId % 1000
+            if v == verse {
+                targetY = yPos
+                break
+            }
+        }
+
+        // If no exact match, find closest preceding verse
+        if targetY == nil {
+            var closestVerse = 0
+            var closestY: CGFloat = 0
+            for (verseId, yPos) in readerVersePositions {
+                let v = verseId % 1000
+                if v < verse && v > closestVerse {
+                    closestVerse = v
+                    closestY = yPos
+                }
+            }
+            if closestVerse > 0 {
+                targetY = closestY
+            }
+        }
+
+        if let y = targetY {
+            let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+            let clampedY = min(max(0, y), maxY)
+            scrollView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: false)
+        }
+    }
+
+    /// Called when drag ends to reset active scroller
+    func scrollEnded() {
+        activeScroller = .none
+    }
+
+    /// Called when drag begins
+    func readerBeganScrolling() {
+        activeScroller = .reader
+    }
+
+    func toolPanelBeganScrolling() {
+        activeScroller = .toolPanel
+    }
+}
+
+protocol ToolPanelScrollable: AnyObject {
+    func scrollToVerse(_ verse: Int, animated: Bool)
+}
+
+// MARK: - Reader Scroll Spy
+
+/// Invisible UIView that intercepts scroll events from the parent SwiftUI ScrollView
+class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
+    private weak var scrollView: UIScrollView?
+    private var originalDelegate: UIScrollViewDelegate?
+    private let coordinator = ScrollSyncCoordinator.shared
+    private var lastReportedVerse: Int = 0
+    private var isReady: Bool = false // Prevents sync during initial load
+
+    // Verse position lookup - set by ReaderView
+    var versePositions: [Int: CGFloat] = [:] {
+        didSet {
+            coordinator.readerVersePositions = versePositions
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            // Find and intercept the parent scroll view
+            DispatchQueue.main.async { [weak self] in
+                self?.findAndInterceptScrollView()
+            }
+            // Enable sync after initial load settles
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.isReady = true
+            }
+        }
+    }
+
+    private func findAndInterceptScrollView() {
+        guard scrollView == nil else { return }
+
+        // Walk up the view hierarchy to find UIScrollView
+        var view: UIView? = self.superview
+        while let v = view {
+            if let sv = v as? UIScrollView {
+                scrollView = sv
+                coordinator.readerScrollView = sv
+                originalDelegate = sv.delegate
+                sv.delegate = self
+                return
+            }
+            view = v.superview
+        }
+    }
+
+    // MARK: - UIScrollViewDelegate
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Forward to original delegate
+        originalDelegate?.scrollViewDidScroll?(scrollView)
+
+        // Skip during initial load
+        guard isReady else { return }
+
+        // Skip if tool panel is in control
+        guard coordinator.activeScroller != .toolPanel else { return }
+
+        // Find verse at current scroll position
+        let offset = scrollView.contentOffset.y + scrollView.contentInset.top
+        if let verse = findVerseAtOffset(offset) {
+            if verse != lastReportedVerse {
+                lastReportedVerse = verse
+                coordinator.readerDidScrollToVerse(verse)
+            }
+        }
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        originalDelegate?.scrollViewWillBeginDragging?(scrollView)
+        coordinator.readerBeganScrolling()
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        originalDelegate?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
+        if !decelerate {
+            coordinator.scrollEnded()
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        originalDelegate?.scrollViewDidEndDecelerating?(scrollView)
+        coordinator.scrollEnded()
+    }
+
+    // Forward other delegate methods
+    func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+        return originalDelegate?.scrollViewShouldScrollToTop?(scrollView) ?? true
+    }
+
+    func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
+        originalDelegate?.scrollViewDidScrollToTop?(scrollView)
+    }
+
+    func scrollViewWillBeginDecelerating(_ scrollView: UIScrollView) {
+        originalDelegate?.scrollViewWillBeginDecelerating?(scrollView)
+    }
+
+    private func findVerseAtOffset(_ offset: CGFloat) -> Int? {
+        var result: Int? = nil
+        let sortedPositions = versePositions.sorted { $0.value < $1.value }
+
+        for (verseId, yPos) in sortedPositions {
+            if yPos <= offset + 50 {
+                result = verseId % 1000 // Extract verse number
+            } else {
+                break
+            }
+        }
+        return result
+    }
+}
+
+/// SwiftUI wrapper for the scroll spy
+struct ReaderScrollSpy: UIViewRepresentable {
+    let versePositions: [Int: CGFloat]
+
+    func makeUIView(context: Context) -> ReaderScrollSpyView {
+        let view = ReaderScrollSpyView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: ReaderScrollSpyView, context: Context) {
+        uiView.versePositions = versePositions
+    }
+}
+
+// MARK: - UIKit Collection View for Scroll Sync
+
+/// Item type for verse-based content in the collection view
+struct VerseItem: Hashable {
+    let verse: Int
+    let id: String // Unique identifier for diffable data source
+}
+
+/// SwiftUI wrapper for UIKit collection view - scroll sync handled by coordinator
+struct UIKitVerseList<ItemData, CellContent: View>: UIViewControllerRepresentable {
+    let items: [(verse: Int, data: ItemData)]
+    let cellContent: (ItemData) -> CellContent
+    let listId: String // Force recreation when this changes
+
+    class Coordinator {
+        var lastListId: String?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIViewController(context: Context) -> UIKitVerseListController<ItemData, CellContent> {
+        let vc = UIKitVerseListController<ItemData, CellContent>()
+        vc.cellContent = cellContent
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: UIKitVerseListController<ItemData, CellContent>, context: Context) {
+        uiViewController.cellContent = cellContent
+
+        // Check if list changed (book/chapter change)
+        let listChanged = context.coordinator.lastListId != listId
+        context.coordinator.lastListId = listId
+
+        let verseItems = items.enumerated().map { index, item in
+            VerseItem(verse: item.verse, id: "\(listId)_\(index)_\(item.verse)")
+        }
+        uiViewController.updateItems(verseItems, rawData: items.map { $0.data })
+
+        // Scroll to current verse on list change
+        if listChanged {
+            let currentVerse = ScrollSyncCoordinator.shared.currentVerse
+            uiViewController.scrollToVerse(currentVerse)
+        }
+    }
+}
+
+/// Generic UICollectionView controller for verse-based content
+class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, UICollectionViewDelegate, ToolPanelScrollable {
+    private var collectionView: UICollectionView!
+    private var dataSource: UICollectionViewDiffableDataSource<Int, VerseItem>!
+
+    // Content configuration
+    var cellContent: ((ItemData) -> CellContent)?
+    private var rawData: [ItemData] = []
+
+    // Direct coordinator reference - no SwiftUI state
+    private let scrollCoordinator = ScrollSyncCoordinator.shared
+
+    // Scroll state
+    private var lastReportedVerse: Int = 0
+    private var isProgrammaticScroll: Bool = false
+    private var items: [VerseItem] = []
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupCollectionView()
+        setupDataSource()
+        // Register with coordinator for direct scroll sync
+        scrollCoordinator.registerToolPanel(self)
+    }
+
+    private func setupCollectionView() {
+        var config = UICollectionLayoutListConfiguration(appearance: .plain)
+        config.showsSeparators = false
+        config.backgroundColor = .clear
+        let layout = UICollectionViewCompositionalLayout.list(using: config)
+
+        collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
+        collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        collectionView.backgroundColor = .clear
+        collectionView.delegate = self
+        collectionView.contentInsetAdjustmentBehavior = .automatic
+
+        view.addSubview(collectionView)
+    }
+
+    private func setupDataSource() {
+        let cellRegistration = UICollectionView.CellRegistration<UICollectionViewCell, VerseItem> { [weak self] cell, indexPath, item in
+            guard let self = self,
+                  let cellContent = self.cellContent,
+                  indexPath.item < self.rawData.count else { return }
+
+            let data = self.rawData[indexPath.item]
+            cell.contentConfiguration = UIHostingConfiguration {
+                cellContent(data)
+            }
+            .margins(.all, 0)
+        }
+
+        dataSource = UICollectionViewDiffableDataSource<Int, VerseItem>(collectionView: collectionView) { collectionView, indexPath, item in
+            collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: item)
+        }
+    }
+
+    func updateItems(_ newItems: [VerseItem], rawData: [ItemData]) {
+        self.items = newItems
+        self.rawData = rawData
+
+        var snapshot = NSDiffableDataSourceSnapshot<Int, VerseItem>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(newItems)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
+    func scrollToVerse(_ verse: Int, animated: Bool = false) {
+        guard let index = items.firstIndex(where: { $0.verse == verse }) else {
+            // Try to find closest preceding verse
+            if let index = items.lastIndex(where: { $0.verse < verse }) {
+                scrollToIndex(index, animated: animated)
+            }
+            return
+        }
+        scrollToIndex(index, animated: animated)
+    }
+
+    private func scrollToIndex(_ index: Int, animated: Bool) {
+        isProgrammaticScroll = true
+        let indexPath = IndexPath(item: index, section: 0)
+        collectionView.scrollToItem(at: indexPath, at: .top, animated: animated)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.isProgrammaticScroll = false
+        }
+    }
+
+    // MARK: - UIScrollViewDelegate (Direct coordinator sync - no SwiftUI)
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !isProgrammaticScroll else { return }
+
+        // Find visible verse from top visible cell
+        let visiblePoint = CGPoint(x: scrollView.bounds.midX, y: scrollView.contentOffset.y + 50)
+
+        if let indexPath = collectionView.indexPathForItem(at: visiblePoint),
+           indexPath.item < items.count {
+            let verse = items[indexPath.item].verse
+            if verse != lastReportedVerse && verse > 0 {
+                lastReportedVerse = verse
+                // Direct coordinator call - no SwiftUI state involved
+                scrollCoordinator.toolPanelDidScrollToVerse(verse)
+            }
+        }
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        scrollCoordinator.toolPanelBeganScrolling()
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate {
+            scrollCoordinator.scrollEnded()
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        scrollCoordinator.scrollEnded()
+    }
+}
+
+// MARK: - Cross Reference Cell Data
+
+/// Data for a single verse's cross references
+struct CrossRefVerseData {
+    let verse: Int
+    let refs: [CrossReference]
+    let baseOffset: Int
+    let totalCount: Int
+}
+
+/// Cell view for displaying a verse's cross references
+struct CrossRefVerseCell: View {
+    let data: CrossRefVerseData
+    let translation: Translation
+    let fontSize: Int
+    let onNavigateToVerse: ((Int) -> Void)?
+    @Binding var crossRefSheetState: CrossRefSheetState?
+    @Binding var crossRefAllItems: [CrossRefTappableItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("v. \(data.verse)")
+                .font(.system(size: CGFloat(fontSize - 2), weight: .semibold))
+                .foregroundColor(.secondary)
+
+            CrossRefLinkedText(
+                crossRefs: data.refs,
+                translation: translation,
+                fontSize: fontSize,
+                onNavigateToVerse: onNavigateToVerse,
+                baseOffset: data.baseOffset,
+                sharedSheetState: $crossRefSheetState,
+                sharedAllItems: $crossRefAllItems,
+                totalCount: data.totalCount
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - TSK Verse Cell Data
+
+/// Data for a single verse's TSK content
+struct TSKVerseData {
+    let verseId: Int
+    let verse: Int
+    let baseOffset: Int
+    let totalCount: Int
+}
+
+/// Cell view for displaying a verse's TSK topics
+struct TSKVerseCell: View {
+    let data: TSKVerseData
+    let translation: Translation
+    let fontSize: Int
+    let onNavigateToVerse: ((Int) -> Void)?
+    @Binding var tskSheetState: TSKSheetState?
+    @Binding var tskAllItems: [TSKTappableItem]
+
+    var body: some View {
+        TSKVerseSection(
+            verseId: data.verseId,
+            translation: translation,
+            fontSize: fontSize,
+            onNavigateToVerse: onNavigateToVerse,
+            baseOffset: data.baseOffset,
+            sharedSheetState: $tskSheetState,
+            sharedAllItems: $tskAllItems,
+            totalCount: data.totalCount
+        )
+    }
+}
+
+// MARK: - Commentary Cell Data
+
+/// Data for a single commentary unit
+struct CommentaryUnitData {
+    let index: Int
+    let verse: Int
+    let unit: CommentaryUnit
+    let abbreviations: [CommentaryAbbreviation]?
+}
+
+/// Cell view for displaying a commentary unit
+struct CommentaryUnitCell: View {
+    let data: CommentaryUnitData
+    let fontSize: Int
+    let onScriptureTap: ((Int, Int?) -> Void)?
+    let onStrongsTap: ((String) -> Void)?
+    let onFootnoteTap: ((String, CommentaryFootnote) -> Void)?
+
+    var body: some View {
+        CommentaryUnitView(
+            unit: data.unit,
+            abbreviations: data.abbreviations,
+            style: CommentaryRenderer.Style(
+                bodyFont: .system(size: CGFloat(fontSize)),
+                uiBodyFont: .systemFont(ofSize: CGFloat(fontSize))
+            ),
+            onScriptureTap: onScriptureTap,
+            onStrongsTap: onStrongsTap,
+            onFootnoteTap: onFootnoteTap
+        )
+    }
+}
+
+// MARK: - Notes Cell Data
+
+/// Data for a single note section
+struct NoteSectionData {
+    let verse: Int
+    let section: NoteSection
+    let sectionIndex: Int
+}
 
 enum ToolPanelMode: String, CaseIterable {
     case notes = "Notes"
     case crossRefs = "Cross References"
     case tske = "Treasury of Scripture Knowledge (Enhanced)"
-}
-
-// Non-reactive position storage to avoid triggering re-renders during scroll
-private class ToolPanelPositionTracker {
-    var positions: [Int: CGFloat] = [:]
-}
-
-// Lightweight scroll debouncer that avoids Task creation overhead
-private class ToolPanelScrollDebouncer {
-    private var workItem: DispatchWorkItem?
-
-    func debounce(delay: TimeInterval, action: @escaping () -> Void) {
-        workItem?.cancel()
-        let item = DispatchWorkItem(block: action)
-        workItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
-    }
-
-    func cancel() {
-        workItem?.cancel()
-    }
+    case commentary = "Commentary"
 }
 
 struct ToolPanelView: View {
     let book: Int
     let chapter: Int
     let currentVerse: Int
-    @Binding var scrollToVerse: Int?
     @ObservedRealmObject var user: User
     var onNavigateToVerse: ((Int) -> Void)?
-    var onVisibleVerseChanged: ((Int) -> Void)?
+
+    // Direct coordinator reference for scroll sync
+    private let scrollCoordinator = ScrollSyncCoordinator.shared
 
     @AppStorage("toolPanelMode") private var panelMode: ToolPanelMode = .crossRefs
+    @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     @AppStorage("toolPanelScrollLinked") private var isScrollLinked: Bool = true
     @AppStorage("bottomToolbarMode") private var bottomToolbarMode: BottomToolbarMode = .navigation
-    private let scrollDebouncer = ToolPanelScrollDebouncer()
+
+    /// Current scroll position ID for each content type (verse number or index)
+    @State private var scrollPosition: Int? = nil
+    /// Last verse we reported to prevent duplicate callbacks
     @State private var lastReportedVerse: Int = 0
-    private let positionTracker = ToolPanelPositionTracker()
-    @State private var isProgrammaticScroll: Bool = false
     @State private var note: Note?
     @State private var sections: [NoteSection] = []
     @State private var isLoading: Bool = true
@@ -78,6 +600,7 @@ struct ToolPanelView: View {
     // Conflict state
     @State private var showingConflictResolution: Bool = false
     @State private var currentConflict: NoteConflict?
+    @State private var isProgrammaticScroll: Bool = false
 
     // Keyboard state (to disable scroll-linking while editing)
     @State private var isKeyboardVisible: Bool = false
@@ -85,18 +608,52 @@ struct ToolPanelView: View {
     // UI state
     @State private var isMaximized: Bool = false
     @State private var showingOptionsMenu: Bool = false
-    @AppStorage("notesFontSize") private var notesFontSize: Int = 16
-    @State private var animateToolPaneScroll: Bool = true
+    @AppStorage("toolFontSize") private var toolFontSize: Int = 16
 
     // Sync status
-    @State private var syncStatus: ICloudNoteStorage.SyncStatus = .synced
+    @State private var syncStatus: ICloudModuleStorage.SyncStatus = .synced
     @State private var syncCheckTask: Task<Void, Never>?
 
-    private let storage = ICloudNoteStorage.shared
-    private let lockRefreshInterval: UInt64 = 60_000_000_000 // 60 seconds in nanoseconds
+    // TSKe cross-segment sheet navigation
+    @State private var tskSheetState: TSKSheetState? = nil
+    @State private var tskAllItems: [TSKTappableItem] = []
+
+    // Cross References sheet navigation
+    @State private var crossRefSheetState: CrossRefSheetState? = nil
+    @State private var crossRefAllItems: [CrossRefTappableItem] = []
+
+    // UIKit scroll target (verse to scroll to)
+    @State private var scrollToVerseTarget: Int? = nil
+
+    // Module storage
+    private let moduleDatabase = ModuleDatabase.shared
+    private let moduleSyncManager = ModuleSyncManager.shared
+    private let moduleStorage = ICloudModuleStorage.shared
+    @State private var notesModuleId: String = "bible-notes"
+
+    // Commentary state
+    @State private var commentarySeries: [String] = []
+    @AppStorage("selectedCommentarySeries") private var selectedCommentarySeries: String = ""
+    @State private var commentaryStrongsKey: String? = nil
+    @State private var commentaryScriptureRef: CommentaryScriptureSheetItem? = nil
+    @State private var commentaryFootnote: CommentaryFootnote? = nil
+
+    // Commentary Data State
+    @State private var commentaryUnits: [CommentaryUnit] = []
+    @State private var commentaryBook: CommentaryBook? = nil
+    @State private var commentarySeriesHasCoverage: Bool = false
+    @State private var isCommentaryLoading: Bool = false
 
     var bookName: String {
         RealmManager.shared.realm.objects(Book.self).filter("id == \(book)").first?.name ?? "Unknown"
+    }
+
+    /// Display name for current panel mode - shows series name for commentary
+    private var currentPanelModeDisplayName: String {
+        if panelMode == .commentary {
+            return selectedCommentarySeries.isEmpty ? "Commentary" : selectedCommentarySeries
+        }
+        return panelMode.rawValue
     }
 
     var maxVerseInChapter: Int {
@@ -109,31 +666,50 @@ struct ToolPanelView: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                if user.notesEnabled {
-                    Menu {
-                        Picker("Mode", selection: $panelMode) {
-                            ForEach(ToolPanelMode.allCases, id: \.self) { mode in
-                                Text(mode.rawValue).tag(mode)
+                Menu {
+                    // Fixed modes (excluding commentary - those are shown individually by module name)
+                    ForEach([ToolPanelMode.notes, .crossRefs, .tske], id: \.self) { mode in
+                        Button {
+                            panelMode = mode
+                        } label: {
+                            if panelMode == mode {
+                                Label(mode.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(mode.rawValue)
                             }
                         }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(panelMode.rawValue)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Image(systemName: "chevron.up.chevron.down")
-                                .imageScale(.small)
+                    }
+
+                    // Commentary series shown by series name
+                    if !commentarySeries.isEmpty {
+                        Divider()
+                        ForEach(commentarySeries, id: \.self) { series in
+                            Button {
+                                selectedCommentarySeries = series
+                                panelMode = .commentary
+                            } label: {
+                                if panelMode == .commentary && selectedCommentarySeries == series {
+                                    Label(series, systemImage: "checkmark")
+                                } else {
+                                    Text(series)
+                                }
+                            }
                         }
                     }
-                    .modifier(ConditionalGlassButtonStyle())
-                } else {
-                    Text("Cross References")
-                        .modifier(ConditionalGlassButtonStyle())
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(currentPanelModeDisplayName)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .imageScale(.small)
+                    }
                 }
+                .modifier(ConditionalGlassButtonStyle())
 
                 Spacer()
 
-                if user.notesEnabled && panelMode == .notes {
+                if panelMode == .notes {
                     notesStatusIndicator
                 }
 
@@ -154,10 +730,12 @@ struct ToolPanelView: View {
             .padding(.top, 2)
             .padding(.bottom, 6)
 
-            if user.notesEnabled && panelMode == .notes {
+            if panelMode == .notes {
                 notesContent
             } else if panelMode == .tske {
                 tskeContent
+            } else if panelMode == .commentary {
+                commentaryContent
             } else {
                 crossRefsContent
             }
@@ -216,29 +794,27 @@ struct ToolPanelView: View {
             }
         }
         .onChange(of: book) { _, _ in
-            positionTracker.positions = [:]
             lastReportedVerse = 0
-            animateToolPaneScroll = false  // Don't animate on chapter change
+            scrollPosition = nil
             Task {
                 await releaseLockIfNeeded()
                 await loadNote()
             }
             // Scroll to current verse after content loads
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                scrollToVerse = currentVerse
+                scrollPosition = currentVerse
             }
         }
         .onChange(of: chapter) { _, _ in
-            positionTracker.positions = [:]
             lastReportedVerse = 0
-            animateToolPaneScroll = false  // Don't animate on chapter change
+            scrollPosition = nil
             Task {
                 await releaseLockIfNeeded()
                 await loadNote()
             }
             // Scroll to current verse after content loads
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                scrollToVerse = currentVerse
+                scrollPosition = currentVerse
             }
         }
         .onDisappear {
@@ -267,14 +843,17 @@ struct ToolPanelView: View {
         .onAppear {
             isReadOnly = true // Default to read-only when panel opens
         }
+        .task {
+            // Load commentary series early to determine if commentary option should show in picker
+            await loadCommentarySeriesOnly()
+        }
         .onChange(of: panelMode) { _, _ in
-            // Clear position tracking when switching modes to prevent stale data
-            positionTracker.positions = [:]
+            // Reset scroll state when switching modes
             lastReportedVerse = 0
-            // Suppress scroll detection and scroll tool pane to match Bible pane's current verse
-            isProgrammaticScroll = true
+            scrollPosition = nil
+            // Scroll tool pane to match Bible pane's current verse
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                scrollToVerse = currentVerse
+                scrollPosition = currentVerse
             }
         }
     }
@@ -282,7 +861,7 @@ struct ToolPanelView: View {
     private var optionsMenuContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Notes mode options
-            if user.notesEnabled && panelMode == .notes {
+            if panelMode == .notes {
                 VStack(alignment: .leading, spacing: 0) {
                     Button {
                         isReadOnly.toggle()
@@ -305,7 +884,7 @@ struct ToolPanelView: View {
                         showingOptionsMenu = false
                         isMaximized = true
                     } label: {
-                        Label("Maximize", systemImage: "arrow.up.left.and.arrow.down.right")
+                        Label("Maximize", systemImage: "arrow.down.left.and.arrow.up.right")
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
                     }
@@ -338,13 +917,10 @@ struct ToolPanelView: View {
             // Hide
             Button {
                 showingOptionsMenu = false
-                if user.notesEnabled && panelMode == .notes {
+                if panelMode == .notes {
                     isReadOnly = true
                 }
-                try? RealmManager.shared.realm.write {
-                    guard let thawedUser = user.thaw() else { return }
-                    thawedUser.notesPanelVisible = false
-                }
+                notesPanelVisible = false
             } label: {
                 Label("Hide Tools", systemImage: "rectangle.portrait")
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -359,8 +935,8 @@ struct ToolPanelView: View {
             // Font size controls - compact row
             HStack(spacing: 0) {
                 Button {
-                    if notesFontSize > 12 {
-                        notesFontSize -= 2
+                    if toolFontSize > 12 {
+                        toolFontSize -= 2
                     }
                 } label: {
                     Image(systemName: "textformat.size.smaller")
@@ -369,14 +945,14 @@ struct ToolPanelView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(notesFontSize <= 12)
+                .disabled(toolFontSize <= 12)
 
                 Divider()
                     .frame(height: 20)
 
                 Button {
-                    if notesFontSize < 24 {
-                        notesFontSize += 2
+                    if toolFontSize < 24 {
+                        toolFontSize += 2
                     }
                 } label: {
                     Image(systemName: "textformat.size.larger")
@@ -385,7 +961,7 @@ struct ToolPanelView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(notesFontSize >= 24)
+                .disabled(toolFontSize >= 24)
             }
             .background(Color(UIColor.secondarySystemGroupedBackground))
             .cornerRadius(14)
@@ -582,8 +1158,6 @@ struct ToolPanelView: View {
             Spacer()
         } else {
             let gaps = verseGaps()
-            // Build sorted verse list from sections for scroll detection
-            let sortedNoteVerses = sections.compactMap { $0.verseStart }.sorted()
 
             ScrollViewReader { proxy in
                 ScrollView {
@@ -605,7 +1179,7 @@ struct ToolPanelView: View {
                             NoteSectionView(
                                 section: $sections[index],
                                 isReadOnly: isReadOnly,
-                                fontSize: notesFontSize,
+                                fontSize: toolFontSize,
                                 translation: user.readerTranslation!,
                                 onContentChange: { scheduleSave() },
                                 onNavigateToVerse: { verse in
@@ -628,28 +1202,13 @@ struct ToolPanelView: View {
                                     startEditingSection(section, at: index)
                                 }
                             )
-                            .id(sections[index].id)
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear
-                                        .onAppear {
-                                            if let verseStart = section.verseStart {
-                                                positionTracker.positions[verseStart] = geo.frame(in: .named("notesScroll")).origin.y
-                                            }
-                                        }
-                                        .onChange(of: geo.frame(in: .named("notesScroll")).origin.y) { _, newY in
-                                            if let verseStart = section.verseStart {
-                                                positionTracker.positions[verseStart] = newY
-                                            }
-                                        }
-                                }
-                            )
+                            .id(section.verseStart ?? -index)
                         }
 
                         // Show "No verse notes" placeholder in read-only mode when no verse sections exist
                         if isReadOnly && !sections.contains(where: { !$0.isGeneral }) {
                             Text("No verse notes")
-                                .font(.system(size: CGFloat(notesFontSize)))
+                                .font(.system(size: CGFloat(toolFontSize)))
                                 .foregroundStyle(.tertiary)
                         }
 
@@ -678,59 +1237,30 @@ struct ToolPanelView: View {
                         }
                     }
                     .padding()
+                    .scrollTargetLayout()
                 }
-                .coordinateSpace(name: "notesScroll")
-                .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.contentOffset.y
-                } action: { [self] _, _ in
-                    // Don't scroll-link while keyboard is visible or if disabled
-                    guard isScrollLinked && !isProgrammaticScroll && !isKeyboardVisible else { return }
-
-                    scrollDebouncer.debounce(delay: 0.5) { [self] in
-                        // Double-check flag inside callback (may have changed during debounce)
-                        guard !isProgrammaticScroll else { return }
-
-                        var foundVerse: Int? = nil
-                        let positions = positionTracker.positions
-                        for verse in sortedNoteVerses {
-                            if let yPos = positions[verse] {
-                                if yPos <= 50 {
-                                    foundVerse = verse
-                                }
-                            }
-                        }
-
-                        if let verse = foundVerse, verse != lastReportedVerse {
-                            lastReportedVerse = verse
-                            onVisibleVerseChanged?(verse)
-                        }
-                    }
-                }
+                .scrollPosition(id: $scrollPosition, anchor: .top)
                 .scrollDismissesKeyboard(.never)
-                .onChange(of: scrollToVerse) { _, newVerse in
-                    // Don't scroll-link while keyboard is visible (user is editing)
-                    guard !isKeyboardVisible else {
-                        scrollToVerse = nil
-                        return
+                .onChange(of: currentVerse) { _, newVerse in
+                    guard isScrollLinked && !isKeyboardVisible else { return }
+                    // Skip if tool panel is the active scroller (prevents feedback loop)
+                    if scrollCoordinator.activeScroller == .toolPanel { return }
+
+                    isProgrammaticScroll = true
+
+                    // Use proxy.scrollTo for reliable programmatic scrolling
+                    if findSectionId(forVerse: newVerse) != nil {
+                        proxy.scrollTo(newVerse, anchor: .top)
                     }
-                    if let verse = newVerse {
-                        isProgrammaticScroll = true
-                        // Try exact verse first
-                        if let sectionId = findSectionId(forVerse: verse) {
-                            if animateToolPaneScroll {
-                                withAnimation {
-                                    proxy.scrollTo(sectionId, anchor: .top)
-                                }
-                            } else {
-                                proxy.scrollTo(sectionId, anchor: .top)
-                            }
-                        }
-                        scrollToVerse = nil
-                        animateToolPaneScroll = true  // Reset for future scrolls
-                        // Reset programmatic scroll flag after animation + debounce time
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            isProgrammaticScroll = false
-                        }
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        isProgrammaticScroll = false
+                    }
+                }
+                .onAppear {
+                    // Scroll to current verse when view appears
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        proxy.scrollTo(currentVerse, anchor: .top)
                     }
                 }
             }
@@ -771,123 +1301,172 @@ struct ToolPanelView: View {
         }
         let sortedVerses = groupedRefs.keys.sorted()
 
-        ScrollViewReader { proxy in
+        // Compute offsets and total count for cross-segment navigation
+        let verseOffsets: [Int: Int] = {
+            var offsets: [Int: Int] = [:]
+            var runningOffset = 0
+            for verse in sortedVerses {
+                offsets[verse] = runningOffset
+                runningOffset += groupedRefs[verse]?.count ?? 0
+            }
+            return offsets
+        }()
+        let totalCrossRefCount = allCrossRefs.count
+
+        // Build items for UIKit list
+        let items: [(verse: Int, data: CrossRefVerseData)] = sortedVerses.compactMap { verse in
+            guard let refs = groupedRefs[verse] else { return nil }
+            return (verse: verse, data: CrossRefVerseData(
+                verse: verse,
+                refs: refs.sorted { $0.r < $1.r },
+                baseOffset: verseOffsets[verse] ?? 0,
+                totalCount: totalCrossRefCount
+            ))
+        }
+
+        Group {
+            if sortedVerses.isEmpty {
+                VStack {
+                    Spacer()
+                    Text("No cross references for this chapter")
+                        .font(.system(size: CGFloat(toolFontSize)))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+            } else {
+                UIKitVerseList(
+                    items: items,
+                    cellContent: { data in
+                        CrossRefVerseCell(
+                            data: data,
+                            translation: user.readerTranslation!,
+                            fontSize: toolFontSize,
+                            onNavigateToVerse: onNavigateToVerse,
+                            crossRefSheetState: $crossRefSheetState,
+                            crossRefAllItems: $crossRefAllItems
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    },
+                    listId: "crossRef_\(book)_\(chapter)_\(toolFontSize)"
+                )
+            }
+        }
+        .onChange(of: chapter) { _, _ in
+            crossRefSheetState = nil
+            crossRefAllItems = []
+        }
+        .onChange(of: book) { _, _ in
+            crossRefSheetState = nil
+            crossRefAllItems = []
+        }
+        .sheet(item: $crossRefSheetState) { state in
+            crossRefSheetContent(state: state, translation: user.readerTranslation!)
+        }
+    }
+
+    @ViewBuilder
+    private func crossRefSheetContent(state: CrossRefSheetState, translation: Translation) -> some View {
+        let item = state.currentItem
+        NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    if sortedVerses.isEmpty {
-                        Text("No cross references for this chapter")
-                            .font(.system(size: CGFloat(notesFontSize)))
-                            .foregroundStyle(.tertiary)
-                            .padding()
-                    } else {
-                        ForEach(sortedVerses, id: \.self) { verse in
-                            if let refs = groupedRefs[verse] {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    // Verse header
-                                    Text("Verse \(verse)")
-                                        .font(.headline)
-
-                                    // Cross references as comma-separated buttons
-                                    CrossRefFlowView(
-                                        crossRefs: refs.sorted { $0.r < $1.r },
-                                        translation: user.readerTranslation!,
-                                        fontSize: notesFontSize,
-                                        onNavigateToVerse: onNavigateToVerse
-                                    )
-                                }
-                                .id("crossref_v\(verse)")
-                                .background(
-                                    GeometryReader { geo in
-                                        Color.clear
-                                            .onAppear {
-                                                positionTracker.positions[verse] = geo.frame(in: .named("crossRefScroll")).origin.y
-                                            }
-                                            .onChange(of: geo.frame(in: .named("crossRefScroll")).origin.y) { _, newY in
-                                                positionTracker.positions[verse] = newY
-                                            }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
+                CrossRefVerseContent(
+                    title: item.displayText,
+                    verseId: item.sv,
+                    endVerseId: item.ev,
+                    translation: translation
+                )
                 .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .coordinateSpace(name: "crossRefScroll")
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { [self] _, _ in
-                guard isScrollLinked && !isProgrammaticScroll else { return }
-
-                scrollDebouncer.debounce(delay: 0.5) { [self] in
-                    // Double-check flag inside callback (may have changed during debounce)
-                    guard !isProgrammaticScroll else { return }
-
-                    var foundVerse: Int? = nil
-                    let positions = positionTracker.positions
-                    for verse in sortedVerses {
-                        if let yPos = positions[verse] {
-                            if yPos <= 50 {
-                                foundVerse = verse
+            .id("\(item.sv)-\(item.ev ?? 0)")
+            .navigationTitle(item.displayText)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        crossRefSheetState = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if onNavigateToVerse != nil {
+                        Button {
+                            crossRefSheetState = nil
+                            onNavigateToVerse?(item.sv)
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                        }
+                    }
+                }
+            }
+            .toolbar {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if state.allItems.count > 1 {
+                        Button {
+                            if let prev = state.withPrev() {
+                                crossRefSheetState = prev
                             }
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
                         }
-                    }
+                        .buttonStyle(.plain)
+                        .disabled(!state.canNavigatePrev)
 
-                    if let verse = foundVerse, verse != lastReportedVerse {
-                        lastReportedVerse = verse
-                        onVisibleVerseChanged?(verse)
-                    }
-                }
-            }
-            .onChange(of: scrollToVerse) { _, newVerse in
-                // Don't scroll-link while keyboard is visible
-                guard !isKeyboardVisible else {
-                    scrollToVerse = nil
-                    return
-                }
-                if let verse = newVerse, groupedRefs[verse] != nil {
-                    isProgrammaticScroll = true
-                    if animateToolPaneScroll {
-                        withAnimation {
-                            proxy.scrollTo("crossref_v\(verse)", anchor: .top)
+                        Spacer()
+
+                        Text("\(state.currentIndex + 1) of \(state.displayCount)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .padding(.horizontal, 8)
+
+                        Spacer()
+
+                        Button {
+                            if let next = state.withNext() {
+                                crossRefSheetState = next
+                            }
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
                         }
-                    } else {
-                        proxy.scrollTo("crossref_v\(verse)", anchor: .top)
-                    }
-                    scrollToVerse = nil
-                    animateToolPaneScroll = true  // Reset for future scrolls
-                    // Reset programmatic scroll flag after animation + debounce time
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        isProgrammaticScroll = false
-                    }
-                }
-            }
-            .onChange(of: currentVerse) { _, newVerse in
-                // Auto-scroll when current verse changes (from Bible panel scroll)
-                guard !isKeyboardVisible else { return }
-                guard isScrollLinked else { return }
-                guard !isProgrammaticScroll else { return }  // Prevent feedback loop
-                if groupedRefs[newVerse] != nil {
-                    isProgrammaticScroll = true
-                    if animateToolPaneScroll {
-                        withAnimation {
-                            proxy.scrollTo("crossref_v\(newVerse)", anchor: .top)
-                        }
-                    } else {
-                        proxy.scrollTo("crossref_v\(newVerse)", anchor: .top)
-                        animateToolPaneScroll = true  // Reset for future scrolls
-                    }
-                    // Reset programmatic scroll flag after animation + debounce time
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        isProgrammaticScroll = false
+                        .buttonStyle(.plain)
+                        .disabled(!state.canNavigateNext)
                     }
                 }
             }
         }
+        .presentationDetents([.fraction(0.325), .medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
     }
 
     // MARK: - TSKe Content
+
+    /// Compute ref counts for all TSKe content in the chapter (for cross-segment swipe navigation)
+    private func computeTskRefData(tskChapter: TSKChapter?, allTskVerses: Results<TSKVerse>) -> (totalCount: Int, chapterOverviewCount: Int, verseOffsets: [Int: Int]) {
+        var totalCount = 0
+        var verseOffsets: [Int: Int] = [:]
+
+        // Chapter overview refs
+        let chapterOverviewCount = tskChapter.map { countRefsInSegmentsJson($0.segmentsJson) } ?? 0
+        totalCount += chapterOverviewCount
+
+        // Verse refs
+        for tskVerse in allTskVerses {
+            verseOffsets[tskVerse.id] = totalCount
+            // Count refs in all topics for this verse
+            for topic in tskVerse.topics {
+                totalCount += countRefsInSegmentsJson(topic.segmentsJson)
+            }
+        }
+
+        return (totalCount, chapterOverviewCount, verseOffsets)
+    }
 
     @ViewBuilder
     private var tskeContent: some View {
@@ -902,161 +1481,411 @@ struct ToolPanelView: View {
             .filter("id >= \(chapterStart) AND id <= \(chapterEnd)")
             .sorted(byKeyPath: "id", ascending: true)
 
-        // Extract verse numbers for scroll tracking
-        let sortedVerses = allTskVerses.map { $0.id % 1000 }
+        // Compute ref counts and offsets for cross-segment swipe navigation
+        let refData = computeTskRefData(tskChapter: tskChapter, allTskVerses: allTskVerses)
 
-        ScrollViewReader { proxy in
+        // Build items for UIKit list
+        let items: [(verse: Int, data: TSKVerseData)] = Array(allTskVerses).map { tskVerse in
+            let verseNum = tskVerse.id % 1000
+            let verseOffset = refData.verseOffsets[tskVerse.id] ?? 0
+            return (verse: verseNum, data: TSKVerseData(
+                verseId: tskVerse.id,
+                verse: verseNum,
+                baseOffset: verseOffset,
+                totalCount: refData.totalCount
+            ))
+        }
+
+        let hasHeaderContent = (chapter == 1 && tskBook?.t.isEmpty == false) ||
+                               (tskChapter?.segmentsJson.isEmpty == false)
+
+        Group {
+            if allTskVerses.isEmpty && tskBook == nil && tskChapter == nil {
+                VStack {
+                    Spacer()
+                    Text("No TSKe data for this chapter")
+                        .font(.system(size: CGFloat(toolFontSize)))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+            } else {
+                UIKitVerseList(
+                    items: items,
+                    cellContent: { data in
+                        TSKVerseCell(
+                            data: data,
+                            translation: user.readerTranslation!,
+                            fontSize: toolFontSize,
+                            onNavigateToVerse: onNavigateToVerse,
+                            tskSheetState: $tskSheetState,
+                            tskAllItems: $tskAllItems
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    },
+                    listId: "tske_\(book)_\(chapter)_\(toolFontSize)"
+                )
+            }
+        }
+        .onChange(of: chapter) { _, _ in
+            tskSheetState = nil
+            tskAllItems = []
+        }
+        .onChange(of: book) { _, _ in
+            tskSheetState = nil
+            tskAllItems = []
+        }
+        .sheet(item: $tskSheetState) { state in
+            tskSheetContent(state: state, translation: user.readerTranslation!)
+        }
+    }
+
+    @ViewBuilder
+    private func tskSheetContent(state: TSKSheetState, translation: Translation) -> some View {
+        let item = state.currentItem
+        NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    // Book introduction (only for chapter 1)
-                    if chapter == 1, let bookIntro = tskBook?.t, !bookIntro.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Book Introduction")
-                                .font(.headline)
-                                .foregroundStyle(.secondary)
-                            Text(bookIntro)
-                                .font(.system(size: CGFloat(notesFontSize)))
-                        }
-                        .padding(.bottom, 8)
-
-                        Divider()
-                    }
-
-                    // Chapter overview (with parsed segments)
-                    if let chapter = tskChapter, !chapter.segmentsJson.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Chapter Overview")
-                                .font(.headline)
-                                .foregroundStyle(.secondary)
-                            TSKSegmentsView(
-                                segmentsJson: chapter.segmentsJson,
-                                translation: user.readerTranslation!,
-                                fontSize: notesFontSize,
-                                onNavigateToVerse: onNavigateToVerse
-                            )
-                        }
-                        .padding(.bottom, 8)
-
-                        if !allTskVerses.isEmpty {
-                            Divider()
-                        }
-                    }
-
-                    // Verse topics - using isolated TSKVerseSection for better performance
-                    if allTskVerses.isEmpty && tskBook == nil && tskChapter == nil {
-                        Text("No TSKe data for this chapter")
-                            .font(.system(size: CGFloat(notesFontSize)))
-                            .foregroundStyle(.tertiary)
-                            .padding()
-                    } else {
-                        ForEach(Array(allTskVerses), id: \.id) { tskVerse in
-                            let verseNum = tskVerse.id % 1000
-                            TSKVerseSection(
-                                verseId: tskVerse.id,
-                                translation: user.readerTranslation!,
-                                fontSize: notesFontSize,
-                                onNavigateToVerse: onNavigateToVerse
-                            )
-                            .id("tske_\(tskVerse.id)")  // Use full verseId to force refresh on chapter change
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear
-                                        .onAppear {
-                                            positionTracker.positions[verseNum] = geo.frame(in: .named("tskeScroll")).origin.y
-                                        }
-                                        .onChange(of: geo.frame(in: .named("tskeScroll")).origin.y) { _, newY in
-                                            positionTracker.positions[verseNum] = newY
-                                        }
-                                }
-                            )
-                        }
-                    }
-                }
+                VerseSheetContent(
+                    title: item.displayText,
+                    verseId: item.sv,
+                    endVerseId: item.ev,
+                    translation: translation
+                )
                 .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .id("tskeScroll_\(book)_\(chapter)")  // Force full refresh when book/chapter changes
-            .coordinateSpace(name: "tskeScroll")
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { [self] _, _ in
-                guard isScrollLinked && !isProgrammaticScroll else { return }
-
-                scrollDebouncer.debounce(delay: 0.5) { [self] in
-                    // Double-check flag inside callback (may have changed during debounce)
-                    guard !isProgrammaticScroll else { return }
-
-                    var foundVerse: Int? = nil
-                    let positions = positionTracker.positions
-                    for verse in sortedVerses {
-                        if let yPos = positions[verse] {
-                            if yPos <= 50 {
-                                foundVerse = verse
+            .id("\(item.sv)-\(item.ev ?? 0)")  // Force refresh when item changes
+            .navigationTitle(item.displayText)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        tskSheetState = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if onNavigateToVerse != nil {
+                        Button {
+                            tskSheetState = nil
+                            onNavigateToVerse?(item.sv)
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                        }
+                    }
+                }
+            }
+            .toolbar {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if state.allItems.count > 1 {
+                        Button {
+                            if let prev = state.withPrev() {
+                                tskSheetState = prev
                             }
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
                         }
-                    }
+                        .buttonStyle(.plain)
+                        .disabled(!state.canNavigatePrev)
 
-                    if let verse = foundVerse, verse != lastReportedVerse {
-                        lastReportedVerse = verse
-                        onVisibleVerseChanged?(verse)
-                    }
-                }
-            }
-            .onChange(of: scrollToVerse) { _, newVerse in
-                guard !isKeyboardVisible else {
-                    scrollToVerse = nil
-                    return
-                }
-                if let verse = newVerse {
-                    // Check if this verse has TSKe data
-                    let verseId = book * 1000000 + chapter * 1000 + verse
-                    let hasData = allTskVerses.contains { $0.id == verseId }
+                        Spacer()
 
-                    if hasData {
-                        isProgrammaticScroll = true
-                        if animateToolPaneScroll {
-                            withAnimation {
-                                proxy.scrollTo("tske_\(verseId)", anchor: .top)
+                        Text("\(state.currentIndex + 1) of \(state.displayCount)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .padding(.horizontal, 8)
+
+                        Spacer()
+
+                        Button {
+                            if let next = state.withNext() {
+                                tskSheetState = next
                             }
-                        } else {
-                            proxy.scrollTo("tske_\(verseId)", anchor: .top)
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
                         }
-                        scrollToVerse = nil
-                        animateToolPaneScroll = true
-                        // Reset programmatic scroll flag after animation + debounce time
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            isProgrammaticScroll = false
-                        }
-                    } else {
-                        scrollToVerse = nil
-                    }
-                }
-            }
-            .onChange(of: currentVerse) { _, newVerse in
-                guard !isKeyboardVisible else { return }
-                guard isScrollLinked else { return }
-                guard !isProgrammaticScroll else { return }  // Prevent feedback loop
-
-                let verseId = book * 1000000 + chapter * 1000 + newVerse
-                let hasData = allTskVerses.contains { $0.id == verseId }
-
-                if hasData {
-                    isProgrammaticScroll = true
-                    if animateToolPaneScroll {
-                        withAnimation {
-                            proxy.scrollTo("tske_\(verseId)", anchor: .top)
-                        }
-                    } else {
-                        proxy.scrollTo("tske_\(verseId)", anchor: .top)
-                        animateToolPaneScroll = true
-                    }
-                    // Reset programmatic scroll flag after animation + debounce time
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        isProgrammaticScroll = false
+                        .buttonStyle(.plain)
+                        .disabled(!state.canNavigateNext)
                     }
                 }
             }
         }
+        .presentationDetents([.fraction(0.325), .medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+    }
+
+    // MARK: - Commentary Content
+
+    @ViewBuilder
+    private var commentaryContent: some View {
+        VStack(spacing: 0) {
+            if selectedCommentarySeries.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "text.book.closed")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.tertiary)
+                    Text("Select a commentary series")
+                        .font(.system(size: CGFloat(toolFontSize)))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if isCommentaryLoading {
+                VStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !commentarySeriesHasCoverage {
+                VStack(spacing: 12) {
+                    Image(systemName: "book.closed")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.tertiary)
+                    Text("\(selectedCommentarySeries) does not include \(bookName)")
+                        .font(.system(size: CGFloat(toolFontSize)))
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if commentaryUnits.isEmpty {
+                VStack(spacing: 12) {
+                    Text("No commentary for this chapter")
+                        .font(.system(size: CGFloat(toolFontSize)))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                commentaryScrollView(units: commentaryUnits, commentaryBook: commentaryBook)
+                    .id("commentaryScroll_\(book)_\(chapter)")
+            }
+        }
+        .id("commentary_\(book)_\(chapter)_\(selectedCommentarySeries)")
+        .task(id: book) { await loadCommentaryContent() }
+        .task(id: chapter) { await loadCommentaryContent() }
+        .task(id: selectedCommentarySeries) { await loadCommentaryContent() }
+        .sheet(item: Binding(
+            get: { commentaryStrongsKey.map { CommentaryStrongsSheetItem(key: $0) } },
+            set: { commentaryStrongsKey = $0?.key }
+        )) { item in
+            LexiconSheetView(
+                word: "",
+                strongs: [item.key],
+                morphology: nil,
+                translation: user.readerTranslation,
+                onNavigateToVerse: { verseId in
+                    commentaryStrongsKey = nil
+                    onNavigateToVerse?(verseId)
+                }
+            )
+            .presentationDetents([.fraction(0.325), .medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
+        .sheet(item: $commentaryScriptureRef) { item in
+            commentaryScriptureSheetContent(item: item, translation: user.readerTranslation!)
+        }
+        .sheet(item: $commentaryFootnote) { footnote in
+            commentaryFootnoteSheetContent(footnote: footnote)
+        }
+    }
+
+    @ViewBuilder
+    private func commentaryScrollView(units: [CommentaryUnit], commentaryBook: CommentaryBook?) -> some View {
+        // Build items for UIKit list
+        let items: [(verse: Int, data: CommentaryUnitData)] = units.enumerated().map { index, unit in
+            (verse: unit.verse, data: CommentaryUnitData(
+                index: index,
+                verse: unit.verse,
+                unit: unit,
+                abbreviations: commentaryBook?.abbreviations
+            ))
+        }
+
+        UIKitVerseList(
+            items: items,
+            cellContent: { data in
+                CommentaryUnitCell(
+                    data: data,
+                    fontSize: toolFontSize,
+                    onScriptureTap: { sv, ev in
+                        commentaryScriptureRef = CommentaryScriptureSheetItem(verseId: sv, endVerseId: ev)
+                    },
+                    onStrongsTap: { strongsKey in
+                        commentaryStrongsKey = strongsKey
+                    },
+                    onFootnoteTap: { _, footnote in
+                        commentaryFootnote = footnote
+                    }
+                )
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            },
+            listId: "commentary_\(book)_\(chapter)_\(selectedCommentarySeries)_\(toolFontSize)"
+        )
+    }
+
+    private func loadCommentaryContent() async {
+        guard !selectedCommentarySeries.isEmpty else { return }
+
+        isCommentaryLoading = true
+        defer { isCommentaryLoading = false }
+
+        // Use a detached task to avoid blocking the main actor
+        // We capture values to avoid actor isolation issues if we were accessing self in detached task
+        let series = selectedCommentarySeries
+        let b = book
+        let c = chapter
+        let database = moduleDatabase
+
+        let (coverage, bookInfo, units) = await Task.detached(priority: .userInitiated) {
+            let coverage = (try? database.seriesHasCoverageForBook(seriesFull: series, bookNumber: b)) ?? false
+            let bookInfo = coverage ? (try? database.getCommentaryBookForSeries(seriesFull: series, bookNumber: b)) : nil
+            let units = coverage ? ((try? database.getCommentaryUnitsForChapterBySeries(seriesFull: series, book: b, chapter: c)) ?? []) : []
+            return (coverage, bookInfo, units)
+        }.value
+
+        // Update state on Main Actor
+        commentarySeriesHasCoverage = coverage
+        commentaryBook = bookInfo
+        commentaryUnits = units
+    }
+
+    /// Load just the commentary series list (for picker availability check)
+    private func loadCommentarySeriesOnly() async {
+        do {
+            commentarySeries = try moduleDatabase.getCommentarySeries()
+            if !commentarySeries.isEmpty && (selectedCommentarySeries.isEmpty || !commentarySeries.contains(selectedCommentarySeries)) {
+                selectedCommentarySeries = commentarySeries.first ?? ""
+            }
+        } catch {
+            print("Failed to load commentary series: \(error)")
+        }
+    }
+
+    /// Format verse ID to display string (e.g., 40001001 -> "Matt 1:1")
+    private func formatVerseReference(_ verseId: Int) -> String {
+        let bookId = verseId / 1000000
+        let chapter = (verseId % 1000000) / 1000
+        let verse = verseId % 1000
+
+        let realm = RealmManager.shared.realm
+        let bookName: String
+        if let book = realm.objects(Book.self).filter("id == %@", bookId).first {
+            bookName = book.name
+        } else {
+            bookName = "?"
+        }
+        return "\(bookName) \(chapter):\(verse)"
+    }
+
+    @ViewBuilder
+    private func commentaryScriptureSheetContent(item: CommentaryScriptureSheetItem, translation: Translation) -> some View {
+        let displayText = formatVerseRangeReference(item.verseId, endVerseId: item.endVerseId)
+        NavigationStack {
+            ScrollView {
+                VerseSheetContent(
+                    title: displayText,
+                    verseId: item.verseId,
+                    endVerseId: item.endVerseId,
+                    translation: translation
+                )
+                .padding()
+            }
+            .navigationTitle(displayText)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        commentaryScriptureRef = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if onNavigateToVerse != nil {
+                        Button {
+                            commentaryScriptureRef = nil
+                            onNavigateToVerse?(item.verseId)
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                        }
+                    }
+                }
+            }
+        }
+        .presentationDetents([.fraction(0.325), .medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+    }
+
+    /// Format verse range reference (e.g., "Matt 1:1-5" or "Matt 1:1")
+    private func formatVerseRangeReference(_ verseId: Int, endVerseId: Int?) -> String {
+        let bookId = verseId / 1000000
+        let chapter = (verseId % 1000000) / 1000
+        let verse = verseId % 1000
+
+        let realm = RealmManager.shared.realm
+        let bookName: String
+        if let book = realm.objects(Book.self).filter("id == %@", bookId).first {
+            bookName = book.name
+        } else {
+            bookName = "?"
+        }
+
+        if let ev = endVerseId {
+            let endVerse = ev % 1000
+            if endVerse != verse {
+                return "\(bookName) \(chapter):\(verse)-\(endVerse)"
+            }
+        }
+        return "\(bookName) \(chapter):\(verse)"
+    }
+
+    @ViewBuilder
+    private func commentaryFootnoteSheetContent(footnote: CommentaryFootnote) -> some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Render the footnote content with annotation support
+                    AnnotatedTextView(
+                        footnote.content,
+                        style: CommentaryRenderer.Style(
+                            bodyFont: .system(size: CGFloat(toolFontSize)),
+                            uiBodyFont: .systemFont(ofSize: CGFloat(toolFontSize))
+                        ),
+                        onScriptureTap: { sv, ev in
+                            commentaryFootnote = nil
+                            commentaryScriptureRef = CommentaryScriptureSheetItem(verseId: sv, endVerseId: ev)
+                        },
+                        onStrongsTap: { strongsKey in
+                            commentaryFootnote = nil
+                            commentaryStrongsKey = strongsKey
+                        }
+                    )
+                }
+                .padding()
+            }
+            .navigationTitle("Footnote \(footnote.id)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        commentaryFootnote = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+            }
+        }
+        .presentationDetents([.fraction(0.325), .medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
     }
 
     private var addVerseSheet: some View {
@@ -1177,27 +2006,24 @@ struct ToolPanelView: View {
         lockRefreshTask?.cancel()
 
         do {
-            // Check for conflicts first
-            let conflicts = try await storage.checkForConflicts()
-            if let conflict = conflicts.first(where: { $0.book == book && $0.chapter == chapter }) {
-                currentConflict = conflict
-                showingConflictResolution = true
-            }
+            // Ensure default notes module exists
+            try await moduleSyncManager.ensureDefaultNotesModule()
 
-            if let loadedNote = try await storage.readNote(book: book, chapter: chapter) {
-                note = loadedNote
-                sections = NoteParser.parseSections(from: loadedNote.content)
+            // Load notes from SQLite for this chapter
+            let entries = try moduleDatabase.getNotesForChapter(moduleId: notesModuleId, book: book, chapter: chapter)
 
-                // Try to acquire lock for editing
-                await tryAcquireLock()
-            } else {
-                // No note exists yet, create empty sections
-                note = Note(book: book, chapter: chapter)
+            // Convert NoteEntry records to NoteSection for UI
+            sections = convertEntriesToSections(entries)
+
+            // If no entries, start with empty general section
+            if sections.isEmpty {
                 sections = [.general(content: "")]
-                // New notes don't need locking until first save
             }
+
+            // Create a synthetic Note object for compatibility
+            note = Note(book: book, chapter: chapter)
         } catch {
-            print("Failed to load note: \(error)")
+            print("Failed to load notes: \(error)")
             note = Note(book: book, chapter: chapter)
             sections = [.general(content: "")]
         }
@@ -1208,23 +2034,81 @@ struct ToolPanelView: View {
         await checkSyncStatus()
     }
 
+    /// Convert NoteEntry records to NoteSection array for UI display
+    private func convertEntriesToSections(_ entries: [NoteEntry]) -> [NoteSection] {
+        var result: [NoteSection] = []
+
+        // Sort entries by verse number
+        let sorted = entries.sorted { $0.verse < $1.verse }
+
+        for entry in sorted {
+            if entry.verse == 0 {
+                // General notes (chapter-level)
+                result.insert(.general(content: entry.content), at: 0)
+            } else if let verseRefs = entry.verseRefs, let endVerse = verseRefs.first, endVerse != entry.verse {
+                // Verse range - endVerse stored in verseRefs
+                result.append(.verseRange(start: entry.verse, end: endVerse, content: entry.content))
+            } else {
+                // Single verse
+                result.append(.verse(entry.verse, content: entry.content))
+            }
+        }
+
+        return result
+    }
+
+    /// Convert NoteSection array back to NoteEntry records for storage
+    private func convertSectionsToEntries(_ sections: [NoteSection]) -> [NoteEntry] {
+        var entries: [NoteEntry] = []
+
+        for section in sections {
+            let verse: Int
+            let endVerse: Int?
+            let content = section.content
+
+            if section.isGeneral {
+                verse = 0
+                endVerse = nil
+            } else if let start = section.verseStart {
+                verse = start
+                if let end = section.verseEnd, end != start {
+                    endVerse = end
+                } else {
+                    endVerse = nil
+                }
+            } else {
+                verse = 0
+                endVerse = nil
+            }
+
+            let verseId = book * 1000000 + chapter * 1000 + verse
+
+            // Generate stable ID based on module + verse
+            let entryId = "\(notesModuleId):\(verseId)"
+
+            let entry = NoteEntry(
+                id: entryId,
+                moduleId: notesModuleId,
+                verseId: verseId,
+                title: section.displayTitle.isEmpty ? nil : section.displayTitle,
+                content: content,
+                verseRefs: endVerse.map { [$0] },
+                lastModified: Int(Date().timeIntervalSince1970)
+            )
+            entries.append(entry)
+        }
+
+        return entries
+    }
+
     private func checkSyncStatus() async {
-        syncStatus = await storage.getSyncStatus(book: book, chapter: chapter)
+        let fileName = "\(notesModuleId).json"
+        syncStatus = await moduleStorage.getSyncStatus(type: .notes, fileName: fileName)
     }
 
     private func tryAcquireLock() async {
-        do {
-            let result = try await storage.acquireLock(book: book, chapter: chapter)
-            switch result {
-            case .acquired, .alreadyLockedByMe:
-                startLockRefresh()
-            case .lockedByOther(let lockedBy, let lockedAt):
-                lockConflictInfo = (lockedBy, lockedAt)
-                showingLockConflict = true
-            }
-        } catch {
-            print("Failed to acquire lock: \(error)")
-        }
+        // Lock handling simplified for new module system
+        // The JSON file-based system handles conflicts at sync time
     }
 
     private func handleLockAction(_ action: LockAction) {
@@ -1234,42 +2118,24 @@ struct ToolPanelView: View {
             isReadOnly = true
         case .editAnyway:
             isReadOnly = false
-            startLockRefresh()
         case .cancel:
             break
         }
     }
 
     private func startLockRefresh() {
-        lockRefreshTask?.cancel()
-        lockRefreshTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: lockRefreshInterval)
-                guard !Task.isCancelled else { break }
-                try? await storage.refreshLock(book: book, chapter: chapter)
-            }
-        }
+        // No longer needed with new module system
     }
 
     private func releaseLockIfNeeded() async {
-        lockRefreshTask?.cancel()
-        if !isReadOnly {
-            try? await storage.releaseLock(book: book, chapter: chapter)
-        }
+        // No longer needed with new module system
     }
 
     private func resolveConflict(keepVersionId: String) async {
-        guard let conflict = currentConflict else { return }
-
-        do {
-            try await storage.resolveConflict(conflict, keepVersionId: keepVersionId)
-            showingConflictResolution = false
-            currentConflict = nil
-            // Reload the note after conflict resolution
-            await loadNote()
-        } catch {
-            print("Failed to resolve conflict: \(error)")
-        }
+        // Conflict resolution handled differently in new module system
+        showingConflictResolution = false
+        currentConflict = nil
+        await loadNote()
     }
 
     private func scheduleSave() {
@@ -1287,51 +2153,42 @@ struct ToolPanelView: View {
     }
 
     private func saveNote() async {
-        guard var currentNote = note else { return }
+        guard note != nil else { return }
         guard !isReadOnly else { return } // Don't save in read-only mode
 
         saveState = .saving
 
-        let content = NoteParser.serializeSections(sections)
-        currentNote.content = content
-        currentNote.modified = Date()
-
-        // Preserve lock info if we have it
-        if !isReadOnly {
-            currentNote.lockedBy = Note.deviceId
-            currentNote.lockedAt = Date()
-        }
-
         do {
-            let result = try await storage.writeNote(currentNote)
+            // Convert sections to NoteEntry records
+            let entries = convertSectionsToEntries(sections)
 
-            switch result {
-            case .success:
-                note = currentNote
-                saveState = .saved
+            // Delete existing entries for this chapter first
+            let existingEntries = try moduleDatabase.getNotesForChapter(moduleId: notesModuleId, book: book, chapter: chapter)
+            for entry in existingEntries {
+                try moduleDatabase.deleteNoteEntry(id: entry.id)
+            }
 
-                // Check sync status after save
-                await checkSyncStatus()
+            // Save new entries (skip empty ones)
+            for entry in entries where !entry.content.isEmpty {
+                try moduleDatabase.saveNoteEntry(entry)
+            }
 
-                // Clear "Saved" indicator after 2 seconds
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                if case .saved = saveState {
-                    saveState = .idle
-                }
+            // Export to iCloud
+            try await moduleSyncManager.exportModule(id: notesModuleId)
 
-            case .conflict(let conflict):
+            saveState = .saved
+
+            // Check sync status after save
+            await checkSyncStatus()
+
+            // Clear "Saved" indicator after 2 seconds
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if case .saved = saveState {
                 saveState = .idle
-                currentConflict = conflict
-                showingConflictResolution = true
-
-            case .lockedByOther(let lockedBy, let lockedAt):
-                saveState = .error("Locked by another device")
-                lockConflictInfo = (lockedBy, lockedAt)
-                showingLockConflict = true
             }
         } catch {
             saveState = .error("Save failed")
-            print("Failed to save note: \(error)")
+            print("Failed to save notes: \(error)")
         }
     }
 
@@ -1398,7 +2255,7 @@ struct ToolPanelView: View {
             resetAddVerseForm()
             // Delay scroll until after sheet dismissal animation completes
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                scrollToVerse = targetVerse
+                scrollPosition = targetVerse
             }
         }
     }
@@ -1523,7 +2380,7 @@ struct ToolPanelView: View {
             editingSection = nil
             resetEditVerseForm()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                scrollToVerse = targetVerse
+                scrollPosition = targetVerse
             }
         }
     }
@@ -1636,7 +2493,7 @@ struct NoteSectionView: View {
             if !section.displayTitle.isEmpty {
                 if section.isGeneral {
                     Text(section.displayTitle)
-                        .font(.headline)
+                        .font(.system(size: CGFloat(fontSize), weight: .bold))
                         .foregroundColor(.primary)
                 } else if let verseStart = section.verseStart {
                     HStack {
@@ -1644,7 +2501,7 @@ struct NoteSectionView: View {
                             onNavigateToVerse?(verseStart)
                         } label: {
                             Text(section.displayTitle)
-                                .font(.headline)
+                                .font(.system(size: CGFloat(fontSize), weight: .bold))
                                 .foregroundColor(.accentColor)
                         }
 
@@ -1703,6 +2560,11 @@ struct NoteSectionView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    /// Count the number of verse references in this section's content
+    var referenceCount: Int {
+        VerseReferenceParser.shared.parse(section.content).count
     }
 }
 
@@ -1899,7 +2761,7 @@ struct InteractiveNoteContentView: View {
     var body: some View {
         // Use a custom layout that wraps text and inline buttons
         WrappingHStack(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+            ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
                 if let reference = segment.reference {
                     VerseReferenceButton(
                         reference: reference,
@@ -1914,6 +2776,11 @@ struct InteractiveNoteContentView: View {
             }
         }
     }
+
+    /// Count the number of verse references in this content
+    var referenceCount: Int {
+        VerseReferenceParser.shared.parse(content).count
+    }
 }
 
 struct VerseReferenceButton: View {
@@ -1921,206 +2788,102 @@ struct VerseReferenceButton: View {
     let translation: Translation
     let fontSize: Int
     var onNavigateToVerse: ((Int) -> Void)?
-    @State private var showingPopover: Bool = false
-
-    private var verses: Results<Verse> {
-        if let endVerseId = reference.endVerseId {
-            return RealmManager.shared.realm.objects(Verse.self)
-                .filter("tr == \(translation.id) AND id >= \(reference.verseId) AND id <= \(endVerseId)")
-        } else {
-            return RealmManager.shared.realm.objects(Verse.self)
-                .filter("tr == \(translation.id) AND id == \(reference.verseId)")
-        }
-    }
-
-    private var inlineVerseText: AttributedString {
-        var result = AttributedString()
-        let versesArray = Array(verses)
-
-        for (index, verse) in versesArray.enumerated() {
-            var verseNum = AttributedString("\(verse.v)")
-            verseNum.font = .caption
-            verseNum.foregroundColor = .secondary
-            verseNum.baselineOffset = 4
-            result.append(verseNum)
-            result.append(AttributedString(" "))
-
-            // Strip Strong's annotations for plain display
-            var verseText = AttributedString(stripStrongsAnnotations(verse.t))
-            verseText.font = .body
-            result.append(verseText)
-
-            if index < versesArray.count - 1 {
-                result.append(AttributedString(" "))
-            }
-        }
-
-        return result
-    }
-
-    @State private var contentHeight: CGFloat = 200
-
-    private var navigationAction: (() -> Void)? {
-        guard let navigate = onNavigateToVerse else { return nil }
-        return {
-            showingPopover = false
-            navigate(reference.verseId)
-        }
-    }
+    @State private var showingSheet = false
 
     var body: some View {
         Button {
-            showingPopover = true
+            showingSheet = true
         } label: {
             Text(reference.displayText)
                 .font(.system(size: CGFloat(fontSize)))
                 .foregroundColor(.accentColor)
         }
-        .popover(isPresented: $showingPopover) {
-            VersePopoverContent(
-                title: reference.displayText,
-                verseText: inlineVerseText,
-                onNavigate: navigationAction,
-                contentHeight: $contentHeight
-            )
-        }
-    }
-}
-
-// MARK: - Cross Reference Flow View
-
-struct CrossRefFlowView: View {
-    let crossRefs: [CrossReference]
-    let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-
-    var body: some View {
-        FlowLayout(spacing: 0) {
-            ForEach(Array(crossRefs.enumerated()), id: \.offset) { index, crossRef in
-                HStack(spacing: 0) {
-                    CrossRefButton(crossRef: crossRef, translation: translation, fontSize: fontSize, onNavigateToVerse: onNavigateToVerse)
-                    if index < crossRefs.count - 1 {
-                        Text(", ")
-                            .font(.system(size: CGFloat(fontSize)))
-                            .foregroundStyle(.secondary)
+        .sheet(isPresented: $showingSheet) {
+            NavigationStack {
+                ScrollView {
+                    VerseSheetContent(
+                        title: reference.displayText,
+                        verseId: reference.verseId,
+                        endVerseId: reference.endVerseId,
+                        translation: translation
+                    )
+                    .padding()
+                }
+                .navigationTitle(reference.displayText)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
+                            showingSheet = false
+                        }
+                    }
+                    if onNavigateToVerse != nil {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button {
+                                showingSheet = false
+                                onNavigateToVerse?(reference.verseId)
+                            } label: {
+                                Image(systemName: "arrow.up.right")
+                            }
+                        }
                     }
                 }
+                .presentationDetents([.fraction(0.4), .medium, .large])
+                .presentationDragIndicator(.visible)
             }
-        }
-    }
-}
-
-struct CrossRefButton: View {
-    let crossRef: CrossReference
-    let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-    @State private var showingPopover: Bool = false
-
-    private var description: String {
-        let (startVerse, startChapter, startBook) = splitVerseId(crossRef.sv)
-        let startBookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(startBook)").first
-
-        if let ev = crossRef.ev {
-            let (endVerse, endChapter, endBook) = splitVerseId(ev)
-            if startBook == endBook && startChapter == endChapter {
-                return "\(startBookObj?.osisId ?? "") \(startChapter):\(startVerse)-\(endVerse)"
-            } else {
-                let endBookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(endBook)").first
-                return "\(startBookObj?.osisId ?? "") \(startChapter):\(startVerse) - \(endBookObj?.osisId ?? "") \(endChapter):\(endVerse)"
-            }
-        } else {
-            return "\(startBookObj?.osisId ?? "") \(startChapter):\(startVerse)"
-        }
-    }
-
-    private var verses: Results<Verse> {
-        if let ev = crossRef.ev {
-            return RealmManager.shared.realm.objects(Verse.self)
-                .filter("tr == \(translation.id) AND id >= \(crossRef.sv) AND id <= \(ev)")
-        } else {
-            return RealmManager.shared.realm.objects(Verse.self)
-                .filter("tr == \(translation.id) AND id == \(crossRef.sv)")
-        }
-    }
-
-    private var inlineVerseText: AttributedString {
-        var result = AttributedString()
-        let versesArray = Array(verses)
-
-        for (index, verse) in versesArray.enumerated() {
-            // Add verse number as superscript
-            var verseNum = AttributedString("\(verse.v)")
-            verseNum.font = .caption
-            verseNum.foregroundColor = .secondary
-            verseNum.baselineOffset = 4
-            result.append(verseNum)
-
-            // Add space after verse number
-            result.append(AttributedString(" "))
-
-            // Add verse text (strip Strong's annotations for plain display)
-            var verseText = AttributedString(stripStrongsAnnotations(verse.t))
-            verseText.font = .body
-            result.append(verseText)
-
-            // Add space between verses (but not after last)
-            if index < versesArray.count - 1 {
-                result.append(AttributedString(" "))
-            }
-        }
-
-        return result
-    }
-
-    @State private var contentHeight: CGFloat = 200
-
-    private var navigationAction: (() -> Void)? {
-        guard let navigate = onNavigateToVerse else { return nil }
-        return {
-            showingPopover = false
-            navigate(crossRef.sv)
-        }
-    }
-
-    var body: some View {
-        Button {
-            showingPopover = true
-        } label: {
-            Text(description)
-                .font(.system(size: CGFloat(fontSize)))
-                .foregroundColor(.accentColor)
-        }
-        .popover(isPresented: $showingPopover) {
-            VersePopoverContent(
-                title: description,
-                verseText: inlineVerseText,
-                onNavigate: navigationAction,
-                contentHeight: $contentHeight
-            )
         }
     }
 }
 
 // Simple flow layout for comma-separated items
+// Uses caching to avoid recalculating positions during height changes
 struct FlowLayout: Layout {
     var spacing: CGFloat = 4
+    var lineSpacing: CGFloat? = nil  // Vertical spacing between lines (defaults to spacing)
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let result = arrange(proposal: proposal, subviews: subviews)
-        return result.size
+    // Cache structure to store layout calculations
+    struct LayoutCache {
+        var lastWidth: CGFloat = -1
+        var lastSubviewCount: Int = -1
+        var cachedSize: CGSize = .zero
+        var cachedPositions: [CGPoint] = []
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = arrange(proposal: proposal, subviews: subviews)
-        for (index, position) in result.positions.enumerated() {
+    func makeCache(subviews: Subviews) -> LayoutCache {
+        LayoutCache()
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout LayoutCache) -> CGSize {
+        updateCacheIfNeeded(proposal: proposal, subviews: subviews, cache: &cache)
+        return cache.cachedSize
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout LayoutCache) {
+        updateCacheIfNeeded(proposal: proposal, subviews: subviews, cache: &cache)
+        for (index, position) in cache.cachedPositions.enumerated() {
             subviews[index].place(at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y), proposal: .unspecified)
         }
     }
 
+    private func updateCacheIfNeeded(proposal: ProposedViewSize, subviews: Subviews, cache: inout LayoutCache) {
+        let width = proposal.width ?? .infinity
+        let subviewCount = subviews.count
+
+        // Only recalculate if width or subview count changed
+        if cache.lastWidth == width && cache.lastSubviewCount == subviewCount {
+            return
+        }
+
+        let result = arrange(proposal: proposal, subviews: subviews)
+        cache.lastWidth = width
+        cache.lastSubviewCount = subviewCount
+        cache.cachedSize = result.size
+        cache.cachedPositions = result.positions
+    }
+
     private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
         let maxWidth = proposal.width ?? .infinity
+        let verticalSpacing = lineSpacing ?? spacing
         var positions: [CGPoint] = []
         var x: CGFloat = 0
         var y: CGFloat = 0
@@ -2131,7 +2894,7 @@ struct FlowLayout: Layout {
             let size = subview.sizeThatFits(.unspecified)
             if x + size.width > maxWidth && x > 0 {
                 x = 0
-                y += rowHeight + spacing
+                y += rowHeight + verticalSpacing
                 rowHeight = 0
             }
             positions.append(CGPoint(x: x, y: y))
@@ -2172,63 +2935,666 @@ private class BookOsisCache {
     }
 }
 
-/// Renders chapter overview segments (text + verse references) as flowing text
+/// Data for a single TSKe ref (used for cross-segment navigation)
+struct TSKRefItem {
+    let index: Int
+    let sourceVerseId: Int  // The verse section where this button is located
+    let sv: Int             // The referenced verse (target of cross-reference)
+    let ev: Int?
+    let displayText: String
+}
+
+/// Builds a flat array of all TSKe refs in a chapter (for cross-segment navigation)
+func buildTskRefArray(tskChapter: TSKChapter?, allTskVerses: Results<TSKVerse>) -> [TSKRefItem] {
+    var refs: [TSKRefItem] = []
+    var currentIndex = 0
+
+    // Chapter overview refs (sourceVerseId = 0 for chapter-level content)
+    if let chapter = tskChapter, !chapter.segmentsJson.isEmpty {
+        let chapterRefs = parseRefsFromSegmentsJson(chapter.segmentsJson)
+        for ref in chapterRefs {
+            refs.append(TSKRefItem(index: currentIndex, sourceVerseId: 0, sv: ref.sv, ev: ref.ev, displayText: ref.displayText))
+            currentIndex += 1
+        }
+    }
+
+    // Verse refs (sourceVerseId = the verse section containing the button)
+    for tskVerse in allTskVerses {
+        for topic in tskVerse.topics {
+            let topicRefs = parseRefsFromSegmentsJson(topic.segmentsJson)
+            for ref in topicRefs {
+                refs.append(TSKRefItem(index: currentIndex, sourceVerseId: tskVerse.id, sv: ref.sv, ev: ref.ev, displayText: ref.displayText))
+                currentIndex += 1
+            }
+        }
+    }
+
+    return refs
+}
+
+/// Parses refs from segments JSON, returning (sv, ev, displayText) tuples
+private func parseRefsFromSegmentsJson(_ json: String) -> [(sv: Int, ev: Int?, displayText: String)] {
+    guard let data = json.data(using: .utf8),
+          let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        return []
+    }
+
+    var refs: [(sv: Int, ev: Int?, displayText: String)] = []
+    var pendingSv: Int? = nil
+
+    for dict in parsed {
+        if let sv = dict["sv"] as? Int {
+            // Flush any pending sv first
+            if let prevSv = pendingSv {
+                refs.append((sv: prevSv, ev: nil, displayText: buildRefDisplayText(sv: prevSv, ev: nil)))
+            }
+
+            // Check if this dict has both sv and ev
+            if let ev = dict["ev"] as? Int {
+                refs.append((sv: sv, ev: ev, displayText: buildRefDisplayText(sv: sv, ev: ev)))
+                pendingSv = nil
+            } else {
+                pendingSv = sv
+            }
+        } else if let ev = dict["ev"] as? Int, let sv = pendingSv {
+            refs.append((sv: sv, ev: ev, displayText: buildRefDisplayText(sv: sv, ev: ev)))
+            pendingSv = nil
+        } else if dict["t"] != nil, let sv = pendingSv {
+            // Flush pending sv before text
+            refs.append((sv: sv, ev: nil, displayText: buildRefDisplayText(sv: sv, ev: nil)))
+            pendingSv = nil
+        }
+    }
+
+    // Flush remaining pending sv
+    if let sv = pendingSv {
+        refs.append((sv: sv, ev: nil, displayText: buildRefDisplayText(sv: sv, ev: nil)))
+    }
+
+    return refs
+}
+
+/// Builds display text for a ref (e.g., "Gen 1:1" or "Gen 1:1-3")
+private func buildRefDisplayText(sv: Int, ev: Int?) -> String {
+    let (startVerse, startChapter, startBook) = splitVerseId(sv)
+    let startOsisId = BookOsisCache.shared.getOsisId(for: startBook)
+
+    if let ev = ev {
+        let (endVerse, endChapter, endBook) = splitVerseId(ev)
+        if startBook == endBook && startChapter == endChapter {
+            return "\(startOsisId) \(startChapter):\(startVerse)-\(endVerse)"
+        } else {
+            let endOsisId = BookOsisCache.shared.getOsisId(for: endBook)
+            return "\(startOsisId) \(startChapter):\(startVerse) - \(endOsisId) \(endChapter):\(endVerse)"
+        }
+    } else {
+        return "\(startOsisId) \(startChapter):\(startVerse)"
+    }
+}
+
+/// Counts the number of refs in a segments JSON string (for computing popover offsets)
+func countRefsInSegmentsJson(_ json: String) -> Int {
+    guard let data = json.data(using: .utf8),
+          let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        return 0
+    }
+
+    var count = 0
+    var pendingSv = false
+
+    for dict in parsed {
+        if dict["sv"] != nil {
+            // Flush any pending sv first (handles consecutive sv entries)
+            if pendingSv {
+                count += 1
+                pendingSv = false
+            }
+            // Check if this dict has both sv and ev (complete range)
+            if dict["ev"] != nil {
+                count += 1
+            } else {
+                pendingSv = true
+            }
+        } else if dict["ev"] != nil && pendingSv {
+            count += 1
+            pendingSv = false
+        } else if dict["t"] != nil && pendingSv {
+            // Flush pending sv before text
+            count += 1
+            pendingSv = false
+        }
+    }
+
+    // Flush remaining pending sv
+    if pendingSv {
+        count += 1
+    }
+
+    return count
+}
+
+/// Renders chapter overview segments (text + verse references) as flowing text using UITextView
 struct TSKSegmentsView: View {
     let segmentsJson: String
     let translation: Translation
     let fontSize: Int
     var onNavigateToVerse: ((Int) -> Void)?
-    var separateRefs: Bool = false  // If true, add ", " between consecutive references
+    var separateRefs: Bool = false
 
-    // Cache parsed segments to avoid re-parsing on every render
-    @State private var cachedSegments: [TSKParsedSegment] = []
-    @State private var cachedJson: String = ""
+    // Shared state for cross-segment navigation (sheet-based)
+    var baseOffset: Int = 0
+    var sharedSheetState: Binding<TSKSheetState?>? = nil
+    var sharedAllItems: Binding<[TSKTappableItem]>? = nil
+    var totalCount: Int? = nil
 
     var body: some View {
-        FlowLayout(spacing: 0) {
-            ForEach(cachedSegments) { segment in
-                switch segment.content {
-                case .word(let word, let italic, let trailingSpace):
-                    Text(word + (trailingSpace ? " " : ""))
-                        .font(italic ? .system(size: CGFloat(fontSize)).italic() : .system(size: CGFloat(fontSize)))
-                case .ref(let sv, let ev, let displayText, let separator):
-                    HStack(spacing: 0) {
-                        TSKRefButton(
-                            sv: sv,
-                            ev: ev,
-                            displayText: displayText,
-                            translation: translation,
-                            fontSize: fontSize,
-                            onNavigateToVerse: onNavigateToVerse
-                        )
-                        if let sep = separator {
-                            Text(sep)
-                                .font(.system(size: CGFloat(fontSize)))
+        TSKLinkedText(
+            segmentsJson: segmentsJson,
+            translation: translation,
+            fontSize: fontSize,
+            onNavigateToVerse: onNavigateToVerse,
+            separateRefs: separateRefs,
+            baseOffset: baseOffset,
+            sharedSheetState: sharedSheetState,
+            sharedAllItems: sharedAllItems,
+            totalCount: totalCount
+        )
+    }
+}
+
+struct TSKRefButton: View {
+    let sv: Int
+    let ev: Int?
+    let displayText: String
+    let translation: Translation
+    let fontSize: Int
+    let popoverIndex: Int
+    @Binding var activePopoverIndex: Int?
+    let totalPopoverCount: Int
+    var onNavigateToVerse: ((Int) -> Void)?
+    var onSwipeNavigate: ((Int) -> Void)?  // Callback for swipe navigation (scroll-first)
+    @State private var showingSheet = false
+
+    private var canSwipePrev: Bool { popoverIndex > 0 }
+    private var canSwipeNext: Bool { popoverIndex < totalPopoverCount - 1 }
+
+    private func handleSwipePrev() {
+        if let onSwipe = onSwipeNavigate {
+            // Use scroll-first navigation for LazyVStack
+            onSwipe(popoverIndex - 1)
+        } else {
+            activePopoverIndex = popoverIndex - 1
+        }
+    }
+
+    private func handleSwipeNext() {
+        if let onSwipe = onSwipeNavigate {
+            // Use scroll-first navigation for LazyVStack
+            onSwipe(popoverIndex + 1)
+        } else {
+            activePopoverIndex = popoverIndex + 1
+        }
+    }
+
+    var body: some View {
+        Button {
+            showingSheet = true
+        } label: {
+            Text(displayText)
+                .font(.system(size: CGFloat(fontSize)))
+                .foregroundColor(.accentColor)
+        }
+        .sheet(isPresented: $showingSheet) {
+            NavigationStack {
+                ScrollView {
+                    VerseSheetContent(
+                        title: displayText,
+                        verseId: sv,
+                        endVerseId: ev,
+                        translation: translation
+                    )
+                    .padding()
+                }
+                .navigationTitle(displayText)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
+                            showingSheet = false
+                        }
+                    }
+                    ToolbarItem(placement: .principal) {
+                        if totalPopoverCount > 1 {
+                            HStack(spacing: 12) {
+                                Button {
+                                    showingSheet = false
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                        handleSwipePrev()
+                                        activePopoverIndex = popoverIndex - 1
+                                    }
+                                } label: {
+                                    Image(systemName: "chevron.left")
+                                }
+                                .disabled(!canSwipePrev)
+
+                                Text("\(popoverIndex + 1)/\(totalPopoverCount)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                Button {
+                                    showingSheet = false
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                        handleSwipeNext()
+                                        activePopoverIndex = popoverIndex + 1
+                                    }
+                                } label: {
+                                    Image(systemName: "chevron.right")
+                                }
+                                .disabled(!canSwipeNext)
+                            }
+                        }
+                    }
+                    if onNavigateToVerse != nil {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button {
+                                showingSheet = false
+                                onNavigateToVerse?(sv)
+                            } label: {
+                                Image(systemName: "arrow.up.right")
+                            }
+                        }
+                    }
+                }
+                .presentationDetents([.fraction(0.4), .medium, .large])
+                .presentationDragIndicator(.visible)
+            }
+        }
+    }
+}
+
+/// Isolated view for a single verse's TSKe content - prevents cascade re-renders
+struct TSKVerseSection: View {
+    let verseId: Int
+    let translation: Translation
+    let fontSize: Int
+    var onNavigateToVerse: ((Int) -> Void)?
+
+    // Shared state for cross-segment navigation (sheet-based)
+    var baseOffset: Int = 0
+    var sharedSheetState: Binding<TSKSheetState?>? = nil
+    var sharedAllItems: Binding<[TSKTappableItem]>? = nil
+    var totalCount: Int? = nil
+
+    private var verseNum: Int { verseId % 1000 }
+
+    /// Load topics directly from Realm (computed once per render)
+    private var topics: [(id: String, heading: String, segmentsJson: String, refCount: Int)] {
+        guard let tskVerse = RealmManager.shared.realm.objects(TSKVerse.self).filter("id == \(verseId)").first else {
+            return []
+        }
+        return Array(tskVerse.topics.map {
+            (id: $0.id, heading: $0.h, segmentsJson: $0.segmentsJson, refCount: countRefsInSegmentsJson($0.segmentsJson))
+        })
+    }
+
+    private func computeTopicOffsets() -> [Int] {
+        var offsets: [Int] = []
+        var runningOffset = baseOffset
+        for topic in topics {
+            offsets.append(runningOffset)
+            runningOffset += topic.refCount
+        }
+        return offsets
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("v. \(verseNum)")
+                .font(.system(size: CGFloat(fontSize - 2), weight: .semibold))
+                .foregroundColor(.secondary)
+
+            // Compute running offset for each topic
+            let topicOffsets = computeTopicOffsets()
+
+            ForEach(Array(topics.enumerated()), id: \.element.id) { index, topic in
+                TSKTopicView(
+                    heading: topic.heading,
+                    segmentsJson: topic.segmentsJson,
+                    translation: translation,
+                    fontSize: fontSize,
+                    onNavigateToVerse: onNavigateToVerse,
+                    baseOffset: topicOffsets[index],
+                    sharedSheetState: sharedSheetState,
+                    sharedAllItems: sharedAllItems,
+                    totalCount: totalCount
+                )
+            }
+        }
+    }
+}
+
+/// Displays a topic with its heading and segments (text + verse refs)
+struct TSKTopicView: View {
+    let heading: String
+    let segmentsJson: String
+    let translation: Translation
+    let fontSize: Int
+    var onNavigateToVerse: ((Int) -> Void)?
+
+    // Shared state for cross-segment navigation (sheet-based)
+    var baseOffset: Int = 0
+    var sharedSheetState: Binding<TSKSheetState?>? = nil
+    var sharedAllItems: Binding<[TSKTappableItem]>? = nil
+    var totalCount: Int? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Topic heading (skip if empty)
+            if !heading.isEmpty {
+                Text(heading)
+                    .font(.system(size: CGFloat(fontSize - 2), weight: .medium))
+                    .foregroundStyle(heading == "Reciprocal" ? .secondary : .primary)
+            }
+
+            // Segments (reuse the same view as chapter overview, with separators)
+            if !segmentsJson.isEmpty {
+                TSKSegmentsView(
+                    segmentsJson: segmentsJson,
+                    translation: translation,
+                    fontSize: fontSize,
+                    onNavigateToVerse: onNavigateToVerse,
+                    separateRefs: true,
+                    baseOffset: baseOffset,
+                    sharedSheetState: sharedSheetState,
+                    sharedAllItems: sharedAllItems,
+                    totalCount: totalCount
+                )
+            }
+        }
+        .padding(.leading, 8)
+    }
+}
+
+// MARK: - Commentary Sheet Items
+
+/// Sheet item for Strong's number from commentary
+struct CommentaryStrongsSheetItem: Identifiable {
+    let key: String
+    var id: String { key }
+}
+
+/// Sheet item for scripture reference from commentary
+struct CommentaryScriptureSheetItem: Identifiable {
+    let verseId: Int
+    let endVerseId: Int?
+    var id: String { "\(verseId)-\(endVerseId ?? 0)" }
+}
+
+// MARK: - TSKe UITextView Implementation
+
+/// Custom attribute key for tappable indices in TSKe text
+private let TSKTappableIndexKey = NSAttributedString.Key("tskTappableIndex")
+
+/// Tappable item in TSKe content
+struct TSKTappableItem: Equatable, Identifiable {
+    let index: Int
+    let sv: Int
+    let ev: Int?
+    let displayText: String
+
+    var id: Int { index }
+}
+
+/// Sheet state for TSKe navigation
+struct TSKSheetState: Equatable, Identifiable {
+    let currentItem: TSKTappableItem
+    let allItems: [TSKTappableItem]
+    var totalCount: Int? = nil  // Pre-computed total (for lazy-loaded items)
+
+    var id: String { "tsk-sheet" }
+
+    var currentIndex: Int {
+        allItems.firstIndex(where: { $0.index == currentItem.index }) ?? 0
+    }
+
+    // Use totalCount if provided, otherwise fall back to allItems.count
+    var displayCount: Int { totalCount ?? allItems.count }
+
+    var canNavigatePrev: Bool { currentIndex > 0 }
+    var canNavigateNext: Bool { currentIndex < allItems.count - 1 }
+
+    func withPrev() -> TSKSheetState? {
+        guard canNavigatePrev else { return nil }
+        return TSKSheetState(currentItem: allItems[currentIndex - 1], allItems: allItems, totalCount: totalCount)
+    }
+
+    func withNext() -> TSKSheetState? {
+        guard canNavigateNext else { return nil }
+        return TSKSheetState(currentItem: allItems[currentIndex + 1], allItems: allItems, totalCount: totalCount)
+    }
+}
+
+/// SwiftUI view that renders TSKe segments using UITextView with tappable refs
+struct TSKLinkedText: View {
+    let segmentsJson: String
+    let translation: Translation
+    let fontSize: Int
+    var onNavigateToVerse: ((Int) -> Void)?
+    var separateRefs: Bool = false
+
+    // Shared state for cross-segment navigation
+    var baseOffset: Int = 0
+    var sharedSheetState: Binding<TSKSheetState?>? = nil
+    var sharedAllItems: Binding<[TSKTappableItem]>? = nil
+    var totalCount: Int? = nil  // Pre-computed total for lazy-loaded items
+
+    @State private var tappableItems: [TSKTappableItem] = []
+    @State private var localSheetState: TSKSheetState? = nil
+
+    private var effectiveSheetState: Binding<TSKSheetState?> {
+        sharedSheetState ?? $localSheetState
+    }
+
+    private func navigateToPrev() {
+        guard let current = effectiveSheetState.wrappedValue, let newState = current.withPrev() else { return }
+        effectiveSheetState.wrappedValue = newState
+    }
+
+    private func navigateToNext() {
+        guard let current = effectiveSheetState.wrappedValue, let newState = current.withNext() else { return }
+        effectiveSheetState.wrappedValue = newState
+    }
+
+    var body: some View {
+        TSKLinkedTextView(
+            segmentsJson: segmentsJson,
+            fontSize: fontSize,
+            separateRefs: separateRefs,
+            baseOffset: baseOffset,
+            onLinkTap: { index in
+                if let item = tappableItems.first(where: { $0.index == index }) {
+                    let allItems = sharedAllItems?.wrappedValue ?? tappableItems
+                    effectiveSheetState.wrappedValue = TSKSheetState(currentItem: item, allItems: allItems, totalCount: totalCount)
+                }
+            },
+            onItemsParsed: { items in
+                tappableItems = items
+                if let sharedItems = sharedAllItems {
+                    let otherItems = sharedItems.wrappedValue.filter { item in
+                        item.index < baseOffset || item.index >= baseOffset + items.count
+                    }
+                    sharedItems.wrappedValue = (otherItems + items).sorted { $0.index < $1.index }
+                }
+            }
+        )
+        .sheet(item: sharedSheetState == nil ? $localSheetState : .constant(nil)) { state in
+            sheetContent(state: state)
+                .presentationDetents([.fraction(0.325), .medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
+        }
+    }
+
+    @ViewBuilder
+    private func sheetContent(state: TSKSheetState) -> some View {
+        let item = state.currentItem
+        NavigationStack {
+            ScrollView {
+                VerseSheetContent(
+                    title: item.displayText,
+                    verseId: item.sv,
+                    endVerseId: item.ev,
+                    translation: translation,
+                    onNavigate: onNavigateToVerse != nil ? {
+                        effectiveSheetState.wrappedValue = nil
+                        onNavigateToVerse?(item.sv)
+                    } : nil
+                )
+                .padding()
+            }
+            .navigationTitle(item.displayText)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        effectiveSheetState.wrappedValue = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if onNavigateToVerse != nil {
+                        Button {
+                            effectiveSheetState.wrappedValue = nil
+                            onNavigateToVerse?(item.sv)
+                        } label: {
+                            Image(systemName: "arrow.up.right")
                         }
                     }
                 }
             }
-        }
-        .onAppear {
-            if cachedSegments.isEmpty || cachedJson != segmentsJson {
-                cachedJson = segmentsJson
-                cachedSegments = parseSegments()
+            .toolbar {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if state.allItems.count > 1 {
+                        Button(action: navigateToPrev) {
+                            Image(systemName: "chevron.left")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!state.canNavigatePrev)
+
+                        Spacer()
+
+                        Text("\(state.currentIndex + 1) of \(state.displayCount)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .padding(.horizontal, 8)
+
+                        Spacer()
+
+                        Button(action: navigateToNext) {
+                            Image(systemName: "chevron.right")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!state.canNavigateNext)
+                    }
+                }
             }
         }
-        .onChange(of: segmentsJson) { _, newJson in
-            cachedJson = newJson
-            cachedSegments = parseSegments()
+    }
+}
+
+/// UIViewRepresentable for TSKe linked text
+private struct TSKLinkedTextView: UIViewRepresentable {
+    let segmentsJson: String
+    let fontSize: Int
+    let separateRefs: Bool
+    let baseOffset: Int
+    let onLinkTap: (Int) -> Void
+    let onItemsParsed: ([TSKTappableItem]) -> Void
+
+    func makeUIView(context: Context) -> TSKTappableTextView {
+        let textView = TSKTappableTextView()
+        textView.isEditable = false
+        textView.isSelectable = false
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        textView.onTappableIndexTap = context.coordinator.handleTap
+
+        // Performance optimization: Draw on background thread
+        textView.layer.drawsAsynchronously = true
+
+        return textView
+    }
+
+    func updateUIView(_ textView: TSKTappableTextView, context: Context) {
+        if context.coordinator.lastJson != segmentsJson || context.coordinator.lastFontSize != fontSize {
+            context.coordinator.lastJson = segmentsJson
+            context.coordinator.lastFontSize = fontSize
+            context.coordinator.cachedSize = nil  // Invalidate size cache
+            let (attrString, items) = buildAttributedString()
+            textView.attributedText = attrString
+            context.coordinator.onLinkTap = onLinkTap
+            textView.invalidateIntrinsicContentSize()
+
+            DispatchQueue.main.async {
+                onItemsParsed(items)
+            }
         }
     }
 
-    private func parseSegments() -> [TSKParsedSegment] {
-        guard let data = segmentsJson.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return []
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onLinkTap: onLinkTap)
+    }
+
+    @available(iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: TSKTappableTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
+
+        // Return cached size if width hasn't changed significantly
+        if let cached = context.coordinator.cachedSize,
+           abs(cached.width - width) < 1 {
+            return cached
         }
 
-        var contents: [TSKSegmentContent] = []
+        let size = uiView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        let result = CGSize(width: width, height: size.height)
+        context.coordinator.cachedSize = result
+        return result
+    }
+
+    private func buildAttributedString() -> (NSAttributedString, [TSKTappableItem]) {
+        guard let data = segmentsJson.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return (NSAttributedString(), [])
+        }
+
+        let result = NSMutableAttributedString()
+        var tappableItems: [TSKTappableItem] = []
+        var itemIndex = baseOffset
+        let uiFont = UIFont.systemFont(ofSize: CGFloat(fontSize))
         var pendingSv: Int? = nil
+        var isFirstRef = true
+        var lastWasRef = false  // Track if last appended content was a ref
+
+        // Add paragraph spacing for better readability
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 4
+
+        // Helper to check if result ends with whitespace
+        func resultEndsWithWhitespace() -> Bool {
+            guard result.length > 0 else { return true }
+            let lastChar = result.string.last
+            return lastChar?.isWhitespace == true
+        }
 
         for (index, dict) in parsed.enumerated() {
             // Skip "Overview " prefix
@@ -2237,105 +3603,164 @@ struct TSKSegmentsView: View {
             }
 
             if let text = dict["t"] as? String {
-                // Flush any pending sv before text
-                if let sv = pendingSv {
-                    let separator = separateRefs ? " " : nil
-                    contents.append(.ref(sv: sv, ev: nil, displayText: buildRefDescription(sv: sv, ev: nil), trailingSeparator: separator))
+                // Check if this is a range separator (hyphen/dash between sv and ev)
+                // Don't flush pending sv if text is just a hyphen - ev might follow
+                let isRangeSeparator = (text == "-" || text == "–" || text == "—") && pendingSv != nil
+
+                // Flush any pending sv before text (unless it's a range separator)
+                if let sv = pendingSv, !isRangeSeparator {
+                    // Always add space before ref if result doesn't end with whitespace
+                    if !resultEndsWithWhitespace() {
+                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+                    }
+                    // In separateRefs mode, also add comma between refs
+                    if separateRefs && !isFirstRef {
+                        result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+                    }
+                    let displayText = buildRefDescription(sv: sv, ev: nil)
+                    result.append(NSAttributedString(string: displayText, attributes: [
+                        .font: uiFont,
+                        .foregroundColor: UIColor.tintColor,
+                        .paragraphStyle: paragraphStyle,
+                        TSKTappableIndexKey: itemIndex
+                    ]))
+                    tappableItems.append(TSKTappableItem(index: itemIndex, sv: sv, ev: nil, displayText: displayText))
+                    itemIndex += 1
+                    isFirstRef = false
                     pendingSv = nil
+                    lastWasRef = true
+                }
+
+                // Skip range separators - they'll be included in the ref display text
+                if isRangeSeparator {
+                    continue
                 }
 
                 var cleaned = text
                     .replacingOccurrences(of: "\n", with: " ")
                     .replacingOccurrences(of: "\r", with: " ")
-                if cleaned == "-" {
-                    cleaned = "- "
-                }
-                let isItalic = dict["i"] as? Bool ?? false
 
-                // Split text into words for proper wrapping
-                let words = splitIntoWords(cleaned)
-                let textEndsWithSpace = cleaned.last?.isWhitespace == true
-                for (wordIndex, word) in words.enumerated() {
-                    // Add trailing space between words, or after last word if original text ended with space
-                    let isLastWord = wordIndex == words.count - 1
-                    let hasTrailingSpace = !isLastWord || textEndsWithSpace
-                    contents.append(.word(word, italic: isItalic, trailingSpace: hasTrailingSpace))
-                }
-
-            } else if let sv = dict["sv"] as? Int {
-                // Check if this same dict also has ev (complete range in one object)
-                let evInSameDict = dict["ev"] as? Int
-
-                // Flush any pending sv first
-                if let prevSv = pendingSv {
-                    let separator = separateRefs ? ", " : nil
-                    contents.append(.ref(sv: prevSv, ev: nil, displayText: buildRefDescription(sv: prevSv, ev: nil), trailingSeparator: separator))
-                    pendingSv = nil
-                } else if separateRefs, let lastContent = contents.last {
-                    // Check if we need separator before this ref
-                    switch lastContent {
-                    case .ref:
-                        // Already has trailing separator from flush above
-                        break
-                    case .word(let lastWord, let lastItalic, _):
-                        // Append comma to last word (keeps it attached, won't wrap separately)
-                        contents.removeLast()
-                        contents.append(.word(lastWord + ",", italic: lastItalic, trailingSpace: true))
+                // Add space before text if last content was a ref and text doesn't start with whitespace
+                // Include hyphens/dashes as needing space (they're text separators in TSKe, not punctuation)
+                if lastWasRef && !cleaned.isEmpty {
+                    let firstChar = cleaned.first!
+                    let isHyphenOrDash = firstChar == "-" || firstChar == "–" || firstChar == "—"
+                    let needsSpace = !firstChar.isWhitespace && (!firstChar.isPunctuation || isHyphenOrDash)
+                    if needsSpace {
+                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
                     }
                 }
 
+                let isItalic = dict["i"] as? Bool ?? false
+                let font = isItalic ? UIFont.italicSystemFont(ofSize: CGFloat(fontSize)) : uiFont
+                result.append(NSAttributedString(string: cleaned, attributes: [
+                    .font: font,
+                    .foregroundColor: UIColor.label,
+                    .paragraphStyle: paragraphStyle
+                ]))
+                lastWasRef = false
+
+            } else if let sv = dict["sv"] as? Int {
+                // Try Int first, then Double (JSONSerialization can parse large ints as Double), then String
+                let evInSameDict: Int? = (dict["ev"] as? Int)
+                    ?? (dict["ev"] as? Double).map { Int($0) }
+                    ?? (dict["ev"] as? String).flatMap { Int($0) }
+
+                // Flush any pending sv first
+                if let prevSv = pendingSv {
+                    // Always add space before ref if result doesn't end with whitespace
+                    if !resultEndsWithWhitespace() {
+                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+                    }
+                    // In separateRefs mode, also add comma between refs
+                    if separateRefs && !isFirstRef {
+                        result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+                    }
+                    let displayText = buildRefDescription(sv: prevSv, ev: nil)
+                    result.append(NSAttributedString(string: displayText, attributes: [
+                        .font: uiFont,
+                        .foregroundColor: UIColor.tintColor,
+                        .paragraphStyle: paragraphStyle,
+                        TSKTappableIndexKey: itemIndex
+                    ]))
+                    tappableItems.append(TSKTappableItem(index: itemIndex, sv: prevSv, ev: nil, displayText: displayText))
+                    itemIndex += 1
+                    isFirstRef = false
+                    pendingSv = nil
+                    lastWasRef = true
+                }
+
                 if let ev = evInSameDict {
-                    // Complete range in this dict - add it directly
-                    contents.append(.ref(sv: sv, ev: ev, displayText: buildRefDescription(sv: sv, ev: ev), trailingSeparator: nil))
+                    // Always add space before ref if result doesn't end with whitespace
+                    if !resultEndsWithWhitespace() {
+                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+                    }
+                    // In separateRefs mode, also add comma between refs
+                    if separateRefs && !isFirstRef {
+                        result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+                    }
+                    let displayText = buildRefDescription(sv: sv, ev: ev)
+                    result.append(NSAttributedString(string: displayText, attributes: [
+                        .font: uiFont,
+                        .foregroundColor: UIColor.tintColor,
+                        .paragraphStyle: paragraphStyle,
+                        TSKTappableIndexKey: itemIndex
+                    ]))
+                    tappableItems.append(TSKTappableItem(index: itemIndex, sv: sv, ev: ev, displayText: displayText))
+                    itemIndex += 1
+                    isFirstRef = false
+                    lastWasRef = true
                 } else {
-                    // Just sv, ev might come in next dict
                     pendingSv = sv
                 }
 
             } else if let ev = dict["ev"] as? Int {
-                // Standalone ev (paired with previous sv from different dict)
                 if let sv = pendingSv {
-                    contents.append(.ref(sv: sv, ev: ev, displayText: buildRefDescription(sv: sv, ev: ev), trailingSeparator: nil))
+                    // Always add space before ref if result doesn't end with whitespace
+                    if !resultEndsWithWhitespace() {
+                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+                    }
+                    // In separateRefs mode, also add comma between refs
+                    if separateRefs && !isFirstRef {
+                        result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+                    }
+                    let displayText = buildRefDescription(sv: sv, ev: ev)
+                    result.append(NSAttributedString(string: displayText, attributes: [
+                        .font: uiFont,
+                        .foregroundColor: UIColor.tintColor,
+                        .paragraphStyle: paragraphStyle,
+                        TSKTappableIndexKey: itemIndex
+                    ]))
+                    tappableItems.append(TSKTappableItem(index: itemIndex, sv: sv, ev: ev, displayText: displayText))
+                    itemIndex += 1
+                    isFirstRef = false
                     pendingSv = nil
+                    lastWasRef = true
                 }
             }
         }
 
         // Flush remaining pending sv
         if let sv = pendingSv {
-            contents.append(.ref(sv: sv, ev: nil, displayText: buildRefDescription(sv: sv, ev: nil), trailingSeparator: nil))
-        }
-
-        // Add separators between consecutive refs when separateRefs is true
-        if separateRefs {
-            var result: [TSKSegmentContent] = []
-            for (i, content) in contents.enumerated() {
-                if case .ref(let sv, let ev, let display, let existingSeparator) = content {
-                    // Check if next segment is also a ref
-                    let nextIsRef = i + 1 < contents.count && {
-                        if case .ref = contents[i + 1] { return true }
-                        return false
-                    }()
-                    // Use ", " between consecutive refs, otherwise preserve existing separator
-                    let separator = nextIsRef ? ", " : existingSeparator
-                    result.append(.ref(sv: sv, ev: ev, displayText: display, trailingSeparator: separator))
-                } else {
-                    result.append(content)
-                }
+            // Always add space before ref if result doesn't end with whitespace
+            if !resultEndsWithWhitespace() {
+                result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
             }
-            // Convert to ParsedSegments with stable IDs
-            return result.enumerated().map { TSKParsedSegment(id: $0, content: $1) }
+            // In separateRefs mode, also add comma between refs
+            if separateRefs && !isFirstRef {
+                result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
+            }
+            let displayText = buildRefDescription(sv: sv, ev: nil)
+            result.append(NSAttributedString(string: displayText, attributes: [
+                .font: uiFont,
+                .foregroundColor: UIColor.tintColor,
+                .paragraphStyle: paragraphStyle,
+                TSKTappableIndexKey: itemIndex
+            ]))
+            tappableItems.append(TSKTappableItem(index: itemIndex, sv: sv, ev: nil, displayText: displayText))
         }
 
-        // Convert to ParsedSegments with stable IDs
-        return contents.enumerated().map { TSKParsedSegment(id: $0, content: $1) }
-    }
-
-    /// Split text into words while preserving punctuation attached to words
-    private func splitIntoWords(_ text: String) -> [String] {
-        // Split on whitespace but keep words with attached punctuation together
-        let components = text.components(separatedBy: .whitespaces)
-        return components.filter { !$0.isEmpty }
+        return (result, tappableItems)
     }
 
     private func buildRefDescription(sv: Int, ev: Int?) -> String {
@@ -2354,174 +3779,724 @@ struct TSKSegmentsView: View {
             return "\(startOsisId) \(startChapter):\(startVerse)"
         }
     }
+
+    class Coordinator {
+        var onLinkTap: (Int) -> Void
+        var lastJson: String = ""
+        var lastFontSize: Int = 0
+        var cachedSize: CGSize?
+
+        init(onLinkTap: @escaping (Int) -> Void) {
+            self.onLinkTap = onLinkTap
+        }
+
+        func handleTap(_ index: Int) {
+            onLinkTap(index)
+        }
+    }
 }
 
-struct TSKRefButton: View {
-    let sv: Int
-    let ev: Int?
-    let displayText: String
-    let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-    @State private var showingPopover: Bool = false
-    @State private var contentHeight: CGFloat = 200
+/// UITextView subclass using TextKit 1 for TSKe tap handling
+private class TSKTappableTextView: UITextView {
+    var onTappableIndexTap: ((Int) -> Void)?
 
-    private var verses: Results<Verse> {
-        if let ev = ev {
-            return RealmManager.shared.realm.objects(Verse.self)
-                .filter("tr == \(translation.id) AND id >= \(sv) AND id <= \(ev)")
-        } else {
-            return RealmManager.shared.realm.objects(Verse.self)
-                .filter("tr == \(translation.id) AND id == \(sv)")
+    private let textKit1LayoutManager = NSLayoutManager()
+    private let textKit1TextContainer = NSTextContainer()
+    private let textKit1TextStorage = NSTextStorage()
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        textKit1TextStorage.addLayoutManager(textKit1LayoutManager)
+        textKit1LayoutManager.addTextContainer(textKit1TextContainer)
+        textKit1TextContainer.widthTracksTextView = true
+        textKit1TextContainer.heightTracksTextView = false
+
+        super.init(frame: frame, textContainer: textKit1TextContainer)
+
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        addGestureRecognizer(tapGesture)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: self)
+
+        let textContainerOffset = CGPoint(
+            x: textContainerInset.left,
+            y: textContainerInset.top
+        )
+        let locationInTextContainer = CGPoint(
+            x: location.x - textContainerOffset.x,
+            y: location.y - textContainerOffset.y
+        )
+
+        let characterIndex = textKit1LayoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textKit1TextContainer,
+            fractionOfDistanceBetweenInsertionPoints: nil
+        )
+
+        guard characterIndex < textKit1TextStorage.length else { return }
+
+        let attributes = textKit1TextStorage.attributes(at: characterIndex, effectiveRange: nil)
+        if let tappableIndex = attributes[TSKTappableIndexKey] as? Int {
+            onTappableIndexTap?(tappableIndex)
         }
     }
 
-    private var inlineVerseText: AttributedString {
-        var result = AttributedString()
-        let versesArray = Array(verses)
+    override var attributedText: NSAttributedString! {
+        didSet {
+            textKit1TextStorage.setAttributedString(attributedText ?? NSAttributedString())
+        }
+    }
+}
 
-        for (index, verse) in versesArray.enumerated() {
+/// Shared verse content view for displaying verse text in sheets/popovers
+/// Used by TSKe, Cross References, Lexicon, and Search views
+struct VerseSheetContent: View {
+    let title: String
+    let verseId: Int
+    let endVerseId: Int?
+    let translation: Translation?
+    var onNavigate: (() -> Void)? = nil
+
+    // Optional context support (for search results)
+    var contextAmount: SearchContextAmount? = nil
+
+    // Optional highlighting support (for search results)
+    var highlightQuery: String? = nil
+    var highlightMode: SearchMode? = nil
+
+    init(title: String, verseId: Int, endVerseId: Int? = nil, translation: Translation?, onNavigate: (() -> Void)? = nil) {
+        self.title = title
+        self.verseId = verseId
+        self.endVerseId = endVerseId
+        self.translation = translation
+        self.onNavigate = onNavigate
+    }
+
+    init(title: String, verseId: Int, endVerseId: Int? = nil, translation: Translation?, onNavigate: (() -> Void)? = nil, contextAmount: SearchContextAmount?, highlightQuery: String?, highlightMode: SearchMode?) {
+        self.title = title
+        self.verseId = verseId
+        self.endVerseId = endVerseId
+        self.translation = translation
+        self.onNavigate = onNavigate
+        self.contextAmount = contextAmount
+        self.highlightQuery = highlightQuery
+        self.highlightMode = highlightMode
+    }
+
+    /// Returns the primary (hit) verses without context
+    private var primaryVerses: [Verse] {
+        guard let translation = translation else { return [] }
+        let startId = verseId
+        let endId = endVerseId ?? verseId
+        // Query through translation's verses list to avoid orphaned verses
+        return Array(translation.verses.filter("id >= \(startId) AND id <= \(endId)"))
+    }
+
+    /// Returns verses with context if contextAmount is set
+    private var versesWithContext: [(verse: Verse, isContext: Bool)] {
+        guard let translation = translation else { return [] }
+
+        // If no context requested, just return primary verses
+        guard let contextAmount = contextAmount else {
+            return primaryVerses.map { ($0, false) }
+        }
+
+        let (_, chapter, book) = splitVerseId(verseId)
+        let chapterVerses = Array(translation.verses.filter("b == %@ AND c == %@", book, chapter).sorted(byKeyPath: "v"))
+
+        guard let index = chapterVerses.firstIndex(where: { $0.id == verseId }) else {
+            return primaryVerses.map { ($0, false) }
+        }
+
+        let contextCount: Int
+        switch contextAmount {
+        case .oneVerse:
+            contextCount = 1
+        case .threeVerses:
+            contextCount = 3
+        case .chapter:
+            return chapterVerses.map { ($0, $0.id != verseId) }
+        }
+
+        let startIndex = max(0, index - contextCount)
+        let endIndex = min(chapterVerses.count - 1, index + contextCount)
+        return Array(chapterVerses[startIndex...endIndex]).map { ($0, $0.id != verseId) }
+    }
+
+    private var versesText: AttributedString {
+        let allVerses = versesWithContext
+        if allVerses.isEmpty {
+            var notFound = AttributedString("Verse not found")
+            notFound.foregroundColor = .secondary
+            return notFound
+        }
+
+        var result = AttributedString()
+        for (index, item) in allVerses.enumerated() {
+            let verse = item.verse
+            let isContext = item.isContext
+
+            // Add verse number as superscript
             var verseNum = AttributedString("\(verse.v)")
             verseNum.font = .caption
             verseNum.foregroundColor = .secondary
             verseNum.baselineOffset = 4
-            result.append(verseNum)
-            result.append(AttributedString(" "))
 
-            var verseText = AttributedString(stripStrongsAnnotations(verse.t))
-            verseText.font = .body
-            result.append(verseText)
+            // Add verse text (with optional highlighting)
+            let verseTextContent: AttributedString
+            if !isContext, let query = highlightQuery, !query.isEmpty {
+                if highlightMode == .strongs {
+                    verseTextContent = highlightedStrongsAttributedText(verse.t, strongsNum: query.uppercased())
+                } else {
+                    verseTextContent = highlightedTextAttributedString(stripStrongsAnnotations(verse.t), query: query)
+                }
+            } else {
+                var text = AttributedString(" " + stripStrongsAnnotations(verse.t))
+                text.font = .body
+                verseTextContent = text
+            }
 
-            if index < versesArray.count - 1 {
-                result.append(AttributedString(" "))
+            // Apply muted style to context verses
+            if isContext {
+                var mutedNum = verseNum
+                mutedNum.foregroundColor = .secondary.opacity(0.5)
+                result.append(mutedNum)
+
+                var mutedText = verseTextContent
+                mutedText.foregroundColor = .secondary.opacity(0.6)
+                result.append(mutedText)
+            } else {
+                result.append(verseNum)
+                result.append(verseTextContent)
+            }
+
+            // Add space between verses (but not after the last one)
+            if index < allVerses.count - 1 {
+                result.append(AttributedString("  "))
+            }
+        }
+        return result
+    }
+
+    private func highlightedTextAttributedString(_ text: String, query: String) -> AttributedString {
+        var result = AttributedString(" ")
+        let lowercaseText = text.lowercased()
+        let lowercaseQuery = query.lowercased()
+
+        guard lowercaseText.contains(lowercaseQuery) else {
+            var plain = AttributedString(text)
+            plain.font = .body
+            result.append(plain)
+            return result
+        }
+
+        var currentIndex = text.startIndex
+        while currentIndex < text.endIndex {
+            if let range = text.range(of: query, options: .caseInsensitive, range: currentIndex..<text.endIndex) {
+                if currentIndex < range.lowerBound {
+                    var before = AttributedString(String(text[currentIndex..<range.lowerBound]))
+                    before.font = .body
+                    result.append(before)
+                }
+                var highlight = AttributedString(String(text[range]))
+                highlight.font = .body.bold()
+                highlight.foregroundColor = .accentColor
+                result.append(highlight)
+                currentIndex = range.upperBound
+            } else {
+                var remaining = AttributedString(String(text[currentIndex..<text.endIndex]))
+                remaining.font = .body
+                result.append(remaining)
+                break
             }
         }
 
         return result
     }
 
-    private var navigationAction: (() -> Void)? {
-        guard let navigate = onNavigateToVerse else { return nil }
-        return {
-            showingPopover = false
-            navigate(sv)
+    private func highlightedStrongsAttributedText(_ text: String, strongsNum: String) -> AttributedString {
+        var result = AttributedString(" ")
+
+        let pattern = "\\{([^|]+)\\|([^}]+)\\}"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            var plain = AttributedString(stripStrongsAnnotations(text))
+            plain.font = .body
+            result.append(plain)
+            return result
         }
+
+        let nsText = text as NSString
+        var currentIndex = 0
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+
+        for match in matches {
+            if match.range.location > currentIndex {
+                let beforeText = nsText.substring(with: NSRange(location: currentIndex, length: match.range.location - currentIndex))
+                var before = AttributedString(beforeText)
+                before.font = .body
+                result.append(before)
+            }
+
+            let wordRange = match.range(at: 1)
+            let annotationRange = match.range(at: 2)
+            let word = nsText.substring(with: wordRange)
+            let annotation = nsText.substring(with: annotationRange)
+
+            if annotationContainsStrongs(annotation, strongsNum: strongsNum) {
+                var highlight = AttributedString(word)
+                highlight.font = .body.bold()
+                highlight.foregroundColor = .accentColor
+                result.append(highlight)
+            } else {
+                var plain = AttributedString(word)
+                plain.font = .body
+                result.append(plain)
+            }
+
+            currentIndex = match.range.location + match.range.length
+        }
+
+        if currentIndex < nsText.length {
+            let remainingText = nsText.substring(from: currentIndex)
+            var remaining = AttributedString(remainingText)
+            remaining.font = .body
+            result.append(remaining)
+        }
+
+        return result
+    }
+
+    private func annotationContainsStrongs(_ annotation: String, strongsNum: String) -> Bool {
+        let parts = annotation.components(separatedBy: CharacterSet(charactersIn: ",|"))
+        return parts.contains { $0.trimmingCharacters(in: .whitespaces) == strongsNum }
     }
 
     var body: some View {
-        Button {
-            showingPopover = true
-        } label: {
-            Text(displayText)
-                .font(.system(size: CGFloat(fontSize)))
-                .foregroundColor(.accentColor)
-        }
-        .popover(isPresented: $showingPopover) {
-            VersePopoverContent(
-                title: displayText,
-                verseText: inlineVerseText,
-                onNavigate: navigationAction,
-                contentHeight: $contentHeight
-            )
-        }
+        Text(versesText)
+            .lineSpacing(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// Isolated view for a single verse's TSKe content - prevents cascade re-renders
-struct TSKVerseSection: View {
-    let verseId: Int
+// MARK: - Cross Reference UITextView Types
+
+/// Tappable item for cross references
+struct CrossRefTappableItem: Equatable, Identifiable {
+    let index: Int
+    let sv: Int
+    let ev: Int?
+    let displayText: String
+
+    var id: Int { index }
+}
+
+/// Sheet state for cross reference navigation
+struct CrossRefSheetState: Equatable, Identifiable {
+    let currentItem: CrossRefTappableItem
+    let allItems: [CrossRefTappableItem]
+    var totalCount: Int? = nil
+
+    var id: String { "crossref-sheet" }
+
+    var currentIndex: Int {
+        allItems.firstIndex(where: { $0.index == currentItem.index }) ?? 0
+    }
+
+    var displayCount: Int { totalCount ?? allItems.count }
+
+    var canNavigatePrev: Bool { currentIndex > 0 }
+    var canNavigateNext: Bool { currentIndex < allItems.count - 1 }
+
+    func withPrev() -> CrossRefSheetState? {
+        guard canNavigatePrev else { return nil }
+        return CrossRefSheetState(currentItem: allItems[currentIndex - 1], allItems: allItems, totalCount: totalCount)
+    }
+
+    func withNext() -> CrossRefSheetState? {
+        guard canNavigateNext else { return nil }
+        return CrossRefSheetState(currentItem: allItems[currentIndex + 1], allItems: allItems, totalCount: totalCount)
+    }
+}
+
+/// Custom attribute key for cross reference tappable indices
+private let CrossRefTappableIndexKey = NSAttributedString.Key("crossRefTappableIndex")
+
+/// SwiftUI view that renders cross references using UITextView with tappable refs
+struct CrossRefLinkedText: View {
+    let crossRefs: [CrossReference]
     let translation: Translation
     let fontSize: Int
     var onNavigateToVerse: ((Int) -> Void)?
 
-    // Cache topics data on first render
-    @State private var topics: [(id: String, heading: String, segmentsJson: String)] = []
-    @State private var loadedVerseId: Int = 0
+    // Shared state for cross-segment navigation
+    var baseOffset: Int = 0
+    var sharedSheetState: Binding<CrossRefSheetState?>? = nil
+    var sharedAllItems: Binding<[CrossRefTappableItem]>? = nil
+    var totalCount: Int? = nil
 
-    private var verseNum: Int { verseId % 1000 }
+    @State private var tappableItems: [CrossRefTappableItem] = []
+    @State private var localSheetState: CrossRefSheetState? = nil
+
+    private var effectiveSheetState: Binding<CrossRefSheetState?> {
+        sharedSheetState ?? $localSheetState
+    }
+
+    private func navigateToPrev() {
+        guard let current = effectiveSheetState.wrappedValue, let newState = current.withPrev() else { return }
+        effectiveSheetState.wrappedValue = newState
+    }
+
+    private func navigateToNext() {
+        guard let current = effectiveSheetState.wrappedValue, let newState = current.withNext() else { return }
+        effectiveSheetState.wrappedValue = newState
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Verse \(verseNum)")
-                .font(.headline)
-
-            ForEach(topics, id: \.id) { topic in
-                TSKTopicView(
-                    heading: topic.heading,
-                    segmentsJson: topic.segmentsJson,
-                    translation: translation,
-                    fontSize: fontSize,
-                    onNavigateToVerse: onNavigateToVerse
-                )
+        CrossRefLinkedTextView(
+            crossRefs: crossRefs,
+            fontSize: fontSize,
+            baseOffset: baseOffset,
+            onLinkTap: { index in
+                if let item = tappableItems.first(where: { $0.index == index }) {
+                    let allItems = sharedAllItems?.wrappedValue ?? tappableItems
+                    effectiveSheetState.wrappedValue = CrossRefSheetState(currentItem: item, allItems: allItems, totalCount: totalCount)
+                }
+            },
+            onItemsParsed: { items in
+                tappableItems = items
+                if let sharedItems = sharedAllItems {
+                    let otherItems = sharedItems.wrappedValue.filter { item in
+                        item.index < baseOffset || item.index >= baseOffset + items.count
+                    }
+                    sharedItems.wrappedValue = (otherItems + items).sorted { $0.index < $1.index }
+                }
             }
-        }
-        .onAppear {
-            if loadedVerseId != verseId {
-                loadTopics()
-            }
-        }
-        .onChange(of: verseId) { _, _ in
-            loadTopics()
+        )
+        .sheet(item: sharedSheetState == nil ? $localSheetState : .constant(nil)) { state in
+            sheetContent(state: state)
+                .presentationDetents([.fraction(0.325), .medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
         }
     }
 
-    private func loadTopics() {
-        if let tskVerse = RealmManager.shared.realm.objects(TSKVerse.self).filter("id == \(verseId)").first {
-            topics = Array(tskVerse.topics.map { (id: $0.id, heading: $0.h, segmentsJson: $0.segmentsJson) })
+    @ViewBuilder
+    private func sheetContent(state: CrossRefSheetState) -> some View {
+        let item = state.currentItem
+        NavigationStack {
+            ScrollView {
+                CrossRefVerseContent(
+                    title: item.displayText,
+                    verseId: item.sv,
+                    endVerseId: item.ev,
+                    translation: translation
+                )
+                .padding()
+            }
+            .id("\(item.sv)-\(item.ev ?? 0)")
+            .navigationTitle(item.displayText)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        effectiveSheetState.wrappedValue = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if onNavigateToVerse != nil {
+                        Button {
+                            effectiveSheetState.wrappedValue = nil
+                            onNavigateToVerse?(item.sv)
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                        }
+                    }
+                }
+            }
+            .toolbar {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if state.allItems.count > 1 {
+                        Button(action: navigateToPrev) {
+                            Image(systemName: "chevron.left")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!state.canNavigatePrev)
+
+                        Spacer()
+
+                        Text("\(state.currentIndex + 1) of \(state.displayCount)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .padding(.horizontal, 8)
+
+                        Spacer()
+
+                        Button(action: navigateToNext) {
+                            Image(systemName: "chevron.right")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!state.canNavigateNext)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// UIViewRepresentable for cross reference linked text
+private struct CrossRefLinkedTextView: UIViewRepresentable {
+    let crossRefs: [CrossReference]
+    let fontSize: Int
+    let baseOffset: Int
+    let onLinkTap: (Int) -> Void
+    let onItemsParsed: ([CrossRefTappableItem]) -> Void
+
+    func makeUIView(context: Context) -> CrossRefTappableTextView {
+        let textView = CrossRefTappableTextView()
+        textView.isEditable = false
+        textView.isSelectable = false
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        textView.onTappableIndexTap = context.coordinator.handleTap
+
+        // Performance optimization: Draw on background thread
+        textView.layer.drawsAsynchronously = true
+
+        return textView
+    }
+
+    func updateUIView(_ textView: CrossRefTappableTextView, context: Context) {
+        let refsKey = crossRefs.map { "\($0.sv)-\($0.ev ?? 0)" }.joined(separator: ",")
+        if context.coordinator.lastRefsKey != refsKey || context.coordinator.lastFontSize != fontSize {
+            context.coordinator.lastRefsKey = refsKey
+            context.coordinator.lastFontSize = fontSize
+            context.coordinator.cachedSize = nil  // Invalidate size cache
+            let (attrString, items) = buildAttributedString()
+            textView.attributedText = attrString
+            context.coordinator.onLinkTap = onLinkTap
+            textView.invalidateIntrinsicContentSize()
+
+            DispatchQueue.main.async {
+                onItemsParsed(items)
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onLinkTap: onLinkTap)
+    }
+
+    @available(iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: CrossRefTappableTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
+
+        // Return cached size if width hasn't changed significantly
+        if let cached = context.coordinator.cachedSize,
+           abs(cached.width - width) < 1 {
+            return cached
+        }
+
+        let size = uiView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        let result = CGSize(width: width, height: size.height)
+        context.coordinator.cachedSize = result
+        return result
+    }
+
+    private func buildAttributedString() -> (NSAttributedString, [CrossRefTappableItem]) {
+        let result = NSMutableAttributedString()
+        var tappableItems: [CrossRefTappableItem] = []
+        var itemIndex = baseOffset
+        let uiFont = UIFont.systemFont(ofSize: CGFloat(fontSize))
+
+        // Add paragraph spacing for better readability
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 4
+
+        for (index, crossRef) in crossRefs.enumerated() {
+            let displayText = buildRefDescription(sv: crossRef.sv, ev: crossRef.ev)
+
+            result.append(NSAttributedString(string: displayText, attributes: [
+                .font: uiFont,
+                .foregroundColor: UIColor.tintColor,
+                .paragraphStyle: paragraphStyle,
+                CrossRefTappableIndexKey: itemIndex
+            ]))
+
+            tappableItems.append(CrossRefTappableItem(index: itemIndex, sv: crossRef.sv, ev: crossRef.ev, displayText: displayText))
+            itemIndex += 1
+
+            // Add comma separator (except for last item)
+            if index < crossRefs.count - 1 {
+                result.append(NSAttributedString(string: ", ", attributes: [
+                    .font: uiFont,
+                    .foregroundColor: UIColor.secondaryLabel,
+                    .paragraphStyle: paragraphStyle
+                ]))
+            }
+        }
+
+        return (result, tappableItems)
+    }
+
+    private func buildRefDescription(sv: Int, ev: Int?) -> String {
+        let (startVerse, startChapter, startBook) = splitVerseId(sv)
+        let startOsisId = BookOsisCache.shared.getOsisId(for: startBook)
+
+        if let ev = ev {
+            let (endVerse, endChapter, endBook) = splitVerseId(ev)
+            if startBook == endBook && startChapter == endChapter {
+                return "\(startOsisId) \(startChapter):\(startVerse)-\(endVerse)"
+            } else {
+                let endOsisId = BookOsisCache.shared.getOsisId(for: endBook)
+                return "\(startOsisId) \(startChapter):\(startVerse) - \(endOsisId) \(endChapter):\(endVerse)"
+            }
         } else {
-            topics = []
+            return "\(startOsisId) \(startChapter):\(startVerse)"
         }
-        loadedVerseId = verseId
+    }
+
+    class Coordinator {
+        var onLinkTap: (Int) -> Void
+        var lastRefsKey: String = ""
+        var lastFontSize: Int = 0
+        var cachedSize: CGSize?
+
+        init(onLinkTap: @escaping (Int) -> Void) {
+            self.onLinkTap = onLinkTap
+        }
+
+        func handleTap(_ index: Int) {
+            onLinkTap(index)
+        }
     }
 }
 
-/// Displays a topic with its heading and segments (text + verse refs)
-struct TSKTopicView: View {
-    let heading: String
-    let segmentsJson: String
+/// UITextView subclass using TextKit 1 for cross reference tap handling
+private class CrossRefTappableTextView: UITextView {
+    var onTappableIndexTap: ((Int) -> Void)?
+
+    private let textKit1LayoutManager = NSLayoutManager()
+    private let textKit1TextContainer = NSTextContainer()
+    private let textKit1TextStorage = NSTextStorage()
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        textKit1TextStorage.addLayoutManager(textKit1LayoutManager)
+        textKit1LayoutManager.addTextContainer(textKit1TextContainer)
+        textKit1TextContainer.widthTracksTextView = true
+        textKit1TextContainer.heightTracksTextView = false
+
+        super.init(frame: frame, textContainer: textKit1TextContainer)
+
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        addGestureRecognizer(tapGesture)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: self)
+
+        let textContainerOffset = CGPoint(
+            x: textContainerInset.left,
+            y: textContainerInset.top
+        )
+        let locationInTextContainer = CGPoint(
+            x: location.x - textContainerOffset.x,
+            y: location.y - textContainerOffset.y
+        )
+
+        let characterIndex = textKit1LayoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textKit1TextContainer,
+            fractionOfDistanceBetweenInsertionPoints: nil
+        )
+
+        guard characterIndex < textKit1TextStorage.length else { return }
+
+        let attributes = textKit1TextStorage.attributes(at: characterIndex, effectiveRange: nil)
+        if let tappableIndex = attributes[CrossRefTappableIndexKey] as? Int {
+            onTappableIndexTap?(tappableIndex)
+        }
+    }
+
+    override var attributedText: NSAttributedString! {
+        didSet {
+            textKit1TextStorage.setAttributedString(attributedText ?? NSAttributedString())
+        }
+    }
+}
+
+/// Verse content for cross reference sheets (paragraph format)
+struct CrossRefVerseContent: View {
+    let title: String
+    let verseId: Int
+    let endVerseId: Int?
     let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Topic heading (skip if empty)
-            if !heading.isEmpty {
-                Text(heading)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .foregroundStyle(heading == "Reciprocal" ? .secondary : .primary)
-            }
+    private var verses: [Verse] {
+        let startId = verseId
+        let endId = endVerseId ?? verseId
+        return Array(RealmManager.shared.realm.objects(Verse.self)
+            .filter("tr == \(translation.id) AND id >= \(startId) AND id <= \(endId)"))
+    }
 
-            // Segments (reuse the same view as chapter overview, with separators)
-            if !segmentsJson.isEmpty {
-                TSKSegmentsView(
-                    segmentsJson: segmentsJson,
-                    translation: translation,
-                    fontSize: fontSize,
-                    onNavigateToVerse: onNavigateToVerse,
-                    separateRefs: true
-                )
+    private var versesText: AttributedString {
+        if verses.isEmpty {
+            var notFound = AttributedString("Verse not found")
+            notFound.foregroundColor = .secondary
+            return notFound
+        }
+
+        var result = AttributedString()
+        for (index, verse) in verses.enumerated() {
+            var verseNum = AttributedString("\(verse.v)")
+            verseNum.font = .caption
+            verseNum.foregroundColor = .secondary
+            verseNum.baselineOffset = 4
+
+            var text = AttributedString(" " + stripStrongsAnnotations(verse.t))
+            text.font = .body
+
+            result.append(verseNum)
+            result.append(text)
+
+            if index < verses.count - 1 {
+                result.append(AttributedString("  "))
             }
         }
-        .padding(.leading, 8)
+        return result
+    }
+
+    var body: some View {
+        Text(versesText)
+            .lineSpacing(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 #Preview {
-    struct PreviewWrapper: View {
-        @State var scrollToVerse: Int? = nil
-
-        var body: some View {
-            ToolPanelView(
-                book: 43,
-                chapter: 3,
-                currentVerse: 16,
-                scrollToVerse: $scrollToVerse,
-                user: RealmManager.shared.realm.objects(User.self).first!
-            )
-        }
-    }
-
-    return PreviewWrapper()
+    ToolPanelView(
+        book: 43,
+        chapter: 3,
+        currentVerse: 16,
+        user: RealmManager.shared.realm.objects(User.self).first!
+    )
 }

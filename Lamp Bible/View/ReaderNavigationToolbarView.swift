@@ -16,6 +16,7 @@ struct ReaderNavigationToolbarView: ToolbarContent {
     @Binding var currentVerseId: Int
     @Binding var showingBookPicker: Bool
     @Binding var showingOptionsMenu: Bool
+    @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     let readerDismiss: DismissAction
     var onHideToolbars: (() -> Void)? = nil
 
@@ -24,7 +25,7 @@ struct ReaderNavigationToolbarView: ToolbarContent {
             Button {
                 readerDismiss()
             } label: {
-                Text(Image(systemName: "arrow.backward"))
+                Image(systemName: "arrow.backward")
             }
         }
         ToolbarItem(placement: .principal) {
@@ -71,14 +72,11 @@ struct ReaderNavigationToolbarView: ToolbarContent {
                         }
 
                         Button {
-                            try! RealmManager.shared.realm.write {
-                                guard let thawedUser = user.thaw() else { return }
-                                thawedUser.notesPanelVisible.toggle()
-                            }
+                            notesPanelVisible.toggle()
                         } label: {
                             Label(
-                                user.notesPanelVisible ? "Hide Tools" : "Show Tools",
-                                systemImage: user.notesPanelVisible ? "rectangle.portrait" : "inset.filled.bottomhalf.rectangle.portrait"
+                                notesPanelVisible ? "Hide Tools" : "Show Tools",
+                                systemImage: notesPanelVisible ? "rectangle.portrait" : "inset.filled.bottomhalf.rectangle.portrait"
                             )
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())

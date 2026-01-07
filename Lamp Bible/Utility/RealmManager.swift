@@ -27,7 +27,6 @@ class RealmManager {
         let v5DestinationURL = documentsURL.appendingPathComponent("v5.realm")
         let v6DestinationURL = documentsURL.appendingPathComponent("v6.realm")
         var oldUser: User? = nil
-        var hasNotesProperties = false  // v5+ has notes properties
 
         // Query the user data we need to keep from the old realm
         if fileManager.fileExists(atPath: v0DestinationURL.path) {
@@ -65,23 +64,13 @@ class RealmManager {
         } else if fileManager.fileExists(atPath: v4DestinationURL.path) {
             let oldConfig = Realm.Configuration(
                 fileURL: v4DestinationURL,
-                schemaVersion: 3,
-                migrationBlock: { migration, oldSchemaVersion in
-                    if oldSchemaVersion < 3 {
-                        // Add new notes properties with default values
-                        migration.enumerateObjects(ofType: User.className()) { oldObject, newObject in
-                            newObject!["notesEnabled"] = true
-                            newObject!["notesPanelVisible"] = false
-                            newObject!["notesPanelOrientation"] = "bottom"
-                        }
-                    }
-                }
+                schemaVersion: 3
             )
 
             oldRealm = try! Realm(configuration: oldConfig)
             oldUser = oldRealm!.objects(User.self).first!
         } else if fileManager.fileExists(atPath: v5DestinationURL.path) {
-            // v5.realm has notes properties (schemaVersion 3)
+            // v5.realm (schemaVersion 3)
             let oldConfig = Realm.Configuration(
                 fileURL: v5DestinationURL,
                 schemaVersion: 3
@@ -89,26 +78,15 @@ class RealmManager {
 
             oldRealm = try! Realm(configuration: oldConfig)
             oldUser = oldRealm!.objects(User.self).first!
-            hasNotesProperties = true
         } else if fileManager.fileExists(atPath: v6DestinationURL.path) {
-            // v6.realm has notes properties + TSKe/Strong's tables (schemaVersion 4)
-            // Need migration block because User class now has lexicon properties
+            // v7.realm has TSKe/Strong's tables (schemaVersion 5)
             let oldConfig = Realm.Configuration(
                 fileURL: v6DestinationURL,
-                schemaVersion: 5,
-                migrationBlock: { migration, oldSchemaVersion in
-                    if oldSchemaVersion < 5 {
-                        migration.enumerateObjects(ofType: User.className()) { oldObject, newObject in
-                            newObject!["greekLexicon"] = "strongs"
-                            newObject!["hebrewLexicon"] = "strongs"
-                        }
-                    }
-                }
+                schemaVersion: 5
             )
 
             oldRealm = try! Realm(configuration: oldConfig)
             oldUser = oldRealm!.objects(User.self).first!
-            hasNotesProperties = true
         }
 
         // Copy the Realm file to the destination URL
@@ -121,19 +99,10 @@ class RealmManager {
             try! fileManager.copyItem(at: bundledRealmPath, to: destinationURL)
         }
 
-        // Schema version 5 adds Dodson Greek, BDB lexicons, and lexicon user settings
+        // Schema version 5
         let config = Realm.Configuration(
             fileURL: destinationURL,
-            schemaVersion: 5,
-            migrationBlock: { migration, oldSchemaVersion in
-                if oldSchemaVersion < 5 {
-                    // Add lexicon properties with default values
-                    migration.enumerateObjects(ofType: User.className()) { oldObject, newObject in
-                        newObject!["greekLexicon"] = "strongs"
-                        newObject!["hebrewLexicon"] = "strongs"
-                    }
-                }
-            }
+            schemaVersion: 5
         )
 
         realm = try! Realm(configuration: config)
@@ -153,12 +122,6 @@ class RealmManager {
                 newUser.planNotificationDate = oldUser!.planNotificationDate
                 newUser.readerCrossReferenceSort = oldUser!.readerCrossReferenceSort
                 newUser.readerFontSize = oldUser!.readerFontSize
-                // Notes properties only exist in v5+ schemas
-                if hasNotesProperties {
-                    newUser.notesEnabled = oldUser!.notesEnabled
-                    newUser.notesPanelVisible = oldUser!.notesPanelVisible
-                    newUser.notesPanelOrientation = oldUser!.notesPanelOrientation
-                }
                 // Lexicon settings only exist in v7+ schemas (new User() has defaults)
 
                 // Object properties cannot be assigned, must be recreated so pointers
