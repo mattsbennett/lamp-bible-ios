@@ -69,6 +69,14 @@ struct ChapterTextView: UIViewRepresentable {
     let positionTracker: VersePositionTracker
     let onScrollToPosition: ((CGFloat) -> Void)?
     let onPositionsCalculated: (([Int: CGFloat]) -> Void)?
+    // True while scrolling (drag OR deceleration)
+    let isUserScrolling: Bool
+
+    // Debug/perf toggle: render as simplified plain text to isolate TextKit/interaction overhead.
+    // Enable by setting: UserDefaults.standard.set(true, forKey: "readerSimplifiedText")
+    private var isSimplifiedText: Bool {
+        UserDefaults.standard.bool(forKey: "readerSimplifiedText")
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -84,9 +92,11 @@ struct ChapterTextView: UIViewRepresentable {
 
         let textView = UITextView(frame: .zero, textContainer: textContainer)
         textView.isEditable = false
-        textView.isSelectable = true
+        textView.isSelectable = !isSimplifiedText
         textView.isScrollEnabled = false
-        textView.backgroundColor = .clear
+        // Big scrolling text: keep it opaque to avoid expensive blending/compositing while scrolling.
+        textView.backgroundColor = UIColor.systemBackground
+        textView.isOpaque = true
         textView.textContainerInset = UIEdgeInsets(top: 0, left: 15, bottom: 20, right: 15)
         // Performance optimization: Draw on background thread
         textView.layer.drawsAsynchronously = true
@@ -94,17 +104,23 @@ struct ChapterTextView: UIViewRepresentable {
         textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        textView.delegate = context.coordinator
+        if !isSimplifiedText {
+            textView.delegate = context.coordinator
 
-        // Add tap gesture for verse numbers - configure to not interfere with selection
-        let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
-        tapGesture.delegate = context.coordinator
-        textView.addGestureRecognizer(tapGesture)
+            // Add tap gesture for verse numbers - configure to not interfere with selection
+            let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+            tapGesture.delegate = context.coordinator
+            textView.addGestureRecognizer(tapGesture)
 
-        // Create edit menu interaction upfront to avoid "_UIReparentingView" warning
-        let editMenuInteraction = UIEditMenuInteraction(delegate: context.coordinator)
-        textView.addInteraction(editMenuInteraction)
-        context.coordinator.editMenuInteraction = editMenuInteraction
+            // Create edit menu interaction upfront to avoid "_UIReparentingView" warning
+            let editMenuInteraction = UIEditMenuInteraction(delegate: context.coordinator)
+            textView.addInteraction(editMenuInteraction)
+            context.coordinator.editMenuInteraction = editMenuInteraction
+        } else {
+            // Extra simplification: avoid text interactions entirely.
+            textView.delegate = nil
+            textView.isUserInteractionEnabled = false
+        }
 
         context.coordinator.textView = textView
         return textView
@@ -116,15 +132,41 @@ struct ChapterTextView: UIViewRepresentable {
 
         // Only rebuild if content actually changed
         let currentKey = context.coordinator.buildKey()
-        if context.coordinator.lastBuildKey != currentKey {
-            context.coordinator.lastBuildKey = currentKey
-            let attributedString = buildAttributedString(coordinator: context.coordinator)
-            textView.attributedText = attributedString
+        let effectiveKey = isSimplifiedText ? (currentKey + "-simplified") : currentKey
+        if context.coordinator.lastBuildKey != effectiveKey {
+            context.coordinator.lastBuildKey = effectiveKey
+
+            if isSimplifiedText {
+                textView.attributedText = buildSimplifiedAttributedString()
+            } else {
+                let attributedString = buildAttributedString(coordinator: context.coordinator)
+                textView.attributedText = attributedString
+            }
+
             textView.invalidateIntrinsicContentSize()
+
+            // Content changed; positions need recalculation (but not during sizeThatFits).
+            if !isSimplifiedText {
+                context.coordinator.markVersePositionsDirty()
+            }
         }
 
         // Note: Scroll-to-verse is handled by onChange(of: versePositions) in ReaderView
         // This ensures scrolling happens after positions are calculated
+
+        // While scrolling, disable UITextView interactions entirely to reduce overhead.
+        if !isSimplifiedText {
+            let allowInteraction = !isUserScrolling
+            if textView.isUserInteractionEnabled != allowInteraction {
+                textView.isUserInteractionEnabled = allowInteraction
+            }
+            if textView.isSelectable != allowInteraction {
+                textView.isSelectable = allowInteraction
+                if !allowInteraction {
+                    textView.selectedRange = NSRange(location: 0, length: 0)
+                }
+            }
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
@@ -133,26 +175,66 @@ struct ChapterTextView: UIViewRepresentable {
         // Update parent reference
         context.coordinator.parent = self
 
+        // Return cached size if width hasn't changed (avoids expensive recalc during scroll)
+        if let cached = context.coordinator.cachedSize, context.coordinator.cachedWidth == width {
+            return cached
+        }
+
         // Ensure text container knows about the width for proper layout
         let containerWidth = width - uiView.textContainerInset.left - uiView.textContainerInset.right
         if uiView.textContainer.size.width != containerWidth {
             uiView.textContainer.size = CGSize(width: containerWidth, height: .greatestFiniteMagnitude)
-        }
 
-        // Force layout to ensure glyph positions are calculated
-        uiView.layoutManager.ensureLayout(for: uiView.textContainer)
+            // Width change affects glyph positions.
+            if !isSimplifiedText {
+                context.coordinator.markVersePositionsDirty()
+            }
+        }
 
         let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
 
-        // Calculate verse positions for local use (verseYPositions in coordinator)
-        // This is used directly for scroll-to-verse
-        context.coordinator.calculateVersePositionsLocal()
+        // Cache the calculated size
+        context.coordinator.cachedSize = size
+        context.coordinator.cachedWidth = width
 
-        // Update positionTracker synchronously - the lock handles thread safety
-        // and we removed @Published to avoid "Publishing changes from within view updates"
-        context.coordinator.updatePositionTracker()
+        // Verse positions are needed for scroll-to-verse and scroll sync, but calculating them
+        // in sizeThatFits can be called repeatedly during scrolling and is expensive.
+        // Coalesce to once per content/width change.
+        if !isSimplifiedText {
+            context.coordinator.scheduleVersePositionCalculation(containerWidth: containerWidth)
+        }
 
         return CGSize(width: width, height: size.height)
+    }
+
+    private func buildSimplifiedAttributedString() -> NSAttributedString {
+        let result = NSMutableAttributedString()
+
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = lineSpacing
+        paragraphStyle.lineHeightMultiple = 1.2
+
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: fontSize),
+            .paragraphStyle: paragraphStyle,
+            .foregroundColor: UIColor.label
+        ]
+
+        // Keep headings minimal and consistent.
+        if showBookTitle && chapter == 1 {
+            result.append(NSAttributedString(string: "\(bookName)\n", attributes: textAttributes))
+        }
+        result.append(NSAttributedString(string: "\(bookName) \(chapter)\n", attributes: textAttributes))
+
+        for (index, verse) in verses.enumerated() {
+            result.append(NSAttributedString(string: "\(verse.v) ", attributes: textAttributes))
+            result.append(NSAttributedString(string: verse.t, attributes: textAttributes))
+            if index < verses.count - 1 {
+                result.append(NSAttributedString(string: " ", attributes: textAttributes))
+            }
+        }
+
+        return result
     }
 
     private func buildAttributedString(coordinator: Coordinator) -> NSAttributedString {
@@ -265,6 +347,14 @@ struct ChapterTextView: UIViewRepresentable {
         var verseYPositions: [Int: CGFloat] = [:]
         var lastBuildKey: String = ""
 
+        private var versePositionsDirty: Bool = true
+        private var lastVersePositionsContainerWidth: CGFloat = 0
+        private var versePositionsWorkItem: DispatchWorkItem?
+
+        // Cache size to prevent repeated calculations during scrolling
+        var cachedSize: CGSize?
+        var cachedWidth: CGFloat = 0
+
         init(_ parent: ChapterTextView) {
             self.parent = parent
         }
@@ -273,6 +363,33 @@ struct ChapterTextView: UIViewRepresentable {
             // Create a key that uniquely identifies the content
             let verseIds = parent.verses.map { $0.id }.description
             return "\(verseIds)-\(parent.fontSize)-\(parent.chapter)-\(parent.showStrongsHints)"
+        }
+
+        func markVersePositionsDirty() {
+            versePositionsDirty = true
+            cachedSize = nil // Invalidate size cache when content changes
+        }
+
+        func scheduleVersePositionCalculation(containerWidth: CGFloat) {
+            guard versePositionsDirty || lastVersePositionsContainerWidth != containerWidth else { return }
+            guard versePositionsWorkItem == nil else { return }
+
+            let item = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.versePositionsWorkItem = nil
+                guard let textView = self.textView else { return }
+                guard !self.verseRanges.isEmpty else { return }
+
+                // If container width changed, it affects layout -> positions.
+                self.lastVersePositionsContainerWidth = containerWidth
+                self.versePositionsDirty = false
+
+                // Ensure layout once, then compute positions.
+                textView.layoutManager.ensureLayout(for: textView.textContainer)
+                self.calculateVersePositions()
+            }
+            versePositionsWorkItem = item
+            DispatchQueue.main.async(execute: item)
         }
 
         func calculateVersePositionsLocal() {
@@ -470,11 +587,6 @@ extension NSAttributedString.Key {
 }
 
 
-private struct ScrollInfo: Equatable {
-    let offset: CGFloat
-    let topInset: CGFloat
-}
-
 // Lightweight scroll debouncer that avoids Task creation overhead
 private class ScrollDebouncer {
     private var workItem: DispatchWorkItem?
@@ -511,6 +623,7 @@ struct ReaderView: View {
     @Binding var visibleVerseId: Int
     @Binding var scrollOrigin: ScrollOrigin
     private let scrollDebouncer = ScrollDebouncer()
+    private let verseCommitDebouncer = ScrollDebouncer()
     @Binding var requestScrollToVerseId: Int?
     @Binding var requestScrollAnimated: Bool
     @State private var internalScrollToVerseId: Int? = nil
@@ -521,6 +634,8 @@ struct ReaderView: View {
     @State private var scrollCleanupId: UUID = UUID() // To prevent race conditions in scroll cleanup
     @State private var isProgrammaticScroll: Bool = false  // Ignore scroll detection during programmatic scrolls
     @State private var isUserDragging: Bool = false // Track active user interaction
+    @State private var isScrolling: Bool = false // True during drag AND deceleration
+
     @State private var selectedStrongsWord: AnnotatedWord? = nil  // For Strong's popover
     @AppStorage("showStrongsHints") private var showStrongsHints: Bool = false
     @State private var toolbarsHidden: Bool = false  // Hide/show toolbars on tap
@@ -723,7 +838,32 @@ struct ReaderView: View {
                 ScrollView {
                     ZStack(alignment: .topLeading) {
                         // UIKit scroll spy for real-time scroll sync
-                        ReaderScrollSpy(versePositions: positionTracker.positions)
+                        ReaderScrollSpy(
+                            versePositions: positionTracker.positions,
+                            onVerseIdChange: { verseId in
+                                // Avoid expensive SwiftUI scroll geometry tracking; instead update
+                                // verse state on a trailing debounce.
+                                guard !isProgrammaticScroll else { return }
+
+                                // If the other panel is in control and we aren't being actively dragged, yield
+                                if !isUserDragging && scrollOrigin == .toolPanel {
+                                    return
+                                }
+
+                                // Enforce our claim
+                                if scrollOrigin != .bible {
+                                    scrollOrigin = .bible
+                                }
+                            },
+                            onUserScrollEndedAtVerseId: { verseId in
+                                // Commit verse state only after user scrolling settles.
+                                commitVisibleVerseIfNeeded(verseId)
+                            },
+                            onScrollFullyStopped: {
+                                // Re-enable text interactions when scroll completely stops
+                                isScrolling = false
+                            }
+                        )
                             .frame(width: 1, height: 1)
 
                         VStack(spacing: 0) {
@@ -759,7 +899,8 @@ struct ReaderView: View {
                                 onScrollToPosition: { yPosition in
                                     scrollTargetY = yPosition
                                 },
-                                onPositionsCalculated: nil
+                                onPositionsCalculated: nil,
+                                isUserScrolling: isScrolling
                             )
                             .id("chapter_\(chapterNumber)_\(translation.id)")
                         }
@@ -775,75 +916,11 @@ struct ReaderView: View {
                         }
                     }
                 }
-                .onScrollGeometryChange(for: ScrollInfo.self) { geometry in
-                    ScrollInfo(offset: geometry.contentOffset.y, topInset: geometry.contentInsets.top)
-                } action: { [self] _, newValue in
-                    // Skip scroll detection entirely during programmatic scrolls
-
-                    // If the other panel is in control and we aren't being actively dragged, yield
-                    if !isUserDragging && scrollOrigin == .toolPanel {
-                        return
-                    }
-
-                    // Otherwise, we claim control locally immediately (to prevent race conditions)
-                    if scrollOrigin != .bible {
-                        scrollOrigin = .bible
-                    }
-
-                    // Capture values for the debounced closure
-                    let offset = newValue.offset
-                    let topInset = newValue.topInset
-
-                    // Use lightweight debouncer instead of Task to avoid overhead
-                    scrollDebouncer.debounce(delay: 0.05) { [self] in
-                        // Double-check flag in case it changed during debounce delay
-                        guard !isProgrammaticScroll else { return }
-
-                        // Check yield condition again in case it changed
-                        if !isUserDragging && scrollOrigin == .toolPanel {
-                             return
-                        }
-
-                        let versesArray = Array(verses)
-                        guard !versesArray.isEmpty else { return }
-
-                        let adjustedOffset = max(0, offset + topInset)
-                        var foundVerseId: Int? = nil
-                        let positions = positionTracker.positions
-
-                        if !positions.isEmpty {
-                            for verse in versesArray {
-                                if let yPos = positions[verse.id] {
-                                    if yPos >= adjustedOffset {
-                                        foundVerseId = verse.id
-                                        break
-                                    }
-                                }
-                            }
-                            if foundVerseId == nil {
-                                foundVerseId = versesArray.last?.id
-                            }
-                        }
-
-                        if foundVerseId == nil {
-                            foundVerseId = versesArray.first?.id
-                        }
-
-                        if let verseId = foundVerseId, verseId != currentVerseId {
-                            // Enforce our claim
-                            scrollOrigin = .bible
-
-                            currentVerseId = verseId
-                            visibleVerseId = verseId
-                            // Update history position as user scrolls
-                            NavigationHistory.shared.updateCurrentPosition(to: verseId)
-                        }
-                    }
-                }
                 .simultaneousGesture(
                     DragGesture()
                         .onChanged { _ in
                             isUserDragging = true
+                            isScrolling = true
                             // Immediate claim on interaction start
                             if scrollOrigin != .bible {
                                 scrollOrigin = .bible
@@ -851,6 +928,8 @@ struct ReaderView: View {
                         }
                         .onEnded { _ in
                             isUserDragging = false
+                            // Keep isScrolling true - it will be cleared by onScrollFullyStopped
+                            // when UIScrollView reports deceleration is complete
                         }
                 )
                 .onChange(of: initialScrollItem) {
@@ -1065,6 +1144,23 @@ struct ReaderView: View {
                 // Always scroll to top since headers are now part of ChapterTextView
                 initialScrollItem = "top"
             }
+        }
+    }
+
+    private func commitVisibleVerseIfNeeded(_ verseId: Int) {
+        // Commit verse state only after scroll settles.
+        verseCommitDebouncer.debounce(delay: 0.12) {
+            guard !isProgrammaticScroll else { return }
+            guard verseId != currentVerseId else { return }
+
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                currentVerseId = verseId
+                visibleVerseId = verseId
+            }
+
+            NavigationHistory.shared.updateCurrentPosition(to: verseId)
         }
     }
 }

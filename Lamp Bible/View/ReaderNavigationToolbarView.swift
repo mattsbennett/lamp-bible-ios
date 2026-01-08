@@ -36,9 +36,9 @@ struct ReaderNavigationToolbarView: ToolbarContent {
             } label: {
                 VStack {
                     let currentVerse = RealmManager.shared.realm.objects(Verse.self).filter("id == \(currentVerseId)").first
-                    let book = RealmManager.shared.realm.objects(Book.self).filter("id == \(currentVerse!.b)").first
+                    let book = currentVerse.flatMap { RealmManager.shared.realm.objects(Book.self).filter("id == \($0.b)").first }
                     Text(translation.abbreviation).bold().font(.system(size: 14))
-                    Text(book!.name + " \(currentVerse!.c)").font(.caption2).foregroundStyle(Color.primary)
+                    Text((book?.name ?? "") + " \(currentVerse?.c ?? 1)").font(.caption2).foregroundStyle(Color.primary)
                 }
                 .padding(.horizontal, 4)
             }

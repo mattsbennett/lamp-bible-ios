@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State var moduleCount: Int? = nil
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @AppStorage("notesPanelOrientation") private var notesPanelOrientation: String = "bottom"
+    @AppStorage("readerSimplifiedText") private var readerSimplifiedText: Bool = false
     let plans: Results<Plan>
     let externalApps: [ExternalBibleApp]
 
@@ -315,6 +316,19 @@ struct SettingsView: View {
                     unscheduleRecurringNotification()
                     scheduleRecurringNotification(at: newValue)
                 }
+
+#if DEBUG
+                Section {
+                    Toggle(isOn: $readerSimplifiedText) {
+                        Text("Simplified Reader Text")
+                    }
+                    .tint(.accentColor)
+                } header: {
+                    Text("Debug")
+                } footer: {
+                    Text("Temporarily renders the reader text with minimal formatting and no interactions to help diagnose scroll performance. Restart the app after changing.")
+                }
+#endif
             }
             .navigationBarBackButtonHidden(true)
             .navigationTitle("Settings")

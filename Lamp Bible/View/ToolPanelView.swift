@@ -22,12 +22,21 @@ class ScrollSyncCoordinator {
 
     // Direct reader scroll view reference for UIKit-based scrolling
     weak var readerScrollView: UIScrollView?
-    var readerVersePositions: [Int: CGFloat] = [:] // verseId -> yPosition
+    // Raw verseId -> yPosition (set by ReaderScrollSpyView)
+    private var readerVersePositions: [Int: CGFloat] = [:]
+    // Cached verseNumber -> yPosition for fast lookup
+    private var readerVerseNumberPositions: [Int: CGFloat] = [:]
+    // Cached sorted verseNumbers for closest-preceding search
+    private var sortedReaderVerseNumbers: [Int] = []
 
     // Current state
     private(set) var currentVerse: Int = 1
     private(set) var activeScroller: ScrollSource = .none
     private var lastReportedReaderVerse: Int = 0
+
+    // Throttle reader scrolling driven by tool panel (avoids hammering setContentOffset)
+    private var lastReaderScrollTime: CFTimeInterval = 0
+    private let minReaderScrollInterval: CFTimeInterval = 1.0 / 60.0 // ~60 Hz
 
     // Check if scroll linking is enabled (reads from UserDefaults, defaults to true)
     private var isScrollLinked: Bool {
@@ -46,6 +55,27 @@ class ScrollSyncCoordinator {
 
     private init() {}
 
+    func updateReaderVersePositions(_ positions: [Int: CGFloat]) {
+        readerVersePositions = positions
+
+        // Build verse-number caches (chapter-local) once, not during scrolling.
+        var verseNumToY: [Int: CGFloat] = [:]
+        verseNumToY.reserveCapacity(positions.count)
+
+        for (verseId, y) in positions {
+            let v = verseId % 1000
+            // If duplicates exist (unlikely), keep the smallest y (earliest in scroll).
+            if let existing = verseNumToY[v] {
+                verseNumToY[v] = min(existing, y)
+            } else {
+                verseNumToY[v] = y
+            }
+        }
+
+        readerVerseNumberPositions = verseNumToY
+        sortedReaderVerseNumbers = verseNumToY.keys.sorted()
+    }
+
     func registerToolPanel(_ controller: any ToolPanelScrollable) {
         toolPanelController = controller
     }
@@ -54,9 +84,10 @@ class ScrollSyncCoordinator {
     func readerDidScrollToVerse(_ verse: Int) {
         guard isScrollLinked else { return }
         guard activeScroller != .toolPanel else { return }
-        guard verse != currentVerse else { return }
+        // Update currentVerse for state tracking
         currentVerse = verse
         activeScroller = .reader
+        // Direct call - no throttling since we're using lightweight setContentOffset
         toolPanelController?.scrollToVerse(verse, animated: false)
     }
 
@@ -64,7 +95,7 @@ class ScrollSyncCoordinator {
     func toolPanelDidScrollToVerse(_ verse: Int) {
         guard isScrollLinked else { return }
         guard activeScroller != .reader else { return }
-        guard verse != currentVerse else { return }
+        // Update currentVerse for state tracking
         currentVerse = verse
         activeScroller = .toolPanel
 
@@ -76,44 +107,53 @@ class ScrollSyncCoordinator {
     private func scrollReaderToVerse(_ verse: Int) {
         guard let scrollView = readerScrollView else { return }
 
-        // Build full verse ID from current book/chapter + verse
-        // Find matching position or closest preceding
-        var targetY: CGFloat?
-
-        // Try exact match first
-        for (verseId, yPos) in readerVersePositions {
-            let v = verseId % 1000
-            if v == verse {
-                targetY = yPos
-                break
-            }
+        // Rate-limit setContentOffset calls.
+        let now = CACurrentMediaTime()
+        if now - lastReaderScrollTime < minReaderScrollInterval {
+            return
         }
+        lastReaderScrollTime = now
 
-        // If no exact match, find closest preceding verse
-        if targetY == nil {
-            var closestVerse = 0
-            var closestY: CGFloat = 0
-            for (verseId, yPos) in readerVersePositions {
-                let v = verseId % 1000
-                if v < verse && v > closestVerse {
-                    closestVerse = v
-                    closestY = yPos
+        // Find matching y or closest preceding verse number using cached lookup.
+        var targetY: CGFloat? = readerVerseNumberPositions[verse]
+        if targetY == nil, !sortedReaderVerseNumbers.isEmpty {
+            // Binary search for last verseNumber <= verse
+            var low = 0
+            var high = sortedReaderVerseNumbers.count - 1
+            var best: Int? = nil
+            while low <= high {
+                let mid = (low + high) / 2
+                let v = sortedReaderVerseNumbers[mid]
+                if v <= verse {
+                    best = v
+                    low = mid + 1
+                } else {
+                    high = mid - 1
                 }
             }
-            if closestVerse > 0 {
-                targetY = closestY
+            if let best, let y = readerVerseNumberPositions[best] {
+                targetY = y
             }
         }
 
         if let y = targetY {
+            // Account for safe area (notch) plus SwiftUI navigation toolbar (~44pt)
+            let topOffset = scrollView.safeAreaInsets.top + 44
+            let adjustedY = y - topOffset
+
             let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
-            let clampedY = min(max(0, y), maxY)
-            scrollView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: false)
+            let clampedY = min(max(0, adjustedY), maxY)
+
+            // Skip tiny adjustments to avoid churn.
+            if abs(scrollView.contentOffset.y - clampedY) > 0.5 {
+                scrollView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: false)
+            }
         }
     }
 
     /// Called when drag ends to reset active scroller
-    func scrollEnded() {
+    func scrollEnded(from source: ScrollSource) {
+        // Reset active scroller when scroll ends
         activeScroller = .none
     }
 
@@ -138,13 +178,32 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
     private weak var scrollView: UIScrollView?
     private var originalDelegate: UIScrollViewDelegate?
     private let coordinator = ScrollSyncCoordinator.shared
-    private var lastReportedVerse: Int = 0
+    private var lastReportedVerseId: Int = 0
+    private var lastProcessedOffset: CGFloat = 0
     private var isReady: Bool = false // Prevents sync during initial load
+    private var isUserScrolling: Bool = false // Track if user is actively scrolling
+
+    // Cached sorted positions for fast lookup during scrolling
+    private var sortedVersePositions: [(verseId: Int, yPos: CGFloat)] = []
+
+    // Optional callback for SwiftUI to observe verse changes without doing expensive geometry tracking
+    var onVerseIdChange: ((Int) -> Void)?
+
+    // Optional callback fired when user scroll ends (drag end without decel, or decel end)
+    // Provides the last reported verseId (full id, not just verse number).
+    var onUserScrollEndedAtVerseId: ((Int) -> Void)?
+
+    // Optional callback fired when user scroll completely stops (including deceleration)
+    var onScrollFullyStopped: (() -> Void)?
 
     // Verse position lookup - set by ReaderView
     var versePositions: [Int: CGFloat] = [:] {
         didSet {
-            coordinator.readerVersePositions = versePositions
+            coordinator.updateReaderVersePositions(versePositions)
+            // Pre-sort once when positions update (positions can be large; don't sort during scroll)
+            sortedVersePositions = versePositions
+                .map { (verseId: $0.key, yPos: $0.value) }
+                .sorted { $0.yPos < $1.yPos }
         }
     }
 
@@ -191,31 +250,51 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         // Skip if tool panel is in control
         guard coordinator.activeScroller != .toolPanel else { return }
 
-        // Find verse at current scroll position
-        let offset = scrollView.contentOffset.y + scrollView.contentInset.top
-        if let verse = findVerseAtOffset(offset) {
-            if verse != lastReportedVerse {
-                lastReportedVerse = verse
-                coordinator.readerDidScrollToVerse(verse)
+        // Calculate which verse is at the top of the visible area
+        let offset = scrollView.contentOffset.y + scrollView.safeAreaInsets.top
+
+        if let verseId = findVerseIdAtOffset(offset) {
+            let verseNumber = verseId % 1000
+            let lastReportedVerseNumber = lastReportedVerseId % 1000
+
+            // Only sync if verse NUMBER changed (not full ID)
+            if verseNumber != lastReportedVerseNumber {
+                lastReportedVerseId = verseId
+                lastProcessedOffset = offset
+                // Direct sync - no throttling
+                coordinator.readerDidScrollToVerse(verseNumber)
             }
         }
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         originalDelegate?.scrollViewWillBeginDragging?(scrollView)
+        isUserScrolling = true
         coordinator.readerBeganScrolling()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         originalDelegate?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
         if !decelerate {
-            coordinator.scrollEnded()
+            // Scroll stopped immediately - sync tool panel now
+            isUserScrolling = false
+            coordinator.scrollEnded(from: .reader)
+            coordinator.readerDidScrollToVerse(lastReportedVerseId % 1000)
+            onUserScrollEndedAtVerseId?(lastReportedVerseId)
+            onScrollFullyStopped?()
+            onVerseIdChange?(lastReportedVerseId)
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         originalDelegate?.scrollViewDidEndDecelerating?(scrollView)
-        coordinator.scrollEnded()
+        // Deceleration finished - sync tool panel now
+        isUserScrolling = false
+        coordinator.scrollEnded(from: .reader)
+        coordinator.readerDidScrollToVerse(lastReportedVerseId % 1000)
+        onUserScrollEndedAtVerseId?(lastReportedVerseId)
+        onScrollFullyStopped?()
+        onVerseIdChange?(lastReportedVerseId)
     }
 
     // Forward other delegate methods
@@ -231,24 +310,36 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         originalDelegate?.scrollViewWillBeginDecelerating?(scrollView)
     }
 
-    private func findVerseAtOffset(_ offset: CGFloat) -> Int? {
-        var result: Int? = nil
-        let sortedPositions = versePositions.sorted { $0.value < $1.value }
+    private func findVerseIdAtOffset(_ offset: CGFloat) -> Int? {
+        guard !sortedVersePositions.isEmpty else { return nil }
 
-        for (verseId, yPos) in sortedPositions {
-            if yPos <= offset + 50 {
-                result = verseId % 1000 // Extract verse number
+        // We want the last verse whose yPos <= offset + 50
+        let target = offset + 50
+        var low = 0
+        var high = sortedVersePositions.count - 1
+        var bestIndex: Int? = nil
+
+        while low <= high {
+            let mid = (low + high) / 2
+            if sortedVersePositions[mid].yPos <= target {
+                bestIndex = mid
+                low = mid + 1
             } else {
-                break
+                high = mid - 1
             }
         }
-        return result
+
+        guard let idx = bestIndex else { return nil }
+        return sortedVersePositions[idx].verseId
     }
 }
 
 /// SwiftUI wrapper for the scroll spy
 struct ReaderScrollSpy: UIViewRepresentable {
     let versePositions: [Int: CGFloat]
+    var onVerseIdChange: ((Int) -> Void)? = nil
+    var onUserScrollEndedAtVerseId: ((Int) -> Void)? = nil
+    var onScrollFullyStopped: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> ReaderScrollSpyView {
         let view = ReaderScrollSpyView()
@@ -259,6 +350,9 @@ struct ReaderScrollSpy: UIViewRepresentable {
 
     func updateUIView(_ uiView: ReaderScrollSpyView, context: Context) {
         uiView.versePositions = versePositions
+        uiView.onVerseIdChange = onVerseIdChange
+        uiView.onUserScrollEndedAtVerseId = onUserScrollEndedAtVerseId
+        uiView.onScrollFullyStopped = onScrollFullyStopped
     }
 }
 
@@ -386,13 +480,33 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
             }
             return
         }
+
         scrollToIndex(index, animated: animated)
+    }
+
+    private func isIndexVisibleNearTop(_ index: Int) -> Bool {
+        let visible = collectionView.indexPathsForVisibleItems
+        guard !visible.isEmpty else { return false }
+
+        // Find the top-most visible index (smallest item).
+        let topVisibleIndex = visible.map { $0.item }.min() ?? Int.max
+
+        // Consider it "close enough" if we're already at or within 1 cell of the target.
+        return abs(topVisibleIndex - index) <= 1
     }
 
     private func scrollToIndex(_ index: Int, animated: Bool) {
         isProgrammaticScroll = true
-        let indexPath = IndexPath(item: index, section: 0)
-        collectionView.scrollToItem(at: indexPath, at: .top, animated: animated)
+
+        // Use contentOffset - position item at top of visible area
+        if let layoutAttributes = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0)) {
+            // Account for safe area (notch)
+            let topInset = collectionView.safeAreaInsets.top
+            let targetY = layoutAttributes.frame.minY - topInset
+            collectionView.setContentOffset(CGPoint(x: 0, y: targetY), animated: animated)
+        } else {
+            collectionView.scrollToItem(at: IndexPath(item: index, section: 0), at: .top, animated: animated)
+        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.isProgrammaticScroll = false
@@ -424,12 +538,12 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate {
-            scrollCoordinator.scrollEnded()
+            scrollCoordinator.scrollEnded(from: .toolPanel)
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        scrollCoordinator.scrollEnded()
+        scrollCoordinator.scrollEnded(from: .toolPanel)
     }
 }
 
