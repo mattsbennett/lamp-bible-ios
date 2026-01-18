@@ -8,6 +8,20 @@
 import SwiftUI
 import UIKit
 
+// MARK: - First Match Scroll Offset (for scroll-to-match in preview sheets)
+
+/// Preference key to collect first match offset from text views for scroll-to-match
+struct CommentaryMatchOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        // Take the first non-nil value (we only want the first match)
+        if value == nil {
+            value = nextValue()
+        }
+    }
+}
+
 // MARK: - Commentary Renderer
 
 /// Utility for rendering AnnotatedText to AttributedString with proper styling
@@ -25,6 +39,7 @@ struct CommentaryRenderer {
         var strongsColor: Color = .accentColor
         var footnoteColor: Color = .secondary
         var abbreviationColor: Color = .orange
+        var searchTerms: [String] = []  // Search terms to highlight
 
         var uiFootnoteFont: UIFont? {
             if let base = uiBodyFont {
@@ -129,6 +144,18 @@ struct CommentaryRenderer {
             case .page:
                 result[range].foregroundColor = style.footnoteColor
                 result[range].font = style.footnoteFont
+
+            case .lexiconRef:
+                result[range].foregroundColor = style.strongsColor
+                if let lexiconId = annotation.data?.lexiconId ?? annotation.id {
+                    result[range].link = URL(string: "lampbible://lexicon/\(lexiconId)")
+                }
+
+            case .bold:
+                result[range].font = style.bodyFont.bold()
+
+            case .italic:
+                result[range].font = style.bodyFont.italic()
             }
         }
 
@@ -230,6 +257,23 @@ struct CommentaryRenderer {
                     // Usually hidden or subtle
                     result.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: range)
                     result.addAttribute(.font, value: style.uiCaptionFont ?? UIFont.preferredFont(forTextStyle: .caption1), range: range)
+
+                case .lexiconRef:
+                    result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor), range: range)
+                    if let lexiconId = annotation.data?.lexiconId ?? annotation.id,
+                       let url = URL(string: "lampbible://lexicon/\(lexiconId)") {
+                        result.addAttribute(.link, value: url, range: range)
+                    }
+
+                case .bold:
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+
+                case .italic:
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
                 }
             }
         }
@@ -238,7 +282,6 @@ struct CommentaryRenderer {
         if let footnoteRefs = annotatedText.footnoteRefs {
             let sortedRefs = footnoteRefs.sorted { $0.offset > $1.offset }
             for ref in sortedRefs {
-                // Find insertion point
                 let scalars = text.unicodeScalars
                 guard ref.offset >= 0, ref.offset <= scalars.count else { continue }
                 let idx = scalars.index(scalars.startIndex, offsetBy: ref.offset)
@@ -261,10 +304,28 @@ struct CommentaryRenderer {
             }
         }
 
-        // Line spacing
+        // Line and paragraph spacing
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 4
+        paragraphStyle.lineSpacing = 6
+        paragraphStyle.paragraphSpacing = 8
         result.addAttribute(.paragraphStyle, value: paragraphStyle, range: NSRange(location: 0, length: result.length))
+
+        // Apply search term highlighting with yellow background
+        if !style.searchTerms.isEmpty {
+            let fullString = result.string
+            let fullStringLower = fullString.lowercased()
+
+            for term in style.searchTerms {
+                let termLower = term.lowercased()
+                var searchStartIndex = fullStringLower.startIndex
+
+                while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
+                    let nsRange = NSRange(range, in: fullString)
+                    result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    searchStartIndex = range.upperBound
+                }
+            }
+        }
 
         return result
     }
@@ -293,6 +354,7 @@ struct CommentaryRenderer {
 
         return result
     }
+
 }
 
 // MARK: - SwiftUI View for Annotated Text
@@ -303,19 +365,32 @@ struct AnnotatedTextView: View {
     let onScriptureTap: ((Int, Int?) -> Void)?  // (sv, ev?) for verse ranges
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String) -> Void)?
+    let onLexiconTap: ((String) -> Void)?  // lexicon entry ID
+
+    // Scroll-to-match support
+    var shouldReportMatchOffset: Bool = false
+    var scrollCoordinateSpace: String = "commentaryScroll"
+
+    @State private var localMatchOffset: CGFloat? = nil
 
     init(
         _ annotatedText: AnnotatedText,
         style: CommentaryRenderer.Style = CommentaryRenderer.defaultStyle,
         onScriptureTap: ((Int, Int?) -> Void)? = nil,
         onStrongsTap: ((String) -> Void)? = nil,
-        onFootnoteTap: ((String) -> Void)? = nil
+        onFootnoteTap: ((String) -> Void)? = nil,
+        onLexiconTap: ((String) -> Void)? = nil,
+        shouldReportMatchOffset: Bool = false,
+        scrollCoordinateSpace: String = "commentaryScroll"
     ) {
         self.annotatedText = annotatedText
         self.style = style
         self.onScriptureTap = onScriptureTap
         self.onStrongsTap = onStrongsTap
         self.onFootnoteTap = onFootnoteTap
+        self.onLexiconTap = onLexiconTap
+        self.shouldReportMatchOffset = shouldReportMatchOffset
+        self.scrollCoordinateSpace = scrollCoordinateSpace
     }
 
     var body: some View {
@@ -324,7 +399,23 @@ struct AnnotatedTextView: View {
             style: style,
             onScriptureTap: onScriptureTap,
             onStrongsTap: onStrongsTap,
-            onFootnoteTap: onFootnoteTap
+            onFootnoteTap: onFootnoteTap,
+            onLexiconTap: onLexiconTap,
+            shouldReportMatchOffset: shouldReportMatchOffset,
+            onFirstMatchOffset: shouldReportMatchOffset ? { offset in
+                localMatchOffset = offset
+            } : nil
+        )
+        .background(
+            GeometryReader { geometry in
+                Color.clear
+                    .preference(
+                        key: CommentaryMatchOffsetPreferenceKey.self,
+                        value: shouldReportMatchOffset && localMatchOffset != nil
+                            ? geometry.frame(in: .named(scrollCoordinateSpace)).minY + (localMatchOffset ?? 0)
+                            : nil
+                    )
+            }
         )
     }
 }
@@ -335,6 +426,11 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
     let onScriptureTap: ((Int, Int?) -> Void)?
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String) -> Void)?
+    let onLexiconTap: ((String) -> Void)?
+
+    // Scroll-to-match support
+    var shouldReportMatchOffset: Bool = false
+    var onFirstMatchOffset: ((CGFloat) -> Void)? = nil
 
     func makeUIView(context: Context) -> UITextView {
         let textView = UITextView()
@@ -389,6 +485,40 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
             context.coordinator.cachedSize = nil
             textView.invalidateIntrinsicContentSize()
         }
+
+        // Report first match offset if requested
+        if shouldReportMatchOffset, let callback = onFirstMatchOffset, !style.searchTerms.isEmpty {
+            DispatchQueue.main.async {
+                textView.layoutIfNeeded()
+                if let matchRange = self.findFirstMatchRange(in: annotatedText.text) {
+                    // Calculate rect for the match
+                    if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
+                       let end = textView.position(from: start, offset: matchRange.length),
+                       let textRange = textView.textRange(from: start, to: end) {
+                        let rect = textView.firstRect(for: textRange)
+                        if !rect.isNull && !rect.isInfinite {
+                            callback(rect.origin.y)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Find the first match range in the text for scroll-to-match
+    private func findFirstMatchRange(in content: String) -> NSRange? {
+        let contentLower = content.lowercased()
+        var earliestRange: NSRange? = nil
+        for term in style.searchTerms {
+            let termLower = term.lowercased()
+            if let range = contentLower.range(of: termLower) {
+                let nsRange = NSRange(range, in: content)
+                if earliestRange == nil || nsRange.location < earliestRange!.location {
+                    earliestRange = nsRange
+                }
+            }
+        }
+        return earliestRange
     }
 
     @available(iOS 16.0, *)
@@ -454,6 +584,8 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
                 parent.onStrongsTap?(value)
             case "footnote":
                 parent.onFootnoteTap?(value)
+            case "lexicon":
+                parent.onLexiconTap?(value)
             default:
                 break
             }
@@ -471,13 +603,23 @@ struct CommentaryUnitView: View {
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String, CommentaryFootnote) -> Void)?
 
+    // Display options
+    var hideVerseReference: Bool = false  // Hide "v. X" when context already shows it
+
+    // Scroll-to-match support
+    var shouldReportMatchOffset: Bool = false
+    var scrollCoordinateSpace: String = "commentaryScroll"
+
     init(
         unit: CommentaryUnit,
         abbreviations: [CommentaryAbbreviation]? = nil,
         style: CommentaryRenderer.Style = CommentaryRenderer.defaultStyle,
         onScriptureTap: ((Int, Int?) -> Void)? = nil,
         onStrongsTap: ((String) -> Void)? = nil,
-        onFootnoteTap: ((String, CommentaryFootnote) -> Void)? = nil
+        onFootnoteTap: ((String, CommentaryFootnote) -> Void)? = nil,
+        hideVerseReference: Bool = false,
+        shouldReportMatchOffset: Bool = false,
+        scrollCoordinateSpace: String = "commentaryScroll"
     ) {
         self.unit = unit
         self.abbreviations = abbreviations
@@ -485,6 +627,9 @@ struct CommentaryUnitView: View {
         self.onScriptureTap = onScriptureTap
         self.onStrongsTap = onStrongsTap
         self.onFootnoteTap = onFootnoteTap
+        self.hideVerseReference = hideVerseReference
+        self.shouldReportMatchOffset = shouldReportMatchOffset
+        self.scrollCoordinateSpace = scrollCoordinateSpace
     }
 
     var body: some View {
@@ -494,7 +639,7 @@ struct CommentaryUnitView: View {
                 Text(title)
                     .font(titleFont)
                     .fontWeight(.semibold)
-            } else if unit.type == .verse {
+            } else if unit.type == .verse, !hideVerseReference {
                 Text(verseReference)
                     .font(titleFont)
                     .fontWeight(.semibold)
@@ -508,7 +653,9 @@ struct CommentaryUnitView: View {
                     style: style,
                     onScriptureTap: onScriptureTap,
                     onStrongsTap: onStrongsTap,
-                    onFootnoteTap: { id in handleFootnoteTap(id) }
+                    onFootnoteTap: { id in handleFootnoteTap(id) },
+                    shouldReportMatchOffset: shouldReportMatchOffset,
+                    scrollCoordinateSpace: scrollCoordinateSpace
                 )
             }
 
@@ -538,7 +685,9 @@ struct CommentaryUnitView: View {
                     style: style,
                     onScriptureTap: onScriptureTap,
                     onStrongsTap: onStrongsTap,
-                    onFootnoteTap: { id in handleFootnoteTap(id) }
+                    onFootnoteTap: { id in handleFootnoteTap(id) },
+                    shouldReportMatchOffset: shouldReportMatchOffset,
+                    scrollCoordinateSpace: scrollCoordinateSpace
                 )
             }
 

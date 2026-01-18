@@ -4,18 +4,17 @@
 //
 //  Created by Matthew Bennett on 2023-11-04.
 //
-import RealmSwift
 import SwiftUI
 
 struct PlanView: View {
-    @ObservedRealmObject var user: User
+    @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
     @State private var planViewRefreshId = UUID()
     @State private var showingDatePicker = false
     @State private var showingInfoModal = false
     @State private var date = Date.now
     @State private var plansMetaData: PlansMetaData
+    @State private var plans: [Plan] = []
     @Environment(\.colorScheme) var colorScheme
-    let plans: Results<Plan>
 
     private var iOS26OrLater: Bool {
         if #available(iOS 26, *) {
@@ -25,17 +24,24 @@ struct PlanView: View {
         }
     }
 
-    init(user: User, plans: Results<Plan>, date: Date = Date.now) {
-        self.plans = plans
-        self.user = user
-        _plansMetaData = State(initialValue: PlansMetaData(plans: plans, date: date))
+    init(date: Date = Date.now) {
+        let settings = UserDatabase.shared.getSettings()
+        _userSettings = State(initialValue: settings)
+        let allPlans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+        _plans = State(initialValue: allPlans)
+        _plansMetaData = State(initialValue: PlansMetaData(plans: allPlans, date: date))
     }
 
     var body: some View {
         GeometryReader { geometry in
             NavigationStack {
                 mainContent(geometry: geometry)
+                    .onAppear {
+                        userSettings = UserDatabase.shared.getSettings()
+                    }
                     .onChange(of: planViewRefreshId) {
+                        userSettings = UserDatabase.shared.getSettings()
+                        plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
                         plansMetaData = PlansMetaData(plans: plans, date: date)
                     }
                     .onChange(of: date) {
@@ -52,19 +58,7 @@ struct PlanView: View {
                     .toolbar {
                         ToolbarItem(placement: .bottomBar) {
                             HStack(spacing: 25) {
-                                NavigationLink(destination: PlanPickerView(plans: plans)) {
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "calendar")
-                                            .font(.title3)
-                                            .foregroundColor(.accentColor)
-                                        Text("Plans")
-                                            .font(.caption2)
-                                            .foregroundColor(iOS26OrLater ? .primary : .red)
-                                    }
-                                }
-
                                 NavigationLink(destination: SplitReaderView(
-                                    user: RealmManager.shared.realm.objects(User.self).first!,
                                     date: $date
                                 )) {
                                     VStack(spacing: 4) {
@@ -88,10 +82,34 @@ struct PlanView: View {
                                     }
                                 }
 
+                                NavigationLink(destination: PlanPickerView()) {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "calendar")
+                                            .font(.title3)
+                                            .foregroundColor(.accentColor)
+                                        Text("Plans")
+                                            .font(.caption2)
+                                            .foregroundColor(iOS26OrLater ? .primary : .red)
+                                    }
+                                }
+
+                                NavigationLink(destination: DevotionalPickerView(
+                                    isFullScreen: false,
+                                    showNewProminent: true,
+                                    moduleId: "devotionals"
+                                )) {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "pencil.line")
+                                            .font(.title3)
+                                            .foregroundColor(.accentColor)
+                                        Text("Write")
+                                            .font(.caption2)
+                                            .foregroundColor(iOS26OrLater ? .primary : .red)
+                                    }
+                                }
+
                                 NavigationLink(destination: SettingsView(
-                                    user: user,
                                     externalApps: externalBibleApps,
-                                    plans: plans,
                                     planViewRefreshId: $planViewRefreshId
                                 )) {
                                     VStack(spacing: 4) {
@@ -117,7 +135,7 @@ struct PlanView: View {
     @ViewBuilder
     private func mainContent(geometry: GeometryProxy) -> some View {
         VStack {
-            if user.plans.count > 0 {
+            if !userSettings.planIds.isEmpty {
                 plansScrollView(geometry: geometry)
             } else {
                 emptyStateView
@@ -131,7 +149,7 @@ struct PlanView: View {
     private var emptyStateView: some View {
         VStack {
             Spacer()
-            NavigationLink(destination: PlanPickerView(plans: plans)) {
+            NavigationLink(destination: PlanPickerView()) {
                 HStack {
                     Text(Image(systemName: "plus.circle.fill"))
                     Text("Reading plan")
@@ -165,7 +183,7 @@ struct PlanView: View {
         let planMetaData = plansMetaData.planMetaData.first(where: { $0.id == plan.id })!
         let readings = planMetaData.readingMetaData
 
-        if user.plans.filter("id == \(plan.id)").count > 0 {
+        if userSettings.isPlanSelected(plan.id) {
             Spacer().id(plan.name)
 
             planHeader(plan: plan, planMetaData: planMetaData, readings: readings)
@@ -176,7 +194,7 @@ struct PlanView: View {
 
             readingsContent(planMetaData: planMetaData, geometry: geometry)
 
-            if plan.id != user.plans.last!.id {
+            if plan.id != userSettings.planIds.last {
                 Divider()
             }
         }
@@ -194,7 +212,7 @@ struct PlanView: View {
                         .fontWeight(.black)
 
                     if readings.count > 0 {
-                        readingsRow(planMetaData: planMetaData, readings: readings)
+                        readingsRow(planMetaData: planMetaData)
                     } else {
                         Text("No readings for today")
                             .padding(EdgeInsets(top: 10, leading: 0, bottom: 0, trailing: 0))
@@ -208,14 +226,13 @@ struct PlanView: View {
     // MARK: - Readings Row
 
     @ViewBuilder
-    private func readingsRow(planMetaData: PlanMetaData, readings: [ReadingMetaData]) -> some View {
+    private func readingsRow(planMetaData: PlanMetaData) -> some View {
         HStack {
-            if user.planInAppBible {
+            if userSettings.planInAppBible {
                 NavigationLink(
                     destination: SplitReaderView(
-                        user: RealmManager.shared.realm.objects(User.self).first!,
                         date: $date,
-                        readingMetaData: readings
+                        initialToolbarMode: .plan
                     )
                 ) {
                     VStack {
@@ -244,7 +261,6 @@ struct PlanView: View {
     private func readingsContent(planMetaData: PlanMetaData, geometry: GeometryProxy) -> some View {
         if geometry.size.width < 600 {
             ReadingsView(
-                user: RealmManager.shared.realm.objects(User.self).first!,
                 planMetaData: planMetaData,
                 stackHorizontally: false
             )
@@ -252,7 +268,6 @@ struct PlanView: View {
             .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
         } else {
             ReadingsView(
-                user: RealmManager.shared.realm.objects(User.self).first!,
                 planMetaData: planMetaData,
                 stackHorizontally: true
             )
@@ -274,8 +289,5 @@ struct TrailingIconLabelStyle: LabelStyle {
 }
 
 #Preview {
-    PlanView(
-        user: RealmManager.shared.realm.objects(User.self).first!,
-        plans: RealmManager.shared.realm.objects(Plan.self)
-    )
+    PlanView()
 }

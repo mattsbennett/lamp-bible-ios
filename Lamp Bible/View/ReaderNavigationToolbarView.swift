@@ -6,13 +6,13 @@
 //
 
 import SwiftUI
-import RealmSwift
 
 struct ReaderNavigationToolbarView: ToolbarContent {
     @Environment(\.dismiss) var dismiss
-    @ObservedRealmObject var user: User
+    @Binding var userSettings: UserSettings
     @Binding var readingMetaData: [ReadingMetaData]?
-    @Binding var translation: Translation
+    @Binding var translationId: String
+    @Binding var translationAbbreviation: String
     @Binding var currentVerseId: Int
     @Binding var showingBookPicker: Bool
     @Binding var showingOptionsMenu: Bool
@@ -35,10 +35,10 @@ struct ReaderNavigationToolbarView: ToolbarContent {
                 }
             } label: {
                 VStack {
-                    let currentVerse = RealmManager.shared.realm.objects(Verse.self).filter("id == \(currentVerseId)").first
-                    let book = currentVerse.flatMap { RealmManager.shared.realm.objects(Book.self).filter("id == \($0.b)").first }
-                    Text(translation.abbreviation).bold().font(.system(size: 14))
-                    Text((book?.name ?? "") + " \(currentVerse?.c ?? 1)").font(.caption2).foregroundStyle(Color.primary)
+                    let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
+                    let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
+                    Text(translationAbbreviation).bold().font(.system(size: 14))
+                    Text((book?.name ?? "") + " \(currentChapter)").font(.caption2).foregroundStyle(Color.primary)
                 }
                 .padding(.horizontal, 4)
             }
@@ -91,11 +91,11 @@ struct ReaderNavigationToolbarView: ToolbarContent {
                     // Font size controls - compact row
                     HStack(spacing: 0) {
                         Button {
-                            if user.readerFontSize > 12 {
-                                try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else { return }
-                                    thawedUser.readerFontSize = thawedUser.readerFontSize - 2
+                            if userSettings.readerFontSize > 12 {
+                                try? UserDatabase.shared.updateSettings { settings in
+                                    settings.readerFontSize = settings.readerFontSize - 2
                                 }
+                                userSettings.readerFontSize -= 2
                             }
                         } label: {
                             Image(systemName: "textformat.size.smaller")
@@ -104,17 +104,17 @@ struct ReaderNavigationToolbarView: ToolbarContent {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(user.readerFontSize <= 12)
+                        .disabled(userSettings.readerFontSize <= 12)
 
                         Divider()
                             .frame(height: 20)
 
                         Button {
-                            if user.readerFontSize < 30 {
-                                try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else { return }
-                                    thawedUser.readerFontSize = thawedUser.readerFontSize + 2
+                            if userSettings.readerFontSize < 30 {
+                                try? UserDatabase.shared.updateSettings { settings in
+                                    settings.readerFontSize = settings.readerFontSize + 2
                                 }
+                                userSettings.readerFontSize += 2
                             }
                         } label: {
                             Image(systemName: "textformat.size.larger")
@@ -123,7 +123,7 @@ struct ReaderNavigationToolbarView: ToolbarContent {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(user.readerFontSize >= 30)
+                        .disabled(userSettings.readerFontSize >= 30)
                     }
                     .background(Color(UIColor.secondarySystemGroupedBackground))
                     .cornerRadius(14)

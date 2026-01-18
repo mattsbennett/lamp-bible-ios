@@ -6,8 +6,8 @@
 //
 
 import Foundation
-import RealmSwift
 import SwiftUI
+import GRDB
 
 /// Tracks who initiated the most recent scroll to prevent feedback loops
 /// Used by ReaderView for legacy compatibility
@@ -17,12 +17,20 @@ enum ScrollOrigin: Equatable {
     case toolPanel
 }
 
+/// Preference key to track divider position for overlay alignment
+struct DividerPositionKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct SplitReaderView: View {
-    @ObservedRealmObject var user: User
     @Binding var date: Date
     var readingMetaData: [ReadingMetaData]?
     var initialVerseId: Int? = nil
-    var initialTranslation: Translation? = nil
+    var initialTranslationId: String? = nil  // GRDB translation ID
+    var initialToolbarMode: BottomToolbarMode? = nil
 
     @State private var requestScrollToVerseId: Int? = nil
     @State private var requestScrollAnimated: Bool = true
@@ -32,6 +40,7 @@ struct SplitReaderView: View {
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     @AppStorage("notesPanelOrientation") private var notesPanelOrientation: String = "bottom"
     @State private var hasUserScrolled: Bool = false
+    @State private var toolbarsHidden: Bool = false
 
     // Derived from currentVerseId - always in sync
     private var currentBook: Int {
@@ -49,6 +58,9 @@ struct SplitReaderView: View {
     @SceneStorage("toolPanelRightWidthV2") private var storedRightPanelWidth: Double = 0
     @State private var bottomPanelHeight: CGFloat = 0
     @State private var rightPanelWidth: CGFloat = 350
+
+    // Divider position tracking for overlay alignment
+    @State private var dividerY: CGFloat = 0
 
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
 
@@ -99,11 +111,11 @@ struct SplitReaderView: View {
                         readerContent
                             .frame(maxWidth: .infinity)
 
-                        // Static Divider Space
+                        // Static Divider
                         Rectangle()
                             .fill(Color(UIColor.separator))
                             .frame(width: 1)
-                            .padding(.horizontal, 5.5) // Total 12 width
+                            .padding(.horizontal, 5.5)
                             .frame(width: 12)
                             .contentShape(Rectangle())
 
@@ -115,34 +127,40 @@ struct SplitReaderView: View {
                         readerContent
                             .frame(height: geometry.size.height - bottomPanelHeight - 12)
 
-                        // Static Divider Space
-                        Rectangle()
-                            .fill(Color(UIColor.separator))
-                            .frame(height: 1)
-                            .padding(.vertical, 5.5) // Total 12 height
-                            .frame(height: 12)
-                            .contentShape(Rectangle())
+                        // Divider with integrated drag handle
+                        BottomPanelDivider(
+                            panelHeight: $bottomPanelHeight,
+                            containerHeight: geometry.size.height,
+                            minPanelSize: minPanelSize,
+                            maxPanelRatio: maxPanelRatio,
+                            onDragEnd: {
+                                storedBottomPanelHeight = Double(bottomPanelHeight)
+                            }
+                        )
 
                         toolPanelContent
                             .frame(height: bottomPanelHeight)
                     }
                 }
 
-                // Layer 2: Interactive Drag Overlay
-                SplitDragOverlay(
-                    isVertical: effectiveOrientation == "right",
-                    panelSize: effectiveOrientation == "right" ? $rightPanelWidth : $bottomPanelHeight,
-                    containerSize: geometry.size,
-                    minPanelSize: minPanelSize,
-                    maxPanelRatio: maxPanelRatio,
-                    onDragEnd: { newSize in
-                        if effectiveOrientation == "right" {
+                // Layer 2: Interactive Drag Overlay (only for right panel - bottom uses inline handle)
+                if effectiveOrientation == "right" {
+                    SplitDragOverlay(
+                        isVertical: true,
+                        panelSize: $rightPanelWidth,
+                        containerSize: geometry.size,
+                        minPanelSize: minPanelSize,
+                        maxPanelRatio: maxPanelRatio,
+                        dividerY: dividerY,
+                        onDragEnd: { newSize in
                             storedRightPanelWidth = Double(newSize)
-                        } else {
-                            storedBottomPanelHeight = Double(newSize)
                         }
-                    }
-                )
+                    )
+                }
+            }
+            .coordinateSpace(name: "splitContainer")
+            .onPreferenceChange(DividerPositionKey.self) { value in
+                dividerY = value
             }
             // Allow split content (including ToolPanelView) to extend behind the bottom toolbar
             // so there isn't a blank/black strip under it.
@@ -173,30 +191,17 @@ struct SplitReaderView: View {
 
     @ViewBuilder
     private var readerContent: some View {
-        Group {
-            if let translation = initialTranslation {
-                ReaderView(
-                    user: user,
-                    date: $date,
-                    readingMetaData: readingMetaData,
-                    translation: translation,
-                    onVerseAction: handleVerseAction,
-                    requestScrollToVerseId: $requestScrollToVerseId,
-                    requestScrollAnimated: $requestScrollAnimated,
-                    visibleVerseId: $currentVerseId
-                )
-            } else {
-                ReaderView(
-                    user: user,
-                    date: $date,
-                    readingMetaData: readingMetaData,
-                    onVerseAction: handleVerseAction,
-                    requestScrollToVerseId: $requestScrollToVerseId,
-                    requestScrollAnimated: $requestScrollAnimated,
-                    visibleVerseId: $currentVerseId
-                )
-            }
-        }
+        ReaderView(
+            date: $date,
+            readingMetaData: readingMetaData,
+            translationId: initialTranslationId,
+            onVerseAction: handleVerseAction,
+            requestScrollToVerseId: $requestScrollToVerseId,
+            requestScrollAnimated: $requestScrollAnimated,
+            visibleVerseId: $currentVerseId,
+            toolbarsHidden: $toolbarsHidden,
+            initialToolbarMode: initialToolbarMode
+        )
         .onAppear {
             // Scroll to initial verse if provided
             if let verseId = initialVerseId, !hasAppliedInitialVerse {
@@ -213,12 +218,12 @@ struct SplitReaderView: View {
             book: currentBook,
             chapter: currentChapter,
             currentVerse: currentVerse,
-            user: user,
             onNavigateToVerse: { verseId in
                 // Direct navigation - bypass coordinator, just scroll reader
                 requestScrollAnimated = false
                 requestScrollToVerseId = verseId
-            }
+            },
+            toolbarsHidden: $toolbarsHidden
         )
     }
 
@@ -230,10 +235,138 @@ struct SplitReaderView: View {
                 notesPanelVisible = true
             }
             // Tool panel will pick up the verse from currentVerse
-        case .viewCrossReferences:
-            // Handled by ReaderView internally
-            break
         }
+    }
+}
+
+/// Inline draggable divider that lives within the layout (not as an overlay)
+struct DraggableDivider: View {
+    let isVertical: Bool
+    @Binding var panelSize: CGFloat
+    let containerSize: CGFloat
+    let minPanelSize: CGFloat
+    let maxPanelRatio: CGFloat
+    let onDragEnd: (CGFloat) -> Void
+
+    @State private var dragOffset: CGFloat = 0
+    @State private var isDragging: Bool = false
+    @State private var initialPanelSize: CGFloat? = nil
+    @State private var lastUpdate: Date = Date.distantPast
+
+    private let handleThickness: CGFloat = 12
+    private let throttleInterval: TimeInterval = 0.032
+
+    var body: some View {
+        ZStack {
+            // Divider line
+            Rectangle()
+                .fill(Color(UIColor.separator))
+                .frame(width: isVertical ? 1 : nil, height: isVertical ? nil : 1)
+
+            // Handle pill
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color(UIColor.systemGray3))
+                .frame(width: isVertical ? 4 : 40, height: isVertical ? 40 : 4)
+        }
+        .frame(width: isVertical ? handleThickness : nil, height: isVertical ? nil : handleThickness)
+        .background(isDragging ? Color.accentColor.opacity(0.15) : Color.clear)
+        .contentShape(Rectangle())
+        .offset(x: isVertical ? dragOffset : 0, y: isVertical ? 0 : dragOffset)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    if !isDragging {
+                        isDragging = true
+                        initialPanelSize = panelSize
+                    }
+
+                    let translation = isVertical ? value.translation.width : value.translation.height
+                    // Clamp the visual offset to valid range
+                    let clampedTranslation = clampedDragOffset(translation)
+                    dragOffset = clampedTranslation
+
+                    // Throttled update of actual panel size
+                    let now = Date()
+                    if now.timeIntervalSince(lastUpdate) > throttleInterval {
+                        updatePanelSize(translation: translation)
+                        lastUpdate = now
+                    }
+                }
+                .onEnded { value in
+                    let translation = isVertical ? value.translation.width : value.translation.height
+                    updatePanelSize(translation: translation)
+
+                    if let finalSize = initialPanelSize {
+                        let newSize = calculateNewSize(baseSize: finalSize, translation: translation)
+                        onDragEnd(newSize)
+                    }
+
+                    isDragging = false
+                    dragOffset = 0
+                    initialPanelSize = nil
+                }
+        )
+    }
+
+    private func calculateNewSize(baseSize: CGFloat, translation: CGFloat) -> CGFloat {
+        let newSize = baseSize - translation
+        return min(max(newSize, minPanelSize), containerSize * maxPanelRatio)
+    }
+
+    private func clampedDragOffset(_ translation: CGFloat) -> CGFloat {
+        guard let baseSize = initialPanelSize else { return translation }
+        let newSize = baseSize - translation
+        let clampedSize = min(max(newSize, minPanelSize), containerSize * maxPanelRatio)
+        return baseSize - clampedSize
+    }
+
+    private func updatePanelSize(translation: CGFloat) {
+        guard let baseSize = initialPanelSize else { return }
+        panelSize = calculateNewSize(baseSize: baseSize, translation: translation)
+    }
+}
+
+/// Inline divider with integrated drag handle for bottom panel
+struct BottomPanelDivider: View {
+    @Binding var panelHeight: CGFloat
+    let containerHeight: CGFloat
+    let minPanelSize: CGFloat
+    let maxPanelRatio: CGFloat
+    let onDragEnd: () -> Void
+
+    @State private var isDragging: Bool = false
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color(UIColor.separator))
+                .frame(height: 1)
+
+            // Drag handle pill
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color(UIColor.systemGray3))
+                .frame(width: 40, height: 4)
+        }
+        .padding(.vertical, 5.5)
+        .frame(height: 12)
+        .frame(maxWidth: .infinity)
+        .background(isDragging ? Color.accentColor.opacity(0.1) : Color.clear)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    if !isDragging {
+                        isDragging = true
+                    }
+                    let translation = value.translation.height
+                    let newHeight = max(minPanelSize, min(panelHeight - translation, containerHeight * maxPanelRatio))
+                    panelHeight = newHeight
+                }
+                .onEnded { _ in
+                    isDragging = false
+                    onDragEnd()
+                }
+        )
     }
 }
 
@@ -243,12 +376,14 @@ struct SplitDragOverlay: View {
     let containerSize: CGSize
     let minPanelSize: CGFloat
     let maxPanelRatio: CGFloat
+    let dividerY: CGFloat  // Y position of actual divider in splitContainer coordinate space
     let onDragEnd: (CGFloat) -> Void
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging: Bool = false
     @State private var initialPanelSize: CGFloat? = nil
     @State private var lastUpdate: Date = Date.distantPast
+    @State private var keyboardHeight: CGFloat = 0
 
     // Constants matching the main view
     private let handleThickness: CGFloat = 12
@@ -293,6 +428,14 @@ struct SplitDragOverlay: View {
                         }
                 )
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+            if let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                keyboardHeight = keyboardFrame.height
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardHeight = 0
+        }
     }
 
     private func calculateNewSize(baseSize: CGFloat, translation: CGFloat) -> CGFloat {
@@ -307,16 +450,28 @@ struct SplitDragOverlay: View {
     }
 
     private var handlePosition: CGPoint {
-        let currentBaseSize = initialPanelSize ?? panelSize
-        // Calculate where the handle *should* be based on the drag, not the lagging panelSize
-        let visualPanelSize = calculateNewSize(baseSize: currentBaseSize, translation: dragOffset)
-
         if isVertical {
+            let currentBaseSize = initialPanelSize ?? panelSize
+            let visualPanelSize = calculateNewSize(baseSize: currentBaseSize, translation: dragOffset)
             let x = containerSize.width - visualPanelSize - (handleThickness / 2)
             return CGPoint(x: x, y: containerSize.height / 2)
         } else {
-            let y = containerSize.height - visualPanelSize - (handleThickness / 2)
-            return CGPoint(x: containerSize.width / 2, y: y)
+            // For horizontal split (bottom panel):
+            // - During drag: calculate from drag offset for smooth feedback
+            // - Otherwise: use actual divider Y position (handles keyboard push-up)
+            // Minimum Y to keep handle below top header area
+            let minY: CGFloat = handleThickness
+
+            if isDragging {
+                let currentBaseSize = initialPanelSize ?? panelSize
+                let visualPanelSize = calculateNewSize(baseSize: currentBaseSize, translation: dragOffset)
+                let y = containerSize.height - visualPanelSize - (handleThickness / 2)
+                return CGPoint(x: containerSize.width / 2, y: max(y, minY))
+            } else {
+                // Use dividerY directly - it tracks the actual divider position
+                let y = dividerY > 0 ? dividerY : containerSize.height - panelSize - (handleThickness / 2)
+                return CGPoint(x: containerSize.width / 2, y: max(y, minY))
+            }
         }
     }
 
@@ -360,7 +515,6 @@ struct SplitDragOverlay: View {
 
         var body: some View {
             SplitReaderView(
-                user: RealmManager.shared.realm.objects(User.self).first!,
                 date: $date
             )
         }

@@ -29,14 +29,153 @@ class ModuleDatabase {
     private func setupDatabase() throws {
         var config = Configuration()
         config.prepareDatabase { db in
-            // Enable WAL mode for concurrent access
+            // Enable WAL mode for better crash resilience
             try db.execute(sql: "PRAGMA journal_mode = WAL")
+            // Enable synchronous mode for durability
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
+        }
+
+        // Try to open the database
+        do {
+            dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
+
+            // Check database integrity
+            let isValid = try checkDatabaseIntegrity()
+            if !isValid {
+                print("[ModuleDatabase] Database integrity check failed, attempting recovery...")
+                try recoverCorruptedDatabase()
+            }
+
+            // Run migrations
+            try migrator.migrate(dbQueue)
+        } catch {
+            print("[ModuleDatabase] Failed to open database: \(error)")
+            print("[ModuleDatabase] Attempting to delete and recreate database...")
+
+            // Delete corrupted database files
+            try? FileManager.default.removeItem(at: databaseURL)
+            try? FileManager.default.removeItem(at: databaseURL.appendingPathExtension("wal"))
+            try? FileManager.default.removeItem(at: databaseURL.appendingPathExtension("shm"))
+
+            // Create fresh database
+            dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
+            try migrator.migrate(dbQueue)
+        }
+    }
+
+    private func checkDatabaseIntegrity() throws -> Bool {
+        try dbQueue.read { db in
+            let result = try String.fetchOne(db, sql: "PRAGMA integrity_check")
+            return result == "ok"
+        }
+    }
+
+    private func recoverCorruptedDatabase() throws {
+        // Close existing connection
+        dbQueue = nil
+
+        // Try to recover by copying to a new database
+        let backupURL = databaseURL.deletingLastPathComponent().appendingPathComponent("usermodules_backup.db")
+
+        // Delete old backup if exists
+        try? FileManager.default.removeItem(at: backupURL)
+
+        // Rename current (corrupted) database as backup
+        try? FileManager.default.moveItem(at: databaseURL, to: backupURL)
+
+        // Delete WAL files from corrupted database
+        try? FileManager.default.removeItem(at: databaseURL.appendingPathExtension("wal"))
+        try? FileManager.default.removeItem(at: databaseURL.appendingPathExtension("shm"))
+
+        // Create fresh database
+        var config = Configuration()
+        config.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
         }
 
         dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
 
-        // Run migrations
+        print("[ModuleDatabase] Database recovered - data may have been lost")
+    }
+
+    // MARK: - Runtime Recovery
+
+    private var isRecovering = false
+    private var lastCorruptionError: Date?
+
+    /// Attempts to recover database if corrupted, returns true if recovered or was healthy
+    func ensureDatabaseHealthy() -> Bool {
+        guard !isRecovering else { return false }
+
+        // Don't attempt recovery more than once per minute to avoid loops
+        if let lastError = lastCorruptionError, Date().timeIntervalSince(lastError) < 60 {
+            print("[ModuleDatabase] Skipping recovery - too recent")
+            return false
+        }
+
+        do {
+            let isValid = try checkDatabaseIntegrity()
+            if !isValid {
+                print("[ModuleDatabase] Runtime integrity check failed, recovering...")
+                lastCorruptionError = Date()
+                isRecovering = true
+                defer { isRecovering = false }
+
+                try recoverCorruptedDatabase()
+                try migrator.migrate(dbQueue)
+                return true
+            }
+            return true
+        } catch {
+            print("[ModuleDatabase] Failed to check/recover database: \(error)")
+            lastCorruptionError = Date()
+            return false
+        }
+    }
+
+    /// Standard write - no inline recovery to avoid cascading issues
+    func write<T>(_ block: (Database) throws -> T) throws -> T {
+        try dbQueue.write(block)
+    }
+
+    /// Read from database
+    func read<T>(_ block: (Database) throws -> T) throws -> T {
+        try dbQueue.read(block)
+    }
+
+    /// Write without transaction - for operations like ATTACH/DETACH
+    func writeWithoutTransaction<T>(_ block: (Database) throws -> T) throws -> T {
+        try dbQueue.writeWithoutTransaction(block)
+    }
+
+    /// Force reset the database - deletes all data and recreates
+    func forceResetDatabase() throws {
+        print("[ModuleDatabase] Force resetting database...")
+
+        isRecovering = true
+        defer { isRecovering = false }
+
+        // Close existing connection
+        dbQueue = nil
+
+        // Delete all database files
+        try? FileManager.default.removeItem(at: databaseURL)
+        try? FileManager.default.removeItem(at: databaseURL.appendingPathExtension("wal"))
+        try? FileManager.default.removeItem(at: databaseURL.appendingPathExtension("shm"))
+
+        // Recreate
+        var config = Configuration()
+        config.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
+        }
+
+        dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
         try migrator.migrate(dbQueue)
+
+        lastCorruptionError = nil
+        print("[ModuleDatabase] Database reset complete")
     }
 
     private var migrator: DatabaseMigrator {
@@ -458,21 +597,429 @@ class ModuleDatabase {
             try db.execute(sql: "UPDATE modules SET file_hash = NULL WHERE type = 'commentary'")
         }
 
+        migrator.registerMigration("v5") { db in
+            // Add series fields to modules table for dictionary series grouping
+            try db.alter(table: "modules") { t in
+                t.add(column: "series_full", .text)
+                t.add(column: "series_abbrev", .text)
+            }
+            // Create index for efficient series lookups
+            try db.create(index: "idx_modules_series", on: "modules", columns: ["series_full"])
+            // Clear file hashes for dictionary modules to force re-import with series info
+            try db.execute(sql: "UPDATE modules SET file_hash = NULL WHERE type = 'dictionary'")
+        }
+
+        migrator.registerMigration("v6") { db in
+            // Force re-import of dictionary modules to pick up series info
+            // (in case v5 ran before the file_hash clearing was added)
+            try db.execute(sql: "UPDATE modules SET file_hash = NULL WHERE type = 'dictionary'")
+        }
+
+        migrator.registerMigration("v7") { db in
+            // Force re-import of dictionary modules after SQLite import fix
+            // Now reads series_full/series_abbrev from module_metadata table
+            try db.execute(sql: "UPDATE modules SET file_hash = NULL WHERE type = 'dictionary'")
+        }
+
+        // Migration v8: Enhanced notes schema with footnotes and search_text
+        migrator.registerMigration("v8") { db in
+            // Add new columns to note_entries for footnotes and combined search text
+            try db.alter(table: "note_entries") { t in
+                t.add(column: "footnotes_json", .text)  // JSON array of footnotes
+                t.add(column: "search_text", .text)     // Combined text for FTS (content + footnotes)
+            }
+
+            // Populate search_text from existing content for backward compatibility
+            try db.execute(sql: """
+                UPDATE note_entries SET search_text = content
+            """)
+
+            // Drop old FTS triggers for notes
+            try db.execute(sql: "DROP TRIGGER IF EXISTS note_fts_insert")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS note_fts_update")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS note_fts_delete")
+
+            // Drop and recreate note_fts to use search_text instead of content
+            try db.execute(sql: "DROP TABLE IF EXISTS note_fts")
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE note_fts USING fts5(
+                    title, search_text,
+                    content='note_entries',
+                    content_rowid='rowid'
+                )
+            """)
+
+            // Repopulate FTS index
+            try db.execute(sql: """
+                INSERT INTO note_fts(rowid, title, search_text)
+                SELECT rowid, title, search_text FROM note_entries
+            """)
+
+            // Create new FTS triggers
+            try db.execute(sql: """
+                CREATE TRIGGER note_fts_insert AFTER INSERT ON note_entries BEGIN
+                    INSERT INTO note_fts(rowid, title, search_text)
+                    VALUES (new.rowid, new.title, new.search_text);
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER note_fts_update AFTER UPDATE ON note_entries BEGIN
+                    UPDATE note_fts SET title = new.title, search_text = new.search_text
+                    WHERE rowid = new.rowid;
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER note_fts_delete AFTER DELETE ON note_entries BEGIN
+                    DELETE FROM note_fts WHERE rowid = old.rowid;
+                END
+            """)
+        }
+
+        // Migration v9: Translation tables with GRDB support
+        migrator.registerMigration("v9") { db in
+            // Create translations table (metadata)
+            try db.create(table: "translations") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("abbreviation", .text).notNull()
+                t.column("description", .text)
+                t.column("language", .text).notNull()
+                t.column("language_name", .text)
+                t.column("text_direction", .text).notNull().defaults(to: "ltr")
+                t.column("translation_philosophy", .text)
+                t.column("year", .integer)
+                t.column("publisher", .text)
+                t.column("copyright", .text)
+                t.column("copyright_year", .integer)
+                t.column("license", .text)
+                t.column("source_texts_json", .text)
+                t.column("features_json", .text)
+                t.column("versification", .text).defaults(to: "standard")
+                t.column("file_path", .text)
+                t.column("file_hash", .text)
+                t.column("last_synced", .integer)
+                t.column("is_bundled", .integer).notNull().defaults(to: 0)
+                t.column("created_at", .integer)
+                t.column("updated_at", .integer)
+            }
+            try db.create(index: "idx_translations_language", on: "translations", columns: ["language"])
+            try db.create(index: "idx_translations_bundled", on: "translations", columns: ["is_bundled"])
+
+            // Create translation_books table (book metadata per translation)
+            try db.create(table: "translation_books") { t in
+                t.column("id", .text).primaryKey()
+                t.column("translation_id", .text).notNull().references("translations", onDelete: .cascade)
+                t.column("book_number", .integer).notNull()
+                t.column("book_id", .text).notNull()
+                t.column("name", .text).notNull()
+                t.column("testament", .text).notNull()
+                t.column("chapter_count", .integer).notNull()
+                t.uniqueKey(["translation_id", "book_number"])
+            }
+            try db.create(index: "idx_trans_books_translation", on: "translation_books", columns: ["translation_id"])
+            try db.create(index: "idx_trans_books_number", on: "translation_books", columns: ["book_number"])
+
+            // Create translation_verses table
+            try db.create(table: "translation_verses") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("translation_id", .text).notNull().references("translations", onDelete: .cascade)
+                t.column("ref", .integer).notNull()
+                t.column("book", .integer).notNull()
+                t.column("chapter", .integer).notNull()
+                t.column("verse", .integer).notNull()
+                t.column("text", .text).notNull()
+                t.column("annotations_json", .text)
+                t.column("footnotes_json", .text)
+                t.column("footnote_refs_json", .text)
+                t.column("paragraph", .integer).defaults(to: 0)
+                t.column("poetry_json", .text)
+                t.uniqueKey(["translation_id", "ref"])
+            }
+            try db.create(index: "idx_verses_translation", on: "translation_verses", columns: ["translation_id"])
+            try db.create(index: "idx_verses_ref", on: "translation_verses", columns: ["ref"])
+            try db.create(index: "idx_verses_book_chapter", on: "translation_verses", columns: ["translation_id", "book", "chapter"])
+
+            // Create translation_headings table
+            try db.create(table: "translation_headings") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("translation_id", .text).notNull().references("translations", onDelete: .cascade)
+                t.column("book", .integer).notNull()
+                t.column("chapter", .integer).notNull()
+                t.column("before_verse", .integer).notNull()
+                t.column("level", .integer).notNull().defaults(to: 1)
+                t.column("text", .text).notNull()
+            }
+            try db.create(index: "idx_headings_chapter", on: "translation_headings", columns: ["translation_id", "book", "chapter"])
+
+            // Create FTS5 virtual table for verse search
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE translation_verses_fts USING fts5(
+                    text,
+                    content='translation_verses',
+                    content_rowid='id',
+                    tokenize='unicode61 remove_diacritics 2'
+                )
+            """)
+
+            // FTS triggers for translation_verses
+            try db.execute(sql: """
+                CREATE TRIGGER translation_verses_fts_insert AFTER INSERT ON translation_verses BEGIN
+                    INSERT INTO translation_verses_fts(rowid, text)
+                    VALUES (new.id, new.text);
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER translation_verses_fts_update AFTER UPDATE ON translation_verses BEGIN
+                    UPDATE translation_verses_fts SET text = new.text
+                    WHERE rowid = new.id;
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER translation_verses_fts_delete AFTER DELETE ON translation_verses BEGIN
+                    DELETE FROM translation_verses_fts WHERE rowid = old.id;
+                END
+            """)
+        }
+
+        // Migration v10: Reading plans tables
+        migrator.registerMigration("v10") { db in
+            // Create plans table (metadata)
+            try db.create(table: "plans") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("description", .text)
+                t.column("author", .text)
+                t.column("full_description", .text)
+                t.column("duration", .integer)           // Number of days (typically 366)
+                t.column("readings_per_day", .integer)   // Typical readings per day
+                t.column("file_path", .text)
+                t.column("file_hash", .text)
+                t.column("last_synced", .integer)
+                t.column("created_at", .integer)
+                t.column("updated_at", .integer)
+            }
+
+            // Create plan_days table
+            try db.create(table: "plan_days") { t in
+                t.column("plan_id", .text).notNull().references("plans", onDelete: .cascade)
+                t.column("day", .integer).notNull()
+                t.column("readings_json", .text)  // JSON array of readings [{sv:..., ev:...}]
+                t.primaryKey(["plan_id", "day"])
+            }
+            try db.create(index: "idx_plan_days_plan", on: "plan_days", columns: ["plan_id"])
+        }
+
+        // Migration v11: Rename bible-notes module to notes
+        migrator.registerMigration("v11") { db in
+            // Check if bible-notes module exists
+            let oldModuleExists = try Row.fetchOne(db, sql: "SELECT 1 FROM modules WHERE id = 'bible-notes'") != nil
+
+            if oldModuleExists {
+                // Check if new "notes" module already exists
+                let newModuleExists = try Row.fetchOne(db, sql: "SELECT 1 FROM modules WHERE id = 'notes'") != nil
+
+                if newModuleExists {
+                    // Both exist - migrate entries from bible-notes to notes, then delete old module
+                    try db.execute(sql: "UPDATE note_entries SET module_id = 'notes' WHERE module_id = 'bible-notes'")
+                    try db.execute(sql: "DELETE FROM modules WHERE id = 'bible-notes'")
+                } else {
+                    // Only old exists - update note_entries first (disable FK temporarily), then rename module
+                    try db.execute(sql: "PRAGMA foreign_keys = OFF")
+                    try db.execute(sql: "UPDATE note_entries SET module_id = 'notes' WHERE module_id = 'bible-notes'")
+                    try db.execute(sql: "UPDATE modules SET id = 'notes', name = 'Notes', file_path = 'notes.json' WHERE id = 'bible-notes'")
+                    try db.execute(sql: "PRAGMA foreign_keys = ON")
+                }
+            }
+        }
+
+        // Migration v12: Commentary series table and series_id in modules
+        migrator.registerMigration("v12") { db in
+            // Create commentary_series table for series-level metadata
+            try db.create(table: "commentary_series") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("abbreviation", .text).notNull()
+                t.column("description", .text)
+                t.column("editor", .text)
+                t.column("publisher", .text)
+                t.column("testament", .text)            // "OT", "NT", or "both"
+                t.column("language", .text)
+                t.column("website", .text)
+                t.column("editor_preface_json", .text)  // Editor's preface as AnnotatedText JSON
+                t.column("introduction_json", .text)    // Series introduction as AnnotatedText JSON
+                t.column("abbreviations_json", .text)   // Series-wide abbreviations JSON array
+                t.column("bibliography_json", .text)    // Series bibliography JSON array
+                t.column("volumes_json", .text)         // List of volumes in series JSON array
+            }
+
+            // Add series_id column to modules table (FK to commentary_series)
+            try db.alter(table: "modules") { t in
+                t.add(column: "series_id", .text).references("commentary_series", onDelete: .setNull)
+            }
+
+            // Create index for efficient series lookups on commentary modules
+            try db.create(index: "idx_modules_series_id", on: "modules", columns: ["series_id"])
+        }
+
+        // Migration v13: Enhanced devotional schema for user-editable devotionals
+        migrator.registerMigration("v13") { db in
+            // Drop old FTS triggers for devotionals
+            try db.execute(sql: "DROP TRIGGER IF EXISTS devotional_fts_insert")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS devotional_fts_update")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS devotional_fts_delete")
+
+            // Drop old FTS table
+            try db.execute(sql: "DROP TABLE IF EXISTS devotional_fts")
+
+            // Create new devotional_entries table with full schema
+            try db.execute(sql: """
+                CREATE TABLE devotional_entries_new (
+                    id TEXT PRIMARY KEY,
+                    module_id TEXT NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    subtitle TEXT,
+                    author TEXT,
+                    date TEXT,
+                    tags TEXT,
+                    category TEXT,
+                    series_id TEXT,
+                    series_name TEXT,
+                    series_order INTEGER,
+                    key_scriptures_json TEXT,
+                    summary_json TEXT,
+                    content_json TEXT NOT NULL,
+                    footnotes_json TEXT,
+                    related_ids TEXT,
+                    created INTEGER,
+                    last_modified INTEGER,
+                    search_text TEXT
+                )
+            """)
+
+            // Migrate existing data from old table
+            try db.execute(sql: """
+                INSERT INTO devotional_entries_new (id, module_id, title, date, tags, content_json, last_modified, search_text)
+                SELECT id, module_id, title, month_day, tags, content, last_modified, content
+                FROM devotional_entries
+            """)
+
+            // Drop old table and rename new one
+            try db.execute(sql: "DROP TABLE devotional_entries")
+            try db.execute(sql: "ALTER TABLE devotional_entries_new RENAME TO devotional_entries")
+
+            // Recreate indexes
+            try db.create(index: "idx_dev_module", on: "devotional_entries", columns: ["module_id"])
+            try db.create(index: "idx_dev_date", on: "devotional_entries", columns: ["date"])
+            try db.create(index: "idx_dev_category", on: "devotional_entries", columns: ["category"])
+            try db.create(index: "idx_dev_series", on: "devotional_entries", columns: ["series_id"])
+
+            // Create new FTS5 virtual table (title + search_text for manageable index size)
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE devotional_entries_fts USING fts5(
+                    title, search_text,
+                    content='devotional_entries',
+                    content_rowid='rowid'
+                )
+            """)
+
+            // Populate FTS table with existing data
+            try db.execute(sql: """
+                INSERT INTO devotional_entries_fts(rowid, title, search_text)
+                SELECT rowid, title, search_text FROM devotional_entries
+            """)
+
+            // Create new FTS triggers
+            try db.execute(sql: """
+                CREATE TRIGGER devotional_fts_insert AFTER INSERT ON devotional_entries BEGIN
+                    INSERT INTO devotional_entries_fts(rowid, title, search_text)
+                    VALUES (new.rowid, new.title, new.search_text);
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER devotional_fts_update AFTER UPDATE ON devotional_entries BEGIN
+                    UPDATE devotional_entries_fts SET
+                        title = new.title,
+                        search_text = new.search_text
+                    WHERE rowid = new.rowid;
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER devotional_fts_delete AFTER DELETE ON devotional_entries BEGIN
+                    DELETE FROM devotional_entries_fts WHERE rowid = old.rowid;
+                END
+            """)
+        }
+
+        // v14: Fix FTS table - remove external content mode to prevent corruption
+        // External content FTS tables can get out of sync and cause corruption
+        migrator.registerMigration("v14") { db in
+            // Check if the problematic FTS table exists
+            let tables = try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='devotional_entries_fts'")
+            guard !tables.isEmpty else { return }
+
+            print("[ModuleDatabase] v14: Rebuilding FTS table without external content mode")
+
+            // Drop old triggers
+            try db.execute(sql: "DROP TRIGGER IF EXISTS devotional_fts_insert")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS devotional_fts_update")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS devotional_fts_delete")
+
+            // Drop old FTS table
+            try db.execute(sql: "DROP TABLE IF EXISTS devotional_entries_fts")
+
+            // Create new self-contained FTS table (stores its own content)
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE IF NOT EXISTS devotional_entries_fts USING fts5(
+                    id UNINDEXED,
+                    title,
+                    search_text
+                )
+            """)
+
+            // Populate from existing data
+            try db.execute(sql: """
+                INSERT INTO devotional_entries_fts(id, title, search_text)
+                SELECT id, title, search_text FROM devotional_entries
+            """)
+
+            // Create triggers that use id instead of rowid
+            try db.execute(sql: """
+                CREATE TRIGGER devotional_fts_insert AFTER INSERT ON devotional_entries BEGIN
+                    INSERT INTO devotional_entries_fts(id, title, search_text)
+                    VALUES (new.id, new.title, new.search_text);
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER devotional_fts_update AFTER UPDATE ON devotional_entries BEGIN
+                    UPDATE devotional_entries_fts SET
+                        title = new.title,
+                        search_text = new.search_text
+                    WHERE id = new.id;
+                END
+            """)
+            try db.execute(sql: """
+                CREATE TRIGGER devotional_fts_delete AFTER DELETE ON devotional_entries BEGIN
+                    DELETE FROM devotional_entries_fts WHERE id = old.id;
+                END
+            """)
+        }
+
+        // v15: Add recordChangeTag for CloudKit sync
+        migrator.registerMigration("v15") { db in
+            // Add record_change_tag column to note_entries
+            let noteColumns = try db.columns(in: "note_entries")
+            if !noteColumns.contains(where: { $0.name == "record_change_tag" }) {
+                try db.execute(sql: "ALTER TABLE note_entries ADD COLUMN record_change_tag TEXT")
+            }
+
+            // Add record_change_tag column to devotional_entries
+            let devotionalColumns = try db.columns(in: "devotional_entries")
+            if !devotionalColumns.contains(where: { $0.name == "record_change_tag" }) {
+                try db.execute(sql: "ALTER TABLE devotional_entries ADD COLUMN record_change_tag TEXT")
+            }
+        }
+
         return migrator
-    }
-
-    // MARK: - Database Access
-
-    func read<T>(_ block: (Database) throws -> T) throws -> T {
-        try dbQueue.read(block)
-    }
-
-    func write<T>(_ block: (Database) throws -> T) throws -> T {
-        try dbQueue.write(block)
-    }
-
-    func writeWithoutTransaction<T>(_ block: (Database) throws -> T) throws -> T {
-        try dbQueue.writeWithoutTransaction(block)
     }
 
     // MARK: - Module CRUD
@@ -542,6 +1089,29 @@ class ModuleDatabase {
                 .filter(Column("module_id") == moduleId)
                 .filter(Column("verse_id") == verseId)
                 .fetchAll(db)
+        }
+    }
+
+    /// Get all notes for a specific book (all chapters)
+    func getAllNotesForBook(moduleId: String, book: Int) throws -> [NoteEntry] {
+        try dbQueue.read { db in
+            try NoteEntry
+                .filter(Column("module_id") == moduleId)
+                .filter(Column("book") == book)
+                .order(Column("chapter"), Column("verse"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get list of book numbers that have notes for a module
+    func getBookNumbersWithNotes(moduleId: String) throws -> [Int] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT DISTINCT book FROM note_entries
+                WHERE module_id = ?
+                ORDER BY book
+                """, arguments: [moduleId])
+            return rows.compactMap { $0["book"] as Int? }
         }
     }
 
@@ -634,10 +1204,71 @@ class ModuleDatabase {
         }
     }
 
-    // MARK: - Commentary Series Queries
+    // MARK: - Commentary Series CRUD
+
+    /// Save a commentary series to the database
+    func saveCommentarySeries(_ series: CommentarySeries) throws {
+        try dbQueue.write { db in
+            try series.save(db)
+        }
+    }
+
+    /// Get a commentary series by ID
+    func getCommentarySeries(id: String) throws -> CommentarySeries? {
+        try dbQueue.read { db in
+            try CommentarySeries.fetchOne(db, key: id)
+        }
+    }
+
+    /// Get all commentary series
+    func getAllCommentarySeries() throws -> [CommentarySeries] {
+        try dbQueue.read { db in
+            try CommentarySeries
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Delete a commentary series by ID
+    func deleteCommentarySeries(id: String) throws {
+        try dbQueue.write { db in
+            _ = try CommentarySeries.deleteOne(db, key: id)
+        }
+    }
+
+    /// Get all modules that belong to a specific series
+    func getModulesForSeries(seriesId: String) throws -> [Module] {
+        try dbQueue.read { db in
+            try Module
+                .filter(Column("series_id") == seriesId)
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get all commentary books for a specific series
+    func getCommentaryBooksForSeries(seriesId: String) throws -> [CommentaryBook] {
+        try dbQueue.read { db in
+            // Get all modules that belong to this series
+            let moduleIds = try Module
+                .filter(Column("series_id") == seriesId)
+                .fetchAll(db)
+                .map { $0.id }
+
+            guard !moduleIds.isEmpty else { return [] }
+
+            // Get all books for these modules
+            return try CommentaryBook
+                .filter(moduleIds.contains(Column("module_id")))
+                .order(Column("book_number"))
+                .fetchAll(db)
+        }
+    }
+
+    // MARK: - Commentary Series Queries (Legacy - uses series_full field)
 
     /// Get all unique series names (full names) from commentary books
-    func getCommentarySeries() throws -> [String] {
+    func getCommentarySeriesNames() throws -> [String] {
         try dbQueue.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT DISTINCT series_full FROM commentary_books
@@ -718,6 +1349,14 @@ class ModuleDatabase {
         }
     }
 
+    func getDictionaryEntry(id: String) throws -> DictionaryEntry? {
+        try dbQueue.read { db in
+            try DictionaryEntry
+                .filter(Column("id") == id)
+                .fetchOne(db)
+        }
+    }
+
     func getDictionaryEntries(moduleId: String, keys: [String]) throws -> [DictionaryEntry] {
         try dbQueue.read { db in
             try DictionaryEntry
@@ -730,8 +1369,14 @@ class ModuleDatabase {
     // MARK: - Devotional Entry CRUD
 
     func saveDevotionalEntry(_ entry: DevotionalEntry) throws {
-        try dbQueue.write { db in
-            try entry.save(db)
+        do {
+            try write { db in
+                try entry.save(db)
+            }
+        } catch {
+            print("[ModuleDatabase] Error saving devotional entry: \(error)")
+            print("[ModuleDatabase] Entry ID: \(entry.id), Title: \(entry.title)")
+            throw error
         }
     }
 
@@ -747,11 +1392,11 @@ class ModuleDatabase {
         }
     }
 
-    func getDevotionalsForDate(moduleId: String, monthDay: String) throws -> [DevotionalEntry] {
+    func getDevotionalsForDate(moduleId: String, date: String) throws -> [DevotionalEntry] {
         try dbQueue.read { db in
             try DevotionalEntry
                 .filter(Column("module_id") == moduleId)
-                .filter(Column("month_day") == monthDay)
+                .filter(Column("date") == date)
                 .fetchAll(db)
         }
     }
@@ -822,6 +1467,509 @@ class ModuleDatabase {
             try db.execute(sql: "DELETE FROM commentary_units WHERE module_id = ?", arguments: [moduleId])
             // Delete the book record
             try db.execute(sql: "DELETE FROM commentary_books WHERE module_id = ?", arguments: [moduleId])
+        }
+    }
+
+    // MARK: - Translation CRUD
+
+    func saveTranslation(_ translation: TranslationModule) throws {
+        try dbQueue.write { db in
+            try translation.save(db)
+        }
+    }
+
+    func deleteTranslation(id: String) throws {
+        try dbQueue.write { db in
+            _ = try TranslationModule.deleteOne(db, key: id)
+        }
+    }
+
+    func getTranslation(id: String) throws -> TranslationModule? {
+        try dbQueue.read { db in
+            try TranslationModule.fetchOne(db, key: id)
+        }
+    }
+
+    func getAllTranslations(bundledOnly: Bool? = nil) throws -> [TranslationModule] {
+        try dbQueue.read { db in
+            if let bundledOnly = bundledOnly {
+                return try TranslationModule
+                    .filter(Column("is_bundled") == (bundledOnly ? 1 : 0))
+                    .order(Column("name"))
+                    .fetchAll(db)
+            } else {
+                return try TranslationModule
+                    .order(Column("name"))
+                    .fetchAll(db)
+            }
+        }
+    }
+
+    func getTranslationsByLanguage(_ language: String) throws -> [TranslationModule] {
+        try dbQueue.read { db in
+            try TranslationModule
+                .filter(Column("language") == language)
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    // MARK: - Translation Book CRUD
+
+    func saveTranslationBook(_ book: TranslationBook) throws {
+        try dbQueue.write { db in
+            try book.save(db)
+        }
+    }
+
+    func getTranslationBook(translationId: String, bookNumber: Int) throws -> TranslationBook? {
+        try dbQueue.read { db in
+            try TranslationBook
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("book_number") == bookNumber)
+                .fetchOne(db)
+        }
+    }
+
+    func getTranslationBooks(translationId: String) throws -> [TranslationBook] {
+        try dbQueue.read { db in
+            try TranslationBook
+                .filter(Column("translation_id") == translationId)
+                .order(Column("book_number"))
+                .fetchAll(db)
+        }
+    }
+
+    // MARK: - Translation Verse CRUD
+
+    func saveTranslationVerse(_ verse: TranslationVerse) throws {
+        try dbQueue.write { db in
+            try verse.save(db)
+        }
+    }
+
+    func getVerse(translationId: String, ref: Int) throws -> TranslationVerse? {
+        try dbQueue.read { db in
+            try TranslationVerse
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("ref") == ref)
+                .fetchOne(db)
+        }
+    }
+
+    func getVerses(translationIds: [String], ref: Int) throws -> [String: TranslationVerse] {
+        try dbQueue.read { db in
+            let verses = try TranslationVerse
+                .filter(translationIds.contains(Column("translation_id")))
+                .filter(Column("ref") == ref)
+                .fetchAll(db)
+            return Dictionary(uniqueKeysWithValues: verses.map { ($0.translationId, $0) })
+        }
+    }
+
+    func getChapter(translationId: String, book: Int, chapter: Int) throws -> ChapterContent {
+        try dbQueue.read { db in
+            let verses = try TranslationVerse
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("book") == book)
+                .filter(Column("chapter") == chapter)
+                .order(Column("verse"))
+                .fetchAll(db)
+
+            let headings = try TranslationHeading
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("book") == book)
+                .filter(Column("chapter") == chapter)
+                .order(Column("before_verse"))
+                .fetchAll(db)
+
+            return ChapterContent(verses: verses, headings: headings)
+        }
+    }
+
+    func getVerseRange(translationId: String, startRef: Int, endRef: Int) throws -> [TranslationVerse] {
+        try dbQueue.read { db in
+            try TranslationVerse
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("ref") >= startRef)
+                .filter(Column("ref") <= endRef)
+                .order(Column("ref"))
+                .fetchAll(db)
+        }
+    }
+
+    func getChapterCount(translationId: String, book: Int) throws -> Int {
+        try dbQueue.read { db in
+            let row = try Row.fetchOne(db, sql: """
+                SELECT MAX(chapter) as max_chapter
+                FROM translation_verses
+                WHERE translation_id = ? AND book = ?
+            """, arguments: [translationId, book])
+            return row?["max_chapter"] ?? 0
+        }
+    }
+
+    func getVerseCount(translationId: String, book: Int, chapter: Int) throws -> Int {
+        try dbQueue.read { db in
+            try TranslationVerse
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("book") == book)
+                .filter(Column("chapter") == chapter)
+                .fetchCount(db)
+        }
+    }
+
+    func getTotalVerseCount(translationId: String) throws -> Int {
+        try dbQueue.read { db in
+            try TranslationVerse
+                .filter(Column("translation_id") == translationId)
+                .fetchCount(db)
+        }
+    }
+
+    func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
+        try dbQueue.read { db in
+            // Search for Strong's number in annotations_json
+            // Pattern: "strongs": "H1234" (with space after colon, as formatted by JSONEncoder)
+            let count = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM translation_verses
+                WHERE translation_id = ? AND annotations_json LIKE ?
+            """, arguments: [translationId, "%\"strongs\": \"\(strongsNum)\"%"])
+            return count ?? 0
+        }
+    }
+
+    func searchVersesByStrongs(
+        translationId: String,
+        strongsNum: String,
+        bookRange: ClosedRange<Int>? = nil,
+        limit: Int = 50
+    ) throws -> [TranslationSearchResult] {
+        try dbQueue.read { db in
+            var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
+            var arguments: [DatabaseValueConvertible] = [translationId, "%\"strongs\": \"\(strongsNum)\"%"]
+
+            if let range = bookRange {
+                conditions.append("v.book BETWEEN ? AND ?")
+                arguments.append(range.lowerBound)
+                arguments.append(range.upperBound)
+            }
+
+            let whereClause = conditions.joined(separator: " AND ")
+
+            let sql = """
+                SELECT
+                    v.id,
+                    v.translation_id,
+                    m.name as translation_name,
+                    m.abbreviation as translation_abbrev,
+                    v.ref,
+                    v.book,
+                    v.chapter,
+                    v.verse,
+                    v.text,
+                    v.annotations_json
+                FROM translation_verses v
+                JOIN modules m ON v.translation_id = m.id
+                WHERE \(whereClause)
+                ORDER BY v.ref
+                LIMIT ?
+            """
+            arguments.append(limit)
+
+            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
+                TranslationSearchResult(
+                    id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
+                    translationId: row["translation_id"],
+                    translationName: row["translation_name"] ?? "",
+                    translationAbbrev: row["translation_abbrev"] ?? "",
+                    ref: row["ref"],
+                    book: row["book"],
+                    chapter: row["chapter"],
+                    verse: row["verse"],
+                    snippet: row["text"] ?? "",
+                    rank: 1.0,
+                    rawText: row["annotations_json"]
+                )
+            }
+        }
+    }
+
+    func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
+        try dbQueue.read { db in
+            let ref = try Int.fetchOne(db, sql: """
+                SELECT MAX(ref) FROM translation_verses
+                WHERE translation_id = ? AND book = ? AND chapter = ?
+            """, arguments: [translationId, book, chapter])
+            return ref ?? 0
+        }
+    }
+
+    func verseExists(translationId: String, ref: Int) throws -> Bool {
+        try dbQueue.read { db in
+            try TranslationVerse
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("ref") == ref)
+                .fetchCount(db) > 0
+        }
+    }
+
+    // MARK: - Translation Heading CRUD
+
+    func saveTranslationHeading(_ heading: TranslationHeading) throws {
+        try dbQueue.write { db in
+            try heading.save(db)
+        }
+    }
+
+    func getHeadingsForChapter(translationId: String, book: Int, chapter: Int) throws -> [TranslationHeading] {
+        try dbQueue.read { db in
+            try TranslationHeading
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("book") == book)
+                .filter(Column("chapter") == chapter)
+                .order(Column("before_verse"))
+                .fetchAll(db)
+        }
+    }
+
+    // MARK: - Translation FTS Search
+
+    func searchVerses(
+        query: String,
+        translationIds: Set<String>? = nil,
+        bookRange: ClosedRange<Int>? = nil,
+        limit: Int = 50
+    ) throws -> [TranslationSearchResult] {
+        let ftsQuery = prepareFTSQuery(query)
+        guard !ftsQuery.isEmpty else { return [] }
+
+        return try dbQueue.read { db in
+            var conditions = ["translation_verses_fts MATCH ?"]
+            var arguments: [DatabaseValueConvertible] = [ftsQuery]
+
+            // Translation filter
+            if let ids = translationIds, !ids.isEmpty {
+                let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
+                conditions.append("v.translation_id IN (\(placeholders))")
+                for id in ids {
+                    arguments.append(id)
+                }
+            }
+
+            // Book range filter (OT/NT or specific books)
+            if let range = bookRange {
+                conditions.append("v.book BETWEEN ? AND ?")
+                arguments.append(range.lowerBound)
+                arguments.append(range.upperBound)
+            }
+
+            let whereClause = conditions.joined(separator: " AND ")
+
+            let sql = """
+                SELECT
+                    v.id,
+                    v.translation_id,
+                    t.name as translation_name,
+                    t.abbreviation as translation_abbrev,
+                    v.ref,
+                    v.book,
+                    v.chapter,
+                    v.verse,
+                    bm25(translation_verses_fts) as rank,
+                    snippet(translation_verses_fts, 0, '<mark>', '</mark>', '...', 32) as snippet
+                FROM translation_verses_fts f
+                JOIN translation_verses v ON f.rowid = v.id
+                JOIN translations t ON v.translation_id = t.id
+                WHERE \(whereClause)
+                ORDER BY rank
+                LIMIT ?
+            """
+            arguments.append(limit)
+
+            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
+                TranslationSearchResult(
+                    id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
+                    translationId: row["translation_id"],
+                    translationName: row["translation_name"],
+                    translationAbbrev: row["translation_abbrev"],
+                    ref: row["ref"],
+                    book: row["book"],
+                    chapter: row["chapter"],
+                    verse: row["verse"],
+                    snippet: row["snippet"] ?? "",
+                    rank: -(row["rank"] as Double)
+                )
+            }
+        }
+    }
+
+    private func prepareFTSQuery(_ query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        // Escape FTS5 special characters
+        let escaped = trimmed
+            .replacingOccurrences(of: "\"", with: "\"\"")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "^", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .replacingOccurrences(of: "(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+
+        // Add prefix wildcard for partial matching
+        return "\"\(escaped)\"*"
+    }
+
+    // MARK: - Translation Bulk Operations
+
+    func deleteAllTranslationContent(translationId: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM translation_headings WHERE translation_id = ?", arguments: [translationId])
+            try db.execute(sql: "DELETE FROM translation_verses WHERE translation_id = ?", arguments: [translationId])
+            try db.execute(sql: "DELETE FROM translation_books WHERE translation_id = ?", arguments: [translationId])
+        }
+    }
+
+    func importTranslationBooks(_ books: [TranslationBook]) throws {
+        try dbQueue.write { db in
+            for book in books {
+                try book.save(db)
+            }
+        }
+    }
+
+    func importTranslationVerses(_ verses: [TranslationVerse]) throws {
+        try dbQueue.write { db in
+            for verse in verses {
+                try verse.save(db)
+            }
+        }
+    }
+
+    func importTranslationHeadings(_ headings: [TranslationHeading]) throws {
+        try dbQueue.write { db in
+            for heading in headings {
+                try heading.save(db)
+            }
+        }
+    }
+
+    /// Import a complete translation with batched inserts for performance
+    func importTranslation(
+        _ translation: TranslationModule,
+        books: [TranslationBook],
+        verses: [TranslationVerse],
+        headings: [TranslationHeading]
+    ) throws {
+        try dbQueue.write { db in
+            // Save translation metadata
+            try translation.save(db)
+
+            // Batch insert books
+            for book in books {
+                try book.save(db)
+            }
+
+            // Batch insert verses (in chunks for memory efficiency)
+            let verseChunkSize = 1000
+            for chunk in verses.chunked(into: verseChunkSize) {
+                for verse in chunk {
+                    try verse.save(db)
+                }
+            }
+
+            // Batch insert headings
+            for heading in headings {
+                try heading.save(db)
+            }
+        }
+    }
+
+    // MARK: - Plan Queries (User Plans)
+
+    /// Get all user plans
+    func getAllPlans() throws -> [Plan] {
+        try dbQueue.read { db in
+            try Plan.order(Column("name")).fetchAll(db)
+        }
+    }
+
+    /// Get a specific plan by ID
+    func getPlan(id: String) throws -> Plan? {
+        try dbQueue.read { db in
+            try Plan.fetchOne(db, key: id)
+        }
+    }
+
+    /// Get a plan day for a specific plan and day number
+    func getPlanDay(planId: String, day: Int) throws -> PlanDay? {
+        try dbQueue.read { db in
+            try PlanDay
+                .filter(Column("plan_id") == planId)
+                .filter(Column("day") == day)
+                .fetchOne(db)
+        }
+    }
+
+    /// Get all days for a plan
+    func getPlanDays(planId: String) throws -> [PlanDay] {
+        try dbQueue.read { db in
+            try PlanDay
+                .filter(Column("plan_id") == planId)
+                .order(Column("day"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get the count of user plans
+    func getPlanCount() throws -> Int {
+        try dbQueue.read { db in
+            try Plan.fetchCount(db)
+        }
+    }
+
+    /// Save a plan
+    func savePlan(_ plan: Plan) throws {
+        try dbQueue.write { db in
+            try plan.save(db)
+        }
+    }
+
+    /// Save plan days
+    func savePlanDays(_ days: [PlanDay]) throws {
+        try dbQueue.write { db in
+            for day in days {
+                try day.save(db)
+            }
+        }
+    }
+
+    /// Delete a plan by ID
+    func deletePlan(id: String) throws {
+        try dbQueue.write { db in
+            _ = try Plan.deleteOne(db, key: id)
+        }
+    }
+
+    /// Import a complete plan with all days
+    func importPlan(_ plan: Plan, days: [PlanDay]) throws {
+        try dbQueue.write { db in
+            try plan.save(db)
+            for day in days {
+                try day.save(db)
+            }
+        }
+    }
+}
+
+// MARK: - Array Chunking Extension
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
         }
     }
 }

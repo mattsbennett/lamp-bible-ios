@@ -5,52 +5,71 @@
 //  Created by Matthew Bennett on 2024-01-14.
 //
 
-import RealmSwift
+import Foundation
 
 class PlanMetaData {
-    let id: Int
+    let id: String
     let plan: Plan
     let date: Date
     let description: String
     let readingTime: Int
     var readingMetaData: [ReadingMetaData] = []
-    
-    init(id: Int, plan: Plan, date: Date) {
+
+    init(id: String, plan: Plan, date: Date) {
         var readingTimeAcc: Int = 0
         var readingMetaDataInit: [ReadingMetaData] = []
         self.id = id
         self.plan = plan
         self.date = date
-        let day = plan.getPlanDay(date: date)
-        let planDay = plan.plan.filter("day == \(day)").first!
+        let dayNum = plan.getPlanDay(date: date)
+
+        // Get plan day from GRDB bundled database
+        guard let planDay = try? BundledModuleDatabase.shared.getPlanDay(planId: plan.id, day: dayNum) else {
+            self.description = ""
+            self.readingTime = 0
+            return
+        }
+
         self.description = planDay.getReadingsDescription()
-        
-        planDay.readings.indices.forEach { index in
-            let user = RealmManager.shared.realm.objects(User.self).first!
-            let reading = planDay.readings[index]
-            let (sv, ev, description) = reading.getVerseRange()
-            let verses = RealmManager.shared.realm.objects(Verse.self).filter("tr == \(user.readerTranslation!.id) && id >= \(sv ?? 0) && id <= \(ev ?? 0)")
-            let concatenatedString = verses.map { $0.t }.joined(separator: " ")
+        let readings = planDay.readings
+
+        // Get user settings from GRDB
+        let userSettings = UserDatabase.shared.getSettings()
+
+        for (index, reading) in readings.enumerated() {
+            let sv = reading.sv
+            let ev = reading.ev
+            let readingDescription = reading.getDescription()
+
+            // Fetch verses from GRDB using translationId
+            let translationId = userSettings.readerTranslationId
+            let verses = (try? TranslationDatabase.shared.getVerseRange(
+                translationId: translationId,
+                startRef: sv,
+                endRef: ev
+            )) ?? []
+
+            let concatenatedString = verses.map { $0.text }.joined(separator: " ")
             let readingWordCount = countWords(source: concatenatedString)
-            let readingTimeReading = Int(ceil(Double(readingWordCount) / user.planWpm))
-            let book = RealmManager.shared.realm.objects(Book.self).filter("id == \(verses.first!.b)").first
-            let genre = RealmManager.shared.realm.objects(Genre.self).filter("id == \(book!.genre)").first!.name
+            let readingTimeReading = Int(ceil(Double(readingWordCount) / userSettings.planWpm))
+            let book = try? BundledModuleDatabase.shared.getBook(id: verses.first?.book ?? 1)
+            let genre = (try? BundledModuleDatabase.shared.getGenre(id: book?.genre ?? 1))?.name ?? "General"
             let year = Calendar.iso8601.component(.year, from: date)
-            let id = "\(id)_\(day)_\(index)_\(year)"
+            let readingId = "\(id)_\(dayNum)_\(index)_\(year)"
             readingTimeAcc += readingTimeReading
             readingMetaDataInit.append(
                 ReadingMetaData(
-                    id: id,
+                    id: readingId,
                     index: index,
                     readingTime: readingTimeReading,
-                    description: description!,
+                    description: readingDescription,
                     genre: genre,
-                    sv: sv!,
-                    ev: ev!
+                    sv: sv,
+                    ev: ev
                 )
             )
         }
-        
+
         self.readingMetaData = readingMetaDataInit
         self.readingTime = readingTimeAcc
     }
@@ -80,15 +99,16 @@ class ReadingMetaData {
 }
 
 class PlansMetaData {
-    let plans: Results<Plan>
+    let plans: [Plan]
     let date: Date
     var planMetaData: [PlanMetaData] = []
-    
-    init(plans: Results<Plan> = RealmManager.shared.realm.objects(Plan.self), date: Date) {
-        self.plans = plans
+
+    init(plans: [Plan]? = nil, date: Date) {
+        // Get all plans from GRDB bundled database if not provided
+        self.plans = plans ?? ((try? BundledModuleDatabase.shared.getAllPlans()) ?? [])
         self.date = date
-        
-        plans.forEach { plan in
+
+        for plan in self.plans {
             planMetaData.append(PlanMetaData(id: plan.id, plan: plan, date: date))
         }
     }

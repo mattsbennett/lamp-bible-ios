@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		13350B121503A4344D2C14B5 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A0BB31BAAADBFFB0E149DF1 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework */; };
 		B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A962B549ADD008341F0 /* ViewModel.swift */; };
-		B8210A992B549E80008341F0 /* CrossReferenceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */; };
 		B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9A2B549ED7008341F0 /* ChapterListView.swift */; };
 		B8210AA02B54A6CE008341F0 /* Utilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9F2B54A6CE008341F0 /* Utilities.swift */; };
 		B82BBB842B4CCEC5002248CC /* ReaderNavigationToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82BBB832B4CCEC5002248CC /* ReaderNavigationToolbarView.swift */; };
@@ -24,14 +23,29 @@
 		B851FFD12B79D1AA00C74C1D /* ConditionalStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */; };
 		B851FFD32B7B1BCF00C74C1D /* ReadingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD22B7B1BCF00C74C1D /* ReadingsView.swift */; };
 		B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = B851FFD42B7B221700C74C1D /* WrappingHStack.swift */; };
-		B861BF002B436452001CA38E /* CrossReferenceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */; };
+		B85B89602F14BE73004B4F61 /* BundledModuleDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B895F2F14BE73004B4F61 /* BundledModuleDatabase.swift */; };
+		B85B896C2F1740E1004B4F61 /* RealmMigrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B896B2F1740E1004B4F61 /* RealmMigrator.swift */; };
+		B85B896E2F17410C004B4F61 /* UserDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B896D2F17410C004B4F61 /* UserDatabase.swift */; };
+		B85B89702F17411A004B4F61 /* UserModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B896F2F17411A004B4F61 /* UserModels.swift */; };
+		B85B89852F19F216004B4F61 /* DevotionalPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89832F19F216004B4F61 /* DevotionalPickerView.swift */; };
+		B85B89862F19F216004B4F61 /* DevotionalBlockRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89812F19F216004B4F61 /* DevotionalBlockRenderer.swift */; };
+		B85B89872F19F216004B4F61 /* DevotionalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89842F19F216004B4F61 /* DevotionalView.swift */; };
+		B85B89882F19F216004B4F61 /* DevotionalConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89822F19F216004B4F61 /* DevotionalConflictView.swift */; };
+		B85B898C2F19F230004B4F61 /* DevotionalStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B898B2F19F230004B4F61 /* DevotionalStorage.swift */; };
+		B85B898D2F19F230004B4F61 /* DevotionalImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89892F19F230004B4F61 /* DevotionalImportExportManager.swift */; };
+		B85B898E2F19F230004B4F61 /* DevotionalModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B898A2F19F230004B4F61 /* DevotionalModels.swift */; };
+		B85B89902F19F248004B4F61 /* MarkdownDevotionalConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B898F2F19F248004B4F61 /* MarkdownDevotionalConverter.swift */; };
+		B85B89982F1C73D7004B4F61 /* SyncProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89932F1C73D7004B4F61 /* SyncProvider.swift */; };
+		B85B89992F1C73D7004B4F61 /* SyncTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89942F1C73D7004B4F61 /* SyncTypes.swift */; };
+		B85B899A2F1C73D7004B4F61 /* WebDAVClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */; };
+		B85B899B2F1C73D7004B4F61 /* WebDAVModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */; };
+		B85B899C2F1C73D7004B4F61 /* SyncableEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89912F1C73D7004B4F61 /* SyncableEntry.swift */; };
+		B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89922F1C73D7004B4F61 /* SyncCoordinator.swift */; };
+		B85B899F2F1CB10F004B4F61 /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B85B899E2F1CB10F004B4F61 /* bundled_modules.db.zlib */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
-		B87B2ACB2F00819E006DC53D /* ICloudNoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */; };
-		B87B2ACD2F0081BD006DC53D /* NoteParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACC2F0081BD006DC53D /* NoteParser.swift */; };
 		B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */; };
 		B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD02F008237006DC53D /* ToolPanelView.swift */; };
 		B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD22F008243006DC53D /* SplitReaderView.swift */; };
-		B87B2AD52F009CCC006DC53D /* NoteConflictViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */; };
 		B87B2AD72F01FAE7006DC53D /* NavigationHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */; };
 		B87B2AD92F022EEE006DC53D /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD82F022EEE006DC53D /* SearchView.swift */; };
 		B87B2ADB2F022F00006DC53D /* SearchResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ADA2F022F00006DC53D /* SearchResult.swift */; };
@@ -54,12 +68,12 @@
 		B89229632F05FE5600A58F81 /* ModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229622F05FE5600A58F81 /* ModuleStorage.swift */; };
 		B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */; };
 		B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */; };
-		B892298D2F08F5DB00A58F81 /* v7.realm in Resources */ = {isa = PBXBuildFile; fileRef = B892298C2F08F5DB00A58F81 /* v7.realm */; };
 		B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */; };
 		B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */; };
+		B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229942F12032700A58F81 /* NotesImportExportManager.swift */; };
+		B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229962F16A00000A58F81 /* NoteConflictView.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
-		B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33412B3E3852009C544D /* RealmManager.swift */; };
 		B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33472B3F4AC7009C544D /* ReaderView.swift */; };
 		C54EA5AEDD610FC18EBD7C3E /* Pods_Lamp_Bible.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1611527E5F09925F4316396A /* Pods_Lamp_Bible.framework */; };
 		CBB1169420EE332202E07EC1 /* Pods_Lamp_BibleTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 382D5810AFA3A23BD83E6508 /* Pods_Lamp_BibleTests.framework */; };
@@ -92,7 +106,6 @@
 		92DDDDBA1FB50EC67ADF2767 /* Pods-Lamp BibleTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp BibleTests.debug.xcconfig"; path = "Target Support Files/Pods-Lamp BibleTests/Pods-Lamp BibleTests.debug.xcconfig"; sourceTree = "<group>"; };
 		AA1177D0A8D0C66B61AF6D5A /* Pods-Lamp Bible.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible.debug.xcconfig"; path = "Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible.debug.xcconfig"; sourceTree = "<group>"; };
 		B8210A962B549ADD008341F0 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModel.swift; sourceTree = "<group>"; };
-		B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossReferenceDetailView.swift; sourceTree = "<group>"; };
 		B8210A9A2B549ED7008341F0 /* ChapterListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterListView.swift; sourceTree = "<group>"; };
 		B8210A9F2B54A6CE008341F0 /* Utilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Utilities.swift; sourceTree = "<group>"; };
 		B82BBB832B4CCEC5002248CC /* ReaderNavigationToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderNavigationToolbarView.swift; sourceTree = "<group>"; };
@@ -107,15 +120,30 @@
 		B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConditionalStack.swift; sourceTree = "<group>"; };
 		B851FFD22B7B1BCF00C74C1D /* ReadingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingsView.swift; sourceTree = "<group>"; };
 		B851FFD42B7B221700C74C1D /* WrappingHStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WrappingHStack.swift; sourceTree = "<group>"; };
-		B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossReferenceListView.swift; sourceTree = "<group>"; };
+		B85B895F2F14BE73004B4F61 /* BundledModuleDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledModuleDatabase.swift; sourceTree = "<group>"; };
+		B85B896B2F1740E1004B4F61 /* RealmMigrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealmMigrator.swift; sourceTree = "<group>"; };
+		B85B896D2F17410C004B4F61 /* UserDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDatabase.swift; sourceTree = "<group>"; };
+		B85B896F2F17411A004B4F61 /* UserModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserModels.swift; sourceTree = "<group>"; };
+		B85B89812F19F216004B4F61 /* DevotionalBlockRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalBlockRenderer.swift; sourceTree = "<group>"; };
+		B85B89822F19F216004B4F61 /* DevotionalConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalConflictView.swift; sourceTree = "<group>"; };
+		B85B89832F19F216004B4F61 /* DevotionalPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalPickerView.swift; sourceTree = "<group>"; };
+		B85B89842F19F216004B4F61 /* DevotionalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalView.swift; sourceTree = "<group>"; };
+		B85B89892F19F230004B4F61 /* DevotionalImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalImportExportManager.swift; sourceTree = "<group>"; };
+		B85B898A2F19F230004B4F61 /* DevotionalModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalModels.swift; sourceTree = "<group>"; };
+		B85B898B2F19F230004B4F61 /* DevotionalStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalStorage.swift; sourceTree = "<group>"; };
+		B85B898F2F19F248004B4F61 /* MarkdownDevotionalConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownDevotionalConverter.swift; sourceTree = "<group>"; };
+		B85B89912F1C73D7004B4F61 /* SyncableEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncableEntry.swift; sourceTree = "<group>"; };
+		B85B89922F1C73D7004B4F61 /* SyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCoordinator.swift; sourceTree = "<group>"; };
+		B85B89932F1C73D7004B4F61 /* SyncProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncProvider.swift; sourceTree = "<group>"; };
+		B85B89942F1C73D7004B4F61 /* SyncTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncTypes.swift; sourceTree = "<group>"; };
+		B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVClient.swift; sourceTree = "<group>"; };
+		B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVModuleStorage.swift; sourceTree = "<group>"; };
+		B85B899E2F1CB10F004B4F61 /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
 		B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Lamp Bible.entitlements"; sourceTree = "<group>"; };
-		B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudNoteStorage.swift; sourceTree = "<group>"; };
-		B87B2ACC2F0081BD006DC53D /* NoteParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteParser.swift; sourceTree = "<group>"; };
 		B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteStorage.swift; sourceTree = "<group>"; };
 		B87B2AD02F008237006DC53D /* ToolPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolPanelView.swift; sourceTree = "<group>"; };
 		B87B2AD22F008243006DC53D /* SplitReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitReaderView.swift; sourceTree = "<group>"; };
-		B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictViews.swift; sourceTree = "<group>"; };
 		B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationHistory.swift; sourceTree = "<group>"; };
 		B87B2AD82F022EEE006DC53D /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		B87B2ADA2F022F00006DC53D /* SearchResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResult.swift; sourceTree = "<group>"; };
@@ -142,12 +170,12 @@
 		B89229622F05FE5600A58F81 /* ModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleStorage.swift; sourceTree = "<group>"; };
 		B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSyncManager.swift; sourceTree = "<group>"; };
 		B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceParsingTests.swift; sourceTree = "<group>"; };
-		B892298C2F08F5DB00A58F81 /* v7.realm */ = {isa = PBXFileReference; lastKnownFileType = file; path = v7.realm; sourceTree = "<group>"; };
 		B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSettingsView.swift; sourceTree = "<group>"; };
 		B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentaryRenderer.swift; sourceTree = "<group>"; };
+		B89229942F12032700A58F81 /* NotesImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesImportExportManager.swift; sourceTree = "<group>"; };
+		B89229962F16A00000A58F81 /* NoteConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictView.swift; sourceTree = "<group>"; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
-		B8FC33412B3E3852009C544D /* RealmManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealmManager.swift; sourceTree = "<group>"; };
 		B8FC33472B3F4AC7009C544D /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 		BC1111E4EE3F363F57311829 /* Pods-Lamp BibleTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp BibleTests.release.xcconfig"; path = "Target Support Files/Pods-Lamp BibleTests/Pods-Lamp BibleTests.release.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -206,19 +234,26 @@
 		B8210A9C2B54A4D7008341F0 /* Data */ = {
 			isa = PBXGroup;
 			children = (
+				B85B895F2F14BE73004B4F61 /* BundledModuleDatabase.swift */,
 				B8FC333D2B3E2CAF009C544D /* DataModel.swift */,
 				B84968DD2AFB3D4000955089 /* ExternalBibleApp.swift */,
 				B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */,
+				B85B89892F19F230004B4F61 /* DevotionalImportExportManager.swift */,
+				B85B898A2F19F230004B4F61 /* DevotionalModels.swift */,
+				B85B898B2F19F230004B4F61 /* DevotionalStorage.swift */,
 				B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */,
 				B892295E2F05FE4600A58F81 /* ModuleModels.swift */,
 				B89229602F05FE4F00A58F81 /* ModuleSearch.swift */,
 				B89229622F05FE5600A58F81 /* ModuleStorage.swift */,
 				B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */,
+				B85B896B2F1740E1004B4F61 /* RealmMigrator.swift */,
+				B85B896D2F17410C004B4F61 /* UserDatabase.swift */,
+				B85B896F2F17411A004B4F61 /* UserModels.swift */,
 				B8210A962B549ADD008341F0 /* ViewModel.swift */,
-				B87B2ACC2F0081BD006DC53D /* NoteParser.swift */,
 				B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */,
+				B89229942F12032700A58F81 /* NotesImportExportManager.swift */,
 				B87B2ADA2F022F00006DC53D /* SearchResult.swift */,
-				B87B2ACA2F00819E006DC53D /* ICloudNoteStorage.swift */,
+				B85B89972F1C73D7004B4F61 /* Sync */,
 			);
 			path = Data;
 			sourceTree = "<group>";
@@ -228,9 +263,9 @@
 			children = (
 				B82DA2222B450B4100E8AC49 /* Extensions.swift */,
 				B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */,
+				B85B898F2F19F248004B4F61 /* MarkdownDevotionalConverter.swift */,
 				B89229582F05FE3100A58F81 /* MarkdownConverter.swift */,
 				B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */,
-				B8FC33412B3E3852009C544D /* RealmManager.swift */,
 				B8210A9F2B54A6CE008341F0 /* Utilities.swift */,
 				B87B2AF02F037B3A006DC53D /* StrongsParser.swift */,
 			);
@@ -240,16 +275,18 @@
 		B8210A9E2B54A58D008341F0 /* View */ = {
 			isa = PBXGroup;
 			children = (
+				B85B89812F19F216004B4F61 /* DevotionalBlockRenderer.swift */,
+				B85B89822F19F216004B4F61 /* DevotionalConflictView.swift */,
+				B85B89832F19F216004B4F61 /* DevotionalPickerView.swift */,
+				B85B89842F19F216004B4F61 /* DevotionalView.swift */,
 				B861BF012B43655D001CA38E /* BookListView.swift */,
 				B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */,
 				B8210A9A2B549ED7008341F0 /* ChapterListView.swift */,
 				B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */,
 				B885E4182ADB47E50066F0A0 /* ContentView.swift */,
-				B861BEFF2B436452001CA38E /* CrossReferenceListView.swift */,
-				B8210A982B549E80008341F0 /* CrossReferenceDetailView.swift */,
 				B89229542F05FE1900A58F81 /* DevotionalView.swift */,
 				B89229562F05FE2100A58F81 /* ModuleManagerView.swift */,
-				B87B2AD42F009CCC006DC53D /* NoteConflictViews.swift */,
+				B89229962F16A00000A58F81 /* NoteConflictView.swift */,
 				B87B2AD02F008237006DC53D /* ToolPanelView.swift */,
 				B87B2AFC2F03881D006DC53D /* LexiconView.swift */,
 				B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */,
@@ -266,6 +303,19 @@
 				B851FFD42B7B221700C74C1D /* WrappingHStack.swift */,
 			);
 			path = View;
+			sourceTree = "<group>";
+		};
+		B85B89972F1C73D7004B4F61 /* Sync */ = {
+			isa = PBXGroup;
+			children = (
+				B85B89912F1C73D7004B4F61 /* SyncableEntry.swift */,
+				B85B89922F1C73D7004B4F61 /* SyncCoordinator.swift */,
+				B85B89932F1C73D7004B4F61 /* SyncProvider.swift */,
+				B85B89942F1C73D7004B4F61 /* SyncTypes.swift */,
+				B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */,
+				B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */,
+			);
+			path = Sync;
 			sourceTree = "<group>";
 		};
 		B885E40A2ADB47E40066F0A0 = {
@@ -297,7 +347,7 @@
 				B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
-				B892298C2F08F5DB00A58F81 /* v7.realm */,
+				B85B899E2F1CB10F004B4F61 /* bundled_modules.db.zlib */,
 				B885E41C2ADB47ED0066F0A0 /* Preview Content */,
 				B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */,
 				B8210A9C2B54A4D7008341F0 /* Data */,
@@ -442,7 +492,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B892298D2F08F5DB00A58F81 /* v7.realm in Resources */,
+				B85B899F2F1CB10F004B4F61 /* bundled_modules.db.zlib in Resources */,
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
@@ -595,9 +645,12 @@
 				B89229592F05FE3100A58F81 /* MarkdownConverter.swift in Sources */,
 				B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */,
 				B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */,
-				B8210A992B549E80008341F0 /* CrossReferenceDetailView.swift in Sources */,
-				B87B2AD52F009CCC006DC53D /* NoteConflictViews.swift in Sources */,
 				B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */,
+				B85B898C2F19F230004B4F61 /* DevotionalStorage.swift in Sources */,
+				B85B898D2F19F230004B4F61 /* DevotionalImportExportManager.swift in Sources */,
+				B85B898E2F19F230004B4F61 /* DevotionalModels.swift in Sources */,
+				B85B896C2F1740E1004B4F61 /* RealmMigrator.swift in Sources */,
+				B85B89602F14BE73004B4F61 /* BundledModuleDatabase.swift in Sources */,
 				B82BBB882B4D0679002248CC /* PlanDateToolbarView.swift in Sources */,
 				B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */,
 				B87B2AD92F022EEE006DC53D /* SearchView.swift in Sources */,
@@ -608,23 +661,34 @@
 				B861BF022B43655D001CA38E /* BookListView.swift in Sources */,
 				B89229612F05FE4F00A58F81 /* ModuleSearch.swift in Sources */,
 				B892295F2F05FE4600A58F81 /* ModuleModels.swift in Sources */,
-				B8FC33422B3E3852009C544D /* RealmManager.swift in Sources */,
+				B85B89902F19F248004B4F61 /* MarkdownDevotionalConverter.swift in Sources */,
 				B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */,
 				B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */,
-				B87B2ACD2F0081BD006DC53D /* NoteParser.swift in Sources */,
 				B87B2AFD2F03881D006DC53D /* LexiconView.swift in Sources */,
-				B861BF002B436452001CA38E /* CrossReferenceListView.swift in Sources */,
 				B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */,
 				B82BBB862B4CF238002248CC /* ReaderBottomToolbarView.swift in Sources */,
 				B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */,
 				B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */,
 				B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */,
-				B87B2ACB2F00819E006DC53D /* ICloudNoteStorage.swift in Sources */,
 				B84968D42AF72D5F00955089 /* PlanView.swift in Sources */,
+				B85B89852F19F216004B4F61 /* DevotionalPickerView.swift in Sources */,
+				B85B89862F19F216004B4F61 /* DevotionalBlockRenderer.swift in Sources */,
+				B85B89872F19F216004B4F61 /* DevotionalView.swift in Sources */,
+				B85B89882F19F216004B4F61 /* DevotionalConflictView.swift in Sources */,
 				B89229552F05FE1900A58F81 /* DevotionalView.swift in Sources */,
 				B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */,
+				B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */,
+				B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */,
 				B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */,
 				B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */,
+				B85B896E2F17410C004B4F61 /* UserDatabase.swift in Sources */,
+				B85B89702F17411A004B4F61 /* UserModels.swift in Sources */,
+				B85B89982F1C73D7004B4F61 /* SyncProvider.swift in Sources */,
+				B85B89992F1C73D7004B4F61 /* SyncTypes.swift in Sources */,
+				B85B899A2F1C73D7004B4F61 /* WebDAVClient.swift in Sources */,
+				B85B899B2F1C73D7004B4F61 /* WebDAVModuleStorage.swift in Sources */,
+				B85B899C2F1C73D7004B4F61 /* SyncableEntry.swift in Sources */,
+				B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */,
 				B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

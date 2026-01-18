@@ -6,10 +6,10 @@
 //
 
 import SwiftUI
-import RealmSwift
 
 struct ReadingsView: View {
-    @ObservedRealmObject var user: User
+    @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
+    @State private var completedReadingIds: Set<String> = UserDatabase.shared.getCompletedReadingIds()
     let planMetaData: PlanMetaData
     let stackHorizontally: Bool
 
@@ -23,26 +23,16 @@ struct ReadingsView: View {
                         let readingId = readingMetaData.id
 
                         Button {
-                            if RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(readingId)'").count > 0 {
-                                try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else {
-                                        // Handle the inability to thaw the object
-                                        return
-                                    }
-                                    thawedUser.removeCompletedReading(id: readingId)
-                                }
+                            if completedReadingIds.contains(readingId) {
+                                try? UserDatabase.shared.removeCompletedReading(readingId)
+                                completedReadingIds.remove(readingId)
                             } else {
-                                try! RealmManager.shared.realm.write {
-                                    guard let thawedUser = user.thaw() else {
-                                        // Handle the inability to thaw the object
-                                        return
-                                    }
-                                    thawedUser.addCompletedReading(id: readingId)
-                                }
+                                try? UserDatabase.shared.addCompletedReading(readingId)
+                                completedReadingIds.insert(readingId)
                             }
                         } label: {
                             HStack {
-                                if RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(readingId)'").count > 0 {
+                                if completedReadingIds.contains(readingId) {
                                     Image(systemName: "checkmark").frame(width: 17)
                                 } else {
                                     Image(systemName: "circle").frame(width: 17)
@@ -51,21 +41,16 @@ struct ReadingsView: View {
                             }
                         }
                         Spacer()
-                        if user.planExternalBible != nil && user.planExternalBible != "None" {
+                        if userSettings.planExternalBible != nil && userSettings.planExternalBible != "None" {
                             Button {
-                                let app = externalBibleApps.first(where: { $0.name == user.planExternalBible })
+                                let app = externalBibleApps.first(where: { $0.name == userSettings.planExternalBible })
                                 if let url = app?.getFullUrl(sv: readingMetaData.sv, ev: readingMetaData.ev) {
                                     if UIApplication.shared.canOpenURL(url) {
                                         UIApplication.shared.open(url)
-                                        
-                                        if RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(readingId)'").count == 0 {
-                                            try! RealmManager.shared.realm.write {
-                                                guard let thawedUser = user.thaw() else {
-                                                    // Handle the inability to thaw the object
-                                                    return
-                                                }
-                                                thawedUser.addCompletedReading(id: readingId)
-                                            }
+
+                                        if !completedReadingIds.contains(readingId) {
+                                            try? UserDatabase.shared.addCompletedReading(readingId)
+                                            completedReadingIds.insert(readingId)
                                         }
                                     }
                                 }
@@ -124,6 +109,9 @@ struct ReadingsView: View {
             }
             Spacer()
         }
+        .onAppear {
+            userSettings = UserDatabase.shared.getSettings()
+            completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
+        }
     }
 }
-

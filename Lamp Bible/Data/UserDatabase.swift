@@ -1,0 +1,347 @@
+//
+//  UserDatabase.swift
+//  Lamp Bible
+//
+//  Created by Matthew Bennett on 2025-01-12.
+//
+
+import Foundation
+import GRDB
+
+/// Manages user settings and completed readings with iCloud sync support
+class UserDatabase {
+    static let shared = UserDatabase()
+
+    private var dbQueue: DatabaseQueue?
+    private let iCloudContainerURL: URL?
+    private let localFallbackURL: URL
+
+    private init() {
+        // Check for iCloud availability
+        iCloudContainerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil)?
+            .appendingPathComponent("Documents/UserData")
+
+        // Local fallback in Documents directory
+        localFallbackURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("UserData")
+
+        setupDatabase()
+    }
+
+    // MARK: - Database Setup
+
+    private func setupDatabase() {
+        let dbURL = (iCloudContainerURL ?? localFallbackURL).appendingPathComponent("user.db")
+
+        // Create directory if needed
+        try? FileManager.default.createDirectory(
+            at: dbURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        // Configure GRDB
+        var config = Configuration()
+        #if DEBUG
+        config.prepareDatabase { db in
+            db.trace { print("UserDB SQL: \($0)") }
+        }
+        #endif
+
+        do {
+            dbQueue = try DatabaseQueue(path: dbURL.path, configuration: config)
+
+            // Run migrations
+            try migrator.migrate(dbQueue!)
+
+            print("UserDatabase initialized at: \(dbURL.path)")
+            if iCloudContainerURL != nil {
+                print("iCloud sync enabled for user data")
+            }
+        } catch {
+            print("Failed to initialize UserDatabase: \(error)")
+        }
+    }
+
+    // MARK: - Migrations
+
+    private var migrator: DatabaseMigrator {
+        var migrator = DatabaseMigrator()
+
+        #if DEBUG
+        // Speed up development by nuking the database when schema changes
+        // migrator.eraseDatabaseOnSchemaChange = true
+        #endif
+
+        migrator.registerMigration("v1_initial") { db in
+            // user_settings table (singleton)
+            try db.create(table: "user_settings") { t in
+                t.column("id", .integer).primaryKey().defaults(to: 1)
+                t.column("selected_plan_ids", .text).notNull().defaults(to: "")
+                t.column("plan_in_app_bible", .integer).notNull().defaults(to: 1)
+                t.column("plan_external_bible", .text)
+                t.column("plan_wpm", .double).notNull().defaults(to: 183.0)
+                t.column("plan_notification", .integer).notNull().defaults(to: 0)
+                t.column("plan_notification_hour", .integer).notNull().defaults(to: 18)
+                t.column("plan_notification_minute", .integer).notNull().defaults(to: 30)
+                t.column("reader_translation_id", .text).notNull().defaults(to: "BSBs")
+                t.column("reader_cross_reference_sort", .text).notNull().defaults(to: "r")
+                t.column("reader_font_size", .double).notNull().defaults(to: 18.0)
+                t.column("updated_at", .datetime).notNull()
+            }
+
+            // Add check constraint for singleton
+            try db.execute(sql: """
+                CREATE TRIGGER user_settings_singleton_insert
+                BEFORE INSERT ON user_settings
+                WHEN (SELECT COUNT(*) FROM user_settings) >= 1
+                BEGIN
+                    SELECT RAISE(ABORT, 'Only one user_settings row allowed');
+                END
+            """)
+
+            // completed_readings table
+            try db.create(table: "completed_readings") { t in
+                t.column("id", .text).primaryKey()
+                t.column("plan_id", .text).notNull()
+                t.column("year", .integer).notNull()
+                t.column("completed_at", .datetime).notNull()
+            }
+
+            try db.create(index: "idx_completed_readings_plan", on: "completed_readings", columns: ["plan_id"])
+            try db.create(index: "idx_completed_readings_year", on: "completed_readings", columns: ["year"])
+
+            // Insert default user settings
+            try db.execute(sql: """
+                INSERT INTO user_settings (id, updated_at) VALUES (1, datetime('now'))
+            """)
+        }
+
+        migrator.registerMigration("v2_devotional_settings") { db in
+            // Add devotional-related settings columns
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "devotional_font_size", .double).notNull().defaults(to: 18.0)
+                t.add(column: "devotional_present_font_multiplier", .double).notNull().defaults(to: 3.0)
+                t.add(column: "devotional_line_spacing_bonus", .double).notNull().defaults(to: 1.0)
+            }
+        }
+
+        migrator.registerMigration("v3_sync_settings") { db in
+            // Add sync settings column (stored as JSON)
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "sync_settings_json", .text)
+            }
+        }
+
+        migrator.registerMigration("v4_module_settings") { db in
+            // Add module-related settings columns
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "hidden_translations", .text).notNull().defaults(to: "")
+                t.add(column: "greek_lexicon_order", .text).notNull().defaults(to: "strongs,dodson")
+                t.add(column: "hebrew_lexicon_order", .text).notNull().defaults(to: "strongs,bdb")
+                t.add(column: "hidden_greek_lexicons", .text).notNull().defaults(to: "")
+                t.add(column: "hidden_hebrew_lexicons", .text).notNull().defaults(to: "")
+                t.add(column: "show_strongs_hints", .integer).notNull().defaults(to: 0)
+            }
+        }
+
+        return migrator
+    }
+
+    // MARK: - User Settings Access
+
+    /// Get current user settings (creates default if none exist)
+    func getSettings() -> UserSettings {
+        guard let dbQueue = dbQueue else {
+            return UserSettings()
+        }
+
+        do {
+            return try dbQueue.read { db in
+                try UserSettings.fetchOne(db, key: 1) ?? UserSettings()
+            }
+        } catch {
+            print("Failed to fetch user settings: \(error)")
+            return UserSettings()
+        }
+    }
+
+    /// Update user settings with a closure
+    func updateSettings(_ update: (inout UserSettings) -> Void) throws {
+        guard let dbQueue = dbQueue else {
+            throw DatabaseError(message: "Database not initialized")
+        }
+
+        try dbQueue.write { db in
+            var settings = try UserSettings.fetchOne(db, key: 1) ?? UserSettings()
+            update(&settings)
+            settings.updatedAt = Date()
+            try settings.save(db)
+        }
+    }
+
+    // MARK: - Completed Readings Access
+
+    /// Get all completed readings, optionally filtered by plan and/or year
+    func getCompletedReadings(forPlan planId: String? = nil, year: Int? = nil) -> [CompletedReading] {
+        guard let dbQueue = dbQueue else {
+            return []
+        }
+
+        do {
+            return try dbQueue.read { db in
+                var query = CompletedReading.all()
+                if let planId = planId {
+                    query = query.filter(Column("plan_id") == planId)
+                }
+                if let year = year {
+                    query = query.filter(Column("year") == year)
+                }
+                return try query.fetchAll(db)
+            }
+        } catch {
+            print("Failed to fetch completed readings: \(error)")
+            return []
+        }
+    }
+
+    /// Get all completed reading IDs (for quick lookup)
+    func getCompletedReadingIds() -> Set<String> {
+        guard let dbQueue = dbQueue else {
+            return []
+        }
+
+        do {
+            return try dbQueue.read { db in
+                let ids = try String.fetchAll(db, sql: "SELECT id FROM completed_readings")
+                return Set(ids)
+            }
+        } catch {
+            print("Failed to fetch completed reading IDs: \(error)")
+            return []
+        }
+    }
+
+    /// Check if a specific reading is completed
+    func isReadingCompleted(_ id: String) -> Bool {
+        guard let dbQueue = dbQueue else {
+            return false
+        }
+
+        do {
+            return try dbQueue.read { db in
+                try CompletedReading.fetchOne(db, key: id) != nil
+            }
+        } catch {
+            print("Failed to check completed reading: \(error)")
+            return false
+        }
+    }
+
+    /// Add a completed reading
+    func addCompletedReading(_ id: String) throws {
+        guard let dbQueue = dbQueue else {
+            throw DatabaseError(message: "Database not initialized")
+        }
+
+        try dbQueue.write { db in
+            let reading = CompletedReading(id: id)
+            try reading.insert(db)
+        }
+    }
+
+    /// Remove a completed reading
+    func removeCompletedReading(_ id: String) throws {
+        guard let dbQueue = dbQueue else {
+            throw DatabaseError(message: "Database not initialized")
+        }
+
+        try dbQueue.write { db in
+            _ = try CompletedReading.deleteOne(db, key: id)
+        }
+    }
+
+    /// Remove all completed readings for a plan
+    func removeCompletedReadings(forPlan planId: String) throws {
+        guard let dbQueue = dbQueue else {
+            throw DatabaseError(message: "Database not initialized")
+        }
+
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM completed_readings WHERE plan_id = ?", arguments: [planId])
+        }
+    }
+
+    // MARK: - iCloud Sync Support
+
+    /// Force a WAL checkpoint to ensure all changes are written to the main database file
+    /// Call this before the app goes to background to ensure iCloud can sync
+    func checkpointForSync() throws {
+        guard let dbQueue = dbQueue else {
+            throw DatabaseError(message: "Database not initialized")
+        }
+
+        try dbQueue.writeWithoutTransaction { db in
+            try db.checkpoint(.truncate)
+        }
+    }
+
+    /// Get the database URL for debugging
+    var databaseURL: URL? {
+        return (iCloudContainerURL ?? localFallbackURL).appendingPathComponent("user.db")
+    }
+
+    /// Check if iCloud is being used for storage
+    var isUsingiCloud: Bool {
+        return iCloudContainerURL != nil
+    }
+
+    // MARK: - Sync Settings
+
+    /// Get sync settings from the database
+    func getSyncSettings() -> SyncSettings? {
+        guard let dbQueue = dbQueue else {
+            return nil
+        }
+
+        do {
+            return try dbQueue.read { db in
+                if let row = try Row.fetchOne(db, sql: """
+                    SELECT sync_settings_json FROM user_settings WHERE id = 1
+                    """) {
+                    if let jsonString: String = row["sync_settings_json"],
+                       let jsonData = jsonString.data(using: .utf8) {
+                        return try JSONDecoder().decode(SyncSettings.self, from: jsonData)
+                    }
+                }
+                return nil
+            }
+        } catch {
+            print("[UserDatabase] Failed to load sync settings: \(error)")
+            return nil
+        }
+    }
+
+    /// Save sync settings to the database
+    func saveSyncSettings(_ settings: SyncSettings) throws {
+        guard let dbQueue = dbQueue else {
+            throw DatabaseError(message: "Database not initialized")
+        }
+
+        let jsonData = try JSONEncoder().encode(settings)
+        guard let jsonString = String(data: jsonData, encoding: .utf8) else {
+            throw DatabaseError(message: "Failed to encode sync settings")
+        }
+
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                UPDATE user_settings SET sync_settings_json = ?, updated_at = datetime('now') WHERE id = 1
+                """, arguments: [jsonString])
+        }
+    }
+}
+
+// MARK: - Database Error
+
+struct DatabaseError: Error {
+    let message: String
+}

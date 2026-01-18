@@ -6,31 +6,50 @@
 //
 
 import SwiftUI
-import RealmSwift
+import GRDB
 
 struct BookListView: View {
     @Binding var currentVerseId: Int
     @Binding var showingBookPicker: Bool
-    @Binding var translation: Translation
+    @Binding var translationId: String
+    @Binding var translationAbbreviation: String
     let loadVersesClosure: () -> Void
-    var onTranslationChange: ((Int) -> Void)? = nil
+    var onTranslationChange: ((String) -> Void)? = nil
 
-    @AppStorage("hiddenTranslations") private var hiddenTranslations: String = ""
+    private var userSettings: UserSettings {
+        UserDatabase.shared.getSettings()
+    }
 
-    private var orderedVisibleTranslations: [Translation] {
-        visibleTranslations(hiddenString: hiddenTranslations)
+    private var hiddenTranslations: String {
+        userSettings.hiddenTranslations
+    }
+
+    /// Get all Bible books from GRDB
+    private var books: [BibleBook] {
+        (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
+    }
+
+    /// Get available translations from GRDB
+    private var availableTranslations: [TranslationModule] {
+        (try? TranslationDatabase.shared.getAllTranslations()) ?? []
+    }
+
+    /// Filter to visible translations based on user preferences
+    private var orderedVisibleTranslations: [TranslationModule] {
+        let hiddenIds = Set(hiddenTranslations.split(separator: ",").map(String.init))
+        return availableTranslations.filter { !hiddenIds.contains($0.id) }
     }
 
     var body: some View {
         NavigationView {
             List {
-                ForEach(RealmManager.shared.realm.objects(Book.self)) { book in
+                ForEach(books) { book in
                     NavigationLink(
                         destination: ChapterListView(
                             currentVerseId: $currentVerseId,
                             showingBookPicker: $showingBookPicker,
                             book: book,
-                            verses: RealmManager.shared.realm.objects(Verse.self).distinct(by: ["c"]).filter("b == \(book.id) AND v == 1"),
+                            translationId: translationId,
                             loadVersesClosure: loadVersesClosure
                         )
                     ) {
@@ -49,12 +68,13 @@ struct BookListView: View {
                 }
                 ToolbarItem(placement: .principal) {
                     Menu {
-                        ForEach(orderedVisibleTranslations) { trans in
+                        ForEach(orderedVisibleTranslations, id: \.id) { trans in
                             Button {
-                                translation = trans
+                                translationId = trans.id
+                                translationAbbreviation = trans.abbreviation
                                 onTranslationChange?(trans.id)
                             } label: {
-                                if trans.id == translation.id {
+                                if trans.id == translationId {
                                     Label(trans.name, systemImage: "checkmark")
                                 } else {
                                     Text(trans.name)
@@ -63,7 +83,7 @@ struct BookListView: View {
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Text(translation.abbreviation)
+                            Text(translationAbbreviation)
                             Image(systemName: "chevron.up.chevron.down")
                                 .imageScale(.small)
                         }

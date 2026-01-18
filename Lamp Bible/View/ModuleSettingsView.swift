@@ -1,4 +1,4 @@
-    //
+//
 //  ModuleSettingsView.swift
 //  Lamp Bible
 //
@@ -6,32 +6,82 @@
 //
 
 import SwiftUI
-import RealmSwift
 import GRDB
 
 struct ModuleSettingsView: View {
-    @ObservedRealmObject var user: User
+    @Binding var userSettings: UserSettings
     @Environment(\.dismiss) var dismiss
 
-    // Translation settings
-    @AppStorage("hiddenTranslations") private var hiddenTranslations: String = ""
-
-    // Lexicon settings
-    @AppStorage("showStrongsHints") private var showStrongsHints: Bool = false
-    @AppStorage("greekLexiconOrder") private var greekLexiconOrder: String = "strongs,dodson"
-    @AppStorage("hebrewLexiconOrder") private var hebrewLexiconOrder: String = "strongs,bdb"
-    @AppStorage("hiddenGreekLexicons") private var hiddenGreekLexicons: String = ""
-    @AppStorage("hiddenHebrewLexicons") private var hiddenHebrewLexicons: String = ""
-
     private let generator = UINotificationFeedbackGenerator()
+
+    // Binding helpers that persist to database
+    private var hiddenTranslations: Binding<String> {
+        Binding(
+            get: { userSettings.hiddenTranslations },
+            set: { newValue in
+                userSettings.hiddenTranslations = newValue
+                try? UserDatabase.shared.updateSettings { $0.hiddenTranslations = newValue }
+            }
+        )
+    }
+
+    private var showStrongsHints: Binding<Bool> {
+        Binding(
+            get: { userSettings.showStrongsHints },
+            set: { newValue in
+                userSettings.showStrongsHints = newValue
+                try? UserDatabase.shared.updateSettings { $0.showStrongsHints = newValue }
+            }
+        )
+    }
+
+    private var greekLexiconOrder: Binding<String> {
+        Binding(
+            get: { userSettings.greekLexiconOrder },
+            set: { newValue in
+                userSettings.greekLexiconOrder = newValue
+                try? UserDatabase.shared.updateSettings { $0.greekLexiconOrder = newValue }
+            }
+        )
+    }
+
+    private var hebrewLexiconOrder: Binding<String> {
+        Binding(
+            get: { userSettings.hebrewLexiconOrder },
+            set: { newValue in
+                userSettings.hebrewLexiconOrder = newValue
+                try? UserDatabase.shared.updateSettings { $0.hebrewLexiconOrder = newValue }
+            }
+        )
+    }
+
+    private var hiddenGreekLexicons: Binding<String> {
+        Binding(
+            get: { userSettings.hiddenGreekLexicons },
+            set: { newValue in
+                userSettings.hiddenGreekLexicons = newValue
+                try? UserDatabase.shared.updateSettings { $0.hiddenGreekLexicons = newValue }
+            }
+        )
+    }
+
+    private var hiddenHebrewLexicons: Binding<String> {
+        Binding(
+            get: { userSettings.hiddenHebrewLexicons },
+            set: { newValue in
+                userSettings.hiddenHebrewLexicons = newValue
+                try? UserDatabase.shared.updateSettings { $0.hiddenHebrewLexicons = newValue }
+            }
+        )
+    }
 
     var body: some View {
         Form {
             // MARK: - Translations Section
             Section {
                 TranslationList(
-                    user: user,
-                    hiddenString: $hiddenTranslations,
+                    userSettings: $userSettings,
+                    hiddenString: hiddenTranslations,
                     onSetDefault: { translationId in
                         setDefaultTranslation(translationId)
                     }
@@ -44,7 +94,7 @@ struct ModuleSettingsView: View {
 
             // MARK: - Lexicons Section
             Section {
-                Toggle(isOn: $showStrongsHints) {
+                Toggle(isOn: showStrongsHints) {
                     Text("Show Word Hints")
                 }.tint(.accentColor)
             } header: {
@@ -55,8 +105,8 @@ struct ModuleSettingsView: View {
 
             Section {
                 LexiconOrderListWithHiding(
-                    orderString: $greekLexiconOrder,
-                    hiddenString: $hiddenGreekLexicons,
+                    orderString: greekLexiconOrder,
+                    hiddenString: hiddenGreekLexicons,
                     builtInLexicons: [
                         ("strongs", "Strong's Greek"),
                         ("dodson", "Dodson")
@@ -71,8 +121,8 @@ struct ModuleSettingsView: View {
 
             Section {
                 LexiconOrderListWithHiding(
-                    orderString: $hebrewLexiconOrder,
-                    hiddenString: $hiddenHebrewLexicons,
+                    orderString: hebrewLexiconOrder,
+                    hiddenString: hiddenHebrewLexicons,
                     builtInLexicons: [
                         ("strongs", "Strong's Hebrew"),
                         ("bdb", "Brown-Driver-Briggs")
@@ -87,7 +137,7 @@ struct ModuleSettingsView: View {
 
             // MARK: - Cross References Section
             Section {
-                CrossReferenceSortPicker(user: user)
+                CrossReferenceSortPicker(userSettings: $userSettings)
             } header: {
                 Text("Cross References")
             } footer: {
@@ -98,22 +148,17 @@ struct ModuleSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func setDefaultTranslation(_ translationId: Int) {
-        let realm = RealmManager.shared.realm
-        guard let translation = realm.object(ofType: Translation.self, forPrimaryKey: translationId) else { return }
-
-        try? realm.write {
-            guard let thawedUser = user.thaw() else { return }
-            thawedUser.readerTranslation = translation
-            generator.notificationOccurred(.success)
-        }
+    private func setDefaultTranslation(_ translationId: String) {
+        userSettings.readerTranslationId = translationId
+        try? UserDatabase.shared.updateSettings { $0.readerTranslationId = translationId }
+        generator.notificationOccurred(.success)
     }
 }
 
 // MARK: - Cross Reference Sort Picker
 
 struct CrossReferenceSortPicker: View {
-    @ObservedRealmObject var user: User
+    @Binding var userSettings: UserSettings
     private let generator = UINotificationFeedbackGenerator()
 
     private let sorts = ["r", "sv"]
@@ -123,17 +168,15 @@ struct CrossReferenceSortPicker: View {
         ForEach(sorts.indices, id: \.self) { index in
             HStack {
                 Button {
-                    try? RealmManager.shared.realm.write {
-                        guard let thawedUser = user.thaw() else { return }
-                        thawedUser.readerCrossReferenceSort = sorts[index]
-                        generator.notificationOccurred(.success)
-                    }
+                    userSettings.readerCrossReferenceSort = sorts[index]
+                    try? UserDatabase.shared.updateSettings { $0.readerCrossReferenceSort = sorts[index] }
+                    generator.notificationOccurred(.success)
                 } label: {
                     Text(sortNames[index])
                         .tint(.primary)
                 }
                 Spacer()
-                if user.readerCrossReferenceSort == sorts[index] {
+                if userSettings.readerCrossReferenceSort == sorts[index] {
                     Image(systemName: "checkmark")
                         .foregroundColor(.accentColor)
                 }
@@ -145,27 +188,27 @@ struct CrossReferenceSortPicker: View {
 // MARK: - Translation List
 
 struct TranslationList: View {
-    @ObservedRealmObject var user: User
+    @Binding var userSettings: UserSettings
     @Binding var hiddenString: String
-    let onSetDefault: (Int) -> Void
+    let onSetDefault: (String) -> Void
 
-    private var defaultTranslationId: Int {
-        user.readerTranslation?.id ?? 0
+    private var defaultTranslationId: String {
+        userSettings.readerTranslationId
     }
 
-    private var allTranslations: [Translation] {
-        Array(RealmManager.shared.realm.objects(Translation.self))
+    private var allTranslations: [TranslationModule] {
+        (try? TranslationDatabase.shared.getAllTranslations()) ?? []
     }
 
-    private var hiddenIds: Set<Int> {
-        parseHiddenTranslationIds(hiddenString)
+    private var hiddenIds: Set<String> {
+        Set(hiddenString.split(separator: ",").map { String($0) })
     }
 
-    private var visibleTranslationsList: [Translation] {
+    private var visibleTranslationsList: [TranslationModule] {
         allTranslations.filter { !hiddenIds.contains($0.id) }
     }
 
-    private var hiddenTranslationsList: [Translation] {
+    private var hiddenTranslationsList: [TranslationModule] {
         allTranslations.filter { hiddenIds.contains($0.id) }
     }
 
@@ -217,21 +260,21 @@ struct TranslationList: View {
         }
     }
 
-    private func hideTranslation(_ id: Int) {
+    private func hideTranslation(_ id: String) {
         var hidden = hiddenIds
         hidden.insert(id)
-        hiddenString = hidden.map { String($0) }.joined(separator: ",")
+        hiddenString = hidden.joined(separator: ",")
     }
 
-    private func showTranslation(_ id: Int) {
+    private func showTranslation(_ id: String) {
         var hidden = hiddenIds
         hidden.remove(id)
-        hiddenString = hidden.map { String($0) }.joined(separator: ",")
+        hiddenString = hidden.joined(separator: ",")
     }
 }
 
 struct TranslationRow: View {
-    let translation: Translation
+    let translation: TranslationModule
     let isDefault: Bool
     let onTap: () -> Void
 
@@ -379,7 +422,13 @@ struct LexiconOrderListWithHiding: View {
 }
 
 #Preview {
-    NavigationStack {
-        ModuleSettingsView(user: RealmManager.shared.realm.objects(User.self).first!)
+    struct PreviewWrapper: View {
+        @State var settings = UserDatabase.shared.getSettings()
+        var body: some View {
+            NavigationStack {
+                ModuleSettingsView(userSettings: $settings)
+            }
+        }
     }
+    return PreviewWrapper()
 }

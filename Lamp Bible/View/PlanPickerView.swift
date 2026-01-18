@@ -5,23 +5,22 @@
 //  Created by Matthew Bennett on 2024-01-02.
 //
 
-import RealmSwift
 import SwiftUI
 
 struct PlanPickerView: View {
     @Environment(\.dismiss) var dismiss
     @State private var isPlanOn: [Bool]
-    // @todo Can't use an ObservedRealmObject here as though we can thaw and write to it, the toggle
-    // implementation doesn't update properly
-    let user: User
-    let plans: Results<Plan>
-    
-    init(plans: Results<Plan>, user: User = RealmManager.shared.realm.objects(User.self).first!) {
-        self.user = user
-        self.plans = plans
-        _isPlanOn = State(initialValue: plans.map { user.plans.contains($0) })
+    @State private var userSettings: UserSettings
+    @State private var plans: [Plan] = []
+
+    init() {
+        let settings = UserDatabase.shared.getSettings()
+        _userSettings = State(initialValue: settings)
+        let allPlans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+        _plans = State(initialValue: allPlans)
+        _isPlanOn = State(initialValue: allPlans.map { settings.isPlanSelected($0.id) })
     }
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -34,19 +33,12 @@ struct PlanPickerView: View {
                         PlanFooterView(plan: plans[index])
                     }
                     .onChange(of: isPlanOn[index]) { oldValue, newValue in
-                        try! RealmManager.shared.realm.write {
-                            if newValue {
-                                // Add the plan to the user's plans list
-                                if !user.plans.contains(plans[index]) {
-                                    user.plans.append(plans[index])
-                                }
-                            } else {
-                                // Remove the plan from the user's plans list
-                                if let planIndex = user.plans.index(of: plans[index]) {
-                                    user.plans.remove(at: planIndex)
-                                }
-                            }
+                        if newValue {
+                            userSettings.addPlan(plans[index].id)
+                        } else {
+                            userSettings.removePlan(plans[index].id)
                         }
+                        try? UserDatabase.shared.updateSettings { $0 = userSettings }
                     }
                 }
             }
@@ -64,6 +56,5 @@ struct PlanPickerView: View {
 }
 
 #Preview {
-    PlanPickerView(plans: RealmManager.shared.realm.objects(Plan.self))
+    PlanPickerView()
 }
-

@@ -7,7 +7,6 @@
 
 import Foundation
 import GRDB
-import RealmSwift
 import SwiftUI
 import UIKit
 
@@ -33,6 +32,9 @@ class ScrollSyncCoordinator {
     private(set) var currentVerse: Int = 1
     private(set) var activeScroller: ScrollSource = .none
     private var lastReportedReaderVerse: Int = 0
+
+    /// Temporarily pause scroll sync (e.g., during keyboard display)
+    var isPaused: Bool = false
 
     // Throttle reader scrolling driven by tool panel (avoids hammering setContentOffset)
     private var lastReaderScrollTime: CFTimeInterval = 0
@@ -82,7 +84,7 @@ class ScrollSyncCoordinator {
 
     /// Called by reader when user scrolls - direct from UIKit
     func readerDidScrollToVerse(_ verse: Int) {
-        guard isScrollLinked else { return }
+        guard isScrollLinked && !isPaused else { return }
         guard activeScroller != .toolPanel else { return }
         // Update currentVerse for state tracking
         currentVerse = verse
@@ -93,7 +95,7 @@ class ScrollSyncCoordinator {
 
     /// Called by tool panel when user scrolls
     func toolPanelDidScrollToVerse(_ verse: Int) {
-        guard isScrollLinked else { return }
+        guard isScrollLinked && !isPaused else { return }
         guard activeScroller != .reader else { return }
         // Update currentVerse for state tracking
         currentVerse = verse
@@ -387,6 +389,10 @@ struct UIKitVerseList<ItemData, CellContent: View>: UIViewControllerRepresentabl
     func updateUIViewController(_ uiViewController: UIKitVerseListController<ItemData, CellContent>, context: Context) {
         uiViewController.cellContent = cellContent
 
+        // Ensure this controller is registered for scroll sync (re-register on every update
+        // in case SwiftUI recreated the view or another panel was active)
+        ScrollSyncCoordinator.shared.registerToolPanel(uiViewController)
+
         // Check if list changed (book/chapter change)
         let listChanged = context.coordinator.lastListId != listId
         context.coordinator.lastListId = listId
@@ -429,6 +435,15 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
         scrollCoordinator.registerToolPanel(self)
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Overscroll padding: allows last item to scroll up for scroll-sync
+        let bottomInset = max(0, collectionView.bounds.height - 150)
+        if collectionView.contentInset.bottom != bottomInset {
+            collectionView.contentInset.bottom = bottomInset
+        }
+    }
+
     private func setupCollectionView() {
         var config = UICollectionLayoutListConfiguration(appearance: .plain)
         config.showsSeparators = false
@@ -463,12 +478,22 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
     }
 
     func updateItems(_ newItems: [VerseItem], rawData: [ItemData]) {
+        let oldItems = self.items
         self.items = newItems
         self.rawData = rawData
 
         var snapshot = NSDiffableDataSourceSnapshot<Int, VerseItem>()
         snapshot.appendSections([0])
         snapshot.appendItems(newItems)
+
+        // Find items that exist in both old and new (same id) - these need reconfiguring
+        // because their underlying data may have changed (e.g., footnotes edited)
+        let oldIds = Set(oldItems.map { $0.id })
+        let itemsToReconfigure = newItems.filter { oldIds.contains($0.id) }
+        if !itemsToReconfigure.isEmpty {
+            snapshot.reconfigureItems(itemsToReconfigure)
+        }
+
         dataSource.apply(snapshot, animatingDifferences: false)
     }
 
@@ -547,79 +572,6 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
     }
 }
 
-// MARK: - Cross Reference Cell Data
-
-/// Data for a single verse's cross references
-struct CrossRefVerseData {
-    let verse: Int
-    let refs: [CrossReference]
-    let baseOffset: Int
-    let totalCount: Int
-}
-
-/// Cell view for displaying a verse's cross references
-struct CrossRefVerseCell: View {
-    let data: CrossRefVerseData
-    let translation: Translation
-    let fontSize: Int
-    let onNavigateToVerse: ((Int) -> Void)?
-    @Binding var crossRefSheetState: CrossRefSheetState?
-    @Binding var crossRefAllItems: [CrossRefTappableItem]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("v. \(data.verse)")
-                .font(.system(size: CGFloat(fontSize - 2), weight: .semibold))
-                .foregroundColor(.secondary)
-
-            CrossRefLinkedText(
-                crossRefs: data.refs,
-                translation: translation,
-                fontSize: fontSize,
-                onNavigateToVerse: onNavigateToVerse,
-                baseOffset: data.baseOffset,
-                sharedSheetState: $crossRefSheetState,
-                sharedAllItems: $crossRefAllItems,
-                totalCount: data.totalCount
-            )
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-// MARK: - TSK Verse Cell Data
-
-/// Data for a single verse's TSK content
-struct TSKVerseData {
-    let verseId: Int
-    let verse: Int
-    let baseOffset: Int
-    let totalCount: Int
-}
-
-/// Cell view for displaying a verse's TSK topics
-struct TSKVerseCell: View {
-    let data: TSKVerseData
-    let translation: Translation
-    let fontSize: Int
-    let onNavigateToVerse: ((Int) -> Void)?
-    @Binding var tskSheetState: TSKSheetState?
-    @Binding var tskAllItems: [TSKTappableItem]
-
-    var body: some View {
-        TSKVerseSection(
-            verseId: data.verseId,
-            translation: translation,
-            fontSize: fontSize,
-            onNavigateToVerse: onNavigateToVerse,
-            baseOffset: data.baseOffset,
-            sharedSheetState: $tskSheetState,
-            sharedAllItems: $tskAllItems,
-            totalCount: data.totalCount
-        )
-    }
-}
-
 // MARK: - Commentary Cell Data
 
 /// Data for a single commentary unit
@@ -655,31 +607,249 @@ struct CommentaryUnitCell: View {
 
 // MARK: - Notes Cell Data
 
-/// Data for a single note section
-struct NoteSectionData {
-    let verse: Int
+/// Gap info for verse gaps in notes
+struct NoteGapInfo: Equatable {
+    let gapStart: Int
+    let gapEnd: Int
+}
+
+/// Data for a single note section in the UIKit list
+struct NoteSectionData: Equatable {
+    let verse: Int  // verseStart or 0 for general section
     let section: NoteSection
     let sectionIndex: Int
+    let gapBefore: NoteGapInfo?  // Gap to show before this section
+
+    static func == (lhs: NoteSectionData, rhs: NoteSectionData) -> Bool {
+        lhs.verse == rhs.verse &&
+        lhs.sectionIndex == rhs.sectionIndex &&
+        lhs.section.id == rhs.section.id &&
+        lhs.section.content == rhs.section.content &&
+        lhs.gapBefore == rhs.gapBefore &&
+        lhs.section.footnotes?.count == rhs.section.footnotes?.count &&
+        lhs.section.footnotes?.map { $0.id } == rhs.section.footnotes?.map { $0.id } &&
+        lhs.section.footnotes?.map { $0.content.plainText } == rhs.section.footnotes?.map { $0.content.plainText }
+    }
+}
+
+/// Cell view for notes in UIKit list - creates binding from callbacks
+struct NoteSectionCell: View {
+    let data: NoteSectionData
+    let isReadOnly: Bool
+    let fontSize: Int
+    let translationId: String
+    let lastCursorPosition: Int?  // Last known cursor position for this section
+
+    // Callbacks
+    let onAddGap: ((Int, Int) -> Void)?  // (gapStart, gapEnd)
+    let onContentChange: (Int, String) -> Void  // (sectionIndex, newContent)
+    let onCursorPositionChange: ((Int, Int) -> Void)?  // (sectionIndex, cursorPosition)
+    let onNavigateToVerse: ((Int) -> Void)?
+    let onNavigateToVerseId: ((Int) -> Void)?
+    let onEditVerseRange: ((Int) -> Void)?  // (sectionIndex)
+    let onShowFootnotePicker: ((Int, Int?) -> Void)?  // (sectionIndex, cursorPosition?)
+    let onEditFootnote: ((Int, UserNotesFootnote) -> Void)?  // (sectionIndex, footnote)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Gap button before this section
+            if let gap = data.gapBefore, !isReadOnly {
+                Button {
+                    onAddGap?(gap.gapStart, gap.gapEnd)
+                } label: {
+                    HStack {
+                        Image(systemName: "plus.circle")
+                        if gap.gapStart == gap.gapEnd {
+                            Text("Add note for verse \(gap.gapStart)")
+                        } else {
+                            Text("Add note for verses \(gap.gapStart)-\(gap.gapEnd)")
+                        }
+                    }
+                    .font(.subheadline)
+                    .foregroundColor(.accentColor)
+                }
+                .padding(.vertical, 4)
+            }
+
+            // Section header
+            if !data.section.displayTitle.isEmpty {
+                HStack(alignment: .center, spacing: 12) {
+                    Text(data.section.displayTitle)
+                        .font(.system(size: CGFloat(fontSize)))
+                        .foregroundColor(.secondary)
+
+                    if !isReadOnly {
+                        Spacer()
+
+                        Button {
+                            onShowFootnotePicker?(data.sectionIndex, lastCursorPosition)
+                        } label: {
+                            Image(systemName: "note.text.badge.plus")
+                                .font(.system(size: CGFloat(fontSize)))
+                                .foregroundColor(.secondary)
+                        }
+
+                        // Only show verse range edit for non-general sections
+                        if !data.section.isGeneral {
+                            Button {
+                                onEditVerseRange?(data.sectionIndex)
+                            } label: {
+                                Image(systemName: "square.and.pencil")
+                                    .font(.system(size: CGFloat(fontSize)))
+                                    .foregroundColor(.secondary)
+                                    .offset(y: -2.5)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Content
+            if isReadOnly {
+                let placeholder = data.section.isGeneral ? "No introduction notes" : "No notes"
+                if data.section.content.isEmpty {
+                    Text(placeholder)
+                        .font(.system(size: CGFloat(fontSize)))
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    InteractiveNoteContentView(
+                        content: data.section.content,
+                        fontSize: fontSize,
+                        translationId: translationId,
+                        onNavigateToVerse: onNavigateToVerseId
+                    )
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            } else {
+                // For editing, use a binding created from callback
+                NoteTextEditorCell(
+                    content: data.section.content,
+                    sectionIndex: data.sectionIndex,
+                    fontSize: CGFloat(fontSize),
+                    onContentChange: onContentChange,
+                    onCursorPositionChange: onCursorPositionChange.map { callback in
+                        { cursorPosition in callback(data.sectionIndex, cursorPosition) }
+                    },
+                    onShowFootnotePicker: onShowFootnotePicker.map { callback in
+                        { cursorPosition in callback(data.sectionIndex, cursorPosition) }
+                    }
+                )
+                .frame(maxWidth: .infinity, minHeight: 60)
+            }
+
+            // Footnotes section
+            let footnotes = data.section.footnotes ?? []
+            if !footnotes.isEmpty || !isReadOnly {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !footnotes.isEmpty {
+                        Divider()
+                            .padding(.vertical, 4)
+                    }
+
+                    ForEach(footnotes) { footnote in
+                        HStack(alignment: .top, spacing: 4) {
+                            Text("[\(footnote.id)]")
+                                .font(.system(size: CGFloat(fontSize) * 0.8))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24, alignment: .trailing)
+                            InteractiveNoteContentView(
+                                content: footnote.content.plainText,
+                                fontSize: Int(Double(fontSize) * 0.9),
+                                translationId: translationId,
+                                onNavigateToVerse: onNavigateToVerse
+                            )
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if !isReadOnly {
+                                onEditFootnote?(data.sectionIndex, footnote)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+
+/// TextEditor wrapper that uses callbacks instead of binding
+struct NoteTextEditorCell: View {
+    let content: String
+    let sectionIndex: Int
+    let fontSize: CGFloat
+    let onContentChange: (Int, String) -> Void
+    let onCursorPositionChange: ((Int) -> Void)?  // (cursorPosition)
+    let onShowFootnotePicker: ((Int) -> Void)?  // (cursorPosition)
+
+    @State private var localContent: String
+
+    init(content: String, sectionIndex: Int, fontSize: CGFloat,
+         onContentChange: @escaping (Int, String) -> Void,
+         onCursorPositionChange: ((Int) -> Void)?,
+         onShowFootnotePicker: ((Int) -> Void)?) {
+        self.content = content
+        self.sectionIndex = sectionIndex
+        self.fontSize = fontSize
+        self.onContentChange = onContentChange
+        self.onCursorPositionChange = onCursorPositionChange
+        self.onShowFootnotePicker = onShowFootnotePicker
+        self._localContent = State(initialValue: content)
+    }
+
+    var body: some View {
+        NoteTextEditor(
+            text: Binding(
+                get: { localContent },
+                set: { newValue in
+                    localContent = newValue
+                    onContentChange(sectionIndex, newValue)
+                }
+            ),
+            fontSize: fontSize,
+            placeholder: "Add your notes...",
+            onTextChange: {},
+            onCursorPositionChange: onCursorPositionChange,
+            onShowFootnotePicker: onShowFootnotePicker
+        )
+        .onChange(of: content) { _, newContent in
+            // Sync external changes (e.g., from footnote insertion)
+            if newContent != localContent {
+                localContent = newContent
+            }
+        }
+    }
 }
 
 enum ToolPanelMode: String, CaseIterable {
     case notes = "Notes"
-    case crossRefs = "Cross References"
-    case tske = "Treasury of Scripture Knowledge (Enhanced)"
     case commentary = "Commentary"
+    case devotionals = "Devotionals"
+}
+
+enum FootnoteInsertMode: String, CaseIterable {
+    case createNew = "Create New"
+    case useExisting = "Use Existing"
 }
 
 struct ToolPanelView: View {
     let book: Int
     let chapter: Int
     let currentVerse: Int
-    @ObservedRealmObject var user: User
     var onNavigateToVerse: ((Int) -> Void)?
+    @Binding var toolbarsHidden: Bool
+
+    // User settings for translation ID
+    @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
 
     // Direct coordinator reference for scroll sync
     private let scrollCoordinator = ScrollSyncCoordinator.shared
 
-    @AppStorage("toolPanelMode") private var panelMode: ToolPanelMode = .crossRefs
+    @AppStorage("toolPanelMode") private var panelMode: ToolPanelMode = .commentary
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     @AppStorage("toolPanelScrollLinked") private var isScrollLinked: Bool = true
     @AppStorage("bottomToolbarMode") private var bottomToolbarMode: BottomToolbarMode = .navigation
@@ -688,7 +858,6 @@ struct ToolPanelView: View {
     @State private var scrollPosition: Int? = nil
     /// Last verse we reported to prevent duplicate callbacks
     @State private var lastReportedVerse: Int = 0
-    @State private var note: Note?
     @State private var sections: [NoteSection] = []
     @State private var isLoading: Bool = true
     @State private var saveState: SaveState = .idle
@@ -705,19 +874,25 @@ struct ToolPanelView: View {
     @State private var editVerseEnd: Int? = nil
     @State private var editOverlappingSection: NoteSection? = nil
 
-    // Locking state
-    @AppStorage("notesIsReadOnly") private var isReadOnly: Bool = true
-    @State private var showingLockConflict: Bool = false
-    @State private var lockConflictInfo: (lockedBy: String, lockedAt: Date)?
-    @State private var lockRefreshTask: Task<Void, Never>?
+    // Footnote editing state
+    @State private var showingFootnoteEditor: Bool = false
+    @State private var editingFootnoteId: String? = nil
+    @State private var editingFootnoteSectionIndex: Int? = nil
+    @State private var footnoteContent: String = ""
 
-    // Conflict state
-    @State private var showingConflictResolution: Bool = false
-    @State private var currentConflict: NoteConflict?
+    // Footnote insert mode (create new vs use existing)
+    @State private var footnoteInsertMode: FootnoteInsertMode = .createNew
+    @State private var selectedExistingFootnoteId: String? = nil
+    @State private var pendingFootnoteInsertCursor: Int? = nil
+    @State private var lastCursorPositions: [Int: Int] = [:]  // sectionIndex -> cursorPosition
+
+    // Edit state
+    @AppStorage("notesIsReadOnly") private var isReadOnly: Bool = true
     @State private var isProgrammaticScroll: Bool = false
 
     // Keyboard state (to disable scroll-linking while editing)
     @State private var isKeyboardVisible: Bool = false
+    @State private var keyboardHeight: CGFloat = 0
 
     // UI state
     @State private var isMaximized: Bool = false
@@ -725,31 +900,24 @@ struct ToolPanelView: View {
     @AppStorage("toolFontSize") private var toolFontSize: Int = 16
 
     // Sync status
-    @State private var syncStatus: ICloudModuleStorage.SyncStatus = .synced
+    @State private var syncStatus: ModuleSyncStatus = .synced
     @State private var syncCheckTask: Task<Void, Never>?
-
-    // TSKe cross-segment sheet navigation
-    @State private var tskSheetState: TSKSheetState? = nil
-    @State private var tskAllItems: [TSKTappableItem] = []
-
-    // Cross References sheet navigation
-    @State private var crossRefSheetState: CrossRefSheetState? = nil
-    @State private var crossRefAllItems: [CrossRefTappableItem] = []
 
     // UIKit scroll target (verse to scroll to)
     @State private var scrollToVerseTarget: Int? = nil
 
     // Module storage
     private let moduleDatabase = ModuleDatabase.shared
-    private let moduleSyncManager = ModuleSyncManager.shared
-    private let moduleStorage = ICloudModuleStorage.shared
-    @State private var notesModuleId: String = "bible-notes"
+    @ObservedObject private var moduleSyncManager = ModuleSyncManager.shared
+    @AppStorage("selectedNotesModuleId") private var notesModuleId: String = "notes"
+    @State private var notesModules: [(id: String, name: String)] = []
+    @State private var showingConflictSheet: Bool = false
 
     // Commentary state
     @State private var commentarySeries: [String] = []
     @AppStorage("selectedCommentarySeries") private var selectedCommentarySeries: String = ""
     @State private var commentaryStrongsKey: String? = nil
-    @State private var commentaryScriptureRef: CommentaryScriptureSheetItem? = nil
+    @State private var commentaryPreviewState: PreviewSheetState? = nil
     @State private var commentaryFootnote: CommentaryFootnote? = nil
 
     // Commentary Data State
@@ -758,38 +926,93 @@ struct ToolPanelView: View {
     @State private var commentarySeriesHasCoverage: Bool = false
     @State private var isCommentaryLoading: Bool = false
 
+    // Devotionals state
+    @State private var showingDevotionalPicker: Bool = true
+    @State private var selectedDevotional: Devotional? = nil
+    @State private var devotionalViewMode: DevotionalViewMode = .read
+    @State private var devotionalsModules: [(id: String, name: String)] = []
+    @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = "devotionals"
+
     var bookName: String {
-        RealmManager.shared.realm.objects(Book.self).filter("id == \(book)").first?.name ?? "Unknown"
+        (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Unknown"
     }
 
-    /// Display name for current panel mode - shows series name for commentary
+    /// Display name for current panel mode - shows module/series name
     private var currentPanelModeDisplayName: String {
         if panelMode == .commentary {
             return selectedCommentarySeries.isEmpty ? "Commentary" : selectedCommentarySeries
+        } else if panelMode == .notes {
+            return notesModules.first(where: { $0.id == notesModuleId })?.name ?? "Notes"
+        } else if panelMode == .devotionals {
+            return devotionalsModules.first(where: { $0.id == devotionalsModuleId })?.name ?? "Devotionals"
         }
         return panelMode.rawValue
     }
 
     var maxVerseInChapter: Int {
-        RealmManager.shared.realm.objects(Verse.self)
-            .filter("b == \(book) AND c == \(chapter)")
-            .max(ofProperty: "v") ?? 1
+        let translationId = UserDatabase.shared.getSettings().readerTranslationId
+        return (try? TranslationDatabase.shared.getVerseCount(translationId: translationId, book: book, chapter: chapter)) ?? 1
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Menu {
-                    // Fixed modes (excluding commentary - those are shown individually by module name)
-                    ForEach([ToolPanelMode.notes, .crossRefs, .tske], id: \.self) { mode in
+        ZStack(alignment: .top) {
+            // Content layer
+            VStack(spacing: 0) {
+                // Spacer for header height
+                if toolbarsHidden {
+                    Color.clear.frame(height: 24)
+                } else {
+                    Color.clear.frame(height: 44)
+                }
+
+                if panelMode == .notes {
+                    notesContent
+                } else if panelMode == .devotionals {
+                    devotionalsContent
+                } else {
+                    commentaryContent
+                }
+            }
+
+            // Header overlay layer
+            VStack(spacing: 0) {
+                if toolbarsHidden {
+                    Text(currentPanelModeDisplayName)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(Color(UIColor.systemBackground))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            toolbarsHidden = false
+                        }
+                } else {
+                HStack {
+                    Menu {
+                    // Notes modules shown by name
+                    if !notesModules.isEmpty {
+                        ForEach(notesModules, id: \.id) { module in
+                            Button {
+                                notesModuleId = module.id
+                                panelMode = .notes
+                            } label: {
+                                if panelMode == .notes && notesModuleId == module.id {
+                                    Label(module.name, systemImage: "checkmark")
+                                } else {
+                                    Text(module.name)
+                                }
+                            }
+                        }
+                    } else {
+                        // Fallback if no modules loaded yet
                         Button {
-                            panelMode = mode
+                            panelMode = .notes
                         } label: {
-                            if panelMode == mode {
-                                Label(mode.rawValue, systemImage: "checkmark")
+                            if panelMode == .notes {
+                                Label(ToolPanelMode.notes.rawValue, systemImage: "checkmark")
                             } else {
-                                Text(mode.rawValue)
+                                Text(ToolPanelMode.notes.rawValue)
                             }
                         }
                     }
@@ -807,6 +1030,39 @@ struct ToolPanelView: View {
                                 } else {
                                     Text(series)
                                 }
+                            }
+                        }
+                    }
+
+                    // Devotionals modules shown by name
+                    if !devotionalsModules.isEmpty {
+                        Divider()
+                        ForEach(devotionalsModules, id: \.id) { module in
+                            Button {
+                                devotionalsModuleId = module.id
+                                panelMode = .devotionals
+                                showingDevotionalPicker = true
+                                selectedDevotional = nil
+                            } label: {
+                                if panelMode == .devotionals && devotionalsModuleId == module.id {
+                                    Label(module.name, systemImage: "checkmark")
+                                } else {
+                                    Text(module.name)
+                                }
+                            }
+                        }
+                    } else {
+                        // Fallback if no devotionals modules loaded yet
+                        Divider()
+                        Button {
+                            panelMode = .devotionals
+                            showingDevotionalPicker = true
+                            selectedDevotional = nil
+                        } label: {
+                            if panelMode == .devotionals {
+                                Label(ToolPanelMode.devotionals.rawValue, systemImage: "checkmark")
+                            } else {
+                                Text(ToolPanelMode.devotionals.rawValue)
                             }
                         }
                     }
@@ -832,26 +1088,139 @@ struct ToolPanelView: View {
                     showingOptionsMenu = true
                 } label: {
                     Image(systemName: "ellipsis")
-                        .padding(.horizontal, 3)
-                        .padding(.vertical, 8)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Circle())
                 }
+                .buttonBorderShape(.circle)
                 .modifier(ConditionalGlassButtonStyle())
                 .popover(isPresented: $showingOptionsMenu) {
-                    optionsMenuContent
-                }
-            }
-            .padding(.horizontal)
-            .padding(.top, 2)
-            .padding(.bottom, 6)
+                    VStack(alignment: .leading, spacing: 8) {
+                        // Notes mode options
+                        if panelMode == .notes {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Button {
+                                    isReadOnly.toggle()
+                                    showingOptionsMenu = false
+                                } label: {
+                                    Label(
+                                        isReadOnly ? "Edit" : "Read-Only",
+                                        systemImage: isReadOnly ? "square.and.pencil" : "book"
+                                    )
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
 
-            if panelMode == .notes {
-                notesContent
-            } else if panelMode == .tske {
-                tskeContent
-            } else if panelMode == .commentary {
-                commentaryContent
-            } else {
-                crossRefsContent
+                                Divider()
+
+                                Button {
+                                    showingOptionsMenu = false
+                                    isMaximized = true
+                                } label: {
+                                    Label("Maximize", systemImage: "arrow.down.left.and.arrow.up.right")
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                            }
+                            .background(Color(UIColor.secondarySystemGroupedBackground))
+                            .cornerRadius(14)
+                        }
+
+                        // Scroll link toggle
+                        Button {
+                            isScrollLinked.toggle()
+                            showingOptionsMenu = false
+                        } label: {
+                            Label(
+                                isScrollLinked ? "Unlink Scroll" : "Link Scroll",
+                                systemImage: isScrollLinked ? "link.circle.fill" : "link.circle"
+                            )
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .cornerRadius(14)
+
+                        // Hide
+                        Button {
+                            showingOptionsMenu = false
+                            if panelMode == .notes {
+                                isReadOnly = true
+                            }
+                            notesPanelVisible = false
+                        } label: {
+                            Label("Hide Tools", systemImage: "rectangle.portrait")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .cornerRadius(14)
+
+                        // Font size controls - compact row
+                        HStack(spacing: 0) {
+                            Button {
+                                if toolFontSize > 12 {
+                                    toolFontSize -= 2
+                                }
+                            } label: {
+                                Image(systemName: "textformat.size.smaller")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(toolFontSize <= 12)
+
+                            Divider()
+                                .frame(height: 20)
+
+                            Button {
+                                if toolFontSize < 24 {
+                                    toolFontSize += 2
+                                }
+                            } label: {
+                                Image(systemName: "textformat.size.larger")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(toolFontSize >= 24)
+                        }
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .cornerRadius(14)
+                    }
+                    .font(.body)
+                    .fontWeight(.regular)
+                    .padding(12)
+                    .background(Color(UIColor.systemGroupedBackground))
+                    .presentationCompactAdaptation(.popover)
+                }
+                }
+                .padding(.horizontal)
+                .padding(.top, 2)
+                .padding(.bottom, 6)
+                .background(Color(UIColor.systemBackground))
+                }
+
+                // Gradient fade below header
+                LinearGradient(
+                    colors: [Color(UIColor.systemBackground), Color(UIColor.systemBackground).opacity(0)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 15)
             }
         }
         .sheet(isPresented: $isMaximized) {
@@ -869,32 +1238,14 @@ struct ToolPanelView: View {
         )) { _ in
             editVerseSheet
         }
-        .sheet(isPresented: $showingLockConflict) {
-            if let info = lockConflictInfo {
-                LockConflictView(
-                    lockedBy: info.lockedBy,
-                    lockedAt: info.lockedAt,
-                    bookName: bookName,
-                    chapter: chapter,
-                    onAction: handleLockAction
-                )
-                .presentationDetents([.medium])
-            }
+        .sheet(isPresented: Binding(
+            get: { !isMaximized && showingFootnoteEditor },
+            set: { showingFootnoteEditor = $0 }
+        )) {
+            footnoteEditorSheet
         }
-        .sheet(isPresented: $showingConflictResolution) {
-            if let conflict = currentConflict {
-                ConflictResolutionView(
-                    conflict: conflict,
-                    bookName: bookName,
-                    onResolve: { versionId in
-                        Task { await resolveConflict(keepVersionId: versionId) }
-                    },
-                    onCancel: {
-                        showingConflictResolution = false
-                        currentConflict = nil
-                    }
-                )
-            }
+        .sheet(isPresented: $showingConflictSheet) {
+            NoteConflictView()
         }
         .task {
             await loadNote()
@@ -911,7 +1262,6 @@ struct ToolPanelView: View {
             lastReportedVerse = 0
             scrollPosition = nil
             Task {
-                await releaseLockIfNeeded()
                 await loadNote()
             }
             // Scroll to current verse after content loads
@@ -923,7 +1273,6 @@ struct ToolPanelView: View {
             lastReportedVerse = 0
             scrollPosition = nil
             Task {
-                await releaseLockIfNeeded()
                 await loadNote()
             }
             // Scroll to current verse after content loads
@@ -931,9 +1280,17 @@ struct ToolPanelView: View {
                 scrollPosition = currentVerse
             }
         }
-        .onDisappear {
-            lockRefreshTask?.cancel()
-            Task { await releaseLockIfNeeded() }
+        .onChange(of: notesModuleId) { _, _ in
+            // Reload notes when module changes
+            Task {
+                await loadNote()
+            }
+        }
+        .onChange(of: moduleSyncManager.pendingConflicts.count) { oldCount, newCount in
+            // Auto-show conflict sheet when new conflicts are detected
+            if oldCount == 0 && newCount > 0 && panelMode == .notes {
+                showingConflictSheet = true
+            }
         }
         .toolbar {
             // Hide keyboard toolbar when bottom toolbar is in search mode
@@ -948,17 +1305,28 @@ struct ToolPanelView: View {
                 }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
             isKeyboardVisible = true
+            if let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                keyboardHeight = keyboardFrame.height
+            }
+            // Pause scroll sync to prevent keyboard push-up from triggering sync
+            scrollCoordinator.isPaused = true
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             isKeyboardVisible = false
+            keyboardHeight = 0
+            // Resume scroll sync
+            scrollCoordinator.isPaused = false
         }
         .onAppear {
             isReadOnly = true // Default to read-only when panel opens
+            userSettings = UserDatabase.shared.getSettings()
         }
         .task {
-            // Load commentary series early to determine if commentary option should show in picker
+            // Load notes modules, devotionals modules, and commentary series early for picker
+            await loadNotesModules()
+            await loadDevotionalsModules()
             await loadCommentarySeriesOnly()
         }
         .onChange(of: panelMode) { _, _ in
@@ -972,121 +1340,6 @@ struct ToolPanelView: View {
         }
     }
 
-    private var optionsMenuContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Notes mode options
-            if panelMode == .notes {
-                VStack(alignment: .leading, spacing: 0) {
-                    Button {
-                        isReadOnly.toggle()
-                        showingOptionsMenu = false
-                    } label: {
-                        Label(
-                            isReadOnly ? "Edit" : "Read-Only",
-                            systemImage: isReadOnly ? "square.and.pencil" : "book"
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-
-                    Divider()
-
-                    Button {
-                        showingOptionsMenu = false
-                        isMaximized = true
-                    } label: {
-                        Label("Maximize", systemImage: "arrow.down.left.and.arrow.up.right")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                }
-                .background(Color(UIColor.secondarySystemGroupedBackground))
-                .cornerRadius(14)
-            }
-
-            // Scroll link toggle
-            Button {
-                isScrollLinked.toggle()
-                showingOptionsMenu = false
-            } label: {
-                Label(
-                    isScrollLinked ? "Unlink Scroll" : "Link Scroll",
-                    systemImage: isScrollLinked ? "link.circle.fill" : "link.circle"
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-            .cornerRadius(14)
-
-            // Hide
-            Button {
-                showingOptionsMenu = false
-                if panelMode == .notes {
-                    isReadOnly = true
-                }
-                notesPanelVisible = false
-            } label: {
-                Label("Hide Tools", systemImage: "rectangle.portrait")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-            .cornerRadius(14)
-
-            // Font size controls - compact row
-            HStack(spacing: 0) {
-                Button {
-                    if toolFontSize > 12 {
-                        toolFontSize -= 2
-                    }
-                } label: {
-                    Image(systemName: "textformat.size.smaller")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(toolFontSize <= 12)
-
-                Divider()
-                    .frame(height: 20)
-
-                Button {
-                    if toolFontSize < 24 {
-                        toolFontSize += 2
-                    }
-                } label: {
-                    Image(systemName: "textformat.size.larger")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(toolFontSize >= 24)
-            }
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-            .cornerRadius(14)
-        }
-        .font(.body)
-        .fontWeight(.regular)
-        .padding(12)
-        .background(Color(UIColor.systemGroupedBackground))
-        .presentationCompactAdaptation(.popover)
-    }
-
     @State private var showingStatusPopover: Bool = false
     @State private var showingMaximizedStatusPopover: Bool = false
 
@@ -1095,40 +1348,21 @@ struct ToolPanelView: View {
         Button {
             showingStatusPopover = true
         } label: {
-            HStack(spacing: 4) {
-                // Save state icon
-                switch saveState {
-                case .idle:
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                case .saving:
-                    ProgressView()
-                        .scaleEffect(0.6)
-                case .saved:
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                case .error:
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .foregroundStyle(.red)
-                }
-
-                // Sync status icon
-                switch syncStatus {
-                case .synced:
-                    Image(systemName: "checkmark.icloud.fill")
-                        .foregroundStyle(.green)
-                case .syncing:
-                    Image(systemName: "arrow.triangle.2.circlepath.icloud")
-                        .foregroundStyle(.secondary)
-                case .notSynced:
-                    Image(systemName: "exclamationmark.icloud")
-                        .foregroundStyle(.orange)
-                case .notAvailable:
-                    Image(systemName: "xmark.icloud")
-                        .foregroundStyle(.red)
-                }
+            // Sync status icon
+            switch syncStatus {
+            case .synced:
+                Image(systemName: "checkmark.icloud.fill")
+                    .foregroundStyle(.green)
+            case .syncing:
+                Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                    .foregroundStyle(.secondary)
+            case .notSynced:
+                Image(systemName: "exclamationmark.icloud")
+                    .foregroundStyle(.orange)
+            case .notAvailable:
+                Image(systemName: "xmark.icloud")
+                    .foregroundStyle(.red)
             }
-            .padding(.vertical, 1.2)
         }
         .modifier(ConditionalGlassButtonStyle())
         .popover(isPresented: $showingStatusPopover) {
@@ -1138,52 +1372,25 @@ struct ToolPanelView: View {
 
     @ViewBuilder
     private var statusPopoverContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Save status row
-            HStack {
-                switch saveState {
-                case .idle:
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("No unsaved changes")
-                case .saving:
-                    ProgressView()
-                        .scaleEffect(0.8)
-                    Text("Saving...")
-                case .saved:
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Saved")
-                case .error(let message):
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .foregroundStyle(.red)
-                    Text(message)
-                        .foregroundStyle(.red)
-                }
-            }
-
-            Divider()
-
-            // Sync status row
-            HStack {
-                switch syncStatus {
-                case .synced:
-                    Image(systemName: "checkmark.icloud.fill")
-                        .foregroundStyle(.green)
-                    Text("Synced to iCloud")
-                case .syncing:
-                    Image(systemName: "arrow.triangle.2.circlepath.icloud")
-                        .foregroundStyle(.secondary)
-                    Text("Syncing to iCloud...")
-                case .notSynced:
-                    Image(systemName: "exclamationmark.icloud")
-                        .foregroundStyle(.orange)
-                    Text("Waiting to sync")
-                case .notAvailable:
-                    Image(systemName: "xmark.icloud")
-                        .foregroundStyle(.red)
-                    Text("iCloud unavailable")
-                }
+        HStack {
+            let backendName = SyncCoordinator.shared.settings.backend.displayName
+            switch syncStatus {
+            case .synced:
+                Image(systemName: "checkmark.icloud.fill")
+                    .foregroundStyle(.green)
+                Text("Synced to \(backendName)")
+            case .syncing:
+                Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                    .foregroundStyle(.secondary)
+                Text("Syncing...")
+            case .notSynced:
+                Image(systemName: "exclamationmark.icloud")
+                    .foregroundStyle(.orange)
+                Text("Waiting to sync")
+            case .notAvailable:
+                Image(systemName: "xmark.icloud")
+                    .foregroundStyle(.red)
+                Text("Sync unavailable")
             }
         }
         .padding()
@@ -1203,37 +1410,21 @@ struct ToolPanelView: View {
                             Button {
                                 showingMaximizedStatusPopover = true
                             } label: {
-                                HStack(spacing: 4) {
-                                    // Save state icon
-                                    switch saveState {
-                                    case .idle, .saved:
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(.green)
-                                    case .saving:
-                                        ProgressView()
-                                            .scaleEffect(0.6)
-                                    case .error:
-                                        Image(systemName: "exclamationmark.circle.fill")
-                                            .foregroundStyle(.red)
-                                    }
-
-                                    // Sync status icon
-                                    switch syncStatus {
-                                    case .synced:
-                                        Image(systemName: "checkmark.icloud.fill")
-                                            .foregroundStyle(.green)
-                                    case .syncing:
-                                        Image(systemName: "arrow.triangle.2.circlepath.icloud")
-                                            .foregroundStyle(.secondary)
-                                    case .notSynced:
-                                        Image(systemName: "exclamationmark.icloud")
-                                            .foregroundStyle(.orange)
-                                    case .notAvailable:
-                                        Image(systemName: "xmark.icloud")
-                                            .foregroundStyle(.red)
-                                    }
+                                // Sync status icon
+                                switch syncStatus {
+                                case .synced:
+                                    Image(systemName: "checkmark.icloud.fill")
+                                        .foregroundStyle(.green)
+                                case .syncing:
+                                    Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                                        .foregroundStyle(.secondary)
+                                case .notSynced:
+                                    Image(systemName: "exclamationmark.icloud")
+                                        .foregroundStyle(.orange)
+                                case .notAvailable:
+                                    Image(systemName: "xmark.icloud")
+                                        .foregroundStyle(.red)
                                 }
-                                .imageScale(.small)
                             }
                             .popover(isPresented: $showingMaximizedStatusPopover) {
                                 statusPopoverContent
@@ -1261,6 +1452,9 @@ struct ToolPanelView: View {
                 .sheet(item: $editingSection) { _ in
                     editVerseSheet
                 }
+                .sheet(isPresented: $showingFootnoteEditor) {
+                    footnoteEditorSheet
+                }
         }
     }
 
@@ -1273,70 +1467,67 @@ struct ToolPanelView: View {
         } else {
             let gaps = verseGaps()
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(sections.indices, id: \.self) { index in
-                            let section = sections[index]
+            // Build items for UIKit list with gap info
+            let items: [(verse: Int, data: NoteSectionData)] = sections.enumerated().compactMap { index, section in
+                // Calculate gap before this section
+                var gapBefore: NoteGapInfo? = nil
+                if !isReadOnly && !section.isGeneral {
+                    if let gap = gaps.first(where: { $0.after == nil && section.verseStart == $0.gapEnd + 1 }) {
+                        gapBefore = NoteGapInfo(gapStart: gap.gapStart, gapEnd: gap.gapEnd)
+                    } else if let prevIndex = sections.prefix(index).lastIndex(where: { !$0.isGeneral }),
+                              let prevEnd = sections[prevIndex].verseEnd ?? sections[prevIndex].verseStart,
+                              let gap = gaps.first(where: { $0.after == prevEnd }) {
+                        gapBefore = NoteGapInfo(gapStart: gap.gapStart, gapEnd: gap.gapEnd)
+                    }
+                }
 
-                            // Show gap button before this section (if there's a gap)
-                            if !isReadOnly && !section.isGeneral {
-                                if let gap = gaps.first(where: { $0.after == nil && section.verseStart == $0.gapEnd + 1 }) {
-                                    gapAddButton(gapStart: gap.gapStart, gapEnd: gap.gapEnd)
-                                } else if let prevIndex = sections.prefix(index).lastIndex(where: { !$0.isGeneral }),
-                                          let prevEnd = sections[prevIndex].verseEnd ?? sections[prevIndex].verseStart,
-                                          let gap = gaps.first(where: { $0.after == prevEnd }) {
-                                    gapAddButton(gapStart: gap.gapStart, gapEnd: gap.gapEnd)
-                                }
-                            }
+                let verse = section.verseStart ?? 0
+                return (verse: verse, data: NoteSectionData(
+                    verse: verse,
+                    section: section,
+                    sectionIndex: index,
+                    gapBefore: gapBefore
+                ))
+            }
 
-                            NoteSectionView(
-                                section: $sections[index],
-                                isReadOnly: isReadOnly,
-                                fontSize: toolFontSize,
-                                translation: user.readerTranslation!,
-                                onContentChange: { scheduleSave() },
-                                onNavigateToVerse: { verse in
-                                    // Close maximized sheet if open
-                                    if isMaximized {
-                                        isMaximized = false
-                                    }
-                                    // Construct full verseId from verse number within current chapter
-                                    let verseId = book * 1000000 + chapter * 1000 + verse
-                                    onNavigateToVerse?(verseId)
-                                },
-                                onNavigateToVerseId: { verseId in
-                                    // Close maximized sheet if open
-                                    if isMaximized {
-                                        isMaximized = false
-                                    }
-                                    onNavigateToVerse?(verseId)
-                                },
-                                onEditVerseRange: section.isGeneral ? nil : {
-                                    startEditingSection(section, at: index)
-                                }
-                            )
-                            .id(section.verseStart ?? -index)
+            VStack(spacing: 0) {
+                // Conflict banner (above the list)
+                if !moduleSyncManager.pendingConflicts.isEmpty {
+                    Button {
+                        showingConflictSheet = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("\(moduleSyncManager.pendingConflicts.count) sync conflict\(moduleSyncManager.pendingConflicts.count == 1 ? "" : "s")")
+                                .fontWeight(.medium)
+                            Spacer()
+                            Text("Resolve")
+                                .foregroundColor(.accentColor)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
+                        .padding()
+                        .background(Color.orange.opacity(0.15))
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                }
 
-                        // Show "No verse notes" placeholder in read-only mode when no verse sections exist
-                        if isReadOnly && !sections.contains(where: { !$0.isGeneral }) {
-                            Text("No verse notes")
-                                .font(.system(size: CGFloat(toolFontSize)))
-                                .foregroundStyle(.tertiary)
-                        }
-
-                        // Show gap button after last verse section (only when verse sections exist)
+                // Main content
+                if sections.isEmpty || (isReadOnly && !sections.contains(where: { !$0.isGeneral })) {
+                    // Empty state - offset up to account for bottom toolbar
+                    VStack(spacing: 12) {
+                        Image(systemName: "note.text")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.tertiary)
+                        Text("No verse notes")
+                            .font(.system(size: CGFloat(toolFontSize)))
+                            .foregroundStyle(.tertiary)
                         if !isReadOnly {
-                            if let lastVerseSection = sections.last(where: { !$0.isGeneral }),
-                               let lastEnd = lastVerseSection.verseEnd ?? lastVerseSection.verseStart,
-                               let gap = gaps.first(where: { $0.after == lastEnd }) {
-                                gapAddButton(gapStart: gap.gapStart, gapEnd: gap.gapEnd)
-                            }
-                        }
-
-                        // General add verse button (only shown when no verse notes exist)
-                        if !isReadOnly && !sections.contains(where: { !$0.isGeneral }) {
                             Button {
                                 showingAddVerseSheet = true
                             } label: {
@@ -1347,34 +1538,80 @@ struct ToolPanelView: View {
                                 .foregroundColor(.accentColor)
                             }
                             .padding(.top, 8)
-                            .padding(.bottom, 20)
                         }
                     }
-                    .padding()
-                    .scrollTargetLayout()
-                }
-                .scrollPosition(id: $scrollPosition, anchor: .top)
-                .scrollDismissesKeyboard(.never)
-                .onChange(of: currentVerse) { _, newVerse in
-                    guard isScrollLinked && !isKeyboardVisible else { return }
-                    // Skip if tool panel is the active scroller (prevents feedback loop)
-                    if scrollCoordinator.activeScroller == .toolPanel { return }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .offset(y: -28)
+                } else {
+                    // UIKit-based notes list for performance and scroll sync
+                    UIKitVerseList(
+                        items: items,
+                        cellContent: { data in
+                            NoteSectionCell(
+                                data: data,
+                                isReadOnly: isReadOnly,
+                                fontSize: toolFontSize,
+                                translationId: userSettings.readerTranslationId,
+                                lastCursorPosition: lastCursorPositions[data.sectionIndex],
+                                onAddGap: { gapStart, gapEnd in
+                                    addVerseSectionWithRange(start: gapStart, end: gapEnd > gapStart ? gapEnd : nil)
+                                },
+                                onContentChange: { sectionIndex, newContent in
+                                    if sectionIndex < sections.count {
+                                        sections[sectionIndex].content = newContent
+                                        scheduleSave()
+                                    }
+                                },
+                                onCursorPositionChange: { sectionIndex, cursorPosition in
+                                    lastCursorPositions[sectionIndex] = cursorPosition
+                                },
+                                onNavigateToVerse: { verse in
+                                    if isMaximized { isMaximized = false }
+                                    let verseId = book * 1000000 + chapter * 1000 + verse
+                                    onNavigateToVerse?(verseId)
+                                },
+                                onNavigateToVerseId: { verseId in
+                                    if isMaximized { isMaximized = false }
+                                    onNavigateToVerse?(verseId)
+                                },
+                                onEditVerseRange: { sectionIndex in
+                                    if sectionIndex < sections.count && !sections[sectionIndex].isGeneral {
+                                        startEditingSection(sections[sectionIndex], at: sectionIndex)
+                                    }
+                                },
+                                onShowFootnotePicker: { sectionIndex, cursorPosition in
+                                    showFootnotePicker(forSectionAt: sectionIndex, cursorPosition: cursorPosition)
+                                },
+                                onEditFootnote: { sectionIndex, footnote in
+                                    editFootnote(footnote, inSectionAt: sectionIndex)
+                                }
+                            )
+                        },
+                        listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(isReadOnly)_\(sections.count)"
+                    )
 
-                    isProgrammaticScroll = true
-
-                    // Use proxy.scrollTo for reliable programmatic scrolling
-                    if findSectionId(forVerse: newVerse) != nil {
-                        proxy.scrollTo(newVerse, anchor: .top)
-                    }
-
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        isProgrammaticScroll = false
-                    }
-                }
-                .onAppear {
-                    // Scroll to current verse when view appears
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        proxy.scrollTo(currentVerse, anchor: .top)
+                    // Trailing gap button (after last verse section)
+                    if !isReadOnly {
+                        if let lastVerseSection = sections.last(where: { !$0.isGeneral }),
+                           let lastEnd = lastVerseSection.verseEnd ?? lastVerseSection.verseStart,
+                           let gap = gaps.first(where: { $0.after == lastEnd }) {
+                            Button {
+                                addVerseSectionWithRange(start: gap.gapStart, end: gap.gapEnd > gap.gapStart ? gap.gapEnd : nil)
+                            } label: {
+                                HStack {
+                                    Image(systemName: "plus.circle")
+                                    if gap.gapStart == gap.gapEnd {
+                                        Text("Add note for verse \(gap.gapStart)")
+                                    } else {
+                                        Text("Add note for verses \(gap.gapStart)-\(gap.gapEnd)")
+                                    }
+                                }
+                                .font(.subheadline)
+                                .foregroundColor(.accentColor)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                        }
                     }
                 }
             }
@@ -1398,340 +1635,6 @@ struct ToolPanelView: View {
             .foregroundColor(.accentColor)
         }
         .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private var crossRefsContent: some View {
-        // Get all verse IDs in this chapter that have cross references
-        let chapterStart = book * 1000000 + chapter * 1000 + 1
-        let chapterEnd = book * 1000000 + chapter * 1000 + 999
-        let allCrossRefs = RealmManager.shared.realm.objects(CrossReference.self)
-            .filter("id >= \(chapterStart) AND id <= \(chapterEnd)")
-            .sorted(byKeyPath: "id", ascending: true)
-
-        // Group cross refs by verse
-        let groupedRefs = Dictionary(grouping: Array(allCrossRefs)) { crossRef in
-            crossRef.id % 1000 // Extract verse number from id
-        }
-        let sortedVerses = groupedRefs.keys.sorted()
-
-        // Compute offsets and total count for cross-segment navigation
-        let verseOffsets: [Int: Int] = {
-            var offsets: [Int: Int] = [:]
-            var runningOffset = 0
-            for verse in sortedVerses {
-                offsets[verse] = runningOffset
-                runningOffset += groupedRefs[verse]?.count ?? 0
-            }
-            return offsets
-        }()
-        let totalCrossRefCount = allCrossRefs.count
-
-        // Build items for UIKit list
-        let items: [(verse: Int, data: CrossRefVerseData)] = sortedVerses.compactMap { verse in
-            guard let refs = groupedRefs[verse] else { return nil }
-            return (verse: verse, data: CrossRefVerseData(
-                verse: verse,
-                refs: refs.sorted { $0.r < $1.r },
-                baseOffset: verseOffsets[verse] ?? 0,
-                totalCount: totalCrossRefCount
-            ))
-        }
-
-        Group {
-            if sortedVerses.isEmpty {
-                VStack {
-                    Spacer()
-                    Text("No cross references for this chapter")
-                        .font(.system(size: CGFloat(toolFontSize)))
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                }
-            } else {
-                UIKitVerseList(
-                    items: items,
-                    cellContent: { data in
-                        CrossRefVerseCell(
-                            data: data,
-                            translation: user.readerTranslation!,
-                            fontSize: toolFontSize,
-                            onNavigateToVerse: onNavigateToVerse,
-                            crossRefSheetState: $crossRefSheetState,
-                            crossRefAllItems: $crossRefAllItems
-                        )
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                    },
-                    listId: "crossRef_\(book)_\(chapter)_\(toolFontSize)"
-                )
-            }
-        }
-        .onChange(of: chapter) { _, _ in
-            crossRefSheetState = nil
-            crossRefAllItems = []
-        }
-        .onChange(of: book) { _, _ in
-            crossRefSheetState = nil
-            crossRefAllItems = []
-        }
-        .sheet(item: $crossRefSheetState) { state in
-            crossRefSheetContent(state: state, translation: user.readerTranslation!)
-        }
-    }
-
-    @ViewBuilder
-    private func crossRefSheetContent(state: CrossRefSheetState, translation: Translation) -> some View {
-        let item = state.currentItem
-        NavigationStack {
-            ScrollView {
-                CrossRefVerseContent(
-                    title: item.displayText,
-                    verseId: item.sv,
-                    endVerseId: item.ev,
-                    translation: translation
-                )
-                .padding()
-            }
-            .id("\(item.sv)-\(item.ev ?? 0)")
-            .navigationTitle(item.displayText)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        crossRefSheetState = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    if onNavigateToVerse != nil {
-                        Button {
-                            crossRefSheetState = nil
-                            onNavigateToVerse?(item.sv)
-                        } label: {
-                            Image(systemName: "arrow.up.right")
-                        }
-                    }
-                }
-            }
-            .toolbar {
-                ToolbarItemGroup(placement: .bottomBar) {
-                    if state.allItems.count > 1 {
-                        Button {
-                            if let prev = state.withPrev() {
-                                crossRefSheetState = prev
-                            }
-                        } label: {
-                            Image(systemName: "chevron.left")
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!state.canNavigatePrev)
-
-                        Spacer()
-
-                        Text("\(state.currentIndex + 1) of \(state.displayCount)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
-                            .padding(.horizontal, 8)
-
-                        Spacer()
-
-                        Button {
-                            if let next = state.withNext() {
-                                crossRefSheetState = next
-                            }
-                        } label: {
-                            Image(systemName: "chevron.right")
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!state.canNavigateNext)
-                    }
-                }
-            }
-        }
-        .presentationDetents([.fraction(0.325), .medium, .large])
-        .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-    }
-
-    // MARK: - TSKe Content
-
-    /// Compute ref counts for all TSKe content in the chapter (for cross-segment swipe navigation)
-    private func computeTskRefData(tskChapter: TSKChapter?, allTskVerses: Results<TSKVerse>) -> (totalCount: Int, chapterOverviewCount: Int, verseOffsets: [Int: Int]) {
-        var totalCount = 0
-        var verseOffsets: [Int: Int] = [:]
-
-        // Chapter overview refs
-        let chapterOverviewCount = tskChapter.map { countRefsInSegmentsJson($0.segmentsJson) } ?? 0
-        totalCount += chapterOverviewCount
-
-        // Verse refs
-        for tskVerse in allTskVerses {
-            verseOffsets[tskVerse.id] = totalCount
-            // Count refs in all topics for this verse
-            for topic in tskVerse.topics {
-                totalCount += countRefsInSegmentsJson(topic.segmentsJson)
-            }
-        }
-
-        return (totalCount, chapterOverviewCount, verseOffsets)
-    }
-
-    @ViewBuilder
-    private var tskeContent: some View {
-        // Get TSKe data for this chapter
-        let tskBook = RealmManager.shared.realm.objects(TSKBook.self).filter("b == \(book)").first
-        let tskChapter = RealmManager.shared.realm.objects(TSKChapter.self).filter("b == \(book) AND c == \(chapter)").first
-
-        // Get all verse entries for this chapter
-        let chapterStart = book * 1000000 + chapter * 1000 + 1
-        let chapterEnd = book * 1000000 + chapter * 1000 + 999
-        let allTskVerses = RealmManager.shared.realm.objects(TSKVerse.self)
-            .filter("id >= \(chapterStart) AND id <= \(chapterEnd)")
-            .sorted(byKeyPath: "id", ascending: true)
-
-        // Compute ref counts and offsets for cross-segment swipe navigation
-        let refData = computeTskRefData(tskChapter: tskChapter, allTskVerses: allTskVerses)
-
-        // Build items for UIKit list
-        let items: [(verse: Int, data: TSKVerseData)] = Array(allTskVerses).map { tskVerse in
-            let verseNum = tskVerse.id % 1000
-            let verseOffset = refData.verseOffsets[tskVerse.id] ?? 0
-            return (verse: verseNum, data: TSKVerseData(
-                verseId: tskVerse.id,
-                verse: verseNum,
-                baseOffset: verseOffset,
-                totalCount: refData.totalCount
-            ))
-        }
-
-        let hasHeaderContent = (chapter == 1 && tskBook?.t.isEmpty == false) ||
-                               (tskChapter?.segmentsJson.isEmpty == false)
-
-        Group {
-            if allTskVerses.isEmpty && tskBook == nil && tskChapter == nil {
-                VStack {
-                    Spacer()
-                    Text("No TSKe data for this chapter")
-                        .font(.system(size: CGFloat(toolFontSize)))
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                }
-            } else {
-                UIKitVerseList(
-                    items: items,
-                    cellContent: { data in
-                        TSKVerseCell(
-                            data: data,
-                            translation: user.readerTranslation!,
-                            fontSize: toolFontSize,
-                            onNavigateToVerse: onNavigateToVerse,
-                            tskSheetState: $tskSheetState,
-                            tskAllItems: $tskAllItems
-                        )
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                    },
-                    listId: "tske_\(book)_\(chapter)_\(toolFontSize)"
-                )
-            }
-        }
-        .onChange(of: chapter) { _, _ in
-            tskSheetState = nil
-            tskAllItems = []
-        }
-        .onChange(of: book) { _, _ in
-            tskSheetState = nil
-            tskAllItems = []
-        }
-        .sheet(item: $tskSheetState) { state in
-            tskSheetContent(state: state, translation: user.readerTranslation!)
-        }
-    }
-
-    @ViewBuilder
-    private func tskSheetContent(state: TSKSheetState, translation: Translation) -> some View {
-        let item = state.currentItem
-        NavigationStack {
-            ScrollView {
-                VerseSheetContent(
-                    title: item.displayText,
-                    verseId: item.sv,
-                    endVerseId: item.ev,
-                    translation: translation
-                )
-                .padding()
-            }
-            .id("\(item.sv)-\(item.ev ?? 0)")  // Force refresh when item changes
-            .navigationTitle(item.displayText)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        tskSheetState = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    if onNavigateToVerse != nil {
-                        Button {
-                            tskSheetState = nil
-                            onNavigateToVerse?(item.sv)
-                        } label: {
-                            Image(systemName: "arrow.up.right")
-                        }
-                    }
-                }
-            }
-            .toolbar {
-                ToolbarItemGroup(placement: .bottomBar) {
-                    if state.allItems.count > 1 {
-                        Button {
-                            if let prev = state.withPrev() {
-                                tskSheetState = prev
-                            }
-                        } label: {
-                            Image(systemName: "chevron.left")
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!state.canNavigatePrev)
-
-                        Spacer()
-
-                        Text("\(state.currentIndex + 1) of \(state.displayCount)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
-                            .padding(.horizontal, 8)
-
-                        Spacer()
-
-                        Button {
-                            if let next = state.withNext() {
-                                tskSheetState = next
-                            }
-                        } label: {
-                            Image(systemName: "chevron.right")
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!state.canNavigateNext)
-                    }
-                }
-            }
-        }
-        .presentationDetents([.fraction(0.325), .medium, .large])
-        .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
     }
 
     // MARK: - Commentary Content
@@ -1791,7 +1694,7 @@ struct ToolPanelView: View {
                 word: "",
                 strongs: [item.key],
                 morphology: nil,
-                translation: user.readerTranslation,
+                translationId: userSettings.readerTranslationId,
                 onNavigateToVerse: { verseId in
                     commentaryStrongsKey = nil
                     onNavigateToVerse?(verseId)
@@ -1801,8 +1704,12 @@ struct ToolPanelView: View {
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
         }
-        .sheet(item: $commentaryScriptureRef) { item in
-            commentaryScriptureSheetContent(item: item, translation: user.readerTranslation!)
+        .sheet(item: $commentaryPreviewState) { _ in
+            PreviewSheet(
+                state: $commentaryPreviewState,
+                translationId: userSettings.readerTranslationId,
+                onNavigateToVerse: onNavigateToVerse
+            )
         }
         .sheet(item: $commentaryFootnote) { footnote in
             commentaryFootnoteSheetContent(footnote: footnote)
@@ -1828,7 +1735,9 @@ struct ToolPanelView: View {
                     data: data,
                     fontSize: toolFontSize,
                     onScriptureTap: { sv, ev in
-                        commentaryScriptureRef = CommentaryScriptureSheetItem(verseId: sv, endVerseId: ev)
+                        let displayText = formatVerseRangeReference(sv, endVerseId: ev)
+                        let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
+                        commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
                     },
                     onStrongsTap: { strongsKey in
                         commentaryStrongsKey = strongsKey
@@ -1855,13 +1764,23 @@ struct ToolPanelView: View {
         let series = selectedCommentarySeries
         let b = book
         let c = chapter
-        let database = moduleDatabase
+        let userDatabase = moduleDatabase
+        let bundledDb = BundledModuleDatabase.shared
 
         let (coverage, bookInfo, units) = await Task.detached(priority: .userInitiated) {
-            let coverage = (try? database.seriesHasCoverageForBook(seriesFull: series, bookNumber: b)) ?? false
-            let bookInfo = coverage ? (try? database.getCommentaryBookForSeries(seriesFull: series, bookNumber: b)) : nil
-            let units = coverage ? ((try? database.getCommentaryUnitsForChapterBySeries(seriesFull: series, book: b, chapter: c)) ?? []) : []
-            return (coverage, bookInfo, units)
+            // Try bundled database first
+            let bundledCoverage = (try? bundledDb.bundledSeriesHasCoverageForBook(seriesFull: series, bookNumber: b)) ?? false
+            if bundledCoverage {
+                let bookInfo = try? bundledDb.getBundledCommentaryBook(seriesFull: series, bookNumber: b)
+                let units = (try? bundledDb.getBundledCommentaryUnitsForChapter(seriesFull: series, book: b, chapter: c)) ?? []
+                return (true, bookInfo, units)
+            }
+
+            // Fall back to user module database
+            let userCoverage = (try? userDatabase.seriesHasCoverageForBook(seriesFull: series, bookNumber: b)) ?? false
+            let bookInfo = userCoverage ? (try? userDatabase.getCommentaryBookForSeries(seriesFull: series, bookNumber: b)) : nil
+            let units = userCoverage ? ((try? userDatabase.getCommentaryUnitsForChapterBySeries(seriesFull: series, book: b, chapter: c)) ?? []) : []
+            return (userCoverage, bookInfo, units)
         }.value
 
         // Update state on Main Actor
@@ -1870,10 +1789,65 @@ struct ToolPanelView: View {
         commentaryUnits = units
     }
 
+    /// Load notes modules for the picker
+    private func loadNotesModules() async {
+        do {
+            let modules = try moduleDatabase.getAllModules(type: .notes)
+            notesModules = modules.map { ($0.id, $0.name) }
+
+            // If no modules exist yet, the default will be created on first use
+            // If current selection is not in list, select first available
+            if !notesModules.isEmpty && !notesModules.contains(where: { $0.id == notesModuleId }) {
+                notesModuleId = notesModules.first?.id ?? "notes"
+            }
+        } catch {
+            print("Failed to load notes modules: \(error)")
+        }
+    }
+
+    /// Load devotionals modules for the picker
+    private func loadDevotionalsModules() async {
+        do {
+            let modules = try moduleDatabase.getAllModules(type: .devotional)
+            devotionalsModules = modules.map { ($0.id, $0.name) }
+
+            // If no modules exist yet, the default will be created on first use
+            // If current selection is not in list, select first available
+            if !devotionalsModules.isEmpty && !devotionalsModules.contains(where: { $0.id == devotionalsModuleId }) {
+                devotionalsModuleId = devotionalsModules.first?.id ?? "devotionals"
+            }
+
+            // If still empty, try to create default module
+            if devotionalsModules.isEmpty {
+                try await ModuleSyncManager.shared.ensureDefaultDevotionalsModule()
+                // Reload after creating default
+                let updatedModules = try moduleDatabase.getAllModules(type: .devotional)
+                devotionalsModules = updatedModules.map { ($0.id, $0.name) }
+            }
+        } catch {
+            print("Failed to load devotionals modules: \(error)")
+        }
+    }
+
     /// Load just the commentary series list (for picker availability check)
+    /// Combines bundled commentaries and user module commentaries
     private func loadCommentarySeriesOnly() async {
         do {
-            commentarySeries = try moduleDatabase.getCommentarySeries()
+            // Load bundled commentary series names
+            let bundledSeries = try BundledModuleDatabase.shared.getBundledCommentarySeriesNames()
+
+            // Load user module commentary series names
+            let userSeries = try moduleDatabase.getCommentarySeriesNames()
+
+            // Combine and deduplicate (bundled first, then user modules)
+            var allSeries = bundledSeries
+            for series in userSeries {
+                if !allSeries.contains(series) {
+                    allSeries.append(series)
+                }
+            }
+
+            commentarySeries = allSeries
             if !commentarySeries.isEmpty && (selectedCommentarySeries.isEmpty || !commentarySeries.contains(selectedCommentarySeries)) {
                 selectedCommentarySeries = commentarySeries.first ?? ""
             }
@@ -1888,54 +1862,8 @@ struct ToolPanelView: View {
         let chapter = (verseId % 1000000) / 1000
         let verse = verseId % 1000
 
-        let realm = RealmManager.shared.realm
-        let bookName: String
-        if let book = realm.objects(Book.self).filter("id == %@", bookId).first {
-            bookName = book.name
-        } else {
-            bookName = "?"
-        }
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
         return "\(bookName) \(chapter):\(verse)"
-    }
-
-    @ViewBuilder
-    private func commentaryScriptureSheetContent(item: CommentaryScriptureSheetItem, translation: Translation) -> some View {
-        let displayText = formatVerseRangeReference(item.verseId, endVerseId: item.endVerseId)
-        NavigationStack {
-            ScrollView {
-                VerseSheetContent(
-                    title: displayText,
-                    verseId: item.verseId,
-                    endVerseId: item.endVerseId,
-                    translation: translation
-                )
-                .padding()
-            }
-            .navigationTitle(displayText)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        commentaryScriptureRef = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    if onNavigateToVerse != nil {
-                        Button {
-                            commentaryScriptureRef = nil
-                            onNavigateToVerse?(item.verseId)
-                        } label: {
-                            Image(systemName: "arrow.up.right")
-                        }
-                    }
-                }
-            }
-        }
-        .presentationDetents([.fraction(0.325), .medium, .large])
-        .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
     }
 
     /// Format verse range reference (e.g., "Matt 1:1-5" or "Matt 1:1")
@@ -1944,13 +1872,7 @@ struct ToolPanelView: View {
         let chapter = (verseId % 1000000) / 1000
         let verse = verseId % 1000
 
-        let realm = RealmManager.shared.realm
-        let bookName: String
-        if let book = realm.objects(Book.self).filter("id == %@", bookId).first {
-            bookName = book.name
-        } else {
-            bookName = "?"
-        }
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
 
         if let ev = endVerseId {
             let endVerse = ev % 1000
@@ -1975,7 +1897,9 @@ struct ToolPanelView: View {
                         ),
                         onScriptureTap: { sv, ev in
                             commentaryFootnote = nil
-                            commentaryScriptureRef = CommentaryScriptureSheetItem(verseId: sv, endVerseId: ev)
+                            let displayText = formatVerseRangeReference(sv, endVerseId: ev)
+                            let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
+                            commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
                         },
                         onStrongsTap: { strongsKey in
                             commentaryFootnote = nil
@@ -2117,14 +2041,15 @@ struct ToolPanelView: View {
     private func loadNote() async {
         isLoading = true
         saveState = .idle
-        lockRefreshTask?.cancel()
 
         do {
             // Ensure default notes module exists
             try await moduleSyncManager.ensureDefaultNotesModule()
 
             // Load notes from SQLite for this chapter
+            print("[Notes] Loading notes for book=\(book), chapter=\(chapter), moduleId=\(notesModuleId)")
             let entries = try moduleDatabase.getNotesForChapter(moduleId: notesModuleId, book: book, chapter: chapter)
+            print("[Notes] Found \(entries.count) entries for this chapter")
 
             // Convert NoteEntry records to NoteSection for UI
             sections = convertEntriesToSections(entries)
@@ -2133,12 +2058,8 @@ struct ToolPanelView: View {
             if sections.isEmpty {
                 sections = [.general(content: "")]
             }
-
-            // Create a synthetic Note object for compatibility
-            note = Note(book: book, chapter: chapter)
         } catch {
-            print("Failed to load notes: \(error)")
-            note = Note(book: book, chapter: chapter)
+            print("[Notes] Failed to load notes: \(error)")
             sections = [.general(content: "")]
         }
 
@@ -2156,15 +2077,22 @@ struct ToolPanelView: View {
         let sorted = entries.sorted { $0.verse < $1.verse }
 
         for entry in sorted {
+            // Parse footnotes from JSON if present
+            var footnotes: [UserNotesFootnote]? = nil
+            if let footnotesJson = entry.footnotesJson,
+               let data = footnotesJson.data(using: .utf8) {
+                footnotes = try? JSONDecoder().decode([UserNotesFootnote].self, from: data)
+            }
+
             if entry.verse == 0 {
-                // General notes (chapter-level)
-                result.insert(.general(content: entry.content), at: 0)
+                // General notes (chapter-level / introduction)
+                result.insert(.general(content: entry.content, footnotes: footnotes), at: 0)
             } else if let verseRefs = entry.verseRefs, let endVerse = verseRefs.first, endVerse != entry.verse {
                 // Verse range - endVerse stored in verseRefs
-                result.append(.verseRange(start: entry.verse, end: endVerse, content: entry.content))
+                result.append(.verseRange(start: entry.verse, end: endVerse, content: entry.content, footnotes: footnotes))
             } else {
                 // Single verse
-                result.append(.verse(entry.verse, content: entry.content))
+                result.append(.verse(entry.verse, content: entry.content, footnotes: footnotes))
             }
         }
 
@@ -2207,7 +2135,8 @@ struct ToolPanelView: View {
                 title: section.displayTitle.isEmpty ? nil : section.displayTitle,
                 content: content,
                 verseRefs: endVerse.map { [$0] },
-                lastModified: Int(Date().timeIntervalSince1970)
+                lastModified: Int(Date().timeIntervalSince1970),
+                footnotes: section.footnotes
             )
             entries.append(entry)
         }
@@ -2216,40 +2145,12 @@ struct ToolPanelView: View {
     }
 
     private func checkSyncStatus() async {
-        let fileName = "\(notesModuleId).json"
-        syncStatus = await moduleStorage.getSyncStatus(type: .notes, fileName: fileName)
-    }
-
-    private func tryAcquireLock() async {
-        // Lock handling simplified for new module system
-        // The JSON file-based system handles conflicts at sync time
-    }
-
-    private func handleLockAction(_ action: LockAction) {
-        showingLockConflict = false
-        switch action {
-        case .viewReadOnly:
-            isReadOnly = true
-        case .editAnyway:
-            isReadOnly = false
-        case .cancel:
-            break
+        let fileName = "\(notesModuleId).lamp"
+        if let storage = SyncCoordinator.shared.activeStorage {
+            syncStatus = await storage.getSyncStatus(type: .notes, fileName: fileName)
+        } else {
+            syncStatus = .notAvailable
         }
-    }
-
-    private func startLockRefresh() {
-        // No longer needed with new module system
-    }
-
-    private func releaseLockIfNeeded() async {
-        // No longer needed with new module system
-    }
-
-    private func resolveConflict(keepVersionId: String) async {
-        // Conflict resolution handled differently in new module system
-        showingConflictResolution = false
-        currentConflict = nil
-        await loadNote()
     }
 
     private func scheduleSave() {
@@ -2267,7 +2168,6 @@ struct ToolPanelView: View {
     }
 
     private func saveNote() async {
-        guard note != nil else { return }
         guard !isReadOnly else { return } // Don't save in read-only mode
 
         saveState = .saving
@@ -2287,7 +2187,7 @@ struct ToolPanelView: View {
                 try moduleDatabase.saveNoteEntry(entry)
             }
 
-            // Export to iCloud
+            // Export to cloud storage
             try await moduleSyncManager.exportModule(id: notesModuleId)
 
             saveState = .saved
@@ -2371,6 +2271,52 @@ struct ToolPanelView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 scrollPosition = targetVerse
             }
+        }
+    }
+
+    // MARK: - Devotionals Content
+
+    @ViewBuilder
+    private var devotionalsContent: some View {
+        if showingDevotionalPicker {
+            DevotionalPickerView(
+                isFullScreen: false,
+                showNewProminent: false,
+                moduleId: devotionalsModuleId,
+                onSelect: { devotional in
+                    selectedDevotional = devotional
+                    showingDevotionalPicker = false
+                    devotionalViewMode = .read
+                },
+                onBack: {
+                    // Switch back to commentary mode when backing out of picker
+                    panelMode = .commentary
+                }
+            )
+        } else if let devotional = selectedDevotional {
+            DevotionalView(
+                devotional: devotional,
+                moduleId: devotionalsModuleId,
+                onBack: {
+                    showingDevotionalPicker = true
+                    selectedDevotional = nil
+                }
+            )
+        } else {
+            // Fallback: show picker
+            DevotionalPickerView(
+                isFullScreen: false,
+                showNewProminent: false,
+                moduleId: devotionalsModuleId,
+                onSelect: { devotional in
+                    selectedDevotional = devotional
+                    showingDevotionalPicker = false
+                    devotionalViewMode = .read
+                },
+                onBack: {
+                    panelMode = .commentary
+                }
+            )
         }
     }
 
@@ -2543,6 +2489,298 @@ struct ToolPanelView: View {
         resetEditVerseForm()
     }
 
+    // MARK: - Footnote Editing
+
+    private var footnoteEditorSheet: some View {
+        // Check if we're editing an existing footnote (vs inserting new)
+        let isEditingExisting: Bool = {
+            guard let sectionIndex = editingFootnoteSectionIndex,
+                  let footnoteId = editingFootnoteId,
+                  sectionIndex < sections.count,
+                  let footnotes = sections[sectionIndex].footnotes,
+                  let footnote = footnotes.first(where: { $0.id == footnoteId }) else {
+                return false
+            }
+            // It's existing if it has non-empty content (not just created)
+            return !footnote.content.plainText.isEmpty
+        }()
+
+        // Get existing footnotes for the picker
+        let existingFootnotes: [UserNotesFootnote] = {
+            guard let sectionIndex = editingFootnoteSectionIndex,
+                  sectionIndex < sections.count else { return [] }
+            return sections[sectionIndex].footnotes ?? []
+        }()
+
+        return NavigationStack {
+            Form {
+                // Show mode picker only when inserting (not editing existing)
+                if !isEditingExisting && !existingFootnotes.isEmpty {
+                    Picker("", selection: $footnoteInsertMode) {
+                        ForEach(FootnoteInsertMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+                }
+
+                if footnoteInsertMode == .useExisting && !isEditingExisting && !existingFootnotes.isEmpty {
+                    // Use existing footnote picker
+                    Section {
+                        Picker("Select Footnote", selection: $selectedExistingFootnoteId) {
+                            Text("Select...").tag(nil as String?)
+                            ForEach(existingFootnotes, id: \.id) { footnote in
+                                let preview = footnote.content.plainText.prefix(40)
+                                let truncated = footnote.content.plainText.count > 40
+                                Text("[\(footnote.id)] \(preview)\(truncated ? "..." : "")")
+                                    .tag(footnote.id as String?)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    } footer: {
+                        Text("Insert a reference to an existing footnote.")
+                    }
+                } else {
+                    // Create new footnote editor
+                    Section {
+                        TextEditor(text: $footnoteContent)
+                            .frame(minHeight: 100)
+                    } header: {
+                        if isEditingExisting, let id = editingFootnoteId {
+                            Text("Footnote [\(id)]")
+                        } else {
+                            Text("New Footnote")
+                        }
+                    } footer: {
+                        Text("Enter the footnote content.")
+                    }
+
+                    // Delete button for existing footnotes
+                    if isEditingExisting, let sectionIndex = editingFootnoteSectionIndex, let footnoteId = editingFootnoteId {
+                        Section {
+                            Button(role: .destructive) {
+                                deleteFootnote(id: footnoteId, fromSectionAt: sectionIndex)
+                                showingFootnoteEditor = false
+                                resetFootnoteForm()
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    Text("Delete Footnote")
+                                    Spacer()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(isEditingExisting ? "Edit Footnote" : "Insert Footnote")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        cancelFootnoteEditor()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(footnoteInsertMode == .useExisting && !isEditingExisting ? "Insert" : "Save") {
+                        if footnoteInsertMode == .useExisting && !isEditingExisting {
+                            insertSelectedExistingFootnote()
+                        } else {
+                            saveFootnote()
+                        }
+                    }
+                    .disabled(footnoteInsertMode == .useExisting && !isEditingExisting
+                              ? selectedExistingFootnoteId == nil
+                              : footnoteContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func insertSelectedExistingFootnote() {
+        guard let sectionIndex = editingFootnoteSectionIndex,
+              let footnoteId = selectedExistingFootnoteId,
+              sectionIndex < sections.count else {
+            showingFootnoteEditor = false
+            resetFootnoteForm()
+            return
+        }
+
+        let marker = "[^\(footnoteId)]"
+
+        // Insert marker at cursor position or end of content
+        if let cursor = pendingFootnoteInsertCursor {
+            var content = sections[sectionIndex].content
+            let insertIndex = content.index(content.startIndex, offsetBy: min(cursor, content.count))
+            content.insert(contentsOf: marker, at: insertIndex)
+            sections[sectionIndex].content = content
+        } else {
+            // Append to end
+            if !sections[sectionIndex].content.isEmpty && !sections[sectionIndex].content.hasSuffix(" ") {
+                sections[sectionIndex].content += " "
+            }
+            sections[sectionIndex].content += marker
+        }
+
+        scheduleSave()
+        showingFootnoteEditor = false
+        resetFootnoteForm()
+    }
+
+    private func cancelFootnoteEditor() {
+        // If we created an empty footnote (from long-press), delete it and its marker
+        if let sectionIndex = editingFootnoteSectionIndex,
+           let footnoteId = editingFootnoteId,
+           sectionIndex < sections.count {
+            // Check if this footnote is empty (just created)
+            if let footnotes = sections[sectionIndex].footnotes,
+               let footnote = footnotes.first(where: { $0.id == footnoteId }),
+               footnote.content.plainText.isEmpty {
+                // Delete the empty footnote
+                deleteFootnote(id: footnoteId, fromSectionAt: sectionIndex)
+            }
+        }
+
+        showingFootnoteEditor = false
+        resetFootnoteForm()
+    }
+
+    /// Show footnote editor to insert existing or create new footnote
+    private func showFootnotePicker(forSectionAt index: Int, cursorPosition: Int? = nil) {
+        guard index < sections.count else { return }
+        editingFootnoteSectionIndex = index
+        editingFootnoteId = nil
+        footnoteContent = ""
+        footnoteInsertMode = .createNew
+        selectedExistingFootnoteId = nil
+        pendingFootnoteInsertCursor = cursorPosition
+        showingFootnoteEditor = true
+    }
+
+    private func editFootnote(_ footnote: UserNotesFootnote, inSectionAt index: Int) {
+        editingFootnoteSectionIndex = index
+        editingFootnoteId = footnote.id
+        footnoteContent = footnote.content.plainText
+        showingFootnoteEditor = true
+    }
+
+    private func deleteFootnote(id: String, fromSectionAt index: Int) {
+        guard index < sections.count else { return }
+
+        var footnotes = sections[index].footnotes ?? []
+        footnotes.removeAll { $0.id == id }
+
+        // Re-number remaining footnotes
+        var renumbered: [UserNotesFootnote] = []
+        for (i, footnote) in footnotes.enumerated() {
+            let newId = String(i + 1)
+            renumbered.append(UserNotesFootnote(id: newId, content: footnote.content))
+        }
+
+        sections[index].footnotes = renumbered.isEmpty ? nil : renumbered
+
+        // Update footnote markers in content (remove deleted, renumber remaining)
+        updateFootnoteMarkersInContent(sectionIndex: index, deletedId: id)
+
+        scheduleSave()
+    }
+
+    private func saveFootnote() {
+        guard let sectionIndex = editingFootnoteSectionIndex,
+              sectionIndex < sections.count else {
+            showingFootnoteEditor = false
+            resetFootnoteForm()
+            return
+        }
+
+        let trimmedContent = footnoteContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContent.isEmpty else { return }
+
+        var footnotes = sections[sectionIndex].footnotes ?? []
+
+        if let existingId = editingFootnoteId {
+            // Update existing footnote
+            if let idx = footnotes.firstIndex(where: { $0.id == existingId }) {
+                footnotes[idx] = UserNotesFootnote(id: existingId, content: .text(trimmedContent))
+            }
+        } else {
+            // Add new footnote
+            let newId = String(footnotes.count + 1)
+            let newFootnote = UserNotesFootnote(id: newId, content: .text(trimmedContent))
+            footnotes.append(newFootnote)
+
+            // Insert footnote marker at cursor position or end of content
+            let marker = "[^\(newId)]"
+            if let cursor = pendingFootnoteInsertCursor {
+                var content = sections[sectionIndex].content
+                let insertIndex = content.index(content.startIndex, offsetBy: min(cursor, content.count))
+                content.insert(contentsOf: marker, at: insertIndex)
+                sections[sectionIndex].content = content
+            } else {
+                if !sections[sectionIndex].content.isEmpty && !sections[sectionIndex].content.hasSuffix(" ") {
+                    sections[sectionIndex].content += " "
+                }
+                sections[sectionIndex].content += marker
+            }
+        }
+
+        sections[sectionIndex].footnotes = footnotes
+
+        showingFootnoteEditor = false
+        resetFootnoteForm()
+        scheduleSave()
+    }
+
+    private func resetFootnoteForm() {
+        editingFootnoteSectionIndex = nil
+        editingFootnoteId = nil
+        footnoteContent = ""
+        footnoteInsertMode = .createNew
+        selectedExistingFootnoteId = nil
+        pendingFootnoteInsertCursor = nil
+    }
+
+    private func updateFootnoteMarkersInContent(sectionIndex: Int, deletedId: String) {
+        guard sectionIndex < sections.count else { return }
+
+        var content = sections[sectionIndex].content
+
+        // Remove the deleted footnote's marker
+        content = content.replacingOccurrences(of: "[^\(deletedId)]", with: "")
+
+        // Renumber remaining markers to match new footnote IDs
+        // Old IDs that were higher than deleted get decremented
+        if let deletedNum = Int(deletedId) {
+            // Find all markers with numbers higher than deleted and decrement them
+            let pattern = #"\[\^(\d+)\]"#
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                let nsContent = content as NSString
+                let matches = regex.matches(in: content, range: NSRange(location: 0, length: nsContent.length))
+
+                // Process matches in reverse order to avoid range shifting issues
+                for match in matches.reversed() {
+                    if let numRange = Range(match.range(at: 1), in: content) {
+                        if let num = Int(content[numRange]), num > deletedNum {
+                            let newNum = num - 1
+                            let fullRange = Range(match.range, in: content)!
+                            content.replaceSubrange(fullRange, with: "[^\(newNum)]")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clean up double spaces
+        while content.contains("  ") {
+            content = content.replacingOccurrences(of: "  ", with: " ")
+        }
+
+        sections[sectionIndex].content = content.trimmingCharacters(in: .whitespaces)
+    }
+
     // MARK: - Gap Calculation
 
     private func verseGaps() -> [(after: Int?, gapStart: Int, gapEnd: Int)] {
@@ -2593,39 +2831,44 @@ struct NoteSectionView: View {
     @Binding var section: NoteSection
     let isReadOnly: Bool
     let fontSize: Int
-    let translation: Translation
+    let translationId: String
     let onContentChange: () -> Void
     var onNavigateToVerse: ((Int) -> Void)?
     var onNavigateToVerseId: ((Int) -> Void)?
     var onEditVerseRange: (() -> Void)?
-
-    @FocusState private var isFocused: Bool
+    var onShowFootnotePicker: (() -> Void)?  // Shows picker to insert existing or create new
+    var onEditFootnote: ((UserNotesFootnote) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Section header
             if !section.displayTitle.isEmpty {
-                if section.isGeneral {
+                HStack(alignment: .center, spacing: 12) {
                     Text(section.displayTitle)
-                        .font(.system(size: CGFloat(fontSize), weight: .bold))
-                        .foregroundColor(.primary)
-                } else if let verseStart = section.verseStart {
-                    HStack {
-                        Button {
-                            onNavigateToVerse?(verseStart)
-                        } label: {
-                            Text(section.displayTitle)
-                                .font(.system(size: CGFloat(fontSize), weight: .bold))
-                                .foregroundColor(.accentColor)
+                        .font(.system(size: CGFloat(fontSize)))
+                        .foregroundColor(.secondary)
+
+                    if !section.isGeneral && !isReadOnly {
+                        Spacer()
+
+                        if let onFootnote = onShowFootnotePicker {
+                            Button {
+                                onFootnote()
+                            } label: {
+                                Image(systemName: "note.text.badge.plus")
+                                    .font(.system(size: CGFloat(fontSize)))
+                                    .foregroundColor(.secondary)
+                            }
                         }
 
-                        if !isReadOnly, let onEdit = onEditVerseRange {
-                            Spacer()
+                        if let onEdit = onEditVerseRange {
                             Button {
                                 onEdit()
                             } label: {
                                 Image(systemName: "square.and.pencil")
+                                    .font(.system(size: CGFloat(fontSize)))
                                     .foregroundColor(.secondary)
+                                    .padding(.bottom, 2)
                             }
                         }
                     }
@@ -2634,7 +2877,7 @@ struct NoteSectionView: View {
 
             // Text editor or read-only text
             if isReadOnly {
-                let placeholder = section.isGeneral ? "No general notes" : "No notes"
+                let placeholder = section.isGeneral ? "No introduction notes" : "No notes"
                 if section.content.isEmpty {
                     Text(placeholder)
                         .font(.system(size: CGFloat(fontSize)))
@@ -2644,32 +2887,53 @@ struct NoteSectionView: View {
                     InteractiveNoteContentView(
                         content: section.content,
                         fontSize: fontSize,
-                        translation: translation,
+                        translationId: translationId,
                         onNavigateToVerse: onNavigateToVerseId
                     )
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             } else {
-                ZStack(alignment: .topLeading) {
-                    if section.content.isEmpty && !isFocused {
-                        Text("Add your notes...")
-                            .font(.system(size: CGFloat(fontSize)))
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 8)
-                            .padding(.leading, 5)
+                NoteTextEditor(
+                    text: $section.content,
+                    fontSize: CGFloat(fontSize),
+                    placeholder: "Add your notes...",
+                    onTextChange: onContentChange,
+                    onShowFootnotePicker: nil  // Not used here - header button triggers picker
+                )
+                .frame(maxWidth: .infinity, minHeight: 60)
+            }
+
+            // Footnotes section
+            let footnotes = section.footnotes ?? []
+            if !footnotes.isEmpty || !isReadOnly {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !footnotes.isEmpty {
+                        Divider()
+                            .padding(.vertical, 4)
                     }
 
-                    TextEditor(text: $section.content)
-                        .font(.system(size: CGFloat(fontSize)))
-                        .focused($isFocused)
-                        .frame(minHeight: 60)
-                        .scrollContentBackground(.hidden)
-                        .scrollDismissesKeyboard(.never)
-                        .background(Color(UIColor.tertiarySystemBackground))
-                        .cornerRadius(8)
-                        .onChange(of: section.content) { _, _ in
-                            onContentChange()
+                    ForEach(footnotes) { footnote in
+                        HStack(alignment: .top, spacing: 4) {
+                            Text("[\(footnote.id)]")
+                                .font(.system(size: CGFloat(fontSize) * 0.8))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24, alignment: .trailing)
+                            InteractiveNoteContentView(
+                                content: footnote.content.plainText,
+                                fontSize: Int(Double(fontSize) * 0.9),
+                                translationId: translationId,
+                                onNavigateToVerse: onNavigateToVerse
+                            )
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if !isReadOnly {
+                                onEditFootnote?(footnote)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2711,7 +2975,7 @@ class VerseReferenceParser {
 
     private init() {
         // Build lookup tables from realm
-        let books = RealmManager.shared.realm.objects(Book.self)
+        let books = (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
         for book in books {
             // Full name (case insensitive)
             bookNameToId[book.name.lowercased()] = book.id
@@ -2723,35 +2987,87 @@ class VerseReferenceParser {
             }
         }
         // Add common abbreviations
+        // OT
         bookAbbrevToId["1sam"] = bookNameToId["1 samuel"]
         bookAbbrevToId["2sam"] = bookNameToId["2 samuel"]
         bookAbbrevToId["1ki"] = bookNameToId["1 kings"]
         bookAbbrevToId["2ki"] = bookNameToId["2 kings"]
+        bookAbbrevToId["1kgs"] = bookNameToId["1 kings"]
+        bookAbbrevToId["2kgs"] = bookNameToId["2 kings"]
         bookAbbrevToId["1chr"] = bookNameToId["1 chronicles"]
         bookAbbrevToId["2chr"] = bookNameToId["2 chronicles"]
+        bookAbbrevToId["prov"] = bookNameToId["proverbs"]
+        bookAbbrevToId["eccl"] = bookNameToId["ecclesiastes"]
+        bookAbbrevToId["ecc"] = bookNameToId["ecclesiastes"]
+        bookAbbrevToId["song"] = bookNameToId["song of solomon"]
+        bookAbbrevToId["sos"] = bookNameToId["song of solomon"]
+        bookAbbrevToId["lam"] = bookNameToId["lamentations"]
+        bookAbbrevToId["ezek"] = bookNameToId["ezekiel"]
+        bookAbbrevToId["eze"] = bookNameToId["ezekiel"]
+        bookAbbrevToId["dan"] = bookNameToId["daniel"]
+        bookAbbrevToId["hos"] = bookNameToId["hosea"]
+        bookAbbrevToId["mic"] = bookNameToId["micah"]
+        bookAbbrevToId["nah"] = bookNameToId["nahum"]
+        bookAbbrevToId["hab"] = bookNameToId["habakkuk"]
+        bookAbbrevToId["zeph"] = bookNameToId["zephaniah"]
+        bookAbbrevToId["hag"] = bookNameToId["haggai"]
+        bookAbbrevToId["zech"] = bookNameToId["zechariah"]
+        bookAbbrevToId["mal"] = bookNameToId["malachi"]
+        // NT
+        bookAbbrevToId["mk"] = bookNameToId["mark"]
+        bookAbbrevToId["lk"] = bookNameToId["luke"]
+        bookAbbrevToId["jn"] = bookNameToId["john"]
+        bookAbbrevToId["rom"] = bookNameToId["romans"]
         bookAbbrevToId["1cor"] = bookNameToId["1 corinthians"]
         bookAbbrevToId["2cor"] = bookNameToId["2 corinthians"]
+        bookAbbrevToId["gal"] = bookNameToId["galatians"]
+        bookAbbrevToId["eph"] = bookNameToId["ephesians"]
+        bookAbbrevToId["phil"] = bookNameToId["philippians"]
+        bookAbbrevToId["col"] = bookNameToId["colossians"]
         bookAbbrevToId["1thess"] = bookNameToId["1 thessalonians"]
         bookAbbrevToId["2thess"] = bookNameToId["2 thessalonians"]
         bookAbbrevToId["1tim"] = bookNameToId["1 timothy"]
         bookAbbrevToId["2tim"] = bookNameToId["2 timothy"]
+        bookAbbrevToId["tit"] = bookNameToId["titus"]
+        bookAbbrevToId["phm"] = bookNameToId["philemon"]
+        bookAbbrevToId["heb"] = bookNameToId["hebrews"]
+        bookAbbrevToId["jas"] = bookNameToId["james"]
         bookAbbrevToId["1pet"] = bookNameToId["1 peter"]
         bookAbbrevToId["2pet"] = bookNameToId["2 peter"]
         bookAbbrevToId["1jn"] = bookNameToId["1 john"]
         bookAbbrevToId["2jn"] = bookNameToId["2 john"]
         bookAbbrevToId["3jn"] = bookNameToId["3 john"]
-        bookAbbrevToId["phil"] = bookNameToId["philippians"]
-        bookAbbrevToId["phm"] = bookNameToId["philemon"]
-        bookAbbrevToId["jas"] = bookNameToId["james"]
         bookAbbrevToId["rev"] = bookNameToId["revelation"]
     }
 
-    /// Parse all verse references in the format [Book Chapter:Verse] or [Book Chapter:StartVerse-EndVerse]
+    /// Parse all verse references from text
+    /// Supports both bracketed [John 3:16] and unbracketed "John 3:16" formats
     func parse(_ text: String) -> [ParsedVerseReference] {
         var references: [ParsedVerseReference] = []
 
+        // First, try bracketed format [Book Chapter:Verse]
+        references.append(contentsOf: parseBracketed(text))
+
+        // Then, try unbracketed format "Book Chapter:Verse"
+        references.append(contentsOf: parseUnbracketed(text))
+
+        // Remove duplicates (same range) and sort by position
+        var seen = Set<String>()
+        return references
+            .sorted { $0.range.lowerBound < $1.range.lowerBound }
+            .filter { ref in
+                let key = "\(ref.range.lowerBound)-\(ref.range.upperBound)"
+                if seen.contains(key) { return false }
+                seen.insert(key)
+                return true
+            }
+    }
+
+    /// Parse bracketed references like [John 3:16]
+    private func parseBracketed(_ text: String) -> [ParsedVerseReference] {
+        var references: [ParsedVerseReference] = []
+
         // Pattern: [Book Chapter:Verse] or [Book Chapter:Verse-EndVerse]
-        // Book can be: "John", "1 John", "Genesis", "Gen", etc.
         let pattern = #"\[([1-3]?\s?[A-Za-z]+)\s+(\d+):(\d+)(?:-(\d+))?\]"#
 
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
@@ -2786,11 +3102,10 @@ class VerseReferenceParser {
                 continue
             }
 
-            // Validate that the verse exists
+            // Validate that the verse exists (using any translation)
             let verseId = bookId * 1000000 + chapter * 1000 + startVerse
-            let exists = RealmManager.shared.realm.objects(Verse.self)
-                .filter("id == \(verseId)")
-                .first != nil
+            let translationId = UserDatabase.shared.getSettings().readerTranslationId
+            let exists = (try? TranslationDatabase.shared.verseExists(translationId: translationId, ref: verseId)) ?? false
 
             if exists {
                 let displayText = String(text[fullRange])
@@ -2799,6 +3114,78 @@ class VerseReferenceParser {
                 references.append(ParsedVerseReference(
                     range: fullRange,
                     displayText: String(displayText),
+                    bookId: bookId,
+                    chapter: chapter,
+                    startVerse: startVerse,
+                    endVerse: endVerse
+                ))
+            }
+        }
+
+        return references
+    }
+
+    /// Parse unbracketed references like "John 3:16" or "1 Cor 13:4-7"
+    private func parseUnbracketed(_ text: String) -> [ParsedVerseReference] {
+        var references: [ParsedVerseReference] = []
+
+        // Build pattern from known book names and abbreviations
+        // Match: BookName Chapter:Verse or BookName Chapter:Verse-EndVerse
+        // Book names can be: Genesis, Gen, 1 John, 1John, 1 Jn, etc.
+
+        // Pattern explanation:
+        // - Optional number prefix (1, 2, 3) with optional space
+        // - Book name (letters only, at least 2 chars)
+        // - Optional period after abbreviation
+        // - Required space
+        // - Chapter number
+        // - Colon
+        // - Verse number
+        // - Optional dash and end verse
+        let pattern = #"(?<!\[)(?<!\w)([1-3]?\s?[A-Za-z]{2,})\.?\s+(\d{1,3}):(\d{1,3})(?:-(\d{1,3}))?(?!\])(?!\w)"#
+
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return references
+        }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+
+        for match in matches {
+            guard match.numberOfRanges >= 4,
+                  let fullRange = Range(match.range, in: text),
+                  let bookRange = Range(match.range(at: 1), in: text),
+                  let chapterRange = Range(match.range(at: 2), in: text),
+                  let verseRange = Range(match.range(at: 3), in: text) else {
+                continue
+            }
+
+            let bookStr = String(text[bookRange]).trimmingCharacters(in: .whitespaces)
+            let chapterStr = String(text[chapterRange])
+            let verseStr = String(text[verseRange])
+
+            var endVerse: Int? = nil
+            if match.numberOfRanges >= 5, match.range(at: 4).location != NSNotFound,
+               let endVerseRange = Range(match.range(at: 4), in: text) {
+                endVerse = Int(String(text[endVerseRange]))
+            }
+
+            guard let chapter = Int(chapterStr),
+                  let startVerse = Int(verseStr),
+                  let bookId = resolveBookId(bookStr) else {
+                continue
+            }
+
+            // Validate that the verse exists (helps filter false positives)
+            let verseId = bookId * 1000000 + chapter * 1000 + startVerse
+            let translationId = UserDatabase.shared.getSettings().readerTranslationId
+            let exists = (try? TranslationDatabase.shared.verseExists(translationId: translationId, ref: verseId)) ?? false
+
+            if exists {
+                let displayText = String(text[fullRange])
+                references.append(ParsedVerseReference(
+                    range: fullRange,
+                    displayText: displayText,
                     bookId: bookId,
                     chapter: chapter,
                     startVerse: startVerse,
@@ -2839,113 +3226,120 @@ class VerseReferenceParser {
 struct InteractiveNoteContentView: View {
     let content: String
     let fontSize: Int
-    let translation: Translation
+    let translationId: String
     var onNavigateToVerse: ((Int) -> Void)?
 
-    private var segments: [(text: String, reference: ParsedVerseReference?)] {
-        let references = VerseReferenceParser.shared.parse(content)
+    @State private var previewState: PreviewSheetState? = nil
 
-        if references.isEmpty {
-            return [(content, nil)]
+    private var references: [ParsedVerseReference] {
+        VerseReferenceParser.shared.parse(content)
+    }
+
+    private var previewItems: [PreviewItem] {
+        references.enumerated().map { index, ref in
+            PreviewItem.verse(
+                index: index,
+                verseId: ref.verseId,
+                endVerseId: ref.endVerseId,
+                displayText: ref.displayText
+            )
         }
+    }
 
-        var result: [(String, ParsedVerseReference?)] = []
+    /// Build AttributedString with tappable verse links and styled footnotes
+    private var styledContent: AttributedString {
+        let refs = references.sorted(by: { $0.range.lowerBound < $1.range.lowerBound })
+        var result = AttributedString()
+
         var currentIndex = content.startIndex
 
-        for ref in references.sorted(by: { $0.range.lowerBound < $1.range.lowerBound }) {
-            // Add text before this reference
+        for (index, ref) in refs.enumerated() {
+            // Add text before this reference (with footnote styling)
             if currentIndex < ref.range.lowerBound {
                 let textBefore = String(content[currentIndex..<ref.range.lowerBound])
-                result.append((textBefore, nil))
+                result.append(styledFootnoteText(textBefore))
             }
-            // Add the reference
-            result.append((ref.displayText, ref))
+
+            // Add the verse reference as a tappable link
+            var verseRef = AttributedString(ref.displayText)
+            verseRef.foregroundColor = .accentColor
+            // Use a custom URL scheme to identify which reference was tapped
+            verseRef.link = URL(string: "verseref://\(index)")
+            result.append(verseRef)
+
             currentIndex = ref.range.upperBound
         }
 
         // Add remaining text after last reference
         if currentIndex < content.endIndex {
             let textAfter = String(content[currentIndex..<content.endIndex])
-            result.append((textAfter, nil))
+            result.append(styledFootnoteText(textAfter))
         }
 
         return result
     }
 
     var body: some View {
-        // Use a custom layout that wraps text and inline buttons
-        WrappingHStack(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
-                if let reference = segment.reference {
-                    VerseReferenceButton(
-                        reference: reference,
-                        translation: translation,
-                        fontSize: fontSize,
-                        onNavigateToVerse: onNavigateToVerse
-                    )
-                } else {
-                    Text(segment.text)
-                        .font(.system(size: CGFloat(fontSize)))
+        Text(styledContent)
+            .font(.system(size: CGFloat(fontSize)))
+            .environment(\.openURL, OpenURLAction { url in
+                // Handle verse reference taps
+                if url.scheme == "verseref",
+                   let indexStr = url.host,
+                   let index = Int(indexStr) {
+                    let items = previewItems
+                    if index < items.count {
+                        previewState = PreviewSheetState(currentItem: items[index], allItems: items)
+                    }
+                    return .handled
                 }
+                return .systemAction
+            })
+            .sheet(item: $previewState) { _ in
+                PreviewSheet(
+                    state: $previewState,
+                    translationId: translationId,
+                    onNavigateToVerse: onNavigateToVerse
+                )
             }
+    }
+
+    /// Creates AttributedString with styled footnote references [^n] -> [n] as superscript
+    private func styledFootnoteText(_ text: String) -> AttributedString {
+        var result = AttributedString(text)
+
+        let pattern = "\\[\\^(\\d+)\\]"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return result
         }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+
+        // Process in reverse to maintain range validity
+        for match in matches.reversed() {
+            guard let swiftRange = Range(match.range, in: text),
+                  let attrRange = Range(swiftRange, in: result),
+                  match.numberOfRanges > 1,
+                  let numberNSRange = Range(match.range(at: 1), in: text) else { continue }
+
+            let number = String(text[numberNSRange])
+
+            // Create styled footnote reference
+            var styledRef = AttributedString("[\(number)]")
+            styledRef.font = .system(size: CGFloat(fontSize) * 0.7)
+            styledRef.foregroundColor = .secondary
+            styledRef.baselineOffset = CGFloat(fontSize) * 0.35
+
+            result.replaceSubrange(attrRange, with: styledRef)
+        }
+
+        return result
     }
 
     /// Count the number of verse references in this content
     var referenceCount: Int {
-        VerseReferenceParser.shared.parse(content).count
-    }
-}
-
-struct VerseReferenceButton: View {
-    let reference: ParsedVerseReference
-    let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-    @State private var showingSheet = false
-
-    var body: some View {
-        Button {
-            showingSheet = true
-        } label: {
-            Text(reference.displayText)
-                .font(.system(size: CGFloat(fontSize)))
-                .foregroundColor(.accentColor)
-        }
-        .sheet(isPresented: $showingSheet) {
-            NavigationStack {
-                ScrollView {
-                    VerseSheetContent(
-                        title: reference.displayText,
-                        verseId: reference.verseId,
-                        endVerseId: reference.endVerseId,
-                        translation: translation
-                    )
-                    .padding()
-                }
-                .navigationTitle(reference.displayText)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") {
-                            showingSheet = false
-                        }
-                    }
-                    if onNavigateToVerse != nil {
-                        ToolbarItem(placement: .primaryAction) {
-                            Button {
-                                showingSheet = false
-                                onNavigateToVerse?(reference.verseId)
-                            } label: {
-                                Image(systemName: "arrow.up.right")
-                            }
-                        }
-                    }
-                }
-                .presentationDetents([.fraction(0.4), .medium, .large])
-                .presentationDragIndicator(.visible)
-            }
-        }
+        references.count
     }
 }
 
@@ -3021,414 +3415,6 @@ struct FlowLayout: Layout {
     }
 }
 
-// MARK: - TSKe Views
-
-// Parsed segment content for TSKe views - defined at file scope for reuse
-private enum TSKSegmentContent {
-    case word(String, italic: Bool, trailingSpace: Bool)
-    case ref(sv: Int, ev: Int?, displayText: String, trailingSeparator: String?)
-}
-
-private struct TSKParsedSegment: Identifiable {
-    let id: Int
-    let content: TSKSegmentContent
-}
-
-// Cache for book OSIS IDs to avoid repeated Realm queries
-private class BookOsisCache {
-    static let shared = BookOsisCache()
-    private var cache: [Int: String] = [:]
-
-    func getOsisId(for bookId: Int) -> String {
-        if let cached = cache[bookId] {
-            return cached
-        }
-        let osisId = RealmManager.shared.realm.objects(Book.self).filter("id == \(bookId)").first?.osisId ?? ""
-        cache[bookId] = osisId
-        return osisId
-    }
-}
-
-/// Data for a single TSKe ref (used for cross-segment navigation)
-struct TSKRefItem {
-    let index: Int
-    let sourceVerseId: Int  // The verse section where this button is located
-    let sv: Int             // The referenced verse (target of cross-reference)
-    let ev: Int?
-    let displayText: String
-}
-
-/// Builds a flat array of all TSKe refs in a chapter (for cross-segment navigation)
-func buildTskRefArray(tskChapter: TSKChapter?, allTskVerses: Results<TSKVerse>) -> [TSKRefItem] {
-    var refs: [TSKRefItem] = []
-    var currentIndex = 0
-
-    // Chapter overview refs (sourceVerseId = 0 for chapter-level content)
-    if let chapter = tskChapter, !chapter.segmentsJson.isEmpty {
-        let chapterRefs = parseRefsFromSegmentsJson(chapter.segmentsJson)
-        for ref in chapterRefs {
-            refs.append(TSKRefItem(index: currentIndex, sourceVerseId: 0, sv: ref.sv, ev: ref.ev, displayText: ref.displayText))
-            currentIndex += 1
-        }
-    }
-
-    // Verse refs (sourceVerseId = the verse section containing the button)
-    for tskVerse in allTskVerses {
-        for topic in tskVerse.topics {
-            let topicRefs = parseRefsFromSegmentsJson(topic.segmentsJson)
-            for ref in topicRefs {
-                refs.append(TSKRefItem(index: currentIndex, sourceVerseId: tskVerse.id, sv: ref.sv, ev: ref.ev, displayText: ref.displayText))
-                currentIndex += 1
-            }
-        }
-    }
-
-    return refs
-}
-
-/// Parses refs from segments JSON, returning (sv, ev, displayText) tuples
-private func parseRefsFromSegmentsJson(_ json: String) -> [(sv: Int, ev: Int?, displayText: String)] {
-    guard let data = json.data(using: .utf8),
-          let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-        return []
-    }
-
-    var refs: [(sv: Int, ev: Int?, displayText: String)] = []
-    var pendingSv: Int? = nil
-
-    for dict in parsed {
-        if let sv = dict["sv"] as? Int {
-            // Flush any pending sv first
-            if let prevSv = pendingSv {
-                refs.append((sv: prevSv, ev: nil, displayText: buildRefDisplayText(sv: prevSv, ev: nil)))
-            }
-
-            // Check if this dict has both sv and ev
-            if let ev = dict["ev"] as? Int {
-                refs.append((sv: sv, ev: ev, displayText: buildRefDisplayText(sv: sv, ev: ev)))
-                pendingSv = nil
-            } else {
-                pendingSv = sv
-            }
-        } else if let ev = dict["ev"] as? Int, let sv = pendingSv {
-            refs.append((sv: sv, ev: ev, displayText: buildRefDisplayText(sv: sv, ev: ev)))
-            pendingSv = nil
-        } else if dict["t"] != nil, let sv = pendingSv {
-            // Flush pending sv before text
-            refs.append((sv: sv, ev: nil, displayText: buildRefDisplayText(sv: sv, ev: nil)))
-            pendingSv = nil
-        }
-    }
-
-    // Flush remaining pending sv
-    if let sv = pendingSv {
-        refs.append((sv: sv, ev: nil, displayText: buildRefDisplayText(sv: sv, ev: nil)))
-    }
-
-    return refs
-}
-
-/// Builds display text for a ref (e.g., "Gen 1:1" or "Gen 1:1-3")
-private func buildRefDisplayText(sv: Int, ev: Int?) -> String {
-    let (startVerse, startChapter, startBook) = splitVerseId(sv)
-    let startOsisId = BookOsisCache.shared.getOsisId(for: startBook)
-
-    if let ev = ev {
-        let (endVerse, endChapter, endBook) = splitVerseId(ev)
-        if startBook == endBook && startChapter == endChapter {
-            return "\(startOsisId) \(startChapter):\(startVerse)-\(endVerse)"
-        } else {
-            let endOsisId = BookOsisCache.shared.getOsisId(for: endBook)
-            return "\(startOsisId) \(startChapter):\(startVerse) - \(endOsisId) \(endChapter):\(endVerse)"
-        }
-    } else {
-        return "\(startOsisId) \(startChapter):\(startVerse)"
-    }
-}
-
-/// Counts the number of refs in a segments JSON string (for computing popover offsets)
-func countRefsInSegmentsJson(_ json: String) -> Int {
-    guard let data = json.data(using: .utf8),
-          let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-        return 0
-    }
-
-    var count = 0
-    var pendingSv = false
-
-    for dict in parsed {
-        if dict["sv"] != nil {
-            // Flush any pending sv first (handles consecutive sv entries)
-            if pendingSv {
-                count += 1
-                pendingSv = false
-            }
-            // Check if this dict has both sv and ev (complete range)
-            if dict["ev"] != nil {
-                count += 1
-            } else {
-                pendingSv = true
-            }
-        } else if dict["ev"] != nil && pendingSv {
-            count += 1
-            pendingSv = false
-        } else if dict["t"] != nil && pendingSv {
-            // Flush pending sv before text
-            count += 1
-            pendingSv = false
-        }
-    }
-
-    // Flush remaining pending sv
-    if pendingSv {
-        count += 1
-    }
-
-    return count
-}
-
-/// Renders chapter overview segments (text + verse references) as flowing text using UITextView
-struct TSKSegmentsView: View {
-    let segmentsJson: String
-    let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-    var separateRefs: Bool = false
-
-    // Shared state for cross-segment navigation (sheet-based)
-    var baseOffset: Int = 0
-    var sharedSheetState: Binding<TSKSheetState?>? = nil
-    var sharedAllItems: Binding<[TSKTappableItem]>? = nil
-    var totalCount: Int? = nil
-
-    var body: some View {
-        TSKLinkedText(
-            segmentsJson: segmentsJson,
-            translation: translation,
-            fontSize: fontSize,
-            onNavigateToVerse: onNavigateToVerse,
-            separateRefs: separateRefs,
-            baseOffset: baseOffset,
-            sharedSheetState: sharedSheetState,
-            sharedAllItems: sharedAllItems,
-            totalCount: totalCount
-        )
-    }
-}
-
-struct TSKRefButton: View {
-    let sv: Int
-    let ev: Int?
-    let displayText: String
-    let translation: Translation
-    let fontSize: Int
-    let popoverIndex: Int
-    @Binding var activePopoverIndex: Int?
-    let totalPopoverCount: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-    var onSwipeNavigate: ((Int) -> Void)?  // Callback for swipe navigation (scroll-first)
-    @State private var showingSheet = false
-
-    private var canSwipePrev: Bool { popoverIndex > 0 }
-    private var canSwipeNext: Bool { popoverIndex < totalPopoverCount - 1 }
-
-    private func handleSwipePrev() {
-        if let onSwipe = onSwipeNavigate {
-            // Use scroll-first navigation for LazyVStack
-            onSwipe(popoverIndex - 1)
-        } else {
-            activePopoverIndex = popoverIndex - 1
-        }
-    }
-
-    private func handleSwipeNext() {
-        if let onSwipe = onSwipeNavigate {
-            // Use scroll-first navigation for LazyVStack
-            onSwipe(popoverIndex + 1)
-        } else {
-            activePopoverIndex = popoverIndex + 1
-        }
-    }
-
-    var body: some View {
-        Button {
-            showingSheet = true
-        } label: {
-            Text(displayText)
-                .font(.system(size: CGFloat(fontSize)))
-                .foregroundColor(.accentColor)
-        }
-        .sheet(isPresented: $showingSheet) {
-            NavigationStack {
-                ScrollView {
-                    VerseSheetContent(
-                        title: displayText,
-                        verseId: sv,
-                        endVerseId: ev,
-                        translation: translation
-                    )
-                    .padding()
-                }
-                .navigationTitle(displayText)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") {
-                            showingSheet = false
-                        }
-                    }
-                    ToolbarItem(placement: .principal) {
-                        if totalPopoverCount > 1 {
-                            HStack(spacing: 12) {
-                                Button {
-                                    showingSheet = false
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                        handleSwipePrev()
-                                        activePopoverIndex = popoverIndex - 1
-                                    }
-                                } label: {
-                                    Image(systemName: "chevron.left")
-                                }
-                                .disabled(!canSwipePrev)
-
-                                Text("\(popoverIndex + 1)/\(totalPopoverCount)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                Button {
-                                    showingSheet = false
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                        handleSwipeNext()
-                                        activePopoverIndex = popoverIndex + 1
-                                    }
-                                } label: {
-                                    Image(systemName: "chevron.right")
-                                }
-                                .disabled(!canSwipeNext)
-                            }
-                        }
-                    }
-                    if onNavigateToVerse != nil {
-                        ToolbarItem(placement: .primaryAction) {
-                            Button {
-                                showingSheet = false
-                                onNavigateToVerse?(sv)
-                            } label: {
-                                Image(systemName: "arrow.up.right")
-                            }
-                        }
-                    }
-                }
-                .presentationDetents([.fraction(0.4), .medium, .large])
-                .presentationDragIndicator(.visible)
-            }
-        }
-    }
-}
-
-/// Isolated view for a single verse's TSKe content - prevents cascade re-renders
-struct TSKVerseSection: View {
-    let verseId: Int
-    let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-
-    // Shared state for cross-segment navigation (sheet-based)
-    var baseOffset: Int = 0
-    var sharedSheetState: Binding<TSKSheetState?>? = nil
-    var sharedAllItems: Binding<[TSKTappableItem]>? = nil
-    var totalCount: Int? = nil
-
-    private var verseNum: Int { verseId % 1000 }
-
-    /// Load topics directly from Realm (computed once per render)
-    private var topics: [(id: String, heading: String, segmentsJson: String, refCount: Int)] {
-        guard let tskVerse = RealmManager.shared.realm.objects(TSKVerse.self).filter("id == \(verseId)").first else {
-            return []
-        }
-        return Array(tskVerse.topics.map {
-            (id: $0.id, heading: $0.h, segmentsJson: $0.segmentsJson, refCount: countRefsInSegmentsJson($0.segmentsJson))
-        })
-    }
-
-    private func computeTopicOffsets() -> [Int] {
-        var offsets: [Int] = []
-        var runningOffset = baseOffset
-        for topic in topics {
-            offsets.append(runningOffset)
-            runningOffset += topic.refCount
-        }
-        return offsets
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("v. \(verseNum)")
-                .font(.system(size: CGFloat(fontSize - 2), weight: .semibold))
-                .foregroundColor(.secondary)
-
-            // Compute running offset for each topic
-            let topicOffsets = computeTopicOffsets()
-
-            ForEach(Array(topics.enumerated()), id: \.element.id) { index, topic in
-                TSKTopicView(
-                    heading: topic.heading,
-                    segmentsJson: topic.segmentsJson,
-                    translation: translation,
-                    fontSize: fontSize,
-                    onNavigateToVerse: onNavigateToVerse,
-                    baseOffset: topicOffsets[index],
-                    sharedSheetState: sharedSheetState,
-                    sharedAllItems: sharedAllItems,
-                    totalCount: totalCount
-                )
-            }
-        }
-    }
-}
-
-/// Displays a topic with its heading and segments (text + verse refs)
-struct TSKTopicView: View {
-    let heading: String
-    let segmentsJson: String
-    let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-
-    // Shared state for cross-segment navigation (sheet-based)
-    var baseOffset: Int = 0
-    var sharedSheetState: Binding<TSKSheetState?>? = nil
-    var sharedAllItems: Binding<[TSKTappableItem]>? = nil
-    var totalCount: Int? = nil
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Topic heading (skip if empty)
-            if !heading.isEmpty {
-                Text(heading)
-                    .font(.system(size: CGFloat(fontSize - 2), weight: .medium))
-                    .foregroundStyle(heading == "Reciprocal" ? .secondary : .primary)
-            }
-
-            // Segments (reuse the same view as chapter overview, with separators)
-            if !segmentsJson.isEmpty {
-                TSKSegmentsView(
-                    segmentsJson: segmentsJson,
-                    translation: translation,
-                    fontSize: fontSize,
-                    onNavigateToVerse: onNavigateToVerse,
-                    separateRefs: true,
-                    baseOffset: baseOffset,
-                    sharedSheetState: sharedSheetState,
-                    sharedAllItems: sharedAllItems,
-                    totalCount: totalCount
-                )
-            }
-        }
-        .padding(.leading, 8)
-    }
-}
-
 // MARK: - Commentary Sheet Items
 
 /// Sheet item for Strong's number from commentary
@@ -3437,543 +3423,13 @@ struct CommentaryStrongsSheetItem: Identifiable {
     var id: String { key }
 }
 
-/// Sheet item for scripture reference from commentary
-struct CommentaryScriptureSheetItem: Identifiable {
-    let verseId: Int
-    let endVerseId: Int?
-    var id: String { "\(verseId)-\(endVerseId ?? 0)" }
-}
-
-// MARK: - TSKe UITextView Implementation
-
-/// Custom attribute key for tappable indices in TSKe text
-private let TSKTappableIndexKey = NSAttributedString.Key("tskTappableIndex")
-
-/// Tappable item in TSKe content
-struct TSKTappableItem: Equatable, Identifiable {
-    let index: Int
-    let sv: Int
-    let ev: Int?
-    let displayText: String
-
-    var id: Int { index }
-}
-
-/// Sheet state for TSKe navigation
-struct TSKSheetState: Equatable, Identifiable {
-    let currentItem: TSKTappableItem
-    let allItems: [TSKTappableItem]
-    var totalCount: Int? = nil  // Pre-computed total (for lazy-loaded items)
-
-    var id: String { "tsk-sheet" }
-
-    var currentIndex: Int {
-        allItems.firstIndex(where: { $0.index == currentItem.index }) ?? 0
-    }
-
-    // Use totalCount if provided, otherwise fall back to allItems.count
-    var displayCount: Int { totalCount ?? allItems.count }
-
-    var canNavigatePrev: Bool { currentIndex > 0 }
-    var canNavigateNext: Bool { currentIndex < allItems.count - 1 }
-
-    func withPrev() -> TSKSheetState? {
-        guard canNavigatePrev else { return nil }
-        return TSKSheetState(currentItem: allItems[currentIndex - 1], allItems: allItems, totalCount: totalCount)
-    }
-
-    func withNext() -> TSKSheetState? {
-        guard canNavigateNext else { return nil }
-        return TSKSheetState(currentItem: allItems[currentIndex + 1], allItems: allItems, totalCount: totalCount)
-    }
-}
-
-/// SwiftUI view that renders TSKe segments using UITextView with tappable refs
-struct TSKLinkedText: View {
-    let segmentsJson: String
-    let translation: Translation
-    let fontSize: Int
-    var onNavigateToVerse: ((Int) -> Void)?
-    var separateRefs: Bool = false
-
-    // Shared state for cross-segment navigation
-    var baseOffset: Int = 0
-    var sharedSheetState: Binding<TSKSheetState?>? = nil
-    var sharedAllItems: Binding<[TSKTappableItem]>? = nil
-    var totalCount: Int? = nil  // Pre-computed total for lazy-loaded items
-
-    @State private var tappableItems: [TSKTappableItem] = []
-    @State private var localSheetState: TSKSheetState? = nil
-
-    private var effectiveSheetState: Binding<TSKSheetState?> {
-        sharedSheetState ?? $localSheetState
-    }
-
-    private func navigateToPrev() {
-        guard let current = effectiveSheetState.wrappedValue, let newState = current.withPrev() else { return }
-        effectiveSheetState.wrappedValue = newState
-    }
-
-    private func navigateToNext() {
-        guard let current = effectiveSheetState.wrappedValue, let newState = current.withNext() else { return }
-        effectiveSheetState.wrappedValue = newState
-    }
-
-    var body: some View {
-        TSKLinkedTextView(
-            segmentsJson: segmentsJson,
-            fontSize: fontSize,
-            separateRefs: separateRefs,
-            baseOffset: baseOffset,
-            onLinkTap: { index in
-                if let item = tappableItems.first(where: { $0.index == index }) {
-                    let allItems = sharedAllItems?.wrappedValue ?? tappableItems
-                    effectiveSheetState.wrappedValue = TSKSheetState(currentItem: item, allItems: allItems, totalCount: totalCount)
-                }
-            },
-            onItemsParsed: { items in
-                tappableItems = items
-                if let sharedItems = sharedAllItems {
-                    let otherItems = sharedItems.wrappedValue.filter { item in
-                        item.index < baseOffset || item.index >= baseOffset + items.count
-                    }
-                    sharedItems.wrappedValue = (otherItems + items).sorted { $0.index < $1.index }
-                }
-            }
-        )
-        .sheet(item: sharedSheetState == nil ? $localSheetState : .constant(nil)) { state in
-            sheetContent(state: state)
-                .presentationDetents([.fraction(0.325), .medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationContentInteraction(.scrolls)
-        }
-    }
-
-    @ViewBuilder
-    private func sheetContent(state: TSKSheetState) -> some View {
-        let item = state.currentItem
-        NavigationStack {
-            ScrollView {
-                VerseSheetContent(
-                    title: item.displayText,
-                    verseId: item.sv,
-                    endVerseId: item.ev,
-                    translation: translation,
-                    onNavigate: onNavigateToVerse != nil ? {
-                        effectiveSheetState.wrappedValue = nil
-                        onNavigateToVerse?(item.sv)
-                    } : nil
-                )
-                .padding()
-            }
-            .navigationTitle(item.displayText)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        effectiveSheetState.wrappedValue = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    if onNavigateToVerse != nil {
-                        Button {
-                            effectiveSheetState.wrappedValue = nil
-                            onNavigateToVerse?(item.sv)
-                        } label: {
-                            Image(systemName: "arrow.up.right")
-                        }
-                    }
-                }
-            }
-            .toolbar {
-                ToolbarItemGroup(placement: .bottomBar) {
-                    if state.allItems.count > 1 {
-                        Button(action: navigateToPrev) {
-                            Image(systemName: "chevron.left")
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!state.canNavigatePrev)
-
-                        Spacer()
-
-                        Text("\(state.currentIndex + 1) of \(state.displayCount)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
-                            .padding(.horizontal, 8)
-
-                        Spacer()
-
-                        Button(action: navigateToNext) {
-                            Image(systemName: "chevron.right")
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!state.canNavigateNext)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// UIViewRepresentable for TSKe linked text
-private struct TSKLinkedTextView: UIViewRepresentable {
-    let segmentsJson: String
-    let fontSize: Int
-    let separateRefs: Bool
-    let baseOffset: Int
-    let onLinkTap: (Int) -> Void
-    let onItemsParsed: ([TSKTappableItem]) -> Void
-
-    func makeUIView(context: Context) -> TSKTappableTextView {
-        let textView = TSKTappableTextView()
-        textView.isEditable = false
-        textView.isSelectable = false
-        textView.isScrollEnabled = false
-        textView.backgroundColor = .clear
-        textView.textContainerInset = .zero
-        textView.textContainer.lineFragmentPadding = 0
-        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        textView.onTappableIndexTap = context.coordinator.handleTap
-
-        // Performance optimization: Draw on background thread
-        textView.layer.drawsAsynchronously = true
-
-        return textView
-    }
-
-    func updateUIView(_ textView: TSKTappableTextView, context: Context) {
-        if context.coordinator.lastJson != segmentsJson || context.coordinator.lastFontSize != fontSize {
-            context.coordinator.lastJson = segmentsJson
-            context.coordinator.lastFontSize = fontSize
-            context.coordinator.cachedSize = nil  // Invalidate size cache
-            let (attrString, items) = buildAttributedString()
-            textView.attributedText = attrString
-            context.coordinator.onLinkTap = onLinkTap
-            textView.invalidateIntrinsicContentSize()
-
-            DispatchQueue.main.async {
-                onItemsParsed(items)
-            }
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onLinkTap: onLinkTap)
-    }
-
-    @available(iOS 16.0, *)
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: TSKTappableTextView, context: Context) -> CGSize? {
-        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
-
-        // Return cached size if width hasn't changed significantly
-        if let cached = context.coordinator.cachedSize,
-           abs(cached.width - width) < 1 {
-            return cached
-        }
-
-        let size = uiView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
-        let result = CGSize(width: width, height: size.height)
-        context.coordinator.cachedSize = result
-        return result
-    }
-
-    private func buildAttributedString() -> (NSAttributedString, [TSKTappableItem]) {
-        guard let data = segmentsJson.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return (NSAttributedString(), [])
-        }
-
-        let result = NSMutableAttributedString()
-        var tappableItems: [TSKTappableItem] = []
-        var itemIndex = baseOffset
-        let uiFont = UIFont.systemFont(ofSize: CGFloat(fontSize))
-        var pendingSv: Int? = nil
-        var isFirstRef = true
-        var lastWasRef = false  // Track if last appended content was a ref
-
-        // Add paragraph spacing for better readability
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 4
-
-        // Helper to check if result ends with whitespace
-        func resultEndsWithWhitespace() -> Bool {
-            guard result.length > 0 else { return true }
-            let lastChar = result.string.last
-            return lastChar?.isWhitespace == true
-        }
-
-        for (index, dict) in parsed.enumerated() {
-            // Skip "Overview " prefix
-            if index == 0, let text = dict["t"] as? String, text.hasPrefix("Overview") {
-                continue
-            }
-
-            if let text = dict["t"] as? String {
-                // Check if this is a range separator (hyphen/dash between sv and ev)
-                // Don't flush pending sv if text is just a hyphen - ev might follow
-                let isRangeSeparator = (text == "-" || text == "–" || text == "—") && pendingSv != nil
-
-                // Flush any pending sv before text (unless it's a range separator)
-                if let sv = pendingSv, !isRangeSeparator {
-                    // Always add space before ref if result doesn't end with whitespace
-                    if !resultEndsWithWhitespace() {
-                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                    // In separateRefs mode, also add comma between refs
-                    if separateRefs && !isFirstRef {
-                        result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                    let displayText = buildRefDescription(sv: sv, ev: nil)
-                    result.append(NSAttributedString(string: displayText, attributes: [
-                        .font: uiFont,
-                        .foregroundColor: UIColor.tintColor,
-                        .paragraphStyle: paragraphStyle,
-                        TSKTappableIndexKey: itemIndex
-                    ]))
-                    tappableItems.append(TSKTappableItem(index: itemIndex, sv: sv, ev: nil, displayText: displayText))
-                    itemIndex += 1
-                    isFirstRef = false
-                    pendingSv = nil
-                    lastWasRef = true
-                }
-
-                // Skip range separators - they'll be included in the ref display text
-                if isRangeSeparator {
-                    continue
-                }
-
-                var cleaned = text
-                    .replacingOccurrences(of: "\n", with: " ")
-                    .replacingOccurrences(of: "\r", with: " ")
-
-                // Add space before text if last content was a ref and text doesn't start with whitespace
-                // Include hyphens/dashes as needing space (they're text separators in TSKe, not punctuation)
-                if lastWasRef && !cleaned.isEmpty {
-                    let firstChar = cleaned.first!
-                    let isHyphenOrDash = firstChar == "-" || firstChar == "–" || firstChar == "—"
-                    let needsSpace = !firstChar.isWhitespace && (!firstChar.isPunctuation || isHyphenOrDash)
-                    if needsSpace {
-                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                }
-
-                let isItalic = dict["i"] as? Bool ?? false
-                let font = isItalic ? UIFont.italicSystemFont(ofSize: CGFloat(fontSize)) : uiFont
-                result.append(NSAttributedString(string: cleaned, attributes: [
-                    .font: font,
-                    .foregroundColor: UIColor.label,
-                    .paragraphStyle: paragraphStyle
-                ]))
-                lastWasRef = false
-
-            } else if let sv = dict["sv"] as? Int {
-                // Try Int first, then Double (JSONSerialization can parse large ints as Double), then String
-                let evInSameDict: Int? = (dict["ev"] as? Int)
-                    ?? (dict["ev"] as? Double).map { Int($0) }
-                    ?? (dict["ev"] as? String).flatMap { Int($0) }
-
-                // Flush any pending sv first
-                if let prevSv = pendingSv {
-                    // Always add space before ref if result doesn't end with whitespace
-                    if !resultEndsWithWhitespace() {
-                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                    // In separateRefs mode, also add comma between refs
-                    if separateRefs && !isFirstRef {
-                        result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                    let displayText = buildRefDescription(sv: prevSv, ev: nil)
-                    result.append(NSAttributedString(string: displayText, attributes: [
-                        .font: uiFont,
-                        .foregroundColor: UIColor.tintColor,
-                        .paragraphStyle: paragraphStyle,
-                        TSKTappableIndexKey: itemIndex
-                    ]))
-                    tappableItems.append(TSKTappableItem(index: itemIndex, sv: prevSv, ev: nil, displayText: displayText))
-                    itemIndex += 1
-                    isFirstRef = false
-                    pendingSv = nil
-                    lastWasRef = true
-                }
-
-                if let ev = evInSameDict {
-                    // Always add space before ref if result doesn't end with whitespace
-                    if !resultEndsWithWhitespace() {
-                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                    // In separateRefs mode, also add comma between refs
-                    if separateRefs && !isFirstRef {
-                        result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                    let displayText = buildRefDescription(sv: sv, ev: ev)
-                    result.append(NSAttributedString(string: displayText, attributes: [
-                        .font: uiFont,
-                        .foregroundColor: UIColor.tintColor,
-                        .paragraphStyle: paragraphStyle,
-                        TSKTappableIndexKey: itemIndex
-                    ]))
-                    tappableItems.append(TSKTappableItem(index: itemIndex, sv: sv, ev: ev, displayText: displayText))
-                    itemIndex += 1
-                    isFirstRef = false
-                    lastWasRef = true
-                } else {
-                    pendingSv = sv
-                }
-
-            } else if let ev = dict["ev"] as? Int {
-                if let sv = pendingSv {
-                    // Always add space before ref if result doesn't end with whitespace
-                    if !resultEndsWithWhitespace() {
-                        result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                    // In separateRefs mode, also add comma between refs
-                    if separateRefs && !isFirstRef {
-                        result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-                    }
-                    let displayText = buildRefDescription(sv: sv, ev: ev)
-                    result.append(NSAttributedString(string: displayText, attributes: [
-                        .font: uiFont,
-                        .foregroundColor: UIColor.tintColor,
-                        .paragraphStyle: paragraphStyle,
-                        TSKTappableIndexKey: itemIndex
-                    ]))
-                    tappableItems.append(TSKTappableItem(index: itemIndex, sv: sv, ev: ev, displayText: displayText))
-                    itemIndex += 1
-                    isFirstRef = false
-                    pendingSv = nil
-                    lastWasRef = true
-                }
-            }
-        }
-
-        // Flush remaining pending sv
-        if let sv = pendingSv {
-            // Always add space before ref if result doesn't end with whitespace
-            if !resultEndsWithWhitespace() {
-                result.append(NSAttributedString(string: " ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-            }
-            // In separateRefs mode, also add comma between refs
-            if separateRefs && !isFirstRef {
-                result.append(NSAttributedString(string: ", ", attributes: [.font: uiFont, .foregroundColor: UIColor.label, .paragraphStyle: paragraphStyle]))
-            }
-            let displayText = buildRefDescription(sv: sv, ev: nil)
-            result.append(NSAttributedString(string: displayText, attributes: [
-                .font: uiFont,
-                .foregroundColor: UIColor.tintColor,
-                .paragraphStyle: paragraphStyle,
-                TSKTappableIndexKey: itemIndex
-            ]))
-            tappableItems.append(TSKTappableItem(index: itemIndex, sv: sv, ev: nil, displayText: displayText))
-        }
-
-        return (result, tappableItems)
-    }
-
-    private func buildRefDescription(sv: Int, ev: Int?) -> String {
-        let (startVerse, startChapter, startBook) = splitVerseId(sv)
-        let startOsisId = BookOsisCache.shared.getOsisId(for: startBook)
-
-        if let ev = ev {
-            let (endVerse, endChapter, endBook) = splitVerseId(ev)
-            if startBook == endBook && startChapter == endChapter {
-                return "\(startOsisId) \(startChapter):\(startVerse)-\(endVerse)"
-            } else {
-                let endOsisId = BookOsisCache.shared.getOsisId(for: endBook)
-                return "\(startOsisId) \(startChapter):\(startVerse) - \(endOsisId) \(endChapter):\(endVerse)"
-            }
-        } else {
-            return "\(startOsisId) \(startChapter):\(startVerse)"
-        }
-    }
-
-    class Coordinator {
-        var onLinkTap: (Int) -> Void
-        var lastJson: String = ""
-        var lastFontSize: Int = 0
-        var cachedSize: CGSize?
-
-        init(onLinkTap: @escaping (Int) -> Void) {
-            self.onLinkTap = onLinkTap
-        }
-
-        func handleTap(_ index: Int) {
-            onLinkTap(index)
-        }
-    }
-}
-
-/// UITextView subclass using TextKit 1 for TSKe tap handling
-private class TSKTappableTextView: UITextView {
-    var onTappableIndexTap: ((Int) -> Void)?
-
-    private let textKit1LayoutManager = NSLayoutManager()
-    private let textKit1TextContainer = NSTextContainer()
-    private let textKit1TextStorage = NSTextStorage()
-
-    override init(frame: CGRect, textContainer: NSTextContainer?) {
-        textKit1TextStorage.addLayoutManager(textKit1LayoutManager)
-        textKit1LayoutManager.addTextContainer(textKit1TextContainer)
-        textKit1TextContainer.widthTracksTextView = true
-        textKit1TextContainer.heightTracksTextView = false
-
-        super.init(frame: frame, textContainer: textKit1TextContainer)
-
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        addGestureRecognizer(tapGesture)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let location = gesture.location(in: self)
-
-        let textContainerOffset = CGPoint(
-            x: textContainerInset.left,
-            y: textContainerInset.top
-        )
-        let locationInTextContainer = CGPoint(
-            x: location.x - textContainerOffset.x,
-            y: location.y - textContainerOffset.y
-        )
-
-        let characterIndex = textKit1LayoutManager.characterIndex(
-            for: locationInTextContainer,
-            in: textKit1TextContainer,
-            fractionOfDistanceBetweenInsertionPoints: nil
-        )
-
-        guard characterIndex < textKit1TextStorage.length else { return }
-
-        let attributes = textKit1TextStorage.attributes(at: characterIndex, effectiveRange: nil)
-        if let tappableIndex = attributes[TSKTappableIndexKey] as? Int {
-            onTappableIndexTap?(tappableIndex)
-        }
-    }
-
-    override var attributedText: NSAttributedString! {
-        didSet {
-            textKit1TextStorage.setAttributedString(attributedText ?? NSAttributedString())
-        }
-    }
-}
-
 /// Shared verse content view for displaying verse text in sheets/popovers
 /// Used by TSKe, Cross References, Lexicon, and Search views
 struct VerseSheetContent: View {
     let title: String
     let verseId: Int
     let endVerseId: Int?
-    let translation: Translation?
+    let translationId: String?  // GRDB translation ID
     var onNavigate: (() -> Void)? = nil
 
     // Optional context support (for search results)
@@ -3983,19 +3439,19 @@ struct VerseSheetContent: View {
     var highlightQuery: String? = nil
     var highlightMode: SearchMode? = nil
 
-    init(title: String, verseId: Int, endVerseId: Int? = nil, translation: Translation?, onNavigate: (() -> Void)? = nil) {
+    init(title: String, verseId: Int, endVerseId: Int? = nil, translationId: String?, onNavigate: (() -> Void)? = nil) {
         self.title = title
         self.verseId = verseId
         self.endVerseId = endVerseId
-        self.translation = translation
+        self.translationId = translationId
         self.onNavigate = onNavigate
     }
 
-    init(title: String, verseId: Int, endVerseId: Int? = nil, translation: Translation?, onNavigate: (() -> Void)? = nil, contextAmount: SearchContextAmount?, highlightQuery: String?, highlightMode: SearchMode?) {
+    init(title: String, verseId: Int, endVerseId: Int? = nil, translationId: String?, onNavigate: (() -> Void)? = nil, contextAmount: SearchContextAmount?, highlightQuery: String?, highlightMode: SearchMode?) {
         self.title = title
         self.verseId = verseId
         self.endVerseId = endVerseId
-        self.translation = translation
+        self.translationId = translationId
         self.onNavigate = onNavigate
         self.contextAmount = contextAmount
         self.highlightQuery = highlightQuery
@@ -4003,17 +3459,16 @@ struct VerseSheetContent: View {
     }
 
     /// Returns the primary (hit) verses without context
-    private var primaryVerses: [Verse] {
-        guard let translation = translation else { return [] }
+    private var primaryVerses: [TranslationVerse] {
+        guard let translationId = translationId else { return [] }
         let startId = verseId
         let endId = endVerseId ?? verseId
-        // Query through translation's verses list to avoid orphaned verses
-        return Array(translation.verses.filter("id >= \(startId) AND id <= \(endId)"))
+        return (try? TranslationDatabase.shared.getVerseRange(translationId: translationId, startRef: startId, endRef: endId)) ?? []
     }
 
     /// Returns verses with context if contextAmount is set
-    private var versesWithContext: [(verse: Verse, isContext: Bool)] {
-        guard let translation = translation else { return [] }
+    private var versesWithContext: [(verse: TranslationVerse, isContext: Bool)] {
+        guard let translationId = translationId else { return [] }
 
         // If no context requested, just return primary verses
         guard let contextAmount = contextAmount else {
@@ -4021,9 +3476,10 @@ struct VerseSheetContent: View {
         }
 
         let (_, chapter, book) = splitVerseId(verseId)
-        let chapterVerses = Array(translation.verses.filter("b == %@ AND c == %@", book, chapter).sorted(byKeyPath: "v"))
+        let chapterContent = (try? TranslationDatabase.shared.getChapter(translationId: translationId, book: book, chapter: chapter)) ?? ChapterContent(verses: [], headings: [])
+        let chapterVerses = chapterContent.verses
 
-        guard let index = chapterVerses.firstIndex(where: { $0.id == verseId }) else {
+        guard let index = chapterVerses.firstIndex(where: { $0.ref == verseId }) else {
             return primaryVerses.map { ($0, false) }
         }
 
@@ -4034,12 +3490,12 @@ struct VerseSheetContent: View {
         case .threeVerses:
             contextCount = 3
         case .chapter:
-            return chapterVerses.map { ($0, $0.id != verseId) }
+            return chapterVerses.map { ($0, $0.ref != verseId) }
         }
 
         let startIndex = max(0, index - contextCount)
         let endIndex = min(chapterVerses.count - 1, index + contextCount)
-        return Array(chapterVerses[startIndex...endIndex]).map { ($0, $0.id != verseId) }
+        return Array(chapterVerses[startIndex...endIndex]).map { ($0, $0.ref != verseId) }
     }
 
     private var versesText: AttributedString {
@@ -4056,7 +3512,7 @@ struct VerseSheetContent: View {
             let isContext = item.isContext
 
             // Add verse number as superscript
-            var verseNum = AttributedString("\(verse.v)")
+            var verseNum = AttributedString("\(verse.verse)")
             verseNum.font = .caption
             verseNum.foregroundColor = .secondary
             verseNum.baselineOffset = 4
@@ -4065,12 +3521,12 @@ struct VerseSheetContent: View {
             let verseTextContent: AttributedString
             if !isContext, let query = highlightQuery, !query.isEmpty {
                 if highlightMode == .strongs {
-                    verseTextContent = highlightedStrongsAttributedText(verse.t, strongsNum: query.uppercased())
+                    verseTextContent = highlightedStrongsAttributedText(verse.text, annotationsJson: verse.annotationsJson, strongsNum: query.uppercased())
                 } else {
-                    verseTextContent = highlightedTextAttributedString(stripStrongsAnnotations(verse.t), query: query)
+                    verseTextContent = highlightedTextAttributedString(verse.text, query: query)
                 }
             } else {
-                var text = AttributedString(" " + stripStrongsAnnotations(verse.t))
+                var text = AttributedString(" " + verse.text)
                 text.font = .body
                 verseTextContent = text
             }
@@ -4133,51 +3589,64 @@ struct VerseSheetContent: View {
         return result
     }
 
-    private func highlightedStrongsAttributedText(_ text: String, strongsNum: String) -> AttributedString {
+    private func highlightedStrongsAttributedText(_ text: String, annotationsJson: String?, strongsNum: String) -> AttributedString {
         var result = AttributedString(" ")
 
-        let pattern = "\\{([^|]+)\\|([^}]+)\\}"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            var plain = AttributedString(stripStrongsAnnotations(text))
+        // Parse annotations to find matching Strong's number ranges
+        var highlightRanges: [(start: Int, end: Int)] = []
+        if let json = annotationsJson,
+           let data = json.data(using: .utf8),
+           let annotations = try? JSONDecoder().decode([VerseAnnotation].self, from: data) {
+            for annotation in annotations {
+                if let strongs = annotation.data?.strongs, strongsNumbersMatch(strongs, strongsNum) {
+                    highlightRanges.append((annotation.start, annotation.end))
+                }
+            }
+        }
+
+        // If no highlights found, return plain text
+        guard !highlightRanges.isEmpty else {
+            var plain = AttributedString(text)
             plain.font = .body
             result.append(plain)
             return result
         }
 
-        let nsText = text as NSString
-        var currentIndex = 0
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        // Sort ranges by start position
+        let sortedRanges = highlightRanges.sorted { $0.start < $1.start }
 
-        for match in matches {
-            if match.range.location > currentIndex {
-                let beforeText = nsText.substring(with: NSRange(location: currentIndex, length: match.range.location - currentIndex))
-                var before = AttributedString(beforeText)
+        // Build attributed string with highlights
+        var currentIndex = 0
+        for range in sortedRanges {
+            let start = max(0, min(range.start, text.count))
+            let end = max(start, min(range.end, text.count))
+
+            // Add text before highlight
+            if currentIndex < start {
+                let startIdx = text.index(text.startIndex, offsetBy: currentIndex)
+                let endIdx = text.index(text.startIndex, offsetBy: start)
+                var before = AttributedString(String(text[startIdx..<endIdx]))
                 before.font = .body
                 result.append(before)
             }
 
-            let wordRange = match.range(at: 1)
-            let annotationRange = match.range(at: 2)
-            let word = nsText.substring(with: wordRange)
-            let annotation = nsText.substring(with: annotationRange)
-
-            if annotationContainsStrongs(annotation, strongsNum: strongsNum) {
-                var highlight = AttributedString(word)
+            // Add highlighted text
+            if start < end {
+                let startIdx = text.index(text.startIndex, offsetBy: start)
+                let endIdx = text.index(text.startIndex, offsetBy: end)
+                var highlight = AttributedString(String(text[startIdx..<endIdx]))
                 highlight.font = .body.bold()
                 highlight.foregroundColor = .accentColor
                 result.append(highlight)
-            } else {
-                var plain = AttributedString(word)
-                plain.font = .body
-                result.append(plain)
             }
 
-            currentIndex = match.range.location + match.range.length
+            currentIndex = end
         }
 
-        if currentIndex < nsText.length {
-            let remainingText = nsText.substring(from: currentIndex)
-            var remaining = AttributedString(remainingText)
+        // Add remaining text after last highlight
+        if currentIndex < text.count {
+            let startIdx = text.index(text.startIndex, offsetBy: currentIndex)
+            var remaining = AttributedString(String(text[startIdx...]))
             remaining.font = .body
             result.append(remaining)
         }
@@ -4185,9 +3654,31 @@ struct VerseSheetContent: View {
         return result
     }
 
-    private func annotationContainsStrongs(_ annotation: String, strongsNum: String) -> Bool {
-        let parts = annotation.components(separatedBy: CharacterSet(charactersIn: ",|"))
-        return parts.contains { $0.trimmingCharacters(in: .whitespaces) == strongsNum }
+    /// Compare Strong's numbers, normalizing leading zeros (H0216 matches H216)
+    private func strongsNumbersMatch(_ a: String, _ b: String) -> Bool {
+        let pattern = "^(TH|H|G)(\\d+)$"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+            return a.uppercased() == b.uppercased()
+        }
+
+        let aRange = NSRange(a.startIndex..., in: a)
+        let bRange = NSRange(b.startIndex..., in: b)
+
+        guard let aMatch = regex.firstMatch(in: a, range: aRange),
+              let bMatch = regex.firstMatch(in: b, range: bRange),
+              let aPrefixRange = Range(aMatch.range(at: 1), in: a),
+              let aNumRange = Range(aMatch.range(at: 2), in: a),
+              let bPrefixRange = Range(bMatch.range(at: 1), in: b),
+              let bNumRange = Range(bMatch.range(at: 2), in: b) else {
+            return a.uppercased() == b.uppercased()
+        }
+
+        let aPrefix = a[aPrefixRange].uppercased()
+        let bPrefix = b[bPrefixRange].uppercased()
+        let aNum = Int(a[aNumRange]) ?? 0
+        let bNum = Int(b[bNumRange]) ?? 0
+
+        return aPrefix == bPrefix && aNum == bNum
     }
 
     var body: some View {
@@ -4197,412 +3688,447 @@ struct VerseSheetContent: View {
     }
 }
 
-// MARK: - Cross Reference UITextView Types
+// MARK: - Unified Preview Sheet System
 
-/// Tappable item for cross references
-struct CrossRefTappableItem: Equatable, Identifiable {
+/// A preview item that can represent verse references or other content types
+struct PreviewItem: Equatable, Identifiable {
     let index: Int
-    let sv: Int
-    let ev: Int?
-    let displayText: String
+    let type: ItemType
 
     var id: Int { index }
+
+    enum ItemType: Equatable {
+        case verse(verseId: Int, endVerseId: Int?, displayText: String)
+        case strongs(key: String, displayText: String)
+    }
+
+    var displayText: String {
+        switch type {
+        case .verse(_, _, let text): return text
+        case .strongs(_, let text): return text
+        }
+    }
+
+    var verseId: Int? {
+        if case .verse(let id, _, _) = type { return id }
+        return nil
+    }
+
+    var endVerseId: Int? {
+        if case .verse(_, let end, _) = type { return end }
+        return nil
+    }
+
+    var strongsKey: String? {
+        if case .strongs(let key, _) = type { return key }
+        return nil
+    }
+
+    static func verse(index: Int, verseId: Int, endVerseId: Int? = nil, displayText: String) -> PreviewItem {
+        PreviewItem(index: index, type: .verse(verseId: verseId, endVerseId: endVerseId, displayText: displayText))
+    }
+
+    static func strongs(index: Int, key: String, displayText: String) -> PreviewItem {
+        PreviewItem(index: index, type: .strongs(key: key, displayText: displayText))
+    }
 }
 
-/// Sheet state for cross reference navigation
-struct CrossRefSheetState: Equatable, Identifiable {
-    let currentItem: CrossRefTappableItem
-    let allItems: [CrossRefTappableItem]
+/// Navigation state for preview sheets
+struct PreviewSheetState: Equatable, Identifiable {
+    let currentItem: PreviewItem
+    let allItems: [PreviewItem]
     var totalCount: Int? = nil
 
-    var id: String { "crossref-sheet" }
+    var id: String { "preview-sheet" }
 
     var currentIndex: Int {
         allItems.firstIndex(where: { $0.index == currentItem.index }) ?? 0
     }
 
     var displayCount: Int { totalCount ?? allItems.count }
-
     var canNavigatePrev: Bool { currentIndex > 0 }
     var canNavigateNext: Bool { currentIndex < allItems.count - 1 }
 
-    func withPrev() -> CrossRefSheetState? {
+    func withPrev() -> PreviewSheetState? {
         guard canNavigatePrev else { return nil }
-        return CrossRefSheetState(currentItem: allItems[currentIndex - 1], allItems: allItems, totalCount: totalCount)
+        return PreviewSheetState(currentItem: allItems[currentIndex - 1], allItems: allItems, totalCount: totalCount)
     }
 
-    func withNext() -> CrossRefSheetState? {
+    func withNext() -> PreviewSheetState? {
         guard canNavigateNext else { return nil }
-        return CrossRefSheetState(currentItem: allItems[currentIndex + 1], allItems: allItems, totalCount: totalCount)
+        return PreviewSheetState(currentItem: allItems[currentIndex + 1], allItems: allItems, totalCount: totalCount)
     }
 }
 
-/// Custom attribute key for cross reference tappable indices
-private let CrossRefTappableIndexKey = NSAttributedString.Key("crossRefTappableIndex")
-
-/// SwiftUI view that renders cross references using UITextView with tappable refs
-struct CrossRefLinkedText: View {
-    let crossRefs: [CrossReference]
-    let translation: Translation
-    let fontSize: Int
+/// Shared sheet wrapper for previews with navigation support
+/// Used by cross references, TSK, note references, commentary refs, etc.
+struct PreviewSheet: View {
+    @Binding var state: PreviewSheetState?
+    let translationId: String?
     var onNavigateToVerse: ((Int) -> Void)?
+    var onSearchStrongs: ((String) -> Void)?
 
-    // Shared state for cross-segment navigation
-    var baseOffset: Int = 0
-    var sharedSheetState: Binding<CrossRefSheetState?>? = nil
-    var sharedAllItems: Binding<[CrossRefTappableItem]>? = nil
-    var totalCount: Int? = nil
+    // Optional context/highlighting for search results
+    var contextAmount: SearchContextAmount? = nil
+    var highlightQuery: String? = nil
+    var highlightMode: SearchMode? = nil
 
-    @State private var tappableItems: [CrossRefTappableItem] = []
-    @State private var localSheetState: CrossRefSheetState? = nil
-
-    private var effectiveSheetState: Binding<CrossRefSheetState?> {
-        sharedSheetState ?? $localSheetState
-    }
-
-    private func navigateToPrev() {
-        guard let current = effectiveSheetState.wrappedValue, let newState = current.withPrev() else { return }
-        effectiveSheetState.wrappedValue = newState
-    }
-
-    private func navigateToNext() {
-        guard let current = effectiveSheetState.wrappedValue, let newState = current.withNext() else { return }
-        effectiveSheetState.wrappedValue = newState
-    }
+    private var item: PreviewItem? { state?.currentItem }
 
     var body: some View {
-        CrossRefLinkedTextView(
-            crossRefs: crossRefs,
-            fontSize: fontSize,
-            baseOffset: baseOffset,
-            onLinkTap: { index in
-                if let item = tappableItems.first(where: { $0.index == index }) {
-                    let allItems = sharedAllItems?.wrappedValue ?? tappableItems
-                    effectiveSheetState.wrappedValue = CrossRefSheetState(currentItem: item, allItems: allItems, totalCount: totalCount)
-                }
-            },
-            onItemsParsed: { items in
-                tappableItems = items
-                if let sharedItems = sharedAllItems {
-                    let otherItems = sharedItems.wrappedValue.filter { item in
-                        item.index < baseOffset || item.index >= baseOffset + items.count
-                    }
-                    sharedItems.wrappedValue = (otherItems + items).sorted { $0.index < $1.index }
-                }
-            }
-        )
-        .sheet(item: sharedSheetState == nil ? $localSheetState : .constant(nil)) { state in
-            sheetContent(state: state)
-                .presentationDetents([.fraction(0.325), .medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationContentInteraction(.scrolls)
-        }
-    }
-
-    @ViewBuilder
-    private func sheetContent(state: CrossRefSheetState) -> some View {
-        let item = state.currentItem
         NavigationStack {
-            ScrollView {
-                CrossRefVerseContent(
-                    title: item.displayText,
-                    verseId: item.sv,
-                    endVerseId: item.ev,
-                    translation: translation
-                )
-                .padding()
-            }
-            .id("\(item.sv)-\(item.ev ?? 0)")
-            .navigationTitle(item.displayText)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        effectiveSheetState.wrappedValue = nil
-                    } label: {
-                        Image(systemName: "xmark")
+            if let item = item {
+                ScrollView {
+                    switch item.type {
+                    case .verse(let verseId, let endVerseId, _):
+                        VerseSheetContent(
+                            title: item.displayText,
+                            verseId: verseId,
+                            endVerseId: endVerseId,
+                            translationId: translationId,
+                            onNavigate: nil,
+                            contextAmount: contextAmount,
+                            highlightQuery: highlightQuery,
+                            highlightMode: highlightMode
+                        )
+                        .padding()
+                    case .strongs(let key, _):
+                        StrongsSheetContent(strongsKey: key)
+                            .padding()
                     }
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    if onNavigateToVerse != nil {
+                .id("\(item.index)")
+                .navigationTitle(item.displayText)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
                         Button {
-                            effectiveSheetState.wrappedValue = nil
-                            onNavigateToVerse?(item.sv)
+                            state = nil
                         } label: {
-                            Image(systemName: "arrow.up.right")
+                            Image(systemName: "xmark")
+                        }
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        if let verseId = item.verseId, onNavigateToVerse != nil {
+                            Button {
+                                state = nil
+                                onNavigateToVerse?(verseId)
+                            } label: {
+                                Image(systemName: "arrow.up.right")
+                            }
+                        } else if let key = item.strongsKey, onSearchStrongs != nil {
+                            Button {
+                                state = nil
+                                onSearchStrongs?(key)
+                            } label: {
+                                Image(systemName: "arrow.up.right")
+                            }
                         }
                     }
                 }
-            }
-            .toolbar {
-                ToolbarItemGroup(placement: .bottomBar) {
-                    if state.allItems.count > 1 {
-                        Button(action: navigateToPrev) {
-                            Image(systemName: "chevron.left")
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
+                .toolbar {
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        if let currentState = state, currentState.allItems.count > 1 {
+                            Button {
+                                if let prev = currentState.withPrev() {
+                                    state = prev
+                                }
+                            } label: {
+                                Image(systemName: "chevron.left")
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!currentState.canNavigatePrev)
+
+                            Spacer()
+
+                            Text("\(currentState.currentIndex + 1) of \(currentState.displayCount)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                                .padding(.horizontal, 8)
+
+                            Spacer()
+
+                            Button {
+                                if let next = currentState.withNext() {
+                                    state = next
+                                }
+                            } label: {
+                                Image(systemName: "chevron.right")
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!currentState.canNavigateNext)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(!state.canNavigatePrev)
-
-                        Spacer()
-
-                        Text("\(state.currentIndex + 1) of \(state.displayCount)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
-                            .padding(.horizontal, 8)
-
-                        Spacer()
-
-                        Button(action: navigateToNext) {
-                            Image(systemName: "chevron.right")
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!state.canNavigateNext)
                     }
                 }
             }
         }
+        .presentationDetents([.fraction(0.4), .medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
     }
 }
 
-/// UIViewRepresentable for cross reference linked text
-private struct CrossRefLinkedTextView: UIViewRepresentable {
-    let crossRefs: [CrossReference]
-    let fontSize: Int
-    let baseOffset: Int
-    let onLinkTap: (Int) -> Void
-    let onItemsParsed: ([CrossRefTappableItem]) -> Void
+/// Simple Strongs content placeholder for PreviewSheet
+private struct StrongsSheetContent: View {
+    let strongsKey: String
 
-    func makeUIView(context: Context) -> CrossRefTappableTextView {
-        let textView = CrossRefTappableTextView()
-        textView.isEditable = false
-        textView.isSelectable = false
-        textView.isScrollEnabled = false
+    var body: some View {
+        // This would show the Strongs entry - for now just placeholder
+        // In practice, lexicon views have their own more complete implementation
+        Text("Strongs: \(strongsKey)")
+            .foregroundStyle(.secondary)
+    }
+}
+
+// MARK: - Note Text Editor with Cursor Tracking
+
+/// UITextView wrapper that supports cursor position tracking and edit menu footnote insertion
+struct NoteTextEditor: UIViewRepresentable {
+    @Binding var text: String
+    let fontSize: CGFloat
+    let placeholder: String
+    var onTextChange: (() -> Void)?
+    var onCursorPositionChange: ((Int) -> Void)?  // Reports cursor position changes
+    var onShowFootnotePicker: ((Int) -> Void)?  // (cursorPosition) - shows picker to insert existing or new
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIView(context: Context) -> NoteTextView {
+        let textView = NoteTextView()
+        textView.delegate = context.coordinator
+        textView.font = .systemFont(ofSize: fontSize)
         textView.backgroundColor = .clear
-        textView.textContainerInset = .zero
-        textView.textContainer.lineFragmentPadding = 0
-        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        textView.onTappableIndexTap = context.coordinator.handleTap
+        textView.layer.cornerRadius = 8
+        textView.layer.borderWidth = 1
+        textView.layer.borderColor = UIColor.separator.cgColor
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
+        textView.isScrollEnabled = false
+        textView.alwaysBounceVertical = false
+        textView.keyboardDismissMode = .none
 
-        // Performance optimization: Draw on background thread
-        textView.layer.drawsAsynchronously = true
+        // Enable text wrapping by making text container track text view width
+        textView.textContainer.widthTracksTextView = true
+        textView.textContainer.heightTracksTextView = false
+
+        // Allow horizontal compression for proper width constraints
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        // Store coordinator reference for menu actions
+        textView.coordinator = context.coordinator
+        context.coordinator.textView = textView
 
         return textView
     }
 
-    func updateUIView(_ textView: CrossRefTappableTextView, context: Context) {
-        let refsKey = crossRefs.map { "\($0.sv)-\($0.ev ?? 0)" }.joined(separator: ",")
-        if context.coordinator.lastRefsKey != refsKey || context.coordinator.lastFontSize != fontSize {
-            context.coordinator.lastRefsKey = refsKey
-            context.coordinator.lastFontSize = fontSize
-            context.coordinator.cachedSize = nil  // Invalidate size cache
-            let (attrString, items) = buildAttributedString()
-            textView.attributedText = attrString
-            context.coordinator.onLinkTap = onLinkTap
-            textView.invalidateIntrinsicContentSize()
+    func updateUIView(_ textView: NoteTextView, context: Context) {
+        // Update parent reference
+        context.coordinator.parent = self
 
-            DispatchQueue.main.async {
-                onItemsParsed(items)
-            }
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onLinkTap: onLinkTap)
-    }
-
-    @available(iOS 16.0, *)
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: CrossRefTappableTextView, context: Context) -> CGSize? {
-        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
-
-        // Return cached size if width hasn't changed significantly
-        if let cached = context.coordinator.cachedSize,
-           abs(cached.width - width) < 1 {
-            return cached
-        }
-
-        let size = uiView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
-        let result = CGSize(width: width, height: size.height)
-        context.coordinator.cachedSize = result
-        return result
-    }
-
-    private func buildAttributedString() -> (NSAttributedString, [CrossRefTappableItem]) {
-        let result = NSMutableAttributedString()
-        var tappableItems: [CrossRefTappableItem] = []
-        var itemIndex = baseOffset
-        let uiFont = UIFont.systemFont(ofSize: CGFloat(fontSize))
-
-        // Add paragraph spacing for better readability
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 4
-
-        for (index, crossRef) in crossRefs.enumerated() {
-            let displayText = buildRefDescription(sv: crossRef.sv, ev: crossRef.ev)
-
-            result.append(NSAttributedString(string: displayText, attributes: [
-                .font: uiFont,
-                .foregroundColor: UIColor.tintColor,
-                .paragraphStyle: paragraphStyle,
-                CrossRefTappableIndexKey: itemIndex
-            ]))
-
-            tappableItems.append(CrossRefTappableItem(index: itemIndex, sv: crossRef.sv, ev: crossRef.ev, displayText: displayText))
-            itemIndex += 1
-
-            // Add comma separator (except for last item)
-            if index < crossRefs.count - 1 {
-                result.append(NSAttributedString(string: ", ", attributes: [
-                    .font: uiFont,
-                    .foregroundColor: UIColor.secondaryLabel,
-                    .paragraphStyle: paragraphStyle
-                ]))
+        // Only update if text actually changed (avoid cursor jump)
+        if textView.text != text {
+            let selectedRange = textView.selectedRange
+            textView.attributedText = styledAttributedText(from: text)
+            // Try to restore cursor position
+            if selectedRange.location <= text.count {
+                textView.selectedRange = selectedRange
             }
         }
 
-        return (result, tappableItems)
+        // Update placeholder visibility
+        context.coordinator.updatePlaceholder()
     }
 
-    private func buildRefDescription(sv: Int, ev: Int?) -> String {
-        let (startVerse, startChapter, startBook) = splitVerseId(sv)
-        let startOsisId = BookOsisCache.shared.getOsisId(for: startBook)
+    /// Creates attributed text with styled footnote references
+    func styledAttributedText(from text: String) -> NSAttributedString {
+        let baseAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: fontSize),
+            .foregroundColor: UIColor.label
+        ]
 
-        if let ev = ev {
-            let (endVerse, endChapter, endBook) = splitVerseId(ev)
-            if startBook == endBook && startChapter == endChapter {
-                return "\(startOsisId) \(startChapter):\(startVerse)-\(endVerse)"
-            } else {
-                let endOsisId = BookOsisCache.shared.getOsisId(for: endBook)
-                return "\(startOsisId) \(startChapter):\(startVerse) - \(endOsisId) \(endChapter):\(endVerse)"
+        let attributedString = NSMutableAttributedString(string: text, attributes: baseAttributes)
+
+        // Style footnote references [^n] as superscript with secondary color
+        let pattern = "\\[\\^(\\d+)\\]"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return attributedString
+        }
+
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+
+        for match in matches {
+            // Style the visible parts [n] as superscript
+            let footnoteAttributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: fontSize * 0.7),
+                .foregroundColor: UIColor.secondaryLabel,
+                .baselineOffset: fontSize * 0.35
+            ]
+            attributedString.addAttributes(footnoteAttributes, range: match.range)
+
+            // Hide the ^ by making it invisible (zero-width)
+            let caretLocation = match.range.location + 1  // Position after [
+            let caretRange = NSRange(location: caretLocation, length: 1)
+            attributedString.addAttributes([
+                .font: UIFont.systemFont(ofSize: 0.01),
+                .foregroundColor: UIColor.clear
+            ], range: caretRange)
+        }
+
+        return attributedString
+    }
+
+    class Coordinator: NSObject, UITextViewDelegate {
+        var parent: NoteTextEditor
+        weak var textView: NoteTextView?
+        private var placeholderLabel: UILabel?
+
+        init(_ parent: NoteTextEditor) {
+            self.parent = parent
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            let plainText = textView.text ?? ""
+            parent.text = plainText
+            parent.onTextChange?()
+            updatePlaceholder()
+
+            // Reapply footnote styling after edit
+            let selectedRange = textView.selectedRange
+            textView.attributedText = parent.styledAttributedText(from: plainText)
+            textView.selectedRange = selectedRange
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            updatePlaceholder()
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            updatePlaceholder()
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            // Report cursor position changes
+            let cursorPosition = textView.selectedRange.location
+            parent.onCursorPositionChange?(cursorPosition)
+        }
+
+        func updatePlaceholder() {
+            guard let textView = textView else { return }
+
+            if placeholderLabel == nil {
+                let label = UILabel()
+                label.text = parent.placeholder
+                label.font = .systemFont(ofSize: parent.fontSize)
+                label.textColor = UIColor.tertiaryLabel
+                label.translatesAutoresizingMaskIntoConstraints = false
+                textView.addSubview(label)
+                NSLayoutConstraint.activate([
+                    label.topAnchor.constraint(equalTo: textView.topAnchor, constant: 8),
+                    label.leadingAnchor.constraint(equalTo: textView.leadingAnchor, constant: 8)
+                ])
+                placeholderLabel = label
             }
-        } else {
-            return "\(startOsisId) \(startChapter):\(startVerse)"
-        }
-    }
 
-    class Coordinator {
-        var onLinkTap: (Int) -> Void
-        var lastRefsKey: String = ""
-        var lastFontSize: Int = 0
-        var cachedSize: CGSize?
-
-        init(onLinkTap: @escaping (Int) -> Void) {
-            self.onLinkTap = onLinkTap
+            placeholderLabel?.isHidden = !textView.text.isEmpty || textView.isFirstResponder
         }
 
-        func handleTap(_ index: Int) {
-            onLinkTap(index)
+        // MARK: - Edit Menu Customization (iOS 16+)
+
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            guard parent.onShowFootnotePicker != nil else {
+                return UIMenu(children: suggestedActions)
+            }
+
+            let insertAction = UIAction(title: "Insert Footnote", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
+                self?.showFootnotePicker()
+            }
+
+            // Insert at the beginning - system actions come after
+            return UIMenu(children: [insertAction] + suggestedActions)
+        }
+
+        func showFootnotePicker() {
+            guard let textView = textView else { return }
+
+            // Get current cursor position (or start of selection)
+            let cursorPosition = textView.selectedRange.location
+
+            // Show the picker - parent will handle inserting the marker
+            parent.onShowFootnotePicker?(cursorPosition)
         }
     }
 }
 
-/// UITextView subclass using TextKit 1 for cross reference tap handling
-private class CrossRefTappableTextView: UITextView {
-    var onTappableIndexTap: ((Int) -> Void)?
-
-    private let textKit1LayoutManager = NSLayoutManager()
-    private let textKit1TextContainer = NSTextContainer()
-    private let textKit1TextStorage = NSTextStorage()
+/// Custom UITextView subclass that supports the Insert Footnote menu action
+class NoteTextView: UITextView {
+    weak var coordinator: NoteTextEditor.Coordinator?
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
-        textKit1TextStorage.addLayoutManager(textKit1LayoutManager)
-        textKit1LayoutManager.addTextContainer(textKit1TextContainer)
-        textKit1TextContainer.widthTracksTextView = true
-        textKit1TextContainer.heightTracksTextView = false
-
-        super.init(frame: frame, textContainer: textKit1TextContainer)
-
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        addGestureRecognizer(tapGesture)
+        super.init(frame: frame, textContainer: textContainer)
+        setupKeyboardToolbar()
     }
 
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        super.init(coder: coder)
+        setupKeyboardToolbar()
     }
 
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let location = gesture.location(in: self)
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Set text container width for proper text wrapping
+        let insets = textContainerInset
+        let containerWidth = bounds.width - insets.left - insets.right - textContainer.lineFragmentPadding * 2
+        if containerWidth > 0 && textContainer.size.width != containerWidth {
+            textContainer.size.width = containerWidth
+        }
+        invalidateIntrinsicContentSize()
+    }
 
-        let textContainerOffset = CGPoint(
-            x: textContainerInset.left,
-            y: textContainerInset.top
+    override var intrinsicContentSize: CGSize {
+        let fixedWidth = bounds.width
+        guard fixedWidth > 0 else { return super.intrinsicContentSize }
+        let size = sizeThatFits(CGSize(width: fixedWidth, height: .greatestFiniteMagnitude))
+        return CGSize(width: fixedWidth, height: max(size.height, 60))
+    }
+
+    private func setupKeyboardToolbar() {
+        let toolbar = UIToolbar()
+        toolbar.sizeToFit()
+
+        let flexSpace = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
+        let doneButton = UIBarButtonItem(
+            image: UIImage(systemName: "keyboard.chevron.compact.down"),
+            style: .plain,
+            target: self,
+            action: #selector(dismissKeyboardAction)
         )
-        let locationInTextContainer = CGPoint(
-            x: location.x - textContainerOffset.x,
-            y: location.y - textContainerOffset.y
-        )
+        doneButton.tintColor = .label
 
-        let characterIndex = textKit1LayoutManager.characterIndex(
-            for: locationInTextContainer,
-            in: textKit1TextContainer,
-            fractionOfDistanceBetweenInsertionPoints: nil
-        )
-
-        guard characterIndex < textKit1TextStorage.length else { return }
-
-        let attributes = textKit1TextStorage.attributes(at: characterIndex, effectiveRange: nil)
-        if let tappableIndex = attributes[CrossRefTappableIndexKey] as? Int {
-            onTappableIndexTap?(tappableIndex)
-        }
+        toolbar.items = [flexSpace, doneButton]
+        self.inputAccessoryView = toolbar
     }
 
-    override var attributedText: NSAttributedString! {
-        didSet {
-            textKit1TextStorage.setAttributedString(attributedText ?? NSAttributedString())
-        }
-    }
-}
-
-/// Verse content for cross reference sheets (paragraph format)
-struct CrossRefVerseContent: View {
-    let title: String
-    let verseId: Int
-    let endVerseId: Int?
-    let translation: Translation
-
-    private var verses: [Verse] {
-        let startId = verseId
-        let endId = endVerseId ?? verseId
-        return Array(RealmManager.shared.realm.objects(Verse.self)
-            .filter("tr == \(translation.id) AND id >= \(startId) AND id <= \(endId)"))
+    @objc private func dismissKeyboardAction() {
+        self.resignFirstResponder()
     }
 
-    private var versesText: AttributedString {
-        if verses.isEmpty {
-            var notFound = AttributedString("Verse not found")
-            notFound.foregroundColor = .secondary
-            return notFound
+    // Override to show Insert Footnote even without text selection
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(insertFootnoteAction) {
+            return coordinator?.parent.onShowFootnotePicker != nil
         }
-
-        var result = AttributedString()
-        for (index, verse) in verses.enumerated() {
-            var verseNum = AttributedString("\(verse.v)")
-            verseNum.font = .caption
-            verseNum.foregroundColor = .secondary
-            verseNum.baselineOffset = 4
-
-            var text = AttributedString(" " + stripStrongsAnnotations(verse.t))
-            text.font = .body
-
-            result.append(verseNum)
-            result.append(text)
-
-            if index < verses.count - 1 {
-                result.append(AttributedString("  "))
-            }
-        }
-        return result
+        return super.canPerformAction(action, withSender: sender)
     }
 
-    var body: some View {
-        Text(versesText)
-            .lineSpacing(4)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    @objc func insertFootnoteAction() {
+        coordinator?.showFootnotePicker()
     }
 }
 
@@ -4611,6 +4137,6 @@ struct CrossRefVerseContent: View {
         book: 43,
         chapter: 3,
         currentVerse: 16,
-        user: RealmManager.shared.realm.objects(User.self).first!
+        toolbarsHidden: .constant(false)
     )
 }

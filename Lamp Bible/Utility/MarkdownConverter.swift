@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import RealmSwift
 import GRDB
 
 /// Converts between module entries and markdown format for import/export
@@ -34,6 +33,9 @@ struct MarkdownConverter {
         }
 
         markdown += "---\n\n"
+
+        // Collect all footnotes with unique IDs
+        var allFootnotes: [(uniqueId: String, content: String)] = []
 
         // Group entries by book and chapter
         var currentBook: Int = 0
@@ -64,7 +66,21 @@ struct MarkdownConverter {
                 markdown += "#### Verse \(entry.verse)\n\n"
             }
 
-            markdown += entry.content + "\n\n"
+            // Replace local footnote markers with unique IDs (include book for cross-book uniqueness)
+            let bookAbbrev = lookupBookAbbrev(entry.book) ?? "b\(entry.book)"
+            let content = replaceFootnoteMarkers(
+                text: entry.content,
+                prefix: "\(bookAbbrev)-\(currentChapter):\(entry.verse)",
+                footnotes: entry.footnotes,
+                allFootnotes: &allFootnotes
+            )
+            markdown += content + "\n\n"
+        }
+
+        // Add all footnotes at end of document
+        if !allFootnotes.isEmpty {
+            markdown += "\n---\n\n"
+            markdown += formatFootnotesAtEnd(allFootnotes)
         }
 
         return markdown
@@ -88,7 +104,7 @@ struct MarkdownConverter {
             guard let bookName = lookupBookName(bookId) else { continue }
 
             var markdown = "# \(bookName) Notes\n\n---\n\n"
-
+            var allFootnotes: [(uniqueId: String, content: String)] = []
             var currentChapter: Int = 0
 
             for entry in bookEntries.sorted(by: { ($0.chapter, $0.verse) < ($1.chapter, $1.verse) }) {
@@ -107,7 +123,20 @@ struct MarkdownConverter {
                     markdown += "### Verse \(entry.verse)\n\n"
                 }
 
-                markdown += entry.content + "\n\n"
+                // Replace local footnote markers with unique IDs
+                let content = replaceFootnoteMarkers(
+                    text: entry.content,
+                    prefix: "\(currentChapter):\(entry.verse)",
+                    footnotes: entry.footnotes,
+                    allFootnotes: &allFootnotes
+                )
+                markdown += content + "\n\n"
+            }
+
+            // Add footnotes at end of book
+            if !allFootnotes.isEmpty {
+                markdown += "\n---\n\n"
+                markdown += formatFootnotesAtEnd(allFootnotes)
             }
 
             results[bookName] = markdown
@@ -116,96 +145,57 @@ struct MarkdownConverter {
         return results
     }
 
+    /// Replace local footnote markers [^1] with unique IDs [^chapter:verse-1]
+    private static func replaceFootnoteMarkers(
+        text: String,
+        prefix: String,
+        footnotes: [UserNotesFootnote]?,
+        allFootnotes: inout [(uniqueId: String, content: String)]
+    ) -> String {
+        var result = text
+
+        guard let footnotes = footnotes, !footnotes.isEmpty else {
+            return result
+        }
+
+        for fn in footnotes {
+            let localMarker = "[^\(fn.id)]"
+            let uniqueId = "\(prefix)-\(fn.id)"
+            let uniqueMarker = "[^\(uniqueId)]"
+
+            result = result.replacingOccurrences(of: localMarker, with: uniqueMarker)
+            allFootnotes.append((uniqueId: uniqueId, content: fn.content.plainText))
+        }
+
+        return result
+    }
+
+    /// Format collected footnotes at end of document
+    private static func formatFootnotesAtEnd(_ footnotes: [(uniqueId: String, content: String)]) -> String {
+        var lines: [String] = []
+
+        for (uniqueId, content) in footnotes {
+            let contentLines = content.components(separatedBy: "\n")
+            if contentLines.count == 1 {
+                lines.append("[^\(uniqueId)]: \(content)")
+            } else {
+                lines.append("[^\(uniqueId)]: \(contentLines[0])")
+                for line in contentLines.dropFirst() {
+                    lines.append("    \(line)")
+                }
+            }
+            lines.append("")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - Notes Import
 
     /// Import notes from markdown into a module
-    static func importNotesFromMarkdown(_ markdown: String, moduleId: String) throws -> Int {
-        let database = ModuleDatabase.shared
-        var importedCount = 0
-
-        // Parse markdown line by line
-        let lines = markdown.components(separatedBy: .newlines)
-
-        var currentBook: Int? = nil
-        var currentChapter: Int? = nil
-        var currentVerse: Int? = nil
-        var currentEndVerse: Int? = nil
-        var currentContent: [String] = []
-
-        func saveCurrentEntry() throws {
-            guard let book = currentBook, let chapter = currentChapter, let verse = currentVerse else { return }
-            guard !currentContent.isEmpty else { return }
-
-            let content = currentContent.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { return }
-
-            let verseId = book * 1000000 + chapter * 1000 + verse
-            let entryId = "\(moduleId):\(verseId)"
-
-            let entry = NoteEntry(
-                id: entryId,
-                moduleId: moduleId,
-                verseId: verseId,
-                content: content,
-                verseRefs: currentEndVerse.map { [$0] }
-            )
-
-            try database.saveNoteEntry(entry)
-            importedCount += 1
-            currentContent = []
-        }
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // Book header: ## Genesis or # Genesis Notes
-            if let bookName = parseBookHeader(trimmed) {
-                try saveCurrentEntry()
-                currentBook = lookupBookId(bookName)
-                currentChapter = nil
-                currentVerse = nil
-                continue
-            }
-
-            // Chapter header: ### Chapter 1 or ## Chapter 1
-            if let chapter = parseChapterHeader(trimmed) {
-                try saveCurrentEntry()
-                currentChapter = chapter
-                currentVerse = nil
-                continue
-            }
-
-            // Verse header: #### Verse 1 or ### Verse 1 or #### Verses 1-5
-            if let (verse, endVerse) = parseVerseHeader(trimmed) {
-                try saveCurrentEntry()
-                currentVerse = verse
-                currentEndVerse = endVerse
-                continue
-            }
-
-            // General notes header
-            if trimmed.lowercased().contains("general notes") && (trimmed.hasPrefix("#") || trimmed.hasPrefix("##")) {
-                try saveCurrentEntry()
-                currentVerse = 0
-                currentEndVerse = nil
-                continue
-            }
-
-            // Skip separators and empty content lines at start
-            if trimmed == "---" || trimmed.hasPrefix(">") {
-                continue
-            }
-
-            // Content line
-            if currentVerse != nil {
-                currentContent.append(line)
-            }
-        }
-
-        // Save last entry
-        try saveCurrentEntry()
-
-        return importedCount
+    /// Delegates to NotesImportExportManager for full footnote support
+    static func importNotesFromMarkdown(_ markdown: String, moduleId: String) async throws -> Int {
+        return try await NotesImportExportManager.shared.importNotesFromMarkdownString(markdown, moduleId: moduleId)
     }
 
     // MARK: - Devotionals Export
@@ -502,19 +492,23 @@ struct MarkdownConverter {
     }
 
     private static func lookupBookName(_ bookId: Int) -> String? {
-        RealmManager.shared.realm.objects(Book.self).filter("id == %@", bookId).first?.name
+        (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name
+    }
+
+    private static func lookupBookAbbrev(_ bookId: Int) -> String? {
+        (try? BundledModuleDatabase.shared.getBook(id: bookId))?.osisId
     }
 
     private static func lookupBookId(_ name: String) -> Int? {
-        let realm = RealmManager.shared.realm
+        let allBooks = (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
 
-        // Try exact match
-        if let book = realm.objects(Book.self).filter("name ==[c] %@", name).first {
+        // Try exact match (case insensitive)
+        if let book = allBooks.first(where: { $0.name.lowercased() == name.lowercased() }) {
             return book.id
         }
 
-        // Try OSIS ID
-        if let book = realm.objects(Book.self).filter("osisId ==[c] %@", name).first {
+        // Try OSIS ID (case insensitive)
+        if let book = allBooks.first(where: { $0.osisId.lowercased() == name.lowercased() }) {
             return book.id
         }
 

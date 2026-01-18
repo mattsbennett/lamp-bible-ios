@@ -13,10 +13,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            PlanView(
-                user: RealmManager.shared.realm.objects(User.self).first!,
-                plans: RealmManager.shared.realm.objects(Plan.self)
-            )
+            PlanView()
         }
     }
 }

@@ -6,4 +6,5 @@
 Pods
 xcuserdata
 *.realm
+*.db.zlib
 prompts/**

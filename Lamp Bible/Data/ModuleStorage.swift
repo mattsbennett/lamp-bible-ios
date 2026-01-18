@@ -51,6 +51,16 @@ struct ModuleFileInfo {
     let modificationDate: Date?
 }
 
+// MARK: - Sync Status
+
+/// Status of a file's sync state with the cloud backend
+enum ModuleSyncStatus: Equatable {
+    case synced
+    case syncing
+    case notSynced
+    case notAvailable
+}
+
 // MARK: - Module Storage Protocol
 
 protocol ModuleStorage {
@@ -80,6 +90,9 @@ protocol ModuleStorage {
 
     /// Get directory URL for module type
     func directoryURL(for type: ModuleType) -> URL?
+
+    /// Get sync status for a specific file
+    func getSyncStatus(type: ModuleType, fileName: String) async -> ModuleSyncStatus
 }
 
 // MARK: - Module Storage Extensions
@@ -120,7 +133,17 @@ extension ModuleStorage {
         case .devotional:
             return "Devotionals"
         case .notes:
-            return "BibleNotes"
+            return "Notes"
+        case .plan:
+            return "Plans"
+        }
+    }
+
+    /// Initialize the full directory structure for all module types
+    /// Creates: /LampBible/Notes/, /LampBible/Translations/, etc.
+    func initializeDirectoryStructure() async throws {
+        for type in ModuleType.allCases {
+            try await ensureDirectoryExists(type: type)
         }
     }
 }

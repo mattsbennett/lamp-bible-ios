@@ -83,13 +83,16 @@ class ICloudModuleStorage: ModuleStorage {
             let fileName = fileURL.lastPathComponent
             let fileExtension = fileURL.pathExtension.lowercased()
 
-            // Support .json, .db, and .db.zlib files
+            // Support .lamp (new), .db.zlib (legacy), .db, and .json files
+            let isLamp = fileName.hasSuffix(".lamp")
             let isDbZlib = fileName.hasSuffix(".db.zlib")
-            guard fileExtension == "json" || fileExtension == "db" || isDbZlib else { continue }
+            guard fileExtension == "json" || fileExtension == "db" || fileExtension == "lamp" || isDbZlib else { continue }
 
             let id: String
             if fileExtension == "json" {
                 id = String(fileName.dropLast(5)) // Remove .json
+            } else if isLamp {
+                id = String(fileName.dropLast(5)) // Remove .lamp
             } else if isDbZlib {
                 id = String(fileName.dropLast(8)) // Remove .db.zlib
             } else {
@@ -284,14 +287,7 @@ class ICloudModuleStorage: ModuleStorage {
 
     // MARK: - Sync Status
 
-    enum SyncStatus {
-        case synced
-        case syncing
-        case notSynced
-        case notAvailable
-    }
-
-    func getSyncStatus(type: ModuleType, fileName: String) async -> SyncStatus {
+    func getSyncStatus(type: ModuleType, fileName: String) async -> ModuleSyncStatus {
         guard let dirURL = directoryURL(for: type) else {
             return .notAvailable
         }

@@ -195,7 +195,7 @@ class NavigationHistory: ObservableObject {
         return history.enumerated().compactMap { index, verseId in
             let (verse, chapter, book) = splitVerseId(verseId)
 
-            if let bookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(book)").first {
+            if let bookObj = try? BundledModuleDatabase.shared.getBook(id: book) {
                 return (index, verseId, "\(bookObj.name) \(chapter):\(verse)")
             }
             return nil
@@ -215,7 +215,7 @@ class NavigationHistory: ObservableObject {
             let verseId = history[index]
             let (verse, chapter, book) = splitVerseId(verseId)
 
-            if let bookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(book)").first {
+            if let bookObj = try? BundledModuleDatabase.shared.getBook(id: book) {
                 return (verseId, "\(bookObj.name) \(chapter):\(verse)")
             }
             return nil

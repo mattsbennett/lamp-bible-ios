@@ -6,18 +6,19 @@
 //
 
 import SwiftUI
-import RealmSwift
 
 enum BottomToolbarMode: String {
     case navigation = "navigation"
     case history = "history"
     case search = "search"
+    case plan = "plan"
 
     var label: String {
         switch self {
         case .navigation: return "Navigate"
         case .history: return "History"
         case .search: return "Search"
+        case .plan: return "Plan"
         }
     }
 
@@ -26,11 +27,12 @@ enum BottomToolbarMode: String {
         case .navigation: return "book.pages"
         case .history: return "clock.arrow.circlepath"
         case .search: return "magnifyingglass"
+        case .plan: return "book.fill"
         }
     }
 }
 
-// MARK: - Reading Plan Toolbar
+//// MARK: - Reading Plan Toolbar
 
 struct ReadingPlanToolbarView: ToolbarContent {
     @Binding var readingMetaData: [ReadingMetaData]
@@ -92,30 +94,50 @@ struct ReadingPlanToolbarView: ToolbarContent {
     }
 }
 
-// MARK: - Mode Button Toolbar Item
+/// MARK: - Mode Button Toolbar Item
 
 struct ModeButtonToolbarItem: ToolbarContent {
     @Binding var toolbarMode: BottomToolbarMode
     let translationAbbreviation: String
+    let hasPlanReadings: Bool
+    let date: Date
 
-    private func label(for mode: BottomToolbarMode) -> String {
+    private func menuLabel(for mode: BottomToolbarMode) -> String {
         switch mode {
-        case .navigation: return "Navigate Books/Chapters"
+        case .navigation: return "Navigate Chapter/Book"
         case .history: return "History"
         case .search: return "Search \(translationAbbreviation)"
+        case .plan:
+            if Calendar.current.isDateInToday(date) {
+                return "Readings (Today)"
+            } else {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "MMM d"
+                return "Readings (\(formatter.string(from: date)))"
+            }
         }
+    }
+
+    private var availableModes: [BottomToolbarMode] {
+        // Menu displays bottom-to-top, so reverse order for: Search, History, Navigate, Readings
+        var modes: [BottomToolbarMode] = []
+        if hasPlanReadings {
+            modes.append(.plan)  // Readings at bottom of menu
+        }
+        modes.append(contentsOf: [.navigation, .history, .search])  // Search at top
+        return modes
     }
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .bottomBar) {
             Menu {
-                ForEach([BottomToolbarMode.navigation, .history, .search], id: \.self) { mode in
+                ForEach(availableModes, id: \.self) { mode in
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             toolbarMode = mode
                         }
                     } label: {
-                        Label(label(for: mode), systemImage: mode.icon)
+                        Label(menuLabel(for: mode), systemImage: mode.icon)
                     }
                 }
             } label: {
@@ -123,7 +145,7 @@ struct ModeButtonToolbarItem: ToolbarContent {
                     .frame(width: 36, height: 36)
                     .contentShape(Rectangle())
             }
-            .frame(height: 36)
+            .frame(width: 36, height: 36)
         }
     }
 }
@@ -228,9 +250,7 @@ struct NavigationModeToolbarItems: ToolbarContent {
                 loadPrevBook: loadPrevBook,
                 loadNextBook: loadNextBook
             )
-        }
-        ToolbarItem(placement: .bottomBar) {
-            Spacer()
+            .frame(maxWidth: .infinity)
         }
     }
 }
@@ -247,9 +267,7 @@ struct HistoryModeToolbarItems: ToolbarContent {
                 currentVerseId: currentVerseId,
                 navigateToVerseId: navigateToVerseId
             )
-        }
-        ToolbarItem(placement: .bottomBar) {
-            Spacer()
+            .frame(maxWidth: .infinity)
         }
     }
 }
@@ -269,35 +287,44 @@ struct NavigationToolbarContent: View {
     let loadNextBook: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Previous chapter
+        HStack(spacing: 8) {
+            // Chapter navigation (up/down)
             Button(action: loadPrev) {
-                Image(systemName: "chevron.left")
+                Image(systemName: "chevron.up")
                     .frame(width: 36, height: 36)
             }
             .disabled(currentBook == firstBook && currentChapter == firstChapter)
 
-            // Book navigation (side-by-side)
-            HStack(spacing: 4) {
-                Button(action: loadPrevBook) {
-                    Image(systemName: "chevron.up")
-                        .frame(width: 36, height: 36)
-                }
-                .disabled(currentBook == firstBook)
+            Text("Ch.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize()
 
-                Button(action: loadNextBook) {
-                    Image(systemName: "chevron.down")
-                        .frame(width: 36, height: 36)
-                }
-                .disabled(currentBook == lastBook)
-            }
-
-            // Next chapter
             Button(action: loadNext) {
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.down")
                     .frame(width: 36, height: 36)
             }
             .disabled(currentBook == lastBook && currentChapter == lastChapter)
+
+            Spacer()
+
+            // Book navigation (left/right)
+            Button(action: loadPrevBook) {
+                Image(systemName: "chevron.left")
+                    .frame(width: 36, height: 36)
+            }
+            .disabled(currentBook == firstBook)
+
+            Text("Bk.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+
+            Button(action: loadNextBook) {
+                Image(systemName: "chevron.right")
+                    .frame(width: 36, height: 36)
+            }
+            .disabled(currentBook == lastBook)
         }
         .frame(height: 36)
     }
@@ -312,7 +339,7 @@ struct HistoryToolbarContent: View {
     @State private var showingHistoryList: Bool = false
 
     var body: some View {
-        HStack(spacing: 24) {
+        HStack(spacing: 0) {
             Button {
                 if let verseId = history.goBack(savingPosition: currentVerseId) {
                     navigateToVerseId(verseId)
@@ -322,6 +349,8 @@ struct HistoryToolbarContent: View {
                     .frame(width: 36, height: 36)
             }
             .disabled(!history.canGoBack)
+
+            Spacer()
 
             // History indicator - tap to show full list
             if history.history.count > 0 {
@@ -342,6 +371,8 @@ struct HistoryToolbarContent: View {
                     )
                 }
             }
+
+            Spacer()
 
             Button {
                 if let verseId = history.goForward(savingPosition: currentVerseId) {
@@ -422,56 +453,253 @@ struct HistoryListPopover: View {
     }
 }
 
-// MARK: - Main Toolbar View
+// MARK: - Plan Data for Toolbar
+
+struct PlanWithReadings: Equatable {
+    let id: String
+    let name: String
+    let readings: [ReadingMetaData]
+
+    static func == (lhs: PlanWithReadings, rhs: PlanWithReadings) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+// MARK: - Plan Mode Toolbar Items
+
+struct PlanModeToolbarItems: ToolbarContent {
+    @Binding var date: Date
+    @Binding var currentReadingIndex: Int
+    @Binding var selectedPlanIndex: Int
+    let plansWithReadings: [PlanWithReadings]
+    let onReadingChanged: (Int) -> Void
+    let onPlanChanged: (Int) -> Void
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .bottomBar) {
+            PlanToolbarContent(
+                date: date,
+                currentReadingIndex: $currentReadingIndex,
+                selectedPlanIndex: $selectedPlanIndex,
+                plansWithReadings: plansWithReadings,
+                onReadingChanged: onReadingChanged,
+                onPlanChanged: onPlanChanged
+            )
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+// MARK: - Plan Toolbar Content
+
+struct PlanToolbarContent: View {
+    let date: Date
+    @Binding var currentReadingIndex: Int
+    @Binding var selectedPlanIndex: Int
+    let plansWithReadings: [PlanWithReadings]
+    let onReadingChanged: (Int) -> Void
+    let onPlanChanged: (Int) -> Void
+    @State private var showingPlanPicker: Bool = false
+
+    private var hasMultiplePlans: Bool {
+        plansWithReadings.count > 1
+    }
+
+    private var currentPlan: PlanWithReadings? {
+        guard selectedPlanIndex >= 0 && selectedPlanIndex < plansWithReadings.count else { return nil }
+        return plansWithReadings[selectedPlanIndex]
+    }
+
+    private var currentReadings: [ReadingMetaData] {
+        currentPlan?.readings ?? []
+    }
+
+    private var centerContentMaxWidth: CGFloat {
+        // Scale with screen width: ~35% of screen, clamped between 120-350
+        let screenWidth = UIScreen.main.bounds.width
+        return min(max(screenWidth * 0.35, 120), 350)
+    }
+
+    var body: some View {
+        if plansWithReadings.isEmpty {
+            Text("No readings for today")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(height: 36)
+        } else if let plan = currentPlan, !currentReadings.isEmpty {
+            HStack(spacing: 24) {
+                Button {
+                    let newIndex = currentReadingIndex - 1
+                    currentReadingIndex = newIndex
+                    onReadingChanged(newIndex)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(width: 36, height: 36)
+                }
+                .disabled(currentReadingIndex == 0)
+
+                // Center content - tap to show plan picker if multiple plans
+                Button {
+                    if hasMultiplePlans {
+                        showingPlanPicker = true
+                    }
+                } label: {
+                    VStack(spacing: 2) {
+                        HStack(spacing: 4) {
+                            Text(plan.name)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            if currentReadings.count > 1 {
+                                Text("·")
+                                Text("\(currentReadingIndex + 1)/\(currentReadings.count)")
+                                    .monospacedDigit()
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        Text(currentReadings[currentReadingIndex].description)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .frame(maxWidth: centerContentMaxWidth)
+                }
+                .disabled(!hasMultiplePlans)
+                .popover(isPresented: $showingPlanPicker) {
+                    PlanPickerPopover(
+                        plansWithReadings: plansWithReadings,
+                        selectedPlanIndex: selectedPlanIndex,
+                        onSelectPlan: { index in
+                            showingPlanPicker = false
+                            selectedPlanIndex = index
+                            currentReadingIndex = 0
+                            onPlanChanged(index)
+                        }
+                    )
+                }
+
+                Button {
+                    let newIndex = currentReadingIndex + 1
+                    currentReadingIndex = newIndex
+                    onReadingChanged(newIndex)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(width: 36, height: 36)
+                }
+                .disabled(currentReadingIndex == currentReadings.count - 1)
+            }
+            .frame(height: 36)
+        } else {
+            Text("No readings for today")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(height: 36)
+        }
+    }
+}
+
+// MARK: - Plan Picker Popover
+
+struct PlanPickerPopover: View {
+    let plansWithReadings: [PlanWithReadings]
+    let selectedPlanIndex: Int
+    let onSelectPlan: (Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Plans")
+                .font(.headline)
+                .padding()
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(plansWithReadings.enumerated()), id: \.element.id) { index, plan in
+                        Button {
+                            onSelectPlan(index)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(plan.name)
+                                        .foregroundStyle(index == selectedPlanIndex ? .primary : .secondary)
+                                    Text("\(plan.readings.count) reading\(plan.readings.count == 1 ? "" : "s")")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Spacer()
+                                if index == selectedPlanIndex {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                            .padding(.horizontal)
+                            .padding(.vertical, 10)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < plansWithReadings.count - 1 {
+                            Divider()
+                                .padding(.leading)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 200, maxWidth: 280)
+        .frame(maxHeight: 300)
+        .presentationCompactAdaptation(.popover)
+    }
+}
+
+/// MARK: - Main Toolbar View
 
 struct ReaderBottomToolbarView: ToolbarContent {
     @Binding var readingMetaData: [ReadingMetaData]?
     @Binding var currentReadingIndex: Int
     @Binding var date: Date
-    @Binding var translation: Translation
+    @Binding var translationId: String
+    @Binding var translationAbbreviation: String
     @Binding var currentVerseId: Int
     @Binding var showingSearch: Bool
     @Binding var searchText: String
+    @Binding var toolbarMode: BottomToolbarMode
+    @Binding var selectedPlanIndex: Int
+    let plansWithReadings: [PlanWithReadings]
     let loadPrev: () -> Void
     let loadNext: () -> Void
     let loadPrevBook: () -> Void
     let loadNextBook: () -> Void
     let navigateToVerseId: (Int) -> Void
+    let onPlanReadingChanged: (Int) -> Void
+    let onPlanChanged: (Int) -> Void
 
-    @AppStorage("bottomToolbarMode") private var toolbarMode: BottomToolbarMode = .navigation
+    private var hasPlanReadings: Bool {
+        !plansWithReadings.isEmpty
+    }
 
     private var currentBook: Int { currentVerseId / 1000000 }
     private var currentChapter: Int { (currentVerseId % 1000000) / 1000 }
-    private var firstBook: Int { translation.verses.first!.id / 1000000 }
-    private var firstChapter: Int { (translation.verses.first!.id % 1000000) / 1000 }
-    private var lastBook: Int { translation.verses.last!.id / 1000000 }
-    private var lastChapter: Int { (translation.verses.last!.id % 1000000) / 1000 }
+    // Standard Bible covers Genesis (1) through Revelation (66)
+    private var firstBook: Int { 1 }
+    private var firstChapter: Int { 1 }
+    private var lastBook: Int { 66 }
+    private var lastChapter: Int { 22 }  // Revelation has 22 chapters
 
     var body: some ToolbarContent {
-        if readingMetaData != nil {
-            readingPlanContent
-        } else {
-            freeNavigationContent
-        }
-    }
-
-    @ToolbarContentBuilder
-    private var readingPlanContent: some ToolbarContent {
-        ReadingPlanToolbarView(
-            readingMetaData: Binding(
-                get: { readingMetaData! },
-                set: { _ in }
-            ),
-            currentReadingIndex: $currentReadingIndex,
-            date: $date
-        )
+        // Always show mode button and mode-specific content
+        freeNavigationContent
     }
 
     @ToolbarContentBuilder
     private var freeNavigationContent: some ToolbarContent {
         ModeButtonToolbarItem(
             toolbarMode: $toolbarMode,
-            translationAbbreviation: translation.abbreviation
+            translationAbbreviation: translationAbbreviation,
+            hasPlanReadings: hasPlanReadings,
+            date: date
         )
 
         ToolbarItem(placement: .bottomBar) {
@@ -506,7 +734,16 @@ struct ReaderBottomToolbarView: ToolbarContent {
             SearchModeToolbarItems(
                 searchText: $searchText,
                 showingSearch: $showingSearch,
-                translationAbbreviation: translation.abbreviation
+                translationAbbreviation: translationAbbreviation
+            )
+        case .plan:
+            PlanModeToolbarItems(
+                date: $date,
+                currentReadingIndex: $currentReadingIndex,
+                selectedPlanIndex: $selectedPlanIndex,
+                plansWithReadings: plansWithReadings,
+                onReadingChanged: onPlanReadingChanged,
+                onPlanChanged: onPlanChanged
             )
         }
     }

@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import RealmSwift
 import GRDB
 
 enum SearchScope: String, CaseIterable {
@@ -57,12 +56,12 @@ enum SearchMode: String, CaseIterable, Codable {
 struct SearchHistoryEntry: Codable, Equatable {
     let query: String
     let mode: SearchMode
-    let translationId: Int?  // nil for legacy entries
+    let translationId: String?  // GRDB translation ID
 
     // For display - get translation abbreviation
     var translationAbbreviation: String? {
         guard let id = translationId,
-              let translation = RealmManager.shared.realm.object(ofType: Translation.self, forPrimaryKey: id) else {
+              let translation = try? TranslationDatabase.shared.getTranslation(id: id) else {
             return nil
         }
         return translation.abbreviation
@@ -138,8 +137,8 @@ struct SearchView: View {
     var requestScrollToVerseIdBinding: Binding<Int?>?
     var requestScrollAnimatedBinding: Binding<Bool>?
 
-    // Optional translation - if nil, will fetch from Realm
-    var providedTranslation: Translation?
+    // GRDB translation ID - if set, will use GRDB for searches
+    var providedTranslationId: String?
 
     var initialSearchText: String = ""
     var initialSearchMode: SearchMode? = nil  // If set, overrides persisted mode on appear
@@ -148,30 +147,33 @@ struct SearchView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    // Computed translation - use provided, selected, or fetch default
-    private var translation: Translation {
-        if let provided = providedTranslation {
+    // Computed translation ID for GRDB
+    private var translationId: String {
+        if let provided = providedTranslationId {
             return provided
         }
-        let realm = RealmManager.shared.realm
-        // Use selected translation if set
-        if let selectedId = selectedTranslationId,
-           let selected = realm.object(ofType: Translation.self, forPrimaryKey: selectedId) {
-            return selected
+        // Use selected translation if set (GRDB String ID)
+        if let selectedId = selectedTranslationIdString {
+            return selectedId
         }
-        // Fetch from user's readerTranslation or get first available
-        if let user = realm.objects(User.self).first,
-           let userTranslation = user.readerTranslation {
-            return userTranslation
-        }
-        // Fallback to first translation
-        return realm.objects(Translation.self).first!
+        // Fetch from user's readerTranslationId or use default
+        return UserDatabase.shared.getSettings().readerTranslationId
     }
 
-    // Convenience initializer for sheet presentation (backward compatible)
+    // GRDB translation module for display purposes
+    private var translationModule: TranslationModule? {
+        try? TranslationDatabase.shared.getTranslation(id: translationId)
+    }
+
+    // Translation abbreviation for display
+    private var translationAbbreviation: String {
+        translationModule?.abbreviation ?? translationId
+    }
+
+    // Convenience initializer for sheet presentation (GRDB version)
     init(
         isPresented: Binding<Bool>,
-        translation: Translation,
+        translationId: String,
         requestScrollToVerseId: Binding<Int?>,
         requestScrollAnimated: Binding<Bool>,
         initialSearchText: String = "",
@@ -180,7 +182,7 @@ struct SearchView: View {
         fontSize: Int = 18
     ) {
         self.isPresentedBinding = isPresented
-        self.providedTranslation = translation
+        self.providedTranslationId = translationId
         self.requestScrollToVerseIdBinding = requestScrollToVerseId
         self.requestScrollAnimatedBinding = requestScrollAnimated
         self.initialSearchText = initialSearchText
@@ -192,7 +194,7 @@ struct SearchView: View {
     // Convenience initializer for navigation destination (standalone)
     init(initialSearchText: String = "", initialSearchMode: SearchMode? = nil, initialSearchScope: SearchScope? = nil, fontSize: Int = 18) {
         self.isPresentedBinding = nil
-        self.providedTranslation = nil
+        self.providedTranslationId = nil
         self.requestScrollToVerseIdBinding = nil
         self.requestScrollAnimatedBinding = nil
         self.initialSearchText = initialSearchText
@@ -205,7 +207,7 @@ struct SearchView: View {
     @ObservedObject private var stateManager = SearchStateManager.shared
 
     @State private var searchTask: Task<Void, Never>?
-    @State private var selectedTranslationId: Int? = nil  // For standalone mode translation selection
+    @State private var selectedTranslationIdString: String? = nil  // For standalone mode translation selection (GRDB String ID)
     @State private var navigateToVerseId: Int? = nil  // For standalone mode navigation to reader
     @State private var readerDate: Date = Date.now  // Date binding for reader
     @AppStorage("searchContextAmount") private var contextAmount: SearchContextAmount = .oneVerse
@@ -213,7 +215,11 @@ struct SearchView: View {
     @AppStorage("moduleSearchHistory") private var moduleSearchHistoryData: Data = Data()
     @AppStorage("searchMode") private var searchMode: SearchMode = .text
     @AppStorage("searchScope") private var searchScope: SearchScope = .bible
-    @AppStorage("hiddenTranslations") private var hiddenTranslations: String = ""
+    @State private var userSettings = UserDatabase.shared.getSettings()
+
+    private var hiddenTranslations: String {
+        userSettings.hiddenTranslations
+    }
 
     // Convenience accessors for current scope's state
     private var bibleSearchText: String {
@@ -269,7 +275,7 @@ struct SearchView: View {
 
     // Whether we're in standalone mode (can select translation)
     private var isStandaloneMode: Bool {
-        providedTranslation == nil
+        providedTranslationId == nil
     }
 
     // Computed binding for current scope's search text
@@ -291,7 +297,7 @@ struct SearchView: View {
     }
 
     // All available translations for picker (excluding hidden)
-    private var availableTranslations: [Translation] {
+    private var availableTranslations: [TranslationModule] {
         visibleTranslations(hiddenString: hiddenTranslations).sorted { $0.name < $1.name }
     }
 
@@ -317,7 +323,6 @@ struct SearchView: View {
     @State private var selectedCommentary: ModuleSearchResult? = nil
 
     private let maxHistorySize = 20
-    private let debounceDelay: UInt64 = 300_000_000 // 300ms
 
     private var moduleSearchPlaceholder: String {
         if searchScope == .modules {
@@ -331,8 +336,14 @@ struct SearchView: View {
 
     /// Check if the current translation has Strong's annotations
     private var translationHasStrongsAnnotations: Bool {
-        // Quick check: see if any verse contains the Strong's annotation pattern
-        translation.verses.filter("t CONTAINS '|H' OR t CONTAINS '|G'").count > 0
+        // Check if translation has Strong's annotations via GRDB
+        // For now, assume translations with Strong's annotations are flagged
+        // This could be optimized with a metadata field on the translation
+        guard let translation = try? TranslationDatabase.shared.getTranslation(id: translationId) else {
+            return false
+        }
+        // Check features JSON for strongs support
+        return translation.featuresJson?.contains("strongs") ?? false
     }
 
     /// Count of active Bible search filters
@@ -380,9 +391,9 @@ struct SearchView: View {
 
     private func saveToBibleHistory(_ query: String) {
         var history = searchHistory
-        let entry = SearchHistoryEntry(query: query, mode: searchMode, translationId: translation.id)
+        let entry = SearchHistoryEntry(query: query, mode: searchMode, translationId: translationId)
         // Remove if already exists with same query and translation (to move to top)
-        history.removeAll { $0.query.lowercased() == query.lowercased() && $0.translationId == translation.id }
+        history.removeAll { $0.query.lowercased() == query.lowercased() && $0.translationId == translationId }
         // Add to beginning
         history.insert(entry, at: 0)
         // Trim to max size
@@ -486,8 +497,8 @@ struct SearchView: View {
                     } else if isSearching {
                         loadingState
                     } else if !resultsVisible {
-                        // Show match count while typing, before submit
-                        matchCountState
+                        // Prompt to submit search
+                        readyToSearchState
                     } else if searchScope == .modules {
                         if moduleSearchResults.isEmpty {
                             moduleNoResultsState
@@ -535,12 +546,12 @@ struct SearchView: View {
                             Menu {
                                 ForEach(availableTranslations, id: \.id) { trans in
                                     Button {
-                                        selectedTranslationId = trans.id
+                                        selectedTranslationIdString = trans.id
                                         // Clear results when changing translation
                                         searchResults = []
                                         resultsVisible = false
                                     } label: {
-                                        if trans.id == translation.id {
+                                        if trans.id == translationId {
                                             Label(trans.name, systemImage: "checkmark")
                                         } else {
                                             Text(trans.name)
@@ -548,13 +559,13 @@ struct SearchView: View {
                                     }
                                 }
                             } label: {
-                                Label("Translation: \(translation.abbreviation)", systemImage: "book.closed")
+                                Label("Translation: \(translationAbbreviation)", systemImage: "book.closed")
                             }
                         }
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: searchScope.icon)
-                            Text(searchScope == .bible ? translation.abbreviation : searchScope.rawValue)
+                            Text(searchScope == .bible ? translationAbbreviation : searchScope.rawValue)
                             Image(systemName: "chevron.down")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -616,7 +627,7 @@ struct SearchView: View {
                                                 searchMode = entry.mode
                                                 // Restore translation if in standalone mode
                                                 if isStandaloneMode, let translationId = entry.translationId {
-                                                    selectedTranslationId = translationId
+                                                    selectedTranslationIdString = translationId
                                                 }
                                                 bibleSearchText = entry.query
                                                 DispatchQueue.main.async {
@@ -700,12 +711,10 @@ struct SearchView: View {
                 guard searchScope == .bible else { return }
                 resultsVisible = false
                 autoDetectSearchMode()
-                scheduleSearch()
             }
             .onChange(of: moduleSearchText) {
                 guard searchScope == .modules else { return }
                 resultsVisible = false
-                scheduleSearch()
             }
             .onChange(of: searchMode) {
                 // Clear results and auto-submit when switching modes with text
@@ -725,6 +734,9 @@ struct SearchView: View {
                 resultsVisible = false
             }
             .onAppear {
+                // Reload settings in case they changed
+                userSettings = UserDatabase.shared.getSettings()
+
                 // Load available modules and tags for filters
                 availableModules = moduleSearch.getSearchableModules()
                 availableTags = moduleSearch.getAllDevotionalTags()
@@ -760,10 +772,9 @@ struct SearchView: View {
             .navigationDestination(item: $navigateToVerseId) { verseId in
                 // Navigate to reader with the selected verse and translation
                 SplitReaderView(
-                    user: RealmManager.shared.realm.objects(User.self).first!,
                     date: $readerDate,
                     initialVerseId: verseId,
-                    initialTranslation: translation
+                    initialTranslationId: translationId
                 )
             }
         }
@@ -908,6 +919,7 @@ struct SearchView: View {
         case .commentary: return .green
         case .devotional: return .orange
         case .dictionary: return .purple
+        case .plan: return .teal
         }
     }
 
@@ -937,16 +949,40 @@ struct SearchView: View {
         List {
             Section {
                 ForEach(moduleSearchResults) { result in
+                    let isLast = result.id == moduleSearchResults.last?.id
                     ModuleSearchResultRow(
                         result: result,
+                        searchQuery: currentSearchText,
                         fontSize: fontSize,
                         onNavigate: {
                             handleModuleResultTap(result)
                         }
                     )
+                    .id(result.id)
+                    .listRowSeparator(isLast ? .hidden : .visible, edges: .bottom)
                 }
             } header: {
-                Text("\(moduleSearchResults.count) results")
+                // Negative count means "X+" (more results available)
+                if totalResultCount < 0 {
+                    Text("\(-totalResultCount)+ results")
+                } else {
+                    Text("\(totalResultCount) results")
+                }
+            }
+
+            // Load more button if there are more results (negative totalResultCount means more available)
+            if totalResultCount < 0 {
+                Button {
+                    loadMoreResults()
+                } label: {
+                    Text("Load More Results")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .modifier(ConditionalGlassButtonStyle())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
         }
         .listStyle(.plain)
@@ -956,19 +992,20 @@ struct SearchView: View {
                     word: result.title.components(separatedBy: " (").first ?? result.title,
                     strongs: [strongsKey],
                     morphology: nil,
-                    translation: translation,
-                    restrictToLexicon: lexiconKeyForModuleId(result.moduleId)
+                    translationId: translationId,
+                    restrictToLexicon: lexiconKeyForModuleId(result.moduleId),
+                    searchQuery: currentSearchText
                 )
             }
         }
         .sheet(item: $selectedDevotional) { result in
-            DevotionalEntrySheet(moduleId: result.moduleId, entryId: result.id)
+            DevotionalEntrySheet(moduleId: result.moduleId, entryId: result.id, searchQuery: currentSearchText)
         }
         .sheet(item: $selectedNote) { result in
-            NoteEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId)
+            NoteEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId, searchQuery: currentSearchText)
         }
         .sheet(item: $selectedCommentary) { result in
-            CommentaryEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId)
+            CommentaryEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId, searchQuery: currentSearchText, translationId: translationId)
         }
     }
 
@@ -984,6 +1021,8 @@ struct SearchView: View {
             selectedNote = result
         case .commentary:
             selectedCommentary = result
+        case .plan:
+            break  // Plans are not searched via module search
         }
     }
 
@@ -1024,18 +1063,18 @@ struct SearchView: View {
             if translationHasStrongsAnnotations {
                 return "No verses found with Strong's number \"\(currentSearchText.uppercased())\"."
             } else {
-                return "\(translation.abbreviation) does not include Strong's annotations. Switch to a Strong's-annotated translation to search by Strong's numbers."
+                return "\(translationAbbreviation) does not include Strong's annotations. Switch to a Strong's-annotated translation to search by Strong's numbers."
             }
         } else {
             return "No verses found matching \"\(currentSearchText)\"."
         }
     }
 
-    private var matchCountState: some View {
+    private var readyToSearchState: some View {
         ContentUnavailableView(
-            totalResultCount > 0 ? "\(totalResultCount) matches" : "No matches",
+            "Search Modules",
             systemImage: "magnifyingglass",
-            description: Text("Submit to view results")
+            description: Text("Search for \"\(currentSearchText)\"")
         )
     }
 
@@ -1046,7 +1085,7 @@ struct SearchView: View {
             searchMode: searchMode,
             fontSize: fontSize,
             contextAmount: contextAmount,
-            translation: translation,
+            translationId: translationId,
             totalResultCount: totalResultCount,
             resultLimit: resultLimit,
             stateManager: stateManager,
@@ -1057,45 +1096,39 @@ struct SearchView: View {
 
     // MARK: - Search Logic
 
-    /// Debounced search that just counts matches (for live preview)
-    private func scheduleSearch() {
-        searchTask?.cancel()
-        searchTask = Task {
-            do {
-                try await Task.sleep(nanoseconds: debounceDelay)
-            } catch {
-                return // Task was cancelled
-            }
-
-            guard !Task.isCancelled else { return }
-            await performSearch(showResults: false)
-        }
-    }
-
     /// Submit search - shows results and saves to history
     private func submitSearch() {
         searchTask?.cancel()
         resultsVisible = true
-        performSearch(showResults: true)
 
-        // Save to Bible history if we found results (module history is saved in performModuleSearch)
-        if searchScope == .bible {
-            let query = bibleSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !searchResults.isEmpty && query.count >= 2 {
-                saveToBibleHistory(query)
+        searchTask = Task {
+            await performSearchAsync()
+
+            // Save to Bible history if we found results (module history is saved in performModuleSearch)
+            if searchScope == .bible {
+                let query = bibleSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !searchResults.isEmpty && query.count >= 2 {
+                    saveToBibleHistory(query)
+                }
             }
         }
         // Note: Search state is automatically preserved in stateManager
     }
 
-    @MainActor
-    private func performSearch(showResults: Bool) {
+    /// Async search dispatcher
+    private func performSearchAsync(showLoadingState: Bool = true) async {
         // Handle module search separately
         if searchScope == .modules {
-            performModuleSearch(showResults: showResults)
+            await performModuleSearchAsync(showLoadingState: showLoadingState)
             return
         }
 
+        await performBibleSearchAsync(showLoadingState: showLoadingState)
+    }
+
+    /// Performs Bible search on main thread (Realm requires main thread)
+    @MainActor
+    private func performBibleSearchAsync(showLoadingState: Bool = true) async {
         let query = bibleSearchText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
 
         // Different validation for different modes
@@ -1113,59 +1146,57 @@ struct SearchView: View {
             }
         }
 
-        isSearching = true
-        // Clear saved scroll position so re-submitting doesn't restore
-        stateManager.bibleScrollToId = nil
+        if showLoadingState {
+            isSearching = true
+            // Clear saved scroll position so re-submitting doesn't restore
+            stateManager.bibleScrollToId = nil
+        }
+
+        // Yield to allow UI updates before heavy work
+        await Task.yield()
 
         if searchMode == .strongs {
-            let allResults = versesContainingStrongs(query, translationId: translation.id)
-            totalResultCount = allResults.count
+            // Strong's search using annotations_json LIKE query
+            let strongsQuery = query.uppercased()
+            let results = (try? TranslationDatabase.shared.searchVersesByStrongs(
+                translationId: translationId,
+                strongsNum: strongsQuery,
+                bookRange: nil,
+                limit: 10000  // High limit to get total count
+            )) ?? []
+            totalResultCount = results.count
 
-            if showResults {
-                let limited = Array(allResults.prefix(resultLimit))
-                searchResults = limited.compactMap { verse -> SearchResult? in
-                    guard let book = RealmManager.shared.realm.objects(Book.self)
-                        .filter("id == %@", verse.b).first else { return nil }
-                    return SearchResult(verse: verse, bookName: book.name)
-                }
+            let limited = Array(results.prefix(resultLimit))
+            searchResults = limited.compactMap { result -> SearchResult? in
+                let bookName = (try? BundledModuleDatabase.shared.getBook(id: result.book))?.name ?? "Book \(result.book)"
+                return SearchResult(searchResult: result, bookName: bookName)
             }
         } else {
-            // Text search - parse query for quoted (exact word) and unquoted (substring) terms
-            let searchTerms = parseSearchQuery(query)
-            let realmQuery = getRealmSearchString(from: query)
+            // Text search using GRDB FTS5
+            let cleanQuery = getRealmSearchString(from: query)
+            let results = (try? TranslationDatabase.shared.searchAllTranslations(
+                query: cleanQuery,
+                translationIds: [translationId],
+                bookRange: nil,
+                limit: 10000  // High limit to get total count
+            )) ?? []
+            totalResultCount = results.count
 
-            // Check if this translation has cleanText populated (first verse non-empty)
-            let hasCleanText = translation.verses.first?.cleanText.isEmpty == false
-
-            // Pre-filter with CONTAINS on cleanText or t field
-            let candidates = hasCleanText
-                ? translation.verses.filter("cleanText CONTAINS[c] %@", realmQuery)
-                : translation.verses.filter("t CONTAINS[c] %@", realmQuery)
-
-            // Post-filter for word-boundary matching on quoted terms
-            let filteredVerses = candidates.filter { verse in
-                let text = hasCleanText ? verse.cleanText : stripStrongsAnnotations(verse.t)
-                return textMatchesAllTerms(text, terms: searchTerms)
-            }
-
-            totalResultCount = filteredVerses.count
-
-            if showResults {
-                let limited = Array(filteredVerses.prefix(resultLimit))
-                searchResults = limited.compactMap { verse -> SearchResult? in
-                    guard let book = RealmManager.shared.realm.objects(Book.self)
-                        .filter("id == %@", verse.b).first else { return nil }
-                    return SearchResult(verse: verse, bookName: book.name)
-                }
+            let limited = Array(results.prefix(resultLimit))
+            searchResults = limited.compactMap { result -> SearchResult? in
+                let bookName = (try? BundledModuleDatabase.shared.getBook(id: result.book))?.name ?? "Book \(result.book)"
+                return SearchResult(searchResult: result, bookName: bookName)
             }
         }
 
-        isSearching = false
+        if showLoadingState {
+            isSearching = false
+        }
     }
 
-    /// Performs search across user modules (notes, commentaries, devotionals, dictionaries)
+    /// Performs search across user modules (includes Realm for bundled dictionaries, must run on main thread)
     @MainActor
-    private func performModuleSearch(showResults: Bool) {
+    private func performModuleSearchAsync(showLoadingState: Bool = true) async {
         let query = moduleSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Build filter
@@ -1196,19 +1227,27 @@ struct SearchView: View {
             return
         }
 
-        isSearching = true
+        if showLoadingState {
+            isSearching = true
+        }
+
+        // Yield to allow UI updates before heavy work
+        await Task.yield()
 
         do {
-            let results = try moduleSearch.search(query: searchByKey ? "" : query, filter: filter, limit: resultLimit)
-            totalResultCount = results.count
+            // Request one extra to detect if there are more results
+            let results = try moduleSearch.search(query: searchByKey ? "" : query, filter: filter, limit: resultLimit + 1)
+            let hasMoreResults = results.count > resultLimit
+            let limitedResults = hasMoreResults ? Array(results.prefix(resultLimit)) : results
 
-            if showResults {
-                moduleSearchResults = results
-                // Save to module history if we have results
-                let hasValidQuery = query.count >= 2 || filter.strongsKey != nil
-                if !results.isEmpty && hasValidQuery {
-                    saveToModuleHistory(query)
-                }
+            // Use negative count to signal "more available" (e.g., -100 means "100+")
+            totalResultCount = hasMoreResults ? -resultLimit : results.count
+            moduleSearchResults = limitedResults
+
+            // Save to module history if we have results
+            let hasValidQuery = query.count >= 2 || filter.strongsKey != nil
+            if !results.isEmpty && hasValidQuery {
+                saveToModuleHistory(query)
             }
         } catch {
             print("Module search failed: \(error)")
@@ -1216,7 +1255,9 @@ struct SearchView: View {
             totalResultCount = 0
         }
 
-        isSearching = false
+        if showLoadingState {
+            isSearching = false
+        }
     }
 
     // MARK: - Strong's Search Helpers
@@ -1262,36 +1303,12 @@ struct SearchView: View {
     }
 
     /// Searches for verses containing the exact Strong's number with proper boundary matching
-    private func versesContainingStrongs(_ strongsNum: String, translationId: Int) -> Results<Verse> {
-        // All possible boundary patterns for exact match:
-        // |H1254}  - single number, end of annotation
-        // |H1254,  - first in a comma-separated list
-        // ,H1254,  - middle of list
-        // ,H1254}  - end of list
-        // |H1254|  - single number with morphology following
-        // ,H1254|  - end of list with morphology following
-        let patterns = [
-            "|\(strongsNum)}",   // single, end
-            "|\(strongsNum),",   // first in list
-            ",\(strongsNum),",   // middle of list
-            ",\(strongsNum)}",   // end of list
-            "|\(strongsNum)|",   // single with morphology
-            ",\(strongsNum)|"    // end of list with morphology
-        ]
-
-        let predicates = patterns.map {
-            NSPredicate(format: "t CONTAINS %@", $0)
-        }
-        let compoundPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: predicates)
-
-        return RealmManager.shared.realm.objects(Verse.self)
-            .filter("tr == %@", translationId)
-            .filter(compoundPredicate)
-    }
-
     private func loadMoreResults() {
         resultLimit += 100
-        performSearch(showResults: true)
+        Task {
+            // Don't show loading state for load more to preserve scroll position
+            await performSearchAsync(showLoadingState: false)
+        }
     }
 
     // MARK: - Navigation
@@ -1328,38 +1345,46 @@ struct SearchResultRow: View {
     let searchMode: SearchMode
     let fontSize: Int
     let contextAmount: SearchContextAmount
-    let translation: Translation
+    let translationId: String
     let onNavigate: () -> Void
 
     @State private var showingSheet: Bool = false
 
-    // Get context verses based on setting
-    private var contextVerses: [Verse] {
+    // Get context verses based on setting using GRDB
+    private var contextVerses: [TranslationVerse] {
         let verseId = result.id
-        let (_, chapter, book) = splitVerseId(verseId)
+        let (verse, chapter, book) = splitVerseId(verseId)
+
+        // Get all verses in the chapter
+        let content = (try? TranslationDatabase.shared.getChapter(translationId: translationId, book: book, chapter: chapter)) ?? ChapterContent(verses: [], headings: [])
+        let chapterVerses = content.verses
 
         switch contextAmount {
         case .oneVerse:
             // 1 verse before + hit verse + 1 verse after
-            let chapterVerses = translation.verses.filter("b == %@ AND c == %@", book, chapter).sorted(byKeyPath: "v")
-            guard let index = chapterVerses.firstIndex(where: { $0.id == verseId }) else {
-                return Array(translation.verses.filter("id == %@", verseId))
+            guard let index = chapterVerses.firstIndex(where: { $0.ref == verseId }) else {
+                if let singleVerse = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: verseId) {
+                    return [singleVerse]
+                }
+                return []
             }
             let startIndex = max(0, index - 1)
             let endIndex = min(chapterVerses.count - 1, index + 1)
             return Array(chapterVerses[startIndex...endIndex])
         case .threeVerses:
             // 3 verses before + hit verse + 3 verses after
-            let chapterVerses = translation.verses.filter("b == %@ AND c == %@", book, chapter).sorted(byKeyPath: "v")
-            guard let index = chapterVerses.firstIndex(where: { $0.id == verseId }) else {
-                return Array(translation.verses.filter("id == %@", verseId))
+            guard let index = chapterVerses.firstIndex(where: { $0.ref == verseId }) else {
+                if let singleVerse = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: verseId) {
+                    return [singleVerse]
+                }
+                return []
             }
             let startIndex = max(0, index - 3)
             let endIndex = min(chapterVerses.count - 1, index + 3)
             return Array(chapterVerses[startIndex...endIndex])
         case .chapter:
             // All verses in the chapter
-            return Array(translation.verses.filter("b == %@ AND c == %@", book, chapter).sorted(byKeyPath: "v"))
+            return chapterVerses
         }
     }
 
@@ -1402,66 +1427,6 @@ struct SearchResultRow: View {
         return result
     }
 
-    /// Highlights words that contain the specified Strong's number in their annotation
-    private func highlightedStrongsAttributedText(_ text: String, strongsNum: String) -> AttributedString {
-        var result = AttributedString()
-
-        // Parse the annotated text: {word|H123} or {word|H123,H456} or {word|H123|TH8799}
-        let pattern = "\\{([^|]+)\\|([^}]+)\\}"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return AttributedString(stripStrongsAnnotations(text))
-        }
-
-        let nsText = text as NSString
-        var currentIndex = 0
-
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-
-        for match in matches {
-            // Add text before this annotation
-            if match.range.location > currentIndex {
-                let beforeText = nsText.substring(with: NSRange(location: currentIndex, length: match.range.location - currentIndex))
-                result.append(AttributedString(beforeText))
-            }
-
-            // Extract word and annotation
-            let wordRange = match.range(at: 1)
-            let annotationRange = match.range(at: 2)
-            let word = nsText.substring(with: wordRange)
-            let annotation = nsText.substring(with: annotationRange)
-
-            // Check if this annotation contains our Strong's number
-            let containsStrongs = annotationContainsStrongs(annotation, strongsNum: strongsNum)
-
-            if containsStrongs {
-                var highlight = AttributedString(word)
-                highlight.foregroundColor = .accentColor
-                highlight.font = .system(size: CGFloat(fontSize)).bold()
-                result.append(highlight)
-            } else {
-                result.append(AttributedString(word))
-            }
-
-            currentIndex = match.range.location + match.range.length
-        }
-
-        // Add remaining text after last annotation
-        if currentIndex < nsText.length {
-            let remainingText = nsText.substring(from: currentIndex)
-            result.append(AttributedString(remainingText))
-        }
-
-        return result
-    }
-
-    /// Checks if an annotation string contains the specified Strong's number with proper boundaries
-    private func annotationContainsStrongs(_ annotation: String, strongsNum: String) -> Bool {
-        // Annotation format: H123 or H123,H456 or H123|TH8799
-        // Split by comma and pipe to get individual numbers
-        let parts = annotation.components(separatedBy: CharacterSet(charactersIn: ",|"))
-        return parts.contains { $0.trimmingCharacters(in: .whitespaces) == strongsNum }
-    }
-
     /// Scale factor for relative sizing (module results use ~17pt headline, ~15pt subheadline)
     private var scaleFactor: CGFloat {
         CGFloat(fontSize) / 18.0  // Base font size is 18
@@ -1494,7 +1459,7 @@ struct SearchResultRow: View {
                         title: sheetTitle,
                         verseId: result.id,
                         endVerseId: nil,
-                        translation: translation,
+                        translationId: translationId,
                         onNavigate: {
                             showingSheet = false
                             onNavigate()
@@ -1529,16 +1494,17 @@ struct SearchResultRow: View {
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
         }
-    } 
+    }
 
     // Context for list rows - always includes the match, truncates from ends to fit
     private var listContextText: Text {
-        // Get clean text and find hit position
-        let cleanedText = stripStrongsAnnotations(result.text)
+        // Get clean text (snippet contains the verse text)
+        let cleanedText = result.text
         let hitInfo: (start: Int, end: Int)?
 
         if searchMode == .strongs {
-            hitInfo = findStrongsHitPosition(in: result.verse.t, strongsNum: searchQuery.uppercased())
+            // Parse JSON annotations and find matching Strong's number
+            hitInfo = findStrongsHitInAnnotations(result.rawText, strongsNum: searchQuery.uppercased())
         } else {
             // Strip quotes from query for hit finding
             let cleanQuery = getRealmSearchString(from: searchQuery)
@@ -1556,16 +1522,17 @@ struct SearchResultRow: View {
         return buildSnippetText(cleanedText: cleanedText, hitInfo: hitInfo, targetLength: 120)
     }
 
-    /// Find the position of a Strong's number hit in the cleaned text
-    private func findStrongsHitPosition(in annotatedText: String, strongsNum: String) -> (start: Int, end: Int)? {
-        let words = parseAnnotatedVerse(annotatedText)
-        var position = 0
+    /// Find the position of a Strong's number hit by parsing annotations_json
+    private func findStrongsHitInAnnotations(_ annotationsJson: String, strongsNum: String) -> (start: Int, end: Int)? {
+        guard let data = annotationsJson.data(using: .utf8),
+              let annotations = try? JSONDecoder().decode([VerseAnnotation].self, from: data) else {
+            return nil
+        }
 
-        for word in words {
-            if word.strongs.contains(where: { strongsNumbersMatch($0, strongsNum) }) {
-                return (position, position + word.text.count)
+        for annotation in annotations {
+            if let strongs = annotation.data?.strongs, strongsNumbersMatch(strongs, strongsNum) {
+                return (annotation.start, annotation.end)
             }
-            position += word.text.count
         }
         return nil
     }
@@ -1707,62 +1674,13 @@ struct SearchResultRow: View {
         return result
     }
 
-    /// Highlights words containing the Strong's number, returns Text for full verse display
-    private func highlightedStrongsText(_ text: String, strongsNum: String) -> Text {
-        var result = Text("")
-
-        // Parse the annotated text: {word|H123} or {word|H123,H456} or {word|H123|TH8799}
-        let pattern = "\\{([^|]+)\\|([^}]+)\\}"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return Text(stripStrongsAnnotations(text))
-        }
-
-        let nsText = text as NSString
-        var currentIndex = 0
-
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-
-        for match in matches {
-            // Add text before this annotation
-            if match.range.location > currentIndex {
-                let beforeText = nsText.substring(with: NSRange(location: currentIndex, length: match.range.location - currentIndex))
-                result = result + Text(beforeText)
-            }
-
-            // Extract word and annotation
-            let wordRange = match.range(at: 1)
-            let annotationRange = match.range(at: 2)
-            let word = nsText.substring(with: wordRange)
-            let annotation = nsText.substring(with: annotationRange)
-
-            // Check if this annotation contains our Strong's number
-            let containsStrongs = annotationContainsStrongs(annotation, strongsNum: strongsNum)
-
-            if containsStrongs {
-                result = result + Text(word)
-                    .foregroundColor(.accentColor)
-                    .bold()
-            } else {
-                result = result + Text(word)
-            }
-
-            currentIndex = match.range.location + match.range.length
-        }
-
-        // Add remaining text after last annotation
-        if currentIndex < nsText.length {
-            let remainingText = nsText.substring(from: currentIndex)
-            result = result + Text(remainingText)
-        }
-
-        return result
-    }
 }
 
 // MARK: - Module Search Result Row
 
 struct ModuleSearchResultRow: View {
     let result: ModuleSearchResult
+    var searchQuery: String = ""  // For fallback highlighting when no <mark> tags
     var fontSize: Int = 18
     var onNavigate: (() -> Void)? = nil
 
@@ -1778,6 +1696,7 @@ struct ModuleSearchResultRow: View {
         case .commentary: return .green
         case .devotional: return .orange
         case .dictionary: return .purple
+        case .plan: return .teal
         }
     }
 
@@ -1786,21 +1705,206 @@ struct ModuleSearchResultRow: View {
             return nil
         }
         // Look up book name
-        let bookObj = RealmManager.shared.realm.objects(Book.self).filter("id == %@", book).first
-        return "\(bookObj?.name ?? "Book \(book)") \(chapter):\(verse)"
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
+        // Verse 0 means chapter-level (e.g., chapter intro notes), don't show ":0"
+        if verse == 0 {
+            return "\(bookName) \(chapter)"
+        }
+        return "\(bookName) \(chapter):\(verse)"
     }
 
-    /// Clean snippet by stripping HTML marks and reference annotations
-    private var cleanSnippet: String {
-        result.snippet
-            .replacingOccurrences(of: "<mark>", with: "")
-            .replacingOccurrences(of: "</mark>", with: "")
-            // Strip Bible reference annotations ⟦...⟧
+    /// Parse snippet with <mark> tags into highlighted AttributedString, truncated around first match
+    private var highlightedSnippet: AttributedString {
+        var snippet = result.snippet
+            // Strip reference annotations but keep mark tags
             .replacingOccurrences(of: "⟦", with: "")
             .replacingOccurrences(of: "⟧", with: "")
-            // Strip Strong's reference annotations ⟨...⟩
             .replacingOccurrences(of: "⟨", with: "")
             .replacingOccurrences(of: "⟩", with: "")
+
+        // If no mark tags and we have a search query, add marks around query matches
+        if !snippet.contains("<mark>") && !searchQuery.isEmpty {
+            snippet = addMarksForQuery(snippet, query: searchQuery)
+        }
+
+        // Find first mark position for centering
+        let firstMarkRange = snippet.range(of: "<mark>")
+        let cleanText = snippet
+            .replacingOccurrences(of: "<mark>", with: "")
+            .replacingOccurrences(of: "</mark>", with: "")
+
+        // Calculate character offset of first match in clean text
+        let matchOffset: Int
+        if let markRange = firstMarkRange {
+            let textBeforeMark = String(snippet[..<markRange.lowerBound])
+            matchOffset = textBeforeMark
+                .replacingOccurrences(of: "<mark>", with: "")
+                .replacingOccurrences(of: "</mark>", with: "")
+                .count
+        } else {
+            matchOffset = 0
+        }
+
+        // Truncate around match (150 chars total, centered on match)
+        let maxLength = 150
+        let truncatedText: String
+        let addLeadingEllipsis: Bool
+        let addTrailingEllipsis: Bool
+
+        if cleanText.count <= maxLength {
+            truncatedText = cleanText
+            addLeadingEllipsis = false
+            addTrailingEllipsis = false
+        } else {
+            let halfWindow = maxLength / 2
+            let startOffset = max(0, matchOffset - halfWindow)
+            let endOffset = min(cleanText.count, startOffset + maxLength)
+            let adjustedStart = max(0, endOffset - maxLength)
+
+            let startIndex = cleanText.index(cleanText.startIndex, offsetBy: adjustedStart)
+            let endIndex = cleanText.index(cleanText.startIndex, offsetBy: endOffset)
+            truncatedText = String(cleanText[startIndex..<endIndex])
+            addLeadingEllipsis = adjustedStart > 0
+            addTrailingEllipsis = endOffset < cleanText.count
+        }
+
+        // Now build attributed string with highlighting
+        // Re-parse the original snippet to find mark positions within our truncated window
+        var attributedResult = AttributedString()
+
+        if addLeadingEllipsis {
+            var ellipsis = AttributedString("… ")
+            ellipsis.foregroundColor = .secondary
+            attributedResult.append(ellipsis)
+        }
+
+        // Parse marks from original snippet and map to truncated text
+        var segments: [(text: String, isHighlighted: Bool)] = []
+        var remaining = snippet
+        while !remaining.isEmpty {
+            if let markStart = remaining.range(of: "<mark>") {
+                // Text before mark
+                let before = String(remaining[..<markStart.lowerBound])
+                if !before.isEmpty {
+                    segments.append((before, false))
+                }
+                remaining = String(remaining[markStart.upperBound...])
+
+                // Find closing mark
+                if let markEnd = remaining.range(of: "</mark>") {
+                    let marked = String(remaining[..<markEnd.lowerBound])
+                    segments.append((marked, true))
+                    remaining = String(remaining[markEnd.upperBound...])
+                } else {
+                    // No closing tag, treat rest as marked
+                    segments.append((remaining, true))
+                    remaining = ""
+                }
+            } else {
+                // No more marks
+                segments.append((remaining, false))
+                remaining = ""
+            }
+        }
+
+        // Build attributed string from segments, tracking position in clean text
+        var charCount = 0
+        let truncateStart = addLeadingEllipsis ? (cleanText.count > maxLength ? max(0, matchOffset - maxLength / 2) : 0) : 0
+        let truncateEnd = truncateStart + truncatedText.count
+
+        for segment in segments {
+            let segmentStart = charCount
+            let segmentEnd = charCount + segment.text.count
+
+            // Check if this segment overlaps with our truncated window
+            if segmentEnd > truncateStart && segmentStart < truncateEnd {
+                let overlapStart = max(segmentStart, truncateStart) - segmentStart
+                let overlapEnd = min(segmentEnd, truncateEnd) - segmentStart
+
+                let startIdx = segment.text.index(segment.text.startIndex, offsetBy: overlapStart)
+                let endIdx = segment.text.index(segment.text.startIndex, offsetBy: overlapEnd)
+                let visibleText = String(segment.text[startIdx..<endIdx])
+
+                if !visibleText.isEmpty {
+                    var attrText = AttributedString(visibleText)
+                    if segment.isHighlighted {
+                        attrText.foregroundColor = .accentColor
+                        attrText.font = .system(size: 15 * scaleFactor).bold()
+                    } else {
+                        attrText.foregroundColor = .secondary
+                    }
+                    attributedResult.append(attrText)
+                }
+            }
+
+            charCount += segment.text.count
+        }
+
+        if addTrailingEllipsis {
+            var ellipsis = AttributedString(" …")
+            ellipsis.foregroundColor = .secondary
+            attributedResult.append(ellipsis)
+        }
+
+        return attributedResult
+    }
+
+    /// Add <mark> tags around query matches for fallback highlighting
+    private func addMarksForQuery(_ text: String, query: String) -> String {
+        // Clean query: remove quotes and wildcards
+        let cleanQuery = query
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .trimmingCharacters(in: .whitespaces)
+
+        guard !cleanQuery.isEmpty else { return text }
+
+        // Split into individual terms and search for each
+        let terms = cleanQuery.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        guard !terms.isEmpty else { return text }
+
+        var result = text
+
+        // Mark each term separately (process longer terms first to avoid nested marks)
+        for term in terms.sorted(by: { $0.count > $1.count }) {
+            var searchStart = result.startIndex
+            while let range = result.range(of: term, options: .caseInsensitive, range: searchStart..<result.endIndex) {
+                // Check if already inside a mark tag
+                let beforeRange = result[result.startIndex..<range.lowerBound]
+                let lastMarkOpen = beforeRange.range(of: "<mark>", options: .backwards)
+                let lastMarkClose = beforeRange.range(of: "</mark>", options: .backwards)
+
+                let isInsideMark: Bool
+                if let openPos = lastMarkOpen?.lowerBound {
+                    if let closePos = lastMarkClose?.lowerBound {
+                        isInsideMark = openPos > closePos
+                    } else {
+                        isInsideMark = true
+                    }
+                } else {
+                    isInsideMark = false
+                }
+
+                if !isInsideMark {
+                    let matchedText = String(result[range])
+                    result.replaceSubrange(range, with: "<mark>\(matchedText)</mark>")
+                    let offset = "<mark>".count + matchedText.count + "</mark>".count
+                    if let newStart = result.index(range.lowerBound, offsetBy: offset, limitedBy: result.endIndex) {
+                        searchStart = newStart
+                    } else {
+                        break
+                    }
+                } else {
+                    // Already marked, skip past this occurrence
+                    if let newStart = result.index(range.upperBound, offsetBy: 0, limitedBy: result.endIndex) {
+                        searchStart = newStart
+                    } else {
+                        break
+                    }
+                }
+            }
+        }
+        return result
     }
 
     var body: some View {
@@ -1835,11 +1939,9 @@ struct ModuleSearchResultRow: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // Snippet (strip HTML marks and reference annotations)
-                Text(cleanSnippet)
+                // Snippet with highlighted matches
+                Text(highlightedSnippet)
                     .font(.system(size: 15 * scaleFactor))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1865,6 +1967,32 @@ struct ModuleFilterPicker: View {
         selectedModuleIds?.contains(moduleId) ?? false
     }
 
+    /// Group modules by series for a given type
+    private func modulesBySeries(for type: ModuleType) -> [(series: String, modules: [SearchableModule])] {
+        let filtered = availableModules.filter { $0.type == type }
+        let grouped = Dictionary(grouping: filtered) { $0.seriesAbbrev ?? $0.seriesFull ?? "Other" }
+        return grouped.map { (series: $0.key, modules: $0.value) }
+            .sorted { $0.series < $1.series }
+    }
+
+    /// Check if a module type should use series grouping
+    private func shouldUseSeriesGrouping(for type: ModuleType) -> Bool {
+        type == .commentary || type == .dictionary
+    }
+
+    /// Check if all modules in a series are selected
+    private func isSeriesSelected(_ modules: [SearchableModule]) -> Bool {
+        guard let selected = selectedModuleIds else { return false }
+        return modules.allSatisfy { selected.contains($0.id) }
+    }
+
+    /// Check if some (but not all) modules in a series are selected
+    private func isSeriesPartiallySelected(_ modules: [SearchableModule]) -> Bool {
+        guard let selected = selectedModuleIds else { return false }
+        let selectedCount = modules.filter { selected.contains($0.id) }.count
+        return selectedCount > 0 && selectedCount < modules.count
+    }
+
     var body: some View {
         Menu {
             Button {
@@ -1886,19 +2014,107 @@ struct ModuleFilterPicker: View {
             let grouped = Dictionary(grouping: availableModules) { $0.type }
             ForEach(ModuleType.allCases, id: \.self) { type in
                 if let modules = grouped[type], !modules.isEmpty {
-                    Section(type.displayName) {
-                        ForEach(modules) { module in
+                    let seriesGroups = modulesBySeries(for: type)
+                    if shouldUseSeriesGrouping(for: type) && !seriesGroups.isEmpty {
+                        // Special handling for types with series grouping
+                        Menu {
+                            // "All [Type]" option
                             Button {
-                                toggleModule(module.id)
+                                toggleAllModulesOfType(modules)
                             } label: {
                                 HStack {
-                                    Image(systemName: module.isBundled ? "shippingbox" : "person.circle")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Text(module.name)
-                                    if isSelected(module.id) {
+                                    Text("All \(type.displayName)")
+                                    if modules.allSatisfy({ isSelected($0.id) }) {
                                         Spacer()
                                         Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+
+                            Divider()
+
+                            // Group by series
+                            ForEach(seriesGroups, id: \.series) { seriesGroup in
+                                if seriesGroup.modules.count > 1 {
+                                    // Series with multiple modules - show as submenu
+                                    Menu {
+                                        // "All in series" option
+                                        Button {
+                                            toggleSeries(seriesGroup.modules)
+                                        } label: {
+                                            HStack {
+                                                Text("All \(seriesGroup.series)")
+                                                if isSeriesSelected(seriesGroup.modules) {
+                                                    Spacer()
+                                                    Image(systemName: "checkmark")
+                                                }
+                                            }
+                                        }
+
+                                        Divider()
+
+                                        // Individual modules
+                                        ForEach(seriesGroup.modules) { module in
+                                            Button {
+                                                toggleModule(module.id)
+                                            } label: {
+                                                HStack {
+                                                    Text(module.name)
+                                                    if isSelected(module.id) {
+                                                        Spacer()
+                                                        Image(systemName: "checkmark")
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } label: {
+                                        HStack {
+                                            Text(seriesGroup.series)
+                                            if isSeriesSelected(seriesGroup.modules) {
+                                                Spacer()
+                                                Image(systemName: "checkmark")
+                                            } else if isSeriesPartiallySelected(seriesGroup.modules) {
+                                                Spacer()
+                                                Image(systemName: "minus")
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Single module in series - show directly
+                                    ForEach(seriesGroup.modules) { module in
+                                        Button {
+                                            toggleModule(module.id)
+                                        } label: {
+                                            HStack {
+                                                Text(module.name)
+                                                if isSelected(module.id) {
+                                                    Spacer()
+                                                    Image(systemName: "checkmark")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            Text(type.displayName)
+                        }
+                    } else {
+                        // Standard section for other types
+                        Section(type.displayName) {
+                            ForEach(modules) { module in
+                                Button {
+                                    toggleModule(module.id)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: module.isBundled ? "shippingbox" : "person.circle")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        Text(module.name)
+                                        if isSelected(module.id) {
+                                            Spacer()
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
                             }
@@ -1938,6 +2154,248 @@ struct ModuleFilterPicker: View {
         }
         onChanged()
     }
+
+    private func toggleSeries(_ modules: [SearchableModule]) {
+        let moduleIds = Set(modules.map { $0.id })
+
+        if selectedModuleIds == nil {
+            // Switching from "All" to this series
+            selectedModuleIds = moduleIds
+        } else if moduleIds.isSubset(of: selectedModuleIds!) {
+            // All in series selected - deselect all
+            selectedModuleIds!.subtract(moduleIds)
+            if selectedModuleIds!.isEmpty {
+                selectedModuleIds = nil
+            }
+        } else {
+            // Some or none selected - select all in series
+            selectedModuleIds!.formUnion(moduleIds)
+        }
+        onChanged()
+    }
+
+    private func toggleAllModulesOfType(_ modules: [SearchableModule]) {
+        let moduleIds = Set(modules.map { $0.id })
+
+        if selectedModuleIds == nil {
+            // Switching from "All" to just this type
+            selectedModuleIds = moduleIds
+        } else if moduleIds.isSubset(of: selectedModuleIds!) {
+            // All of type selected - deselect all
+            selectedModuleIds!.subtract(moduleIds)
+            if selectedModuleIds!.isEmpty {
+                selectedModuleIds = nil
+            }
+        } else {
+            // Some or none selected - select all of type
+            selectedModuleIds!.formUnion(moduleIds)
+        }
+        onChanged()
+    }
+}
+
+// MARK: - Highlighted Content Text View
+
+/// A text view that highlights search terms with yellow background
+private struct HighlightedContentText: View {
+    let content: String
+    let searchQuery: String?
+    let font: Font
+    var onFirstMatchOffset: ((CGFloat) -> Void)? = nil
+    var scrollCoordinateSpace: String? = nil  // If set, reports offset via preference key
+
+    @State private var localMatchOffset: CGFloat? = nil
+
+    /// Extract search terms from query string
+    private var searchTerms: [String] {
+        guard let query = searchQuery, !query.isEmpty else { return [] }
+        let cleanQuery = query
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return cleanQuery.components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty && $0.count >= 2 }
+    }
+
+    var body: some View {
+        if searchTerms.isEmpty {
+            // No search terms - use standard markdown rendering
+            Text(LocalizedStringKey(content))
+                .font(font)
+        } else {
+            // Has search terms - use highlighted rendering
+            HighlightedTextUIView(
+                content: content,
+                searchTerms: searchTerms,
+                font: font,
+                onFirstMatchOffset: { offset in
+                    onFirstMatchOffset?(offset)
+                    if scrollCoordinateSpace != nil {
+                        localMatchOffset = offset
+                    }
+                }
+            )
+            .background(
+                GeometryReader { geometry in
+                    Color.clear
+                        .preference(
+                            key: HighlightedContentMatchOffsetPreferenceKey.self,
+                            value: scrollCoordinateSpace != nil && localMatchOffset != nil
+                                ? geometry.frame(in: .named(scrollCoordinateSpace!)).minY + (localMatchOffset ?? 0)
+                                : nil
+                        )
+                }
+            )
+        }
+    }
+}
+
+/// Preference key for highlighted content match offset
+private struct HighlightedContentMatchOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        if value == nil {
+            value = nextValue()
+        }
+    }
+}
+
+/// UIViewRepresentable to capture the UIScrollView for precise scrolling
+private struct ContentScrollViewFinder: UIViewRepresentable {
+    var onScrollViewFound: (UIScrollView?) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async {
+            var current: UIView? = uiView
+            while let view = current {
+                if let scrollView = view as? UIScrollView {
+                    onScrollViewFound(scrollView)
+                    return
+                }
+                current = view.superview
+            }
+            onScrollViewFound(nil)
+        }
+    }
+}
+
+/// UIKit wrapper for text with search term highlighting and first match position reporting
+private struct HighlightedTextUIView: UIViewRepresentable {
+    let content: String
+    let searchTerms: [String]
+    let font: Font
+    var onFirstMatchOffset: ((CGFloat) -> Void)? = nil
+
+    private var effectiveFontSize: CGFloat {
+        switch font {
+        case .body: return 17
+        case .title: return 28
+        case .title2: return 22
+        case .title3: return 20
+        case .headline: return 17
+        case .subheadline: return 15
+        case .callout: return 16
+        case .caption: return 12
+        case .caption2: return 11
+        case .footnote: return 13
+        default: return 17
+        }
+    }
+
+    /// Find the character index of the first search term match
+    private var firstMatchRange: NSRange? {
+        guard !searchTerms.isEmpty else { return nil }
+        let contentLower = content.lowercased()
+
+        var earliestRange: NSRange? = nil
+        for term in searchTerms {
+            let termLower = term.lowercased()
+            if let range = contentLower.range(of: termLower) {
+                let nsRange = NSRange(range, in: content)
+                if earliestRange == nil || nsRange.location < earliestRange!.location {
+                    earliestRange = nsRange
+                }
+            }
+        }
+        return earliestRange
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.isEditable = false
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        let attrString = buildAttributedString()
+        textView.attributedText = attrString
+        textView.invalidateIntrinsicContentSize()
+
+        // Report first match offset after layout
+        if let matchRange = firstMatchRange, let callback = onFirstMatchOffset {
+            DispatchQueue.main.async {
+                textView.layoutIfNeeded()
+                if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
+                   let end = textView.position(from: start, offset: matchRange.length),
+                   let textRange = textView.textRange(from: start, to: end) {
+                    let rect = textView.firstRect(for: textRange)
+                    if !rect.isNull && !rect.isInfinite {
+                        callback(rect.origin.y)
+                    }
+                }
+            }
+        }
+    }
+
+    @available(iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
+        let size = uiView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        return CGSize(width: width, height: size.height)
+    }
+
+    private func buildAttributedString() -> NSAttributedString {
+        let uiFont = UIFont.systemFont(ofSize: effectiveFontSize)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = effectiveFontSize * 0.3
+
+        let result = NSMutableAttributedString(string: content, attributes: [
+            .font: uiFont,
+            .foregroundColor: UIColor.label,
+            .paragraphStyle: paragraphStyle
+        ])
+
+        // Apply search term highlighting
+        let fullString = content
+        let fullStringLower = fullString.lowercased()
+
+        for term in searchTerms {
+            let termLower = term.lowercased()
+            var searchStartIndex = fullStringLower.startIndex
+
+            while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
+                let nsRange = NSRange(range, in: fullString)
+                result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                searchStartIndex = range.upperBound
+            }
+        }
+
+        return result
+    }
 }
 
 // MARK: - Module Entry Sheets
@@ -1945,7 +2403,13 @@ struct ModuleFilterPicker: View {
 struct DevotionalEntrySheet: View {
     let moduleId: String
     let entryId: String
+    var searchQuery: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @State private var preciseMatchOffset: CGFloat? = nil
+    @State private var hasScrolledToMatch: Bool = false
+    @State private var scrollViewRef: UIScrollView? = nil
+
+    private let scrollCoordinateSpaceName = "devotionalScroll"
 
     private var entry: DevotionalEntry? {
         try? ModuleDatabase.shared.read { db in
@@ -1957,6 +2421,11 @@ struct DevotionalEntrySheet: View {
         try? ModuleDatabase.shared.read { db in
             try Module.filter(Column("id") == moduleId).fetchOne(db)
         }
+    }
+
+    private var hasSearchTerms: Bool {
+        guard let query = searchQuery, !query.isEmpty else { return false }
+        return true
     }
 
     var body: some View {
@@ -1988,10 +2457,60 @@ struct DevotionalEntrySheet: View {
                                 }
                             }
 
-                            Text(LocalizedStringKey(entry.content))
-                                .font(.body)
+                            HighlightedContentText(
+                                content: entry.content,
+                                searchQuery: searchQuery,
+                                font: .body,
+                                scrollCoordinateSpace: scrollCoordinateSpaceName
+                            )
                         }
                         .padding()
+                        .background(
+                            ContentScrollViewFinder { scrollView in
+                                if scrollViewRef == nil {
+                                    scrollViewRef = scrollView
+                                }
+                            }
+                        )
+                    }
+                    .coordinateSpace(name: scrollCoordinateSpaceName)
+                    .onPreferenceChange(HighlightedContentMatchOffsetPreferenceKey.self) { offset in
+                        if let offset = offset, preciseMatchOffset == nil {
+                            preciseMatchOffset = offset
+                        }
+                    }
+                    .onAppear {
+                        if !hasScrolledToMatch, hasSearchTerms {
+                            hasScrolledToMatch = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                if let offset = preciseMatchOffset, let scrollView = scrollViewRef {
+                                    let visibleTop = scrollView.contentOffset.y + 120
+                                    let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height
+                                    let isAlreadyVisible = offset >= visibleTop && offset <= visibleBottom - 50
+
+                                    if !isAlreadyVisible {
+                                        let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                                        let targetY = min(max(0, offset - 120), maxScrollY)
+                                        scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .onChange(of: preciseMatchOffset) { _, newOffset in
+                        if hasScrolledToMatch, let offset = newOffset, let scrollView = scrollViewRef {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                let visibleTop = scrollView.contentOffset.y + 120
+                                let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height
+                                let isAlreadyVisible = offset >= visibleTop && offset <= visibleBottom - 50
+
+                                if !isAlreadyVisible {
+                                    let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                                    let targetY = min(max(0, offset - 120), maxScrollY)
+                                    scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+                                }
+                            }
+                        }
                     }
                 } else {
                     ContentUnavailableView("Entry Not Found", systemImage: "doc.questionmark")
@@ -2012,7 +2531,13 @@ struct NoteEntrySheet: View {
     let moduleId: String
     let entryId: String
     let verseId: Int?
+    var searchQuery: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @State private var preciseMatchOffset: CGFloat? = nil
+    @State private var hasScrolledToMatch: Bool = false
+    @State private var scrollViewRef: UIScrollView? = nil
+
+    private let scrollCoordinateSpaceName = "noteScroll"
 
     private var entry: NoteEntry? {
         try? ModuleDatabase.shared.read { db in
@@ -2028,8 +2553,17 @@ struct NoteEntrySheet: View {
 
     private var verseReference: String? {
         guard let entry = entry else { return nil }
-        let bookObj = RealmManager.shared.realm.objects(Book.self).filter("id == %@", entry.book).first
-        return "\(bookObj?.name ?? "Book \(entry.book)") \(entry.chapter):\(entry.verse)"
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: entry.book))?.name ?? "Book \(entry.book)"
+        // Verse 0 means chapter-level note, don't show ":0"
+        if entry.verse == 0 {
+            return "\(bookName) \(entry.chapter)"
+        }
+        return "\(bookName) \(entry.chapter):\(entry.verse)"
+    }
+
+    private var hasSearchTerms: Bool {
+        guard let query = searchQuery, !query.isEmpty else { return false }
+        return true
     }
 
     var body: some View {
@@ -2050,10 +2584,60 @@ struct NoteEntrySheet: View {
                                     .fontWeight(.bold)
                             }
 
-                            Text(LocalizedStringKey(entry.content))
-                                .font(.body)
+                            HighlightedContentText(
+                                content: entry.content,
+                                searchQuery: searchQuery,
+                                font: .body,
+                                scrollCoordinateSpace: scrollCoordinateSpaceName
+                            )
                         }
                         .padding()
+                        .background(
+                            ContentScrollViewFinder { scrollView in
+                                if scrollViewRef == nil {
+                                    scrollViewRef = scrollView
+                                }
+                            }
+                        )
+                    }
+                    .coordinateSpace(name: scrollCoordinateSpaceName)
+                    .onPreferenceChange(HighlightedContentMatchOffsetPreferenceKey.self) { offset in
+                        if let offset = offset, preciseMatchOffset == nil {
+                            preciseMatchOffset = offset
+                        }
+                    }
+                    .onAppear {
+                        if !hasScrolledToMatch, hasSearchTerms {
+                            hasScrolledToMatch = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                if let offset = preciseMatchOffset, let scrollView = scrollViewRef {
+                                    let visibleTop = scrollView.contentOffset.y + 120
+                                    let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height
+                                    let isAlreadyVisible = offset >= visibleTop && offset <= visibleBottom - 50
+
+                                    if !isAlreadyVisible {
+                                        let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                                        let targetY = min(max(0, offset - 120), maxScrollY)
+                                        scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .onChange(of: preciseMatchOffset) { _, newOffset in
+                        if hasScrolledToMatch, let offset = newOffset, let scrollView = scrollViewRef {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                let visibleTop = scrollView.contentOffset.y + 120
+                                let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height
+                                let isAlreadyVisible = offset >= visibleTop && offset <= visibleBottom - 50
+
+                                if !isAlreadyVisible {
+                                    let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                                    let targetY = min(max(0, offset - 120), maxScrollY)
+                                    scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+                                }
+                            }
+                        }
                     }
                 } else {
                     ContentUnavailableView("Entry Not Found", systemImage: "doc.questionmark")
@@ -2074,11 +2658,23 @@ struct CommentaryEntrySheet: View {
     let moduleId: String
     let entryId: String
     let verseId: Int?
+    var searchQuery: String? = nil
+    var translationId: String = "BSBs"
     @Environment(\.dismiss) private var dismiss
+    @State private var preciseMatchOffset: CGFloat? = nil
+    @State private var hasScrolledToMatch: Bool = false
+    @State private var scrollViewRef: UIScrollView? = nil
 
-    private var entry: CommentaryEntry? {
+    // Sheet state for interactive references
+    @State private var previewState: PreviewSheetState? = nil
+    @State private var strongsKey: String? = nil
+    @State private var footnoteItem: CommentaryFootnote? = nil
+
+    private let scrollCoordinateSpaceName = "commentaryScroll"
+
+    private var unit: CommentaryUnit? {
         try? ModuleDatabase.shared.read { db in
-            try CommentaryEntry.filter(Column("id") == entryId).fetchOne(db)
+            try CommentaryUnit.filter(Column("id") == entryId).fetchOne(db)
         }
     }
 
@@ -2089,33 +2685,134 @@ struct CommentaryEntrySheet: View {
     }
 
     private var verseReference: String? {
-        guard let entry = entry else { return nil }
-        let bookObj = RealmManager.shared.realm.objects(Book.self).filter("id == %@", entry.book).first
-        return "\(bookObj?.name ?? "Book \(entry.book)") \(entry.chapter):\(entry.verse)"
+        guard let unit = unit else { return nil }
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: unit.book))?.name ?? "Book \(unit.book)"
+        let verse = unit.sv % 1000
+        let chapter = (unit.sv / 1000) % 1000
+        return "\(bookName) \(chapter):\(verse)"
+    }
+
+    /// Extract search terms from query string
+    private var searchTerms: [String] {
+        guard let query = searchQuery, !query.isEmpty else { return [] }
+        let cleanQuery = query
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return cleanQuery.components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty && $0.count >= 2 }
+    }
+
+    /// Format verse reference for display
+    private func formatVerseRef(_ sv: Int, ev: Int?) -> String {
+        let bookId = sv / 1000000
+        let chapter = (sv % 1000000) / 1000
+        let verse = sv % 1000
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
+        if let ev = ev {
+            let endVerse = ev % 1000
+            if endVerse != verse {
+                return "\(bookName) \(chapter):\(verse)-\(endVerse)"
+            }
+        }
+        return "\(bookName) \(chapter):\(verse)"
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if let entry = entry {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            if let ref = verseReference {
-                                Text(ref)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
+                if let unit = unit {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 16) {
+                                if let ref = verseReference {
+                                    Text(ref)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
 
-                            if let heading = entry.heading, !heading.isEmpty {
-                                Text(heading)
-                                    .font(.title2)
-                                    .fontWeight(.bold)
+                                // Use CommentaryUnitView for proper rendering
+                                CommentaryUnitView(
+                                    unit: unit,
+                                    style: CommentaryRenderer.Style(
+                                        bodyFont: .body,
+                                        uiBodyFont: .systemFont(ofSize: 17),
+                                        searchTerms: searchTerms
+                                    ),
+                                    onScriptureTap: { sv, ev in
+                                        let displayText = formatVerseRef(sv, ev: ev)
+                                        let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
+                                        previewState = PreviewSheetState(currentItem: item, allItems: [item])
+                                    },
+                                    onStrongsTap: { key in
+                                        strongsKey = key
+                                    },
+                                    onFootnoteTap: { _, footnote in
+                                        footnoteItem = footnote
+                                    },
+                                    hideVerseReference: true,  // Already shown above
+                                    shouldReportMatchOffset: !searchTerms.isEmpty,
+                                    scrollCoordinateSpace: scrollCoordinateSpaceName
+                                )
+                                .id("content")
                             }
-
-                            Text(LocalizedStringKey(entry.content))
-                                .font(.body)
+                            .padding()
+                            .background(
+                                CommentaryScrollViewFinder { scrollView in
+                                    if scrollViewRef == nil {
+                                        scrollViewRef = scrollView
+                                    }
+                                }
+                            )
                         }
-                        .padding()
+                        .coordinateSpace(name: scrollCoordinateSpaceName)
+                        .onPreferenceChange(CommentaryMatchOffsetPreferenceKey.self) { offset in
+                            if let offset = offset, preciseMatchOffset == nil {
+                                preciseMatchOffset = offset
+                            }
+                        }
+                        .onAppear {
+                            // Scroll to first match when view appears
+                            if !hasScrolledToMatch, !searchTerms.isEmpty {
+                                hasScrolledToMatch = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                    if let offset = preciseMatchOffset, let scrollView = scrollViewRef {
+                                        // Check if match is already visible
+                                        let visibleTop = scrollView.contentOffset.y + 120
+                                        let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height
+                                        let isAlreadyVisible = offset >= visibleTop && offset <= visibleBottom - 50
+
+                                        if !isAlreadyVisible {
+                                            // Clamp to max scroll offset to avoid scrolling past content
+                                            let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                                            let targetY = min(max(0, offset - 120), maxScrollY)
+                                            scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+                                        }
+                                    } else {
+                                        // Fall back to field-level scrolling
+                                        withAnimation(.easeInOut(duration: 0.3)) {
+                                            proxy.scrollTo("content", anchor: .top)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .onChange(of: preciseMatchOffset) { _, newOffset in
+                            if hasScrolledToMatch, let offset = newOffset, let scrollView = scrollViewRef {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                    let visibleTop = scrollView.contentOffset.y + 120
+                                    let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height
+                                    let isAlreadyVisible = offset >= visibleTop && offset <= visibleBottom - 50
+
+                                    if !isAlreadyVisible {
+                                        // Clamp to max scroll offset to avoid scrolling past content
+                                        let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                                        let targetY = min(max(0, offset - 120), maxScrollY)
+                                        scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+                                    }
+                                }
+                            }
+                        }
                     }
                 } else {
                     ContentUnavailableView("Entry Not Found", systemImage: "doc.questionmark")
@@ -2129,6 +2826,88 @@ struct CommentaryEntrySheet: View {
                 }
             }
         }
+        // Scripture reference sheet
+        .sheet(item: $previewState) { _ in
+            PreviewSheet(
+                state: $previewState,
+                translationId: translationId
+            )
+        }
+        // Strong's lexicon sheet
+        .sheet(item: $strongsKey) { key in
+            LexiconSearchSheet(
+                strongsNum: key,
+                translationId: translationId,
+                fontSize: 17,
+                onNavigateToVerse: { _ in }  // No navigation from preview sheet
+            )
+            .presentationDetents([.fraction(0.4), .medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
+        // Footnote sheet
+        .sheet(item: $footnoteItem) { footnote in
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        AnnotatedTextView(
+                            footnote.content,
+                            style: CommentaryRenderer.Style(
+                                bodyFont: .body,
+                                uiBodyFont: .systemFont(ofSize: 17)
+                            ),
+                            onScriptureTap: { sv, ev in
+                                footnoteItem = nil
+                                let displayText = formatVerseRef(sv, ev: ev)
+                                let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
+                                previewState = PreviewSheetState(currentItem: item, allItems: [item])
+                            },
+                            onStrongsTap: { key in
+                                footnoteItem = nil
+                                strongsKey = key
+                            }
+                        )
+                    }
+                    .padding()
+                }
+                .navigationTitle("Footnote \(footnote.id)")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button { footnoteItem = nil } label: { Image(systemName: "xmark") }
+                    }
+                }
+            }
+            .presentationDetents([.fraction(0.4), .medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+        }
+    }
+}
+
+/// UIViewRepresentable to capture the hosting view for scroll access in commentary sheets
+private struct CommentaryScrollViewFinder: UIViewRepresentable {
+    var onScrollViewFound: (UIScrollView?) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async {
+            var current: UIView? = uiView
+            while let view = current {
+                if let scrollView = view as? UIScrollView {
+                    onScrollViewFound(scrollView)
+                    return
+                }
+                current = view.superview
+            }
+            onScrollViewFound(nil)
+        }
     }
 }
 
@@ -2140,7 +2919,7 @@ private struct BibleResultsListView: View {
     let searchMode: SearchMode
     let fontSize: Int
     let contextAmount: SearchContextAmount
-    let translation: Translation
+    let translationId: String
     let totalResultCount: Int
     let resultLimit: Int
     let stateManager: SearchStateManager
@@ -2165,16 +2944,18 @@ private struct BibleResultsListView: View {
             List {
                 Section {
                     ForEach(searchResults) { result in
+                        let isLast = result.id == searchResults.last?.id
                         SearchResultRow(
                             result: result,
                             searchQuery: currentSearchText,
                             searchMode: searchMode,
                             fontSize: fontSize,
                             contextAmount: contextAmount,
-                            translation: translation,
+                            translationId: translationId,
                             onNavigate: { onNavigate(result) }
                         )
                         .id(result.id)
+                        .listRowSeparator(isLast ? .hidden : .visible, edges: .bottom)
                         .onAppear {
                             visibleIds.insert(result.id)
                         }

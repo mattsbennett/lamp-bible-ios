@@ -20,8 +20,10 @@ struct ExternalBibleApp: Identifiable, Hashable {
     func getFullUrl(sv: Int, ev: Int) -> URL? {
         let (startVerse, startChapter, startBook) = splitVerseId(sv)
         let (endVerse, endChapter, endBook) = splitVerseId(ev)
-        let startBookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(startBook)").first!
-        let endBookObj = RealmManager.shared.realm.objects(Book.self).filter("id == \(endBook)").first!
+        guard let startBookObj = try? BundledModuleDatabase.shared.getBook(id: startBook),
+              let endBookObj = try? BundledModuleDatabase.shared.getBook(id: endBook) else {
+            return nil
+        }
         let startBookOsis = startBookObj.osisParatextAbbreviation
         let startBookName = startBookObj.name.lowercased().trimmingCharacters(in: .whitespaces)
         let endBookName = endBookObj.name.lowercased().trimmingCharacters(in: .whitespaces)

@@ -6,9 +6,9 @@
 //
 
 import Foundation
-import RealmSwift
 import SwiftUI
 import UIKit
+import GRDB
 
 // MARK: - Verse Position Tracker
 
@@ -31,16 +31,16 @@ class VersePositionTracker: ObservableObject {
         }
     }
 
-    func verseAtOffset(_ offset: CGFloat, verses: [Verse]) -> Int? {
+    func verseAtOffset(_ offset: CGFloat, verses: [TranslationVerse]) -> Int? {
         let currentPositions = positions
         guard !currentPositions.isEmpty else { return nil }
 
         var result: Int? = nil
         // Iterate through verses in order to find the one at this offset
         for verse in verses {
-            if let yPos = currentPositions[verse.id] {
+            if let yPos = currentPositions[verse.ref] {
                 if yPos <= offset + 50 {
-                    result = verse.id
+                    result = verse.ref
                 } else {
                     break
                 }
@@ -53,16 +53,15 @@ class VersePositionTracker: ObservableObject {
 // MARK: - Chapter Text View
 
 struct ChapterTextView: UIViewRepresentable {
-    let verses: [Verse]
-    let crossRefVerseIds: Set<Int>
+    let verses: [TranslationVerse]
+    let headings: [TranslationHeading]
     let fontSize: CGFloat
     let lineSpacing: CGFloat
     let bookName: String
     let chapter: Int
     let showBookTitle: Bool
     let showStrongsHints: Bool
-    let onAddNote: (Verse) -> Void
-    let onShowCrossRefs: (Verse) -> Void
+    let onAddNote: (TranslationVerse) -> Void
     let onShowStrongs: (AnnotatedWord) -> Void
     var onSearchText: ((String) -> Void)?
     @Binding var scrollToVerseId: Int?
@@ -227,8 +226,8 @@ struct ChapterTextView: UIViewRepresentable {
         result.append(NSAttributedString(string: "\(bookName) \(chapter)\n", attributes: textAttributes))
 
         for (index, verse) in verses.enumerated() {
-            result.append(NSAttributedString(string: "\(verse.v) ", attributes: textAttributes))
-            result.append(NSAttributedString(string: verse.t, attributes: textAttributes))
+            result.append(NSAttributedString(string: "\(verse.verse) ", attributes: textAttributes))
+            result.append(NSAttributedString(string: verse.text, attributes: textAttributes))
             if index < verses.count - 1 {
                 result.append(NSAttributedString(string: " ", attributes: textAttributes))
             }
@@ -279,36 +278,252 @@ struct ChapterTextView: UIViewRepresentable {
         let chapterTitle = NSAttributedString(string: "\(bookName) \(chapter)\n", attributes: chapterTitleAttributes)
         result.append(chapterTitle)
 
+        // Section heading styles
+        let sectionHeadingParagraphStyle = NSMutableParagraphStyle()
+        sectionHeadingParagraphStyle.paragraphSpacingBefore = lineSpacing * 1.5
+        sectionHeadingParagraphStyle.paragraphSpacing = lineSpacing * 0.5
+
+        let sectionHeadingAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.boldSystemFont(ofSize: fontSize),
+            .paragraphStyle: sectionHeadingParagraphStyle,
+            .foregroundColor: UIColor.secondaryLabel
+        ]
+
+        // Build heading lookup by full verse reference (book*1000000 + chapter*1000 + verse)
+        var headingsByRef: [Int: [TranslationHeading]] = [:]
+        for heading in headings {
+            let ref = heading.book * 1000000 + heading.chapter * 1000 + heading.beforeVerse
+            headingsByRef[ref, default: []].append(heading)
+        }
+
+        // Chapter title style for mid-content chapter headings (multi-chapter readings)
+        let midChapterTitleParagraphStyle = NSMutableParagraphStyle()
+        midChapterTitleParagraphStyle.paragraphSpacingBefore = lineSpacing * 2.5
+        midChapterTitleParagraphStyle.paragraphSpacing = lineSpacing * 0.5
+        midChapterTitleParagraphStyle.alignment = .center
+
+        let midChapterTitleAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: fontSize * 1.1, weight: .semibold),
+            .paragraphStyle: midChapterTitleParagraphStyle,
+            .foregroundColor: UIColor.secondaryLabel
+        ]
+
+        // Track current chapter for multi-chapter readings
+        var currentChapter: Int? = nil
+
         // Add verses
         for (index, verse) in verses.enumerated() {
+            // Detect chapter change and insert chapter heading
+            if verse.chapter != currentChapter {
+                // Only show chapter heading if not the first verse (first chapter title is shown separately)
+                // or if this is a verse range that starts mid-chapter
+                if currentChapter != nil || (index == 0 && verse.verse > 1) {
+                    // Get book name for this chapter
+                    let chapterBookName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name ?? bookName
+                    let midChapterTitle = NSAttributedString(string: "\(chapterBookName) \(verse.chapter)\n", attributes: midChapterTitleAttributes)
+                    result.append(midChapterTitle)
+                }
+                currentChapter = verse.chapter
+            }
+
+            // Render any section headings before this verse
+            let verseRef = verse.book * 1000000 + verse.chapter * 1000 + verse.verse
+            if let verseHeadings = headingsByRef[verseRef] {
+                for heading in verseHeadings {
+                    let headingText = NSAttributedString(string: "\(heading.text)\n", attributes: sectionHeadingAttributes)
+                    result.append(headingText)
+                }
+            }
+            // Handle poetry stanza break (adds extra vertical space)
+            if let poetry = verse.poetry, poetry.stanzaBreak == true {
+                let stanzaBreakStyle = NSMutableParagraphStyle()
+                stanzaBreakStyle.paragraphSpacingBefore = lineSpacing * 1.5
+                result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: stanzaBreakStyle]))
+            }
+            // Handle paragraph break (adds extra vertical space before verse)
+            else if verse.paragraph && index > 0 {
+                let paragraphBreakStyle = NSMutableParagraphStyle()
+                paragraphBreakStyle.paragraphSpacingBefore = lineSpacing
+                result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraphBreakStyle]))
+            }
+
             let verseStart = result.length
 
+            // Poetry indentation
+            let poetryIndent = verse.poetry?.indent ?? 0
+            let indentString = poetryIndent > 0 ? String(repeating: "    ", count: poetryIndent) : ""
+
             // Verse number (superscript style)
-            let hasCrossRefs = crossRefVerseIds.contains(verse.id)
             let verseNumberAttributes: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: fontSize * 0.75),
-                .foregroundColor: hasCrossRefs ? UIColor.tintColor : UIColor.secondaryLabel,
+                .foregroundColor: UIColor.secondaryLabel,
                 .baselineOffset: fontSize * 0.3,
                 .paragraphStyle: paragraphStyle,
-                .verseId: verse.id
+                .verseId: verse.ref
             ]
 
             let verseNumberStart = result.length
-            let verseNumber = NSAttributedString(string: "\(verse.v) ", attributes: verseNumberAttributes)
+            // Add poetry indentation before verse number
+            if !indentString.isEmpty {
+                result.append(NSAttributedString(string: indentString, attributes: textAttributes))
+            }
+            let verseNumber = NSAttributedString(string: "\(verse.verse) ", attributes: verseNumberAttributes)
             result.append(verseNumber)
-            coordinator.verseNumberRanges[verse.id] = NSRange(location: verseNumberStart, length: verseNumber.length)
+            coordinator.verseNumberRanges[verse.ref] = NSRange(location: verseNumberStart, length: verseNumber.length)
 
             // Verse text - check for Strong's annotations
-            if hasStrongsAnnotations(verse.t) {
-                let annotatedWords = parseAnnotatedVerse(verse.t)
+            if let annotations = verse.annotations, !annotations.isEmpty {
+                // New GRDB annotation format - render with offset-based annotations
+                let verseText = verse.text
+                var currentIndex = 0
+
+                // Sort annotations: by start position, then by priority (strongs first for interactivity)
+                let sortedAnnotations = annotations.sorted { a, b in
+                    if a.start != b.start {
+                        return a.start < b.start
+                    }
+                    // When same start, prefer strongs (interactive) over styling annotations
+                    let priorityA = a.type == .strongs ? 0 : 1
+                    let priorityB = b.type == .strongs ? 0 : 1
+                    return priorityA < priorityB
+                }
+
+                // Find the active red letter range (if any) to apply styling to strongs words
+                let redLetterRanges = annotations.filter { $0.type == .redLetter }.map { ($0.start, $0.end) }
+                func isInRedLetter(_ index: Int) -> Bool {
+                    redLetterRanges.contains { $0.0 <= index && index < $0.1 }
+                }
+
+                // Group overlapping Strong's annotations by position to collect multiple Strong's numbers
+                var strongsGrouped: [Int: (end: Int, strongs: [String], morphology: String?)] = [:]
+                for annotation in sortedAnnotations where annotation.type == .strongs {
+                    if var existing = strongsGrouped[annotation.start] {
+                        if let s = annotation.data?.strongs {
+                            existing.strongs.append(s)
+                        }
+                        strongsGrouped[annotation.start] = existing
+                    } else {
+                        strongsGrouped[annotation.start] = (
+                            end: annotation.end,
+                            strongs: annotation.data?.strongs.map { [$0] } ?? [],
+                            morphology: annotation.data?.morphology
+                        )
+                    }
+                }
+
+                for annotation in sortedAnnotations {
+                    // Skip red letter annotations - we handle them by checking ranges for other annotations
+                    if annotation.type == .redLetter {
+                        continue
+                    }
+
+                    // Skip annotations that start before current position (overlapping)
+                    if annotation.start < currentIndex {
+                        continue
+                    }
+
+                    // Add plain text before this annotation
+                    if annotation.start > currentIndex {
+                        let startIdx = verseText.index(verseText.startIndex, offsetBy: currentIndex)
+                        let endIdx = verseText.index(verseText.startIndex, offsetBy: min(annotation.start, verseText.count))
+                        let plainPart = String(verseText[startIdx..<endIdx])
+                        // Apply red letter styling if in red letter range
+                        var plainAttributes = textAttributes
+                        if isInRedLetter(currentIndex) {
+                            plainAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                        }
+                        result.append(NSAttributedString(string: plainPart, attributes: plainAttributes))
+                    }
+
+                    // Add annotated text
+                    let annotationStartIdx = verseText.index(verseText.startIndex, offsetBy: min(annotation.start, verseText.count))
+                    let annotationEndIdx = verseText.index(verseText.startIndex, offsetBy: min(annotation.end, verseText.count))
+                    let annotatedText = String(verseText[annotationStartIdx..<annotationEndIdx])
+
+                    // Check if this annotation is within a red letter range
+                    let inRedLetter = isInRedLetter(annotation.start)
+
+                    switch annotation.type {
+                    case .strongs:
+                        // Get all Strong's numbers from overlapping annotations at this position
+                        let grouped = strongsGrouped[annotation.start]
+                        let strongsArray: [String] = grouped?.strongs ?? []
+                        let annotatedWord = AnnotatedWord(
+                            text: annotatedText,
+                            strongs: strongsArray,
+                            morphology: grouped?.morphology,
+                            isAnnotated: !strongsArray.isEmpty
+                        )
+                        var strongsAttributes = textAttributes
+                        strongsAttributes[.strongsWord] = annotatedWord
+
+                        // Apply red letter color if in red letter range
+                        if inRedLetter {
+                            strongsAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                        }
+
+                        if showStrongsHints {
+                            strongsAttributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                            strongsAttributes[.underlineColor] = UIColor.secondaryLabel.withAlphaComponent(0.4)
+                        }
+
+                        result.append(NSAttributedString(string: annotatedText, attributes: strongsAttributes))
+
+                    case .redLetter:
+                        // Red letter is handled separately via isInRedLetter - shouldn't reach here
+                        break
+
+                    case .added:
+                        var addedAttributes = textAttributes
+                        addedAttributes[.font] = UIFont.italicSystemFont(ofSize: fontSize)
+                        if inRedLetter {
+                            addedAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                        }
+                        result.append(NSAttributedString(string: annotatedText, attributes: addedAttributes))
+
+                    case .divineName:
+                        var divineNameAttributes = textAttributes
+                        // Small caps effect for divine name (LORD, GOD)
+                        if let descriptor = UIFont.systemFont(ofSize: fontSize).fontDescriptor.withSymbolicTraits([.traitBold]) {
+                            divineNameAttributes[.font] = UIFont(descriptor: descriptor, size: fontSize)
+                        }
+                        if inRedLetter {
+                            divineNameAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                        }
+                        result.append(NSAttributedString(string: annotatedText, attributes: divineNameAttributes))
+
+                    default:
+                        // footnote, selah, variant - render as plain text (with red letter if applicable)
+                        var defaultAttributes = textAttributes
+                        if inRedLetter {
+                            defaultAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                        }
+                        result.append(NSAttributedString(string: annotatedText, attributes: defaultAttributes))
+                    }
+
+                    currentIndex = annotation.end
+                }
+
+                // Add remaining plain text after last annotation
+                if currentIndex < verseText.count {
+                    let startIdx = verseText.index(verseText.startIndex, offsetBy: currentIndex)
+                    let remainingText = String(verseText[startIdx...])
+                    // Apply red letter styling if in red letter range
+                    var remainingAttributes = textAttributes
+                    if isInRedLetter(currentIndex) {
+                        remainingAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                    }
+                    result.append(NSAttributedString(string: remainingText, attributes: remainingAttributes))
+                }
+            } else if hasStrongsAnnotations(verse.text) {
+                // Legacy regex format for old translations with {word|H1234} syntax
+                let annotatedWords = parseAnnotatedVerse(verse.text)
                 for word in annotatedWords {
                     if word.isAnnotated {
-                        // Annotated word - add optional underline hint and tap target
                         var strongsAttributes = textAttributes
                         strongsAttributes[.strongsWord] = word
 
                         if showStrongsHints {
-                            // Dotted underline for annotated words
                             strongsAttributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
                             strongsAttributes[.underlineColor] = UIColor.secondaryLabel.withAlphaComponent(0.4)
                         }
@@ -316,23 +531,32 @@ struct ChapterTextView: UIViewRepresentable {
                         let wordText = NSAttributedString(string: word.text, attributes: strongsAttributes)
                         result.append(wordText)
                     } else {
-                        // Plain text (punctuation, spaces, etc.)
                         let plainText = NSAttributedString(string: word.text, attributes: textAttributes)
                         result.append(plainText)
                     }
                 }
             } else {
                 // No annotations - render plain text
-                let verseText = NSAttributedString(string: verse.t, attributes: textAttributes)
+                let verseText = NSAttributedString(string: verse.text, attributes: textAttributes)
                 result.append(verseText)
             }
 
             // Store verse range for scrolling
-            coordinator.verseRanges[verse.id] = NSRange(location: verseStart, length: result.length - verseStart)
+            coordinator.verseRanges[verse.ref] = NSRange(location: verseStart, length: result.length - verseStart)
 
-            // Add space between verses (or newline for last verse)
+            // Add appropriate spacing between verses
             if index < verses.count - 1 {
-                result.append(NSAttributedString(string: " ", attributes: textAttributes))
+                let nextVerse = verses[index + 1]
+                // Poetry verses get newlines; check if current or next verse is poetry
+                let isPoetry = verse.poetry != nil || nextVerse.poetry != nil
+                let nextIsParagraph = nextVerse.paragraph
+                let nextIsStanzaBreak = nextVerse.poetry?.stanzaBreak == true
+
+                if isPoetry || nextIsParagraph || nextIsStanzaBreak {
+                    result.append(NSAttributedString(string: "\n", attributes: textAttributes))
+                } else {
+                    result.append(NSAttributedString(string: " ", attributes: textAttributes))
+                }
             }
         }
 
@@ -361,7 +585,7 @@ struct ChapterTextView: UIViewRepresentable {
 
         func buildKey() -> String {
             // Create a key that uniquely identifies the content
-            let verseIds = parent.verses.map { $0.id }.description
+            let verseIds = parent.verses.map { $0.ref }.description
             return "\(verseIds)-\(parent.fontSize)-\(parent.chapter)-\(parent.showStrongsHints)"
         }
 
@@ -466,12 +690,10 @@ struct ChapterTextView: UIViewRepresentable {
             }
 
             // Check if tapped on a verse number
-            if let verseId = attributes[.verseId] as? Int {
-                if let verse = parent.verses.first(where: { $0.id == verseId }) {
-                    let hasCrossRefs = parent.crossRefVerseIds.contains(verseId)
-
+            if let verseRef = attributes[.verseId] as? Int {
+                if let verse = parent.verses.first(where: { $0.ref == verseRef }) {
                     // Get the verse number's actual rect from layout
-                    if let verseRange = verseNumberRanges[verseId] {
+                    if let verseRange = verseNumberRanges[verseRef] {
                         let glyphRange = textView.layoutManager.glyphRange(forCharacterRange: verseRange, actualCharacterRange: nil)
                         var rect = textView.layoutManager.boundingRect(forGlyphRange: glyphRange, in: textView.textContainer)
                         // Adjust for text container inset
@@ -479,16 +701,15 @@ struct ChapterTextView: UIViewRepresentable {
                         rect.origin.y += textView.textContainerInset.top
 
                         // Show menu at the verse location
-                        showVerseMenu(for: verse, hasCrossRefs: hasCrossRefs, at: rect, in: textView)
+                        showVerseMenu(for: verse, at: rect, in: textView)
                     }
                 }
             }
         }
 
-        private func showVerseMenu(for verse: Verse, hasCrossRefs: Bool, at rect: CGRect, in textView: UITextView) {
+        private func showVerseMenu(for verse: TranslationVerse, at rect: CGRect, in textView: UITextView) {
             // Store for the delegate callback
             currentVerse = verse
-            currentVerseHasCrossRefs = hasCrossRefs
 
             // Use UIEditMenuInteraction to show menu at the verse location
             let menuConfig = UIEditMenuConfiguration(identifier: nil, sourcePoint: CGPoint(x: rect.midX, y: rect.midY))
@@ -497,8 +718,7 @@ struct ChapterTextView: UIViewRepresentable {
 
         // Store state for menu presentation
         var editMenuInteraction: UIEditMenuInteraction?
-        var currentVerse: Verse?
-        var currentVerseHasCrossRefs: Bool = false
+        var currentVerse: TranslationVerse?
 
         // MARK: - UIGestureRecognizerDelegate
 
@@ -523,17 +743,11 @@ struct ChapterTextView: UIViewRepresentable {
         func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration, suggestedActions: [UIMenuElement]) -> UIMenu? {
             guard let verse = currentVerse else { return nil }
 
-            var actions: [UIAction] = []
-
-            actions.append(UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
-                self?.parent.onAddNote(verse)
-            })
-
-            if currentVerseHasCrossRefs {
-                actions.append(UIAction(title: "Cross References", image: UIImage(systemName: "arrow.triangle.branch")) { [weak self] _ in
-                    self?.parent.onShowCrossRefs(verse)
-                })
-            }
+            let actions: [UIAction] = [
+                UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
+                    self?.parent.onAddNote(verse)
+                }
+            ]
 
             return UIMenu(children: actions)
         }
@@ -541,8 +755,7 @@ struct ChapterTextView: UIViewRepresentable {
         func editMenuInteraction(_ interaction: UIEditMenuInteraction, targetRectFor configuration: UIEditMenuConfiguration) -> CGRect {
             // Return the rect where the menu should point to
             if let verse = currentVerse,
-               let verseId = verse.thaw()?.id,
-               let range = verseNumberRanges[verseId],
+               let range = verseNumberRanges[verse.ref],
                let textView = textView {
                 let glyphRange = textView.layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
                 var rect = textView.layoutManager.boundingRect(forGlyphRange: glyphRange, in: textView.textContainer)
@@ -605,20 +818,24 @@ private class ScrollDebouncer {
 
 struct ReaderView: View {
     @Environment(\.dismiss) var dismiss
-    @ObservedRealmObject var user: User
+    @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
+
+    private var showStrongsHints: Bool { userSettings.showStrongsHints }
+
     @Binding var date: Date
     @State private var readingMetaData: [ReadingMetaData]? = nil
     @State private var currentReadingIndex: Int = 0
     @State private var isLoading: Bool = false
     @State private var showingBookPicker: Bool = false
-    @State private var showingCrossReferenceSheet: Bool = false
     @State private var showingOptionsMenu: Bool = false
     @State private var showingSearch: Bool = false
     @State private var bottomSearchText: String = ""
-    @State private var crossReferenceVerse: Verse? = nil
-    @State private var verses: Results<Verse>
+    @State private var verses: [TranslationVerse] = []
+    @State private var headings: [TranslationHeading] = []
     @State private var initialScrollItem: String? = nil
-    @State private var translation: Translation
+    @SceneStorage("readerTranslationId") private var translationId: String = ""  // GRDB translation ID (session)
+    @State private var translationAbbreviation: String = ""  // For display
+    @State private var translationName: String = ""  // For display
     @SceneStorage("readerCurrentVerseId") var currentVerseId: Int = 1001001
     @Binding var visibleVerseId: Int
     @Binding var scrollOrigin: ScrollOrigin
@@ -637,8 +854,13 @@ struct ReaderView: View {
     @State private var isScrolling: Bool = false // True during drag AND deceleration
 
     @State private var selectedStrongsWord: AnnotatedWord? = nil  // For Strong's popover
-    @AppStorage("showStrongsHints") private var showStrongsHints: Bool = false
-    @State private var toolbarsHidden: Bool = false  // Hide/show toolbars on tap
+    @Binding var toolbarsHidden: Bool  // Hide/show toolbars on tap
+    @State private var toolbarMode: BottomToolbarMode = .search
+    @State private var plansWithReadings: [PlanWithReadings] = []  // Plans with their readings for plan mode
+    @State private var selectedPlanIndex: Int = 0  // Which plan is currently selected
+    @State private var planReadingIndex: Int = 0  // Index within the selected plan's readings
+    @State private var requestedToolbarMode: BottomToolbarMode? = nil  // Mode to switch to on appear
+    @State private var hasAppliedInitialMode: Bool = false
 
     let LOADING_NEXT_CHAPTER = "next_chapter"
     let LOADING_PREV_CHAPTER = "prev_chapter"
@@ -654,49 +876,62 @@ struct ReaderView: View {
     var onVerseAction: ((Int, VerseAction) -> Void)?
 
     init(
-        user: User,
         date: Binding<Date>,
         readingMetaData: [ReadingMetaData]? = nil,
-        translation: Translation = RealmManager.shared.realm.objects(User.self).first!.readerTranslation!,
-        verses: Results<Verse> = RealmManager.shared.realm.objects(Verse.self).filter("id == -1"),
+        translationId: String? = nil,
         onVerseAction: ((Int, VerseAction) -> Void)? = nil,
         requestScrollToVerseId: Binding<Int?> = .constant(nil),
         requestScrollAnimated: Binding<Bool> = .constant(true),
         visibleVerseId: Binding<Int> = .constant(1001001),
-        scrollOrigin: Binding<ScrollOrigin> = .constant(.none)
+        scrollOrigin: Binding<ScrollOrigin> = .constant(.none),
+        toolbarsHidden: Binding<Bool> = .constant(false),
+        initialToolbarMode: BottomToolbarMode? = nil
     ) {
-        self.user = user
         _date = date
         _readingMetaData = State(initialValue: readingMetaData)
-        _translation = State(initialValue: translation)
-        _verses = State(initialValue: verses)
+        _requestedToolbarMode = State(initialValue: initialToolbarMode)
+        _hasAppliedInitialMode = State(initialValue: false)
+
+        // Load user settings
+        let settings = UserDatabase.shared.getSettings()
+        _userSettings = State(initialValue: settings)
+
+        // Translation is stored in @SceneStorage - only set if explicitly provided
+        // Scene storage persists the session translation across view recreation
+        // If empty, it will be set to user.readerTranslationId in onAppear
+        if let explicitTranslationId = translationId {
+            _translationId = SceneStorage(wrappedValue: explicitTranslationId, "readerTranslationId")
+        }
+
+        // Load translation metadata (will be updated in onAppear if needed)
+        let metadataId = translationId ?? settings.readerTranslationId
+        if let translation = try? TranslationDatabase.shared.getTranslation(id: metadataId) {
+            _translationAbbreviation = State(initialValue: translation.abbreviation)
+            _translationName = State(initialValue: translation.name)
+        } else {
+            _translationAbbreviation = State(initialValue: metadataId)
+            _translationName = State(initialValue: metadataId)
+        }
+
         _visibleVerseId = visibleVerseId
         _scrollOrigin = scrollOrigin
         self.onVerseAction = onVerseAction
         _requestScrollToVerseId = requestScrollToVerseId
         _requestScrollAnimated = requestScrollAnimated
-    }
-
-    private var crossRefVerseIds: Set<Int> {
-        guard !verses.isEmpty else { return [] }
-        let verseIds = Array(verses.map { $0.id })
-        let crossRefs = RealmManager.shared.realm.objects(CrossReference.self)
-            .filter("id IN %@", verseIds)
-        return Set(crossRefs.map { $0.id })
+        _toolbarsHidden = toolbarsHidden
     }
 
     private var bookName: String {
         guard let firstVerse = verses.first else { return "" }
-        return RealmManager.shared.realm.objects(Book.self)
-            .filter("id == \(firstVerse.b)").first?.name ?? ""
+        return (try? BundledModuleDatabase.shared.getBook(id: firstVerse.book))?.name ?? ""
     }
 
     private var chapterNumber: Int {
-        verses.first?.c ?? 1
+        verses.first?.chapter ?? 1
     }
 
     private var showBookTitle: Bool {
-        verses.first?.c == 1
+        verses.first?.chapter == 1
     }
 
     @ViewBuilder
@@ -704,22 +939,25 @@ struct ReaderView: View {
         BookListView(
             currentVerseId: $currentVerseId,
             showingBookPicker: $showingBookPicker,
-            translation: $translation,
+            translationId: $translationId,
+            translationAbbreviation: $translationAbbreviation,
             loadVersesClosure: {
                 loadVerses(loadingCase: LOADING_CURRENT)
             },
             onTranslationChange: { newTranslationId in
-                loadVerses(loadingCase: LOADING_TRANSLATION, forTranslationId: newTranslationId)
-            }
-        )
-    }
+                // Update translation metadata
+                if let translation = try? TranslationDatabase.shared.getTranslation(id: newTranslationId) {
+                    translationAbbreviation = translation.abbreviation
+                    translationName = translation.name
+                }
 
-    @ViewBuilder
-    private var crossReferenceSheet: some View {
-        CrossReferenceListView(
-            translation: $translation,
-            crossReferenceVerse: $crossReferenceVerse,
-            showingCrossReferenceSheet: $showingCrossReferenceSheet
+                // Check if in plan mode - reload the plan reading, otherwise load chapter
+                if toolbarMode == .plan && planReadingIndex >= 0 {
+                    loadPlanReading(at: planReadingIndex)
+                } else {
+                    loadVerses(loadingCase: LOADING_TRANSLATION, forTranslationId: newTranslationId)
+                }
+            }
         )
     }
 
@@ -727,21 +965,21 @@ struct ReaderView: View {
     private var searchSheet: some View {
         SearchView(
             isPresented: $showingSearch,
-            translation: translation,
+            translationId: translationId,
             requestScrollToVerseId: $requestScrollToVerseId,
             requestScrollAnimated: $requestScrollAnimated,
             initialSearchText: bottomSearchText,
-            fontSize: Int(user.readerFontSize)
+            fontSize: Int(userSettings.readerFontSize)
         )
     }
 
     @ViewBuilder
     private var collapsedHeader: some View {
-        let currentVerse = RealmManager.shared.realm.objects(Verse.self).filter("id == \(currentVerseId)").first
-        let book = currentVerse.flatMap { RealmManager.shared.realm.objects(Book.self).filter("id == \($0.b)").first }
+        let (currentVerse, currentChapter, currentBook) = splitVerseId(currentVerseId)
+        let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
 
         VStack(spacing: 0) {
-            Text("\(translation.abbreviation) · \(book?.name ?? "") \(currentVerse?.c ?? 0)")
+            Text("\(translationAbbreviation) · \(book?.name ?? "") \(currentChapter)")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity)
@@ -764,7 +1002,7 @@ struct ReaderView: View {
         }
     }
 
-    func loadVerses(loadingCase: String, targetVerseId: Int? = nil, forTranslationId: Int? = nil) {
+    func loadVerses(loadingCase: String, targetVerseId: Int? = nil, forTranslationId: String? = nil) {
         let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
 
         // Save current scroll position to history before navigating away
@@ -777,31 +1015,65 @@ struct ReaderView: View {
         positionTracker.positions = [:]
         scrollTargetY = nil
 
-        switch loadingCase {
+        do {
+            switch loadingCase {
             case LOADING_PREV_CHAPTER:
-                verses = getPrevChapterVerses(verseId: currentVerseId, verses: translation.verses)
+                let (newBook, newChapter) = getPreviousChapter(book: currentBook, chapter: currentChapter)
+                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: newBook, chapter: newChapter)
+                verses = content.verses
+                headings = content.headings
+
             case LOADING_NEXT_CHAPTER:
-                verses = getNextChapterVerses(verseId: currentVerseId, verses: translation.verses)
+                let (newBook, newChapter) = getNextChapter(book: currentBook, chapter: currentChapter, translationId: translationId)
+                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: newBook, chapter: newChapter)
+                verses = content.verses
+                headings = content.headings
+
             case LOADING_PREV_BOOK:
-                verses = getPrevBookVerses(verseId: currentVerseId, verses: translation.verses)
+                let newBook = max(1, currentBook - 1)
+                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: newBook, chapter: 1)
+                verses = content.verses
+                headings = content.headings
+
             case LOADING_NEXT_BOOK:
-                verses = getNextBookVerses(verseId: currentVerseId, verses: translation.verses)
+                let newBook = min(66, currentBook + 1)
+                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: newBook, chapter: 1)
+                verses = content.verses
+                headings = content.headings
+
             case LOADING_READING:
-                verses = translation.verses.filter("id >= \(readingMetaData![currentReadingIndex].sv) && id <= \(readingMetaData![currentReadingIndex].ev)")
+                let reading = readingMetaData![currentReadingIndex]
+                verses = try TranslationDatabase.shared.getVerseRange(translationId: translationId, startRef: reading.sv, endRef: reading.ev)
+                headings = []  // No headings for verse ranges
+
             case LOADING_HISTORY:
                 if let targetId = targetVerseId {
                     let (_, targetChapter, targetBook) = splitVerseId(targetId)
-                    verses = translation.verses.filter("b == \(targetBook) && c == \(targetChapter)")
+                    let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: targetBook, chapter: targetChapter)
+                    verses = content.verses
+                    headings = content.headings
                 }
+
             case LOADING_CURRENT:
-                verses = translation.verses.filter("b == \(currentBook) && c == \(currentChapter)")
+                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: currentBook, chapter: currentChapter)
+                verses = content.verses
+                headings = content.headings
+
             case LOADING_TRANSLATION:
                 // Use explicitly passed translation ID, or fall back to current translation
-                let translationId = forTranslationId ?? translation.id
-                if let freshTranslation = RealmManager.shared.realm.object(ofType: Translation.self, forPrimaryKey: translationId) {
-                    verses = freshTranslation.verses.filter("b == \(currentBook) && c == \(currentChapter)")
-                }
-            default: break
+                let newTranslationId = forTranslationId ?? translationId
+                translationId = newTranslationId
+                let content = try TranslationDatabase.shared.getChapter(translationId: newTranslationId, book: currentBook, chapter: currentChapter)
+                verses = content.verses
+                headings = content.headings
+
+            default:
+                break
+            }
+        } catch {
+            print("ReaderView: Error loading verses: \(error)")
+            verses = []
+            headings = []
         }
 
         // For history navigation, use the target verse (preserving scroll position)
@@ -818,8 +1090,8 @@ struct ReaderView: View {
                     scrollTargetY = max(0, yPos + 1 - 20)
                 }
             }
-        } else {
-            currentVerseId = verses.first!.id
+        } else if let firstVerse = verses.first {
+            currentVerseId = firstVerse.ref
             pendingScrollVerseId = nil
         }
 
@@ -832,15 +1104,41 @@ struct ReaderView: View {
         isHistoryNavigation = false
     }
 
+    /// Get the previous chapter (handles book boundaries)
+    private func getPreviousChapter(book: Int, chapter: Int) -> (book: Int, chapter: Int) {
+        if chapter > 1 {
+            return (book, chapter - 1)
+        } else if book > 1 {
+            // Go to last chapter of previous book
+            let prevBook = book - 1
+            let lastChapter = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: prevBook)) ?? 1
+            return (prevBook, lastChapter)
+        }
+        return (book, chapter)  // Already at beginning
+    }
+
+    /// Get the next chapter (handles book boundaries)
+    private func getNextChapter(book: Int, chapter: Int, translationId: String) -> (book: Int, chapter: Int) {
+        let chapterCount = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: book)) ?? 999
+        if chapter < chapterCount {
+            return (book, chapter + 1)
+        } else if book < 66 {
+            // Go to first chapter of next book
+            return (book + 1, 1)
+        }
+        return (book, chapter)  // Already at end
+    }
+
     var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    ZStack(alignment: .topLeading) {
-                        // UIKit scroll spy for real-time scroll sync
-                        ReaderScrollSpy(
+            GeometryReader { geometry in
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        ZStack(alignment: .topLeading) {
+                            // UIKit scroll spy for real-time scroll sync
+                            ReaderScrollSpy(
                             versePositions: positionTracker.positions,
-                            onVerseIdChange: { verseId in
+                            onVerseIdChange: { (verseId: Int) -> Void in
                                 // Avoid expensive SwiftUI scroll geometry tracking; instead update
                                 // verse state on a trailing debounce.
                                 guard !isProgrammaticScroll else { return }
@@ -855,11 +1153,11 @@ struct ReaderView: View {
                                     scrollOrigin = .bible
                                 }
                             },
-                            onUserScrollEndedAtVerseId: { verseId in
+                            onUserScrollEndedAtVerseId: { (verseId: Int) -> Void in
                                 // Commit verse state only after user scrolling settles.
                                 commitVisibleVerseIfNeeded(verseId)
                             },
-                            onScrollFullyStopped: {
+                            onScrollFullyStopped: { () -> Void in
                                 // Re-enable text interactions when scroll completely stops
                                 isScrolling = false
                             }
@@ -873,36 +1171,36 @@ struct ReaderView: View {
 
                             ChapterTextView(
                                 verses: Array(verses),
-                                crossRefVerseIds: crossRefVerseIds,
-                                fontSize: CGFloat(user.readerFontSize),
+                                headings: headings,
+                                fontSize: CGFloat(userSettings.readerFontSize),
                                 lineSpacing: 12,
                                 bookName: bookName,
                                 chapter: chapterNumber,
                                 showBookTitle: showBookTitle,
                                 showStrongsHints: showStrongsHints,
-                                onAddNote: { verse in
-                                    onVerseAction?(verse.v, .addNote)
+                                onAddNote: { (verse: TranslationVerse) -> Void in
+                                    onVerseAction?(verse.verse, .addNote)
                                 },
-                                onShowCrossRefs: { verse in
-                                    crossReferenceVerse = verse
-                                    showingCrossReferenceSheet = true
-                                },
-                                onShowStrongs: { annotatedWord in
+                                onShowStrongs: { (annotatedWord: AnnotatedWord) -> Void in
                                     selectedStrongsWord = annotatedWord
                                 },
-                                onSearchText: { text in
+                                onSearchText: { (text: String) -> Void in
                                     bottomSearchText = text
                                     showingSearch = true
                                 },
                                 scrollToVerseId: $internalScrollToVerseId,
                                 positionTracker: positionTracker,
-                                onScrollToPosition: { yPosition in
+                                onScrollToPosition: { (yPosition: CGFloat) -> Void in
                                     scrollTargetY = yPosition
                                 },
                                 onPositionsCalculated: nil,
                                 isUserScrolling: isScrolling
                             )
-                            .id("chapter_\(chapterNumber)_\(translation.id)")
+                            .id("chapter_\(chapterNumber)_\(translationId)")
+
+                            // Overscroll padding: allows last line to scroll to top for scroll-sync
+                            Color.clear
+                                .frame(height: max(0, geometry.size.height - 50))
                         }
                         // Hidden scroll target - VStack positions the anchor at targetY
                         if let targetY = scrollTargetY {
@@ -918,7 +1216,7 @@ struct ReaderView: View {
                 }
                 .simultaneousGesture(
                     DragGesture()
-                        .onChanged { _ in
+                        .onChanged { (_: DragGesture.Value) -> Void in
                             isUserDragging = true
                             isScrolling = true
                             // Immediate claim on interaction start
@@ -926,7 +1224,7 @@ struct ReaderView: View {
                                 scrollOrigin = .bible
                             }
                         }
-                        .onEnded { _ in
+                        .onEnded { (_: DragGesture.Value) -> Void in
                             isUserDragging = false
                             // Keep isScrolling true - it will be cleared by onScrollFullyStopped
                             // when UIScrollView reports deceleration is complete
@@ -954,15 +1252,14 @@ struct ReaderView: View {
                     }
                 }
                 .onChange(of: currentReadingIndex) {
-                    loadVerses(loadingCase: LOADING_READING)
+                    // Only load via LOADING_READING if readingMetaData exists (legacy path)
+                    // Plan mode uses loadPlanReading instead via onPlanReadingChanged
+                    if readingMetaData != nil {
+                        loadVerses(loadingCase: LOADING_READING)
 
-                    if let readingId = readingMetaData?[currentReadingIndex].id {
-                        if RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(readingId)'").count == 0 {
-                            try! RealmManager.shared.realm.write {
-                                guard let thawedUser = user.thaw() else {
-                                    return
-                                }
-                                thawedUser.addCompletedReading(id: readingId)
+                        if let readingId = readingMetaData?[currentReadingIndex].id {
+                            if !UserDatabase.shared.isReadingCompleted(readingId) {
+                                try? UserDatabase.shared.addCompletedReading(readingId)
                             }
                         }
                     }
@@ -1045,17 +1342,22 @@ struct ReaderView: View {
                         }
                     }
                 }
-            }
+                } // ScrollViewReader
+            } // GeometryReader
             .navigationBarBackButtonHidden(true)
             .toolbar {
                 ReaderBottomToolbarView(
                     readingMetaData: $readingMetaData,
                     currentReadingIndex: $currentReadingIndex,
                     date: $date,
-                    translation: $translation,
+                    translationId: $translationId,
+                    translationAbbreviation: $translationAbbreviation,
                     currentVerseId: $currentVerseId,
                     showingSearch: $showingSearch,
                     searchText: $bottomSearchText,
+                    toolbarMode: $toolbarMode,
+                    selectedPlanIndex: $selectedPlanIndex,
+                    plansWithReadings: plansWithReadings,
                     loadPrev: {
                         loadVerses(loadingCase: LOADING_PREV_CHAPTER)
                     },
@@ -1072,14 +1374,24 @@ struct ReaderView: View {
                         isHistoryNavigation = true
                         animateScroll = false  // No animation for history navigation
                         loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: verseId)
+                    },
+                    onPlanReadingChanged: { index in
+                        planReadingIndex = index
+                        loadPlanReading(at: index)
+                    },
+                    onPlanChanged: { planIndex in
+                        selectedPlanIndex = planIndex
+                        planReadingIndex = 0
+                        loadPlanReading(at: 0)
                     }
                 )
             }
             .toolbar {
                 ReaderNavigationToolbarView(
-                    user: user,
+                    userSettings: $userSettings,
                     readingMetaData: $readingMetaData,
-                    translation: $translation,
+                    translationId: $translationId,
+                    translationAbbreviation: $translationAbbreviation,
                     currentVerseId: $currentVerseId,
                     showingBookPicker: $showingBookPicker,
                     showingOptionsMenu: $showingOptionsMenu,
@@ -1094,9 +1406,6 @@ struct ReaderView: View {
             .sheet(isPresented: $showingBookPicker) {
                 bookPickerSheet
             }
-            .sheet(isPresented: $showingCrossReferenceSheet) {
-                crossReferenceSheet
-            }
             .sheet(isPresented: $showingSearch, onDismiss: {
                 bottomSearchText = ""
             }) {
@@ -1107,7 +1416,7 @@ struct ReaderView: View {
                     word: word.text,
                     strongs: word.strongs,
                     morphology: word.morphology,
-                    translation: translation,
+                    translationId: translationId,
                     onNavigateToVerse: { verseId in
                         requestScrollAnimated = false
                         requestScrollToVerseId = verseId
@@ -1124,25 +1433,76 @@ struct ReaderView: View {
             }
         }
         .onAppear {
+            // Initialize translation from user default if not already set in scene storage
+            if translationId.isEmpty {
+                translationId = userSettings.readerTranslationId
+            }
+            // Always update the display metadata to match the current translationId
+            if let translation = try? TranslationDatabase.shared.getTranslation(id: translationId) {
+                translationAbbreviation = translation.abbreviation
+                translationName = translation.name
+            }
+
+            // Load plan readings for plan mode
+            loadPlanReadings()
+
+            // Apply initial toolbar mode if provided (must be after loadPlanReadings)
+            if !hasAppliedInitialMode, let mode = requestedToolbarMode {
+                // Only apply plan mode if there are readings
+                if mode == .plan && plansWithReadings.isEmpty {
+                    toolbarMode = .search  // Fall back to search if no plan readings
+                } else {
+                    toolbarMode = mode
+                }
+                hasAppliedInitialMode = true
+            }
+
+            // Determine which content to load based on mode
+            let effectiveMode = (plansWithReadings.isEmpty && requestedToolbarMode == .plan) ? .search : (requestedToolbarMode ?? toolbarMode)
+
             if readingMetaData != nil {
                 initialScrollItem = "top"
                 currentReadingIndex = 0
                 loadVerses(loadingCase: LOADING_READING)
 
                 if let readingId = readingMetaData?[0].id {
-                    if RealmManager.shared.realm.objects(CompletedReading.self).filter("id == '\(readingId)'").count == 0 {
-                        try! RealmManager.shared.realm.write {
-                            guard let thawedUser = user.thaw() else {
-                                return
-                            }
-                            thawedUser.addCompletedReading(id: readingId)
-                        }
+                    if !UserDatabase.shared.isReadingCompleted(readingId) {
+                        try? UserDatabase.shared.addCompletedReading(readingId)
                     }
                 }
+            } else if effectiveMode == .plan && !plansWithReadings.isEmpty {
+                // Start in plan mode with first reading
+                loadPlanReading(at: 0)
             } else {
                 loadVerses(loadingCase: LOADING_CURRENT)
                 // Always scroll to top since headers are now part of ChapterTextView
                 initialScrollItem = "top"
+            }
+        }
+        .onChange(of: toolbarMode) { _, newMode in
+            if newMode == .plan {
+                if !plansWithReadings.isEmpty {
+                    // Switch to plan reading
+                    loadPlanReading(at: planReadingIndex)
+                } else {
+                    // No plan readings available, switch back to search
+                    toolbarMode = .search
+                }
+            } else if readingMetaData == nil {
+                // Switch back to chapter view
+                loadVerses(loadingCase: LOADING_CURRENT)
+            }
+        }
+        .onChange(of: date) { _, _ in
+            // Reload plan readings when date changes
+            loadPlanReadings()
+            if toolbarMode == .plan {
+                if !plansWithReadings.isEmpty {
+                    loadPlanReading(at: 0)
+                } else {
+                    // No readings for this date, switch back to search
+                    toolbarMode = .search
+                }
             }
         }
     }
@@ -1163,15 +1523,96 @@ struct ReaderView: View {
             NavigationHistory.shared.updateCurrentPosition(to: verseId)
         }
     }
+
+    /// Loads today's readings from the user's selected plans
+    private func loadPlanReadings() {
+        let plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+        let plansMetaData = PlansMetaData(plans: plans, date: date)
+
+        // Build list of plans with their readings
+        var plansWithReadingsTemp: [PlanWithReadings] = []
+        for planMeta in plansMetaData.planMetaData {
+            if userSettings.isPlanSelected(planMeta.id) && !planMeta.readingMetaData.isEmpty {
+                plansWithReadingsTemp.append(PlanWithReadings(
+                    id: planMeta.id,
+                    name: planMeta.plan.name,
+                    readings: planMeta.readingMetaData
+                ))
+            }
+        }
+
+        plansWithReadings = plansWithReadingsTemp
+        // Reset indices, keeping selectedPlanIndex if still valid
+        if selectedPlanIndex >= plansWithReadings.count {
+            selectedPlanIndex = 0
+        }
+        planReadingIndex = 0
+    }
+
+    /// Loads verses for the specified plan reading index within the selected plan
+    private func loadPlanReading(at index: Int) {
+        guard selectedPlanIndex >= 0 && selectedPlanIndex < plansWithReadings.count else { return }
+        let currentPlanReadings = plansWithReadings[selectedPlanIndex].readings
+        guard index >= 0 && index < currentPlanReadings.count else { return }
+
+        let reading = currentPlanReadings[index]
+        planReadingIndex = index
+
+        // Mark reading as completed
+        if !UserDatabase.shared.isReadingCompleted(reading.id) {
+            try? UserDatabase.shared.addCompletedReading(reading.id)
+        }
+
+        // Update currentVerseId to the start of the reading so toolbar and tool pane update correctly
+        currentVerseId = reading.sv
+        visibleVerseId = reading.sv
+
+        // Load the verses for this reading
+        if let fetchedVerses = try? TranslationDatabase.shared.getVerseRange(
+            translationId: translationId,
+            startRef: reading.sv,
+            endRef: reading.ev
+        ) {
+            verses = fetchedVerses
+
+            // Fetch headings for all chapters in the verse range
+            var allHeadings: [TranslationHeading] = []
+            if !fetchedVerses.isEmpty {
+                let startBook = reading.sv / 1000000
+                let startChapter = (reading.sv % 1000000) / 1000
+                let endBook = reading.ev / 1000000
+                let endChapter = (reading.ev % 1000000) / 1000
+
+                // Collect headings for each book/chapter in the range
+                for book in startBook...endBook {
+                    let firstChapter = (book == startBook) ? startChapter : 1
+                    let lastChapter = (book == endBook) ? endChapter : 150  // Use high number, will be limited by actual chapters
+                    for chapter in firstChapter...lastChapter {
+                        if let chapterHeadings = try? TranslationDatabase.shared.getHeadingsForChapter(
+                            translationId: translationId,
+                            book: book,
+                            chapter: chapter
+                        ) {
+                            allHeadings.append(contentsOf: chapterHeadings)
+                        }
+                    }
+                }
+            }
+
+            headings = allHeadings
+            initialScrollItem = "top"
+        }
+    }
 }
 
 struct ReaderViewPreview: View {
     @State var date: Date = Date.now
+    @State var toolbarsHidden: Bool = false
 
     var body: some View {
         ReaderView(
-            user: RealmManager.shared.realm.objects(User.self).first!,
-            date: $date
+            date: $date,
+            toolbarsHidden: $toolbarsHidden
         )
     }
 }

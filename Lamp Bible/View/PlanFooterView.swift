@@ -13,7 +13,7 @@ struct PlanFooterView: View {
     
     var body: some View {
         VStack {
-            Text(plan.shortDescription).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+            Text(plan.planDescription ?? "").frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
             HStack {
                 Button {
                     showingInfoSheet.toggle()
@@ -32,10 +32,10 @@ struct PlanFooterView: View {
                                     .foregroundColor(.primary)
                                     .padding(EdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0))
                                     .bold()
-                                Text(plan.author)
+                                Text(plan.author ?? "")
                                     .foregroundColor(.primary)
                                     .italic()
-                                Text(plan.fullDescription)
+                                Text(plan.fullDescription ?? "")
                                     .font(.callout)
                                     .foregroundColor(.primary)
                                     .padding(EdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0))
@@ -61,5 +61,5 @@ struct PlanFooterView: View {
 }
 
 #Preview {
-    PlanFooterView(plan: RealmManager.shared.realm.objects(Plan.self).first!)
+    PlanFooterView(plan: (try? BundledModuleDatabase.shared.getAllPlans().first) ?? Plan(id: "preview", name: "Preview Plan", planDescription: "A preview plan", author: "Author", fullDescription: "Full description"))
 }

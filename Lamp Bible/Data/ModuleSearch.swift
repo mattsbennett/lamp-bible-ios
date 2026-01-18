@@ -7,7 +7,6 @@
 
 import Foundation
 import GRDB
-import RealmSwift
 
 // MARK: - Search Result
 
@@ -45,11 +44,17 @@ struct ModuleSearchFilter {
     var includeBundledDictionaries: Bool = true
 
     // Devotional filters
-    var monthDay: String? = nil  // Format: "01-15" for January 15
+    var monthDay: String? = nil  // Format: "01-15" for January 15 (legacy)
+    var devotionalDate: String? = nil  // ISO 8601: YYYY-MM-DD
     var tags: Set<String>? = nil
+    var categories: Set<DevotionalCategory>? = nil
 
     // Dictionary filters
     var strongsKey: String? = nil  // Filter by Strong's number
+
+    // Translation filters
+    var translationIds: Set<String>? = nil  // Specific translations to search
+    var bookRange: ClosedRange<Int>? = nil  // Book range (1-39 OT, 40-66 NT)
 
     static var `default`: ModuleSearchFilter { ModuleSearchFilter() }
 }
@@ -61,6 +66,17 @@ struct SearchableModule: Identifiable {
     let name: String
     let type: ModuleType
     let isBundled: Bool
+    let seriesAbbrev: String?  // For commentaries - series abbreviation (e.g., "MHCC")
+    let seriesFull: String?    // For commentaries - full series name
+
+    init(id: String, name: String, type: ModuleType, isBundled: Bool, seriesAbbrev: String? = nil, seriesFull: String? = nil) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.isBundled = isBundled
+        self.seriesAbbrev = seriesAbbrev
+        self.seriesFull = seriesFull
+    }
 }
 
 // MARK: - Module Search
@@ -78,23 +94,102 @@ class ModuleSearch {
     func getSearchableModules() -> [SearchableModule] {
         var modules: [SearchableModule] = []
 
-        // Bundled dictionaries
-        modules.append(SearchableModule(id: "strongs-greek", name: "Strong's Greek", type: .dictionary, isBundled: true))
-        modules.append(SearchableModule(id: "strongs-hebrew", name: "Strong's Hebrew", type: .dictionary, isBundled: true))
-        modules.append(SearchableModule(id: "dodson", name: "Dodson Greek", type: .dictionary, isBundled: true))
-        modules.append(SearchableModule(id: "bdb", name: "Brown-Driver-Briggs", type: .dictionary, isBundled: true))
+        // Bundled dictionaries - grouped by language
+        modules.append(SearchableModule(id: "strongs-greek", name: "Strong's Greek", type: .dictionary, isBundled: true, seriesAbbrev: "Greek"))
+        modules.append(SearchableModule(id: "strongs-hebrew", name: "Strong's Hebrew", type: .dictionary, isBundled: true, seriesAbbrev: "Hebrew"))
+        modules.append(SearchableModule(id: "dodson", name: "Dodson Greek", type: .dictionary, isBundled: true, seriesAbbrev: "Greek"))
+        modules.append(SearchableModule(id: "bdb", name: "Brown-Driver-Briggs", type: .dictionary, isBundled: true, seriesAbbrev: "Hebrew"))
+
+        // GRDB translations (bundled + user)
+        do {
+            let translations = try TranslationDatabase.shared.getAllTranslations()
+            for translation in translations {
+                modules.append(SearchableModule(
+                    id: translation.id,
+                    name: translation.name,
+                    type: .translation,
+                    isBundled: translation.isBundled,
+                    seriesAbbrev: translation.abbreviation
+                ))
+            }
+        } catch {
+            print("Failed to get translations: \(error)")
+        }
 
         // User modules from SQLite
         do {
             let userModules = try database.getAllModules()
+
+            // Get series info for commentary modules
+            let commentarySeriesInfo = getCommentarySeriesInfo()
+
             for module in userModules {
-                modules.append(SearchableModule(id: module.id, name: module.name, type: module.type, isBundled: false))
+                if module.type == .commentary, let seriesInfo = commentarySeriesInfo[module.id] {
+                    modules.append(SearchableModule(
+                        id: module.id,
+                        name: module.name,
+                        type: module.type,
+                        isBundled: false,
+                        seriesAbbrev: seriesInfo.abbrev,
+                        seriesFull: seriesInfo.full
+                    ))
+                } else if module.type == .dictionary {
+                    // Group user dictionaries by keyType if available
+                    let series = dictionarySeriesFromKeyType(module.keyType)
+                    modules.append(SearchableModule(
+                        id: module.id,
+                        name: module.name,
+                        type: module.type,
+                        isBundled: false,
+                        seriesAbbrev: series
+                    ))
+                } else {
+                    modules.append(SearchableModule(id: module.id, name: module.name, type: module.type, isBundled: false))
+                }
             }
         } catch {
             print("Failed to get user modules: \(error)")
         }
 
         return modules
+    }
+
+    /// Convert dictionary keyType to a display series name
+    private func dictionarySeriesFromKeyType(_ keyType: String?) -> String? {
+        guard let keyType = keyType else { return nil }
+        switch keyType.lowercased() {
+        case "strongs-greek", "greek":
+            return "Greek"
+        case "strongs-hebrew", "hebrew":
+            return "Hebrew"
+        default:
+            return nil
+        }
+    }
+
+    /// Get series info for all commentary modules
+    private func getCommentarySeriesInfo() -> [String: (abbrev: String?, full: String?)] {
+        do {
+            return try database.read { db in
+                let sql = """
+                    SELECT DISTINCT module_id, series_abbrev, series_full
+                    FROM commentary_books
+                    WHERE series_abbrev IS NOT NULL OR series_full IS NOT NULL
+                """
+                let rows = try Row.fetchAll(db, sql: sql)
+                var result: [String: (abbrev: String?, full: String?)] = [:]
+                for row in rows {
+                    let moduleId: String = row["module_id"]
+                    let abbrev: String? = row["series_abbrev"]
+                    let full: String? = row["series_full"]
+                    result[moduleId] = (abbrev: abbrev, full: full)
+                }
+                return result
+            }
+        } catch {
+            print("Failed to get commentary series info: \(error)")
+            return [:]
+        }
     }
 
     /// Get unique tags from all devotionals
@@ -160,6 +255,10 @@ class ModuleSearch {
             results.append(contentsOf: try searchNotes(ftsQuery: ftsQuery, filter: filter, limit: limit))
         }
 
+        if filter.types.contains(.translation) && hasTextQuery {
+            results.append(contentsOf: try searchTranslations(ftsQuery: ftsQuery, filter: filter, limit: limit))
+        }
+
         // Sort by rank (higher is better match)
         results.sort { $0.rank > $1.rank }
 
@@ -210,13 +309,32 @@ class ModuleSearch {
             ftsArgs.append(contentsOf: moduleArgs)
             ftsArgs.append(limit)
 
+            // Extract search terms for finding matching sense
+            let searchTerms = ftsQuery
+                .replacingOccurrences(of: "\"", with: "")
+                .replacingOccurrences(of: "*", with: "")
+                .components(separatedBy: .whitespaces)
+                .filter { !$0.isEmpty }
+                .map { $0.lowercased() }
+
             var results = try Row.fetchAll(db, sql: ftsSql, arguments: StatementArguments(ftsArgs)).map { row -> ModuleSearchResult in
                 var shortDef: String? = nil
                 if let sensesJson: String = row["senses_json"],
                    let data = sensesJson.data(using: .utf8),
-                   let senses = try? JSONDecoder().decode([DictionarySense].self, from: data),
-                   let first = senses.first {
-                    shortDef = first.shortDefinition ?? first.gloss
+                   let senses = try? JSONDecoder().decode([DictionarySense].self, from: data) {
+                    // Find the sense that contains a search term (not just first sense)
+                    for sense in senses {
+                        let defText = sense.definitionText ?? sense.shortDefinitionText ?? sense.gloss ?? ""
+                        let defLower = defText.lowercased()
+                        if searchTerms.contains(where: { defLower.contains($0) }) {
+                            shortDef = defText
+                            break
+                        }
+                    }
+                    // Fall back to first sense if no match found
+                    if shortDef == nil, let first = senses.first {
+                        shortDef = first.definitionText ?? first.shortDefinitionText ?? first.gloss
+                    }
                 }
 
                 let key: String = row["key"]
@@ -226,7 +344,8 @@ class ModuleSearch {
                     moduleName: row["module_name"],
                     moduleType: .dictionary,
                     title: "\(row["lemma"] as String) (\(key))",
-                    snippet: (row["snippet"] as String?) ?? shortDef ?? "",
+                    // Use parsed definition text instead of raw FTS snippet (which contains JSON)
+                    snippet: shortDef ?? "",
                     verseId: nil,
                     rank: -(row["rank"] as Double),
                     strongsKey: key
@@ -262,7 +381,7 @@ class ModuleSearch {
                        let data = sensesJson.data(using: .utf8),
                        let senses = try? JSONDecoder().decode([DictionarySense].self, from: data),
                        let first = senses.first {
-                        shortDef = first.shortDefinition ?? first.gloss
+                        shortDef = first.shortDefinitionText ?? first.gloss
                     }
 
                     let key: String = row["key"]
@@ -323,7 +442,7 @@ class ModuleSearch {
                    let data = sensesJson.data(using: .utf8),
                    let senses = try? JSONDecoder().decode([DictionarySense].self, from: data),
                    let first = senses.first {
-                    shortDef = first.shortDefinition ?? first.gloss
+                    shortDef = first.shortDefinitionText ?? first.gloss
                 }
 
                 let entryKey: String = row["key"]
@@ -342,14 +461,14 @@ class ModuleSearch {
         }
     }
 
-    /// Search bundled dictionaries in Realm
+    /// Search bundled dictionaries via GRDB BundledModuleDatabase
     private func searchBundledDictionaries(query: String, filter: ModuleSearchFilter, limit: Int) -> [ModuleSearchResult] {
-        let realm = RealmManager.shared.realm
+        let bundledDb = BundledModuleDatabase.shared
         var results: [ModuleSearchResult] = []
 
         // Parse query for quoted (exact word match) and unquoted (substring match) terms
         let searchTerms = parseSearchQuery(query)
-        let realmQuery = getRealmSearchString(from: query).lowercased()
+        let searchQuery = getRealmSearchString(from: query).lowercased()
 
         // Check which bundled dictionaries to search
         let searchAll = filter.moduleIds == nil
@@ -364,189 +483,210 @@ class ModuleSearch {
             return textMatchesAllTerms(combinedText, terms: searchTerms)
         }
 
-        // Strong's Greek
+        // Strong's Greek (module ID: strongs_greek)
         if searchStrongsGreek {
-            var greekResults = realm.objects(StrongsGreek.self)
-            if let key = filter.strongsKey {
-                // Key-only search: exact match on id
-                greekResults = greekResults.filter("id == %@", key)
-            } else {
-                // Text search: also include id field
-                greekResults = greekResults.filter("id CONTAINS[c] %@ OR lemma CONTAINS[c] %@ OR def CONTAINS[c] %@ OR xlit CONTAINS[c] %@", realmQuery, realmQuery, realmQuery, realmQuery)
-            }
-            for entry in greekResults.prefix(limit) {
-                // Post-filter for word-boundary matching of quoted terms
-                let entryTexts = [entry.id, entry.lemma, entry.def ?? "", entry.xlit ?? ""]
-                guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
+            do {
+                let entries: [DictionaryEntry]
+                if let key = filter.strongsKey {
+                    // Key-only search
+                    if let entry = try bundledDb.getDictionaryEntry(moduleId: "strongs_greek", key: key) {
+                        entries = [entry]
+                    } else {
+                        entries = []
+                    }
+                } else {
+                    // Text search
+                    entries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "strongs_greek", keyType: nil, limit: limit)
+                }
 
-                let snippet = entry.def ?? ""
-                results.append(ModuleSearchResult(
-                    id: "strongs-greek-\(entry.id)",
-                    moduleId: "strongs-greek",
-                    moduleName: "Strong's Greek",
-                    moduleType: .dictionary,
-                    title: "\(entry.lemma) (\(entry.id))",
-                    snippet: String(snippet.prefix(200)),
-                    verseId: nil,
-                    rank: calculateTextRank(query: realmQuery, in: entryTexts),
-                    strongsKey: entry.id
-                ))
+                for entry in entries.prefix(limit) {
+                    // Get definition from first sense
+                    let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.shortDefinitionText ?? entry.senses.first?.gloss ?? ""
+                    let entryTexts = [entry.key, entry.lemma, senseDef, entry.transliteration ?? ""]
+                    guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
+
+                    let snippet = extractSnippetAroundMatch(senseDef, searchTerms: searchTerms, maxLength: 200)
+                    results.append(ModuleSearchResult(
+                        id: "strongs-greek-\(entry.key)",
+                        moduleId: "strongs-greek",
+                        moduleName: "Strong's Greek",
+                        moduleType: .dictionary,
+                        title: "\(entry.lemma) (\(entry.key))",
+                        snippet: snippet,
+                        verseId: nil,
+                        rank: calculateTextRank(query: searchQuery, in: entryTexts),
+                        strongsKey: entry.key
+                    ))
+                }
+            } catch {
+                print("Error searching Strong's Greek: \(error)")
             }
         }
 
-        // Strong's Hebrew
+        // Strong's Hebrew (module ID: strongs_hebrew)
         if searchStrongsHebrew {
-            var hebrewResults = realm.objects(StrongsHebrew.self)
-            if let key = filter.strongsKey {
-                // Key-only search: exact match on id
-                hebrewResults = hebrewResults.filter("id == %@", key)
-            } else {
-                // Text search: also include id field
-                hebrewResults = hebrewResults.filter("id CONTAINS[c] %@ OR lemma CONTAINS[c] %@ OR def CONTAINS[c] %@ OR xlit CONTAINS[c] %@", realmQuery, realmQuery, realmQuery, realmQuery)
-            }
-            for entry in hebrewResults.prefix(limit) {
-                // Post-filter for word-boundary matching of quoted terms
-                let entryTexts = [entry.id, entry.lemma, entry.def ?? "", entry.xlit ?? ""]
-                guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
+            do {
+                let entries: [DictionaryEntry]
+                if let key = filter.strongsKey {
+                    if let entry = try bundledDb.getDictionaryEntry(moduleId: "strongs_hebrew", key: key) {
+                        entries = [entry]
+                    } else {
+                        entries = []
+                    }
+                } else {
+                    entries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "strongs_hebrew", keyType: nil, limit: limit)
+                }
 
-                let snippet = entry.def ?? ""
-                // Use LRM (Left-to-Right Mark) to prevent RTL reordering of key
-                let lrm = "\u{200E}"
-                results.append(ModuleSearchResult(
-                    id: "strongs-hebrew-\(entry.id)",
-                    moduleId: "strongs-hebrew",
-                    moduleName: "Strong's Hebrew",
-                    moduleType: .dictionary,
-                    title: "\(entry.lemma) \(lrm)(\(entry.id))",
-                    snippet: String(snippet.prefix(200)),
-                    verseId: nil,
-                    rank: calculateTextRank(query: realmQuery, in: entryTexts),
-                    strongsKey: entry.id
-                ))
+                for entry in entries.prefix(limit) {
+                    let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.shortDefinitionText ?? entry.senses.first?.gloss ?? ""
+                    let entryTexts = [entry.key, entry.lemma, senseDef, entry.transliteration ?? ""]
+                    guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
+
+                    let snippet = extractSnippetAroundMatch(senseDef, searchTerms: searchTerms, maxLength: 200)
+                    // Use LRM (Left-to-Right Mark) to prevent RTL reordering of key
+                    let lrm = "\u{200E}"
+                    results.append(ModuleSearchResult(
+                        id: "strongs-hebrew-\(entry.key)",
+                        moduleId: "strongs-hebrew",
+                        moduleName: "Strong's Hebrew",
+                        moduleType: .dictionary,
+                        title: "\(entry.lemma) \(lrm)(\(entry.key))",
+                        snippet: snippet,
+                        verseId: nil,
+                        rank: calculateTextRank(query: searchQuery, in: entryTexts),
+                        strongsKey: entry.key
+                    ))
+                }
+            } catch {
+                print("Error searching Strong's Hebrew: \(error)")
             }
         }
 
-        // Dodson Greek
+        // Dodson Greek (module ID: dodson)
         if searchDodson {
-            var dodsonResults = realm.objects(DodsonGreek.self)
-            if let key = filter.strongsKey {
-                // Key-only search: exact match on id
-                dodsonResults = dodsonResults.filter("id == %@", key)
-            } else {
-                // Text search: also include id field
-                dodsonResults = dodsonResults.filter("id CONTAINS[c] %@ OR lemma CONTAINS[c] %@ OR def CONTAINS[c] %@ OR short CONTAINS[c] %@", realmQuery, realmQuery, realmQuery, realmQuery)
-            }
-            for entry in dodsonResults.prefix(limit) {
-                // Post-filter for word-boundary matching of quoted terms
-                let entryTexts = [entry.id, entry.lemma, entry.def ?? "", entry.short ?? ""]
-                guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
+            do {
+                let entries: [DictionaryEntry]
+                if let key = filter.strongsKey {
+                    if let entry = try bundledDb.getDictionaryEntry(moduleId: "dodson", key: key) {
+                        entries = [entry]
+                    } else {
+                        entries = []
+                    }
+                } else {
+                    entries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "dodson", keyType: nil, limit: limit)
+                }
 
-                let snippet = entry.def ?? entry.short ?? ""
-                results.append(ModuleSearchResult(
-                    id: "dodson-\(entry.id)",
-                    moduleId: "dodson",
-                    moduleName: "Dodson Greek",
-                    moduleType: .dictionary,
-                    title: "\(entry.lemma) (\(entry.id))",
-                    snippet: String(snippet.prefix(200)),
-                    verseId: nil,
-                    rank: calculateTextRank(query: realmQuery, in: entryTexts),
-                    strongsKey: entry.id
-                ))
+                for entry in entries.prefix(limit) {
+                    let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.shortDefinitionText ?? entry.senses.first?.gloss ?? ""
+                    let entryTexts = [entry.key, entry.lemma, senseDef]
+                    guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
+
+                    let snippet = extractSnippetAroundMatch(senseDef, searchTerms: searchTerms, maxLength: 200)
+                    results.append(ModuleSearchResult(
+                        id: "dodson-\(entry.key)",
+                        moduleId: "dodson",
+                        moduleName: "Dodson Greek",
+                        moduleType: .dictionary,
+                        title: "\(entry.lemma) (\(entry.key))",
+                        snippet: snippet,
+                        verseId: nil,
+                        rank: calculateTextRank(query: searchQuery, in: entryTexts),
+                        strongsKey: entry.key
+                    ))
+                }
+            } catch {
+                print("Error searching Dodson: \(error)")
             }
         }
 
         // BDB (Brown-Driver-Briggs) - supports both Strong's key lookup and direct BDB ID lookup
         if searchBDB {
-            let searchedKey = filter.strongsKey  // Remember the key we searched for
-            if let key = searchedKey {
-                // Check if this is a direct BDB ID (e.g., "BDB58", "BDB871")
-                if key.uppercased().hasPrefix("BDB") {
-                    // Direct BDB ID lookup
-                    if let bdbEntry = realm.object(ofType: BDBHebrew.self, forPrimaryKey: key.uppercased()) {
-                        let lrm = "\u{200E}"
-                        // Find Strong's number for this BDB entry via reverse lookup
-                        var strongsNum = ""
-                        let mappings = realm.objects(StrongsToBDB.self)
-                        for mapping in mappings {
-                            if mapping.bdbIds.contains(bdbEntry.id) {
-                                strongsNum = mapping.id
-                                break
+            do {
+                if let key = filter.strongsKey {
+                    // Check if this is a direct BDB ID (e.g., "BDB58", "BDB871")
+                    if key.uppercased().hasPrefix("BDB") {
+                        // Direct BDB ID lookup
+                        if let bdbEntry = try bundledDb.getDictionaryEntry(moduleId: "bdb", key: key.uppercased()) {
+                            let lrm = "\u{200E}"
+                            // Find Strong's number for this BDB entry via reverse lookup
+                            let strongsIds = try bundledDb.getReverseLexiconMappings(targetKey: bdbEntry.key)
+                            let strongsNum = strongsIds.first ?? ""
+                            let displayKey = strongsNum.isEmpty ? key.uppercased() : strongsNum
+                            let senseDef = bdbEntry.senses.first?.definitionText ?? bdbEntry.senses.first?.gloss ?? ""
+                            results.append(ModuleSearchResult(
+                                id: "bdb-\(bdbEntry.key)",
+                                moduleId: "bdb",
+                                moduleName: "Brown-Driver-Briggs",
+                                moduleType: .dictionary,
+                                title: "\(bdbEntry.lemma) \(lrm)(\(displayKey))",
+                                snippet: String(senseDef.prefix(200)),
+                                verseId: nil,
+                                rank: 10.0,
+                                strongsKey: strongsNum.isEmpty ? bdbEntry.key : strongsNum
+                            ))
+                        }
+                    } else {
+                        // Strong's key search: look up via lexicon mapping
+                        let bdbIds = try bundledDb.getLexiconMappings(sourceKey: key)
+                        var bdbEntries: [DictionaryEntry] = []
+                        for bdbId in bdbIds {
+                            if let entry = try bundledDb.getDictionaryEntry(moduleId: "bdb", key: bdbId) {
+                                bdbEntries.append(entry)
                             }
                         }
-                        let displayKey = strongsNum.isEmpty ? key.uppercased() : strongsNum
-                        results.append(ModuleSearchResult(
-                            id: "bdb-\(bdbEntry.id)",
-                            moduleId: "bdb",
-                            moduleName: "Brown-Driver-Briggs",
-                            moduleType: .dictionary,
-                            title: "\(bdbEntry.lemma) \(lrm)(\(displayKey))",
-                            snippet: String((bdbEntry.def ?? bdbEntry.gloss ?? "").prefix(200)),
-                            verseId: nil,
-                            rank: 10.0,  // High rank for key match
-                            strongsKey: strongsNum.isEmpty ? bdbEntry.id : strongsNum
-                        ))
-                    }
-                } else {
-                    // Strong's key search: look up via StrongsToBDB mapping table
-                    if let mapping = realm.object(ofType: StrongsToBDB.self, forPrimaryKey: key) {
-                        let bdbIds = Array(mapping.bdbIds)
-                        let bdbEntries = bdbIds.compactMap { realm.object(ofType: BDBHebrew.self, forPrimaryKey: $0) }
                         if let firstEntry = bdbEntries.first {
                             let lrm = "\u{200E}"
                             let entryCount = bdbEntries.count
                             let title = entryCount > 1
                                 ? "\(firstEntry.lemma) \(lrm)(\(key)) +\(entryCount - 1) more"
                                 : "\(firstEntry.lemma) \(lrm)(\(key))"
+                            let senseDef = firstEntry.senses.first?.definitionText ?? firstEntry.senses.first?.gloss ?? ""
                             results.append(ModuleSearchResult(
                                 id: "bdb-\(key)",
                                 moduleId: "bdb",
                                 moduleName: "Brown-Driver-Briggs",
                                 moduleType: .dictionary,
                                 title: title,
-                                snippet: String((firstEntry.def ?? firstEntry.gloss ?? "").prefix(200)),
+                                snippet: String(senseDef.prefix(200)),
                                 verseId: nil,
-                                rank: 10.0,  // High rank for key match
+                                rank: 10.0,
                                 strongsKey: key
                             ))
                         }
                     }
-                }
-            } else {
-                // Text search: search lemma, def, and gloss fields
-                let bdbResults = realm.objects(BDBHebrew.self)
-                    .filter("lemma CONTAINS[c] %@ OR def CONTAINS[c] %@ OR gloss CONTAINS[c] %@", realmQuery, realmQuery, realmQuery)
-                var seenBdbIds = Set<String>()
-                for entry in bdbResults.prefix(limit) {
-                    guard !seenBdbIds.contains(entry.id) else { continue }
-                    seenBdbIds.insert(entry.id)
+                } else {
+                    // Text search
+                    let bdbEntries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "bdb", keyType: nil, limit: limit)
+                    var seenBdbIds = Set<String>()
+                    for entry in bdbEntries {
+                        guard !seenBdbIds.contains(entry.key) else { continue }
+                        seenBdbIds.insert(entry.key)
 
-                    // Post-filter for word-boundary matching of quoted terms
-                    let entryTexts = [entry.lemma, entry.def ?? "", entry.gloss ?? ""]
-                    guard entryMatchesTerms(entryTexts) else { continue }
+                        let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.gloss ?? ""
+                        let entryTexts = [entry.lemma, senseDef]
+                        guard entryMatchesTerms(entryTexts) else { continue }
 
-                    let snippet = entry.def ?? entry.gloss ?? ""
-                    // Find Strong's number for this BDB entry via reverse lookup
-                    var strongsNum = ""
-                    let mappings = realm.objects(StrongsToBDB.self)
-                    for mapping in mappings {
-                        if mapping.bdbIds.contains(entry.id) {
-                            strongsNum = mapping.id
-                            break
-                        }
+                        let snippet = extractSnippetAroundMatch(senseDef, searchTerms: searchTerms, maxLength: 200)
+
+                        // Find Strong's number for this BDB entry via reverse lookup
+                        let strongsIds = try bundledDb.getReverseLexiconMappings(targetKey: entry.key)
+                        let strongsNum = strongsIds.first ?? ""
+
+                        results.append(ModuleSearchResult(
+                            id: "bdb-\(entry.key)",
+                            moduleId: "bdb",
+                            moduleName: "Brown-Driver-Briggs",
+                            moduleType: .dictionary,
+                            title: entry.lemma,
+                            snippet: snippet,
+                            verseId: nil,
+                            rank: calculateTextRank(query: searchQuery, in: entryTexts),
+                            strongsKey: strongsNum.isEmpty ? entry.key : strongsNum
+                        ))
                     }
-                    results.append(ModuleSearchResult(
-                        id: "bdb-\(entry.id)",
-                        moduleId: "bdb",
-                        moduleName: "Brown-Driver-Briggs",
-                        moduleType: .dictionary,
-                        title: entry.lemma,
-                        snippet: String(snippet.prefix(200)),
-                        verseId: nil,
-                        rank: calculateTextRank(query: realmQuery, in: entryTexts),
-                        strongsKey: strongsNum.isEmpty ? entry.id : strongsNum  // Use Strong's if found, otherwise BDB ID
-                    ))
                 }
+            } catch {
+                print("Error searching BDB: \(error)")
             }
         }
 
@@ -567,6 +707,54 @@ class ModuleSearch {
             }
         }
         return score
+    }
+
+    /// Extract a snippet centered around the first search term match
+    private func extractSnippetAroundMatch(_ text: String, searchTerms: [SearchTerm], maxLength: Int) -> String {
+        guard !text.isEmpty else { return "" }
+
+        let lowerText = text.lowercased()
+
+        // Find the first matching term's position
+        var matchPosition: String.Index? = nil
+        for term in searchTerms {
+            if let range = lowerText.range(of: term.text.lowercased()) {
+                matchPosition = range.lowerBound
+                break
+            }
+        }
+
+        guard let matchPos = matchPosition else {
+            // No match found, return start of text
+            return String(text.prefix(maxLength))
+        }
+
+        let matchOffset = text.distance(from: text.startIndex, to: matchPos)
+
+        // If match is within first maxLength chars, just return prefix
+        if matchOffset < maxLength / 2 {
+            return String(text.prefix(maxLength))
+        }
+
+        // Center the snippet around the match
+        let halfWindow = maxLength / 2
+        let startOffset = max(0, matchOffset - halfWindow)
+        let endOffset = min(text.count, startOffset + maxLength)
+
+        let startIndex = text.index(text.startIndex, offsetBy: startOffset)
+        let endIndex = text.index(text.startIndex, offsetBy: endOffset)
+
+        var snippet = String(text[startIndex..<endIndex])
+
+        // Add ellipsis if truncated
+        if startOffset > 0 {
+            snippet = "…" + snippet
+        }
+        if endOffset < text.count {
+            snippet = snippet + "…"
+        }
+
+        return snippet
     }
 
     private func searchCommentaries(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
@@ -613,13 +801,14 @@ class ModuleSearch {
                 if let t = title, !t.isEmpty {
                     displayTitle = t
                 } else {
+                    let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
                     switch unitType {
                     case "section":
-                        displayTitle = "Section in \(book):\(chapter)"
+                        displayTitle = "Section in \(bookName) \(chapter)"
                     case "pericope":
-                        displayTitle = "Pericope \(book):\(chapter):\(verse)"
+                        displayTitle = "Pericope \(bookName) \(chapter):\(verse)"
                     default:
-                        displayTitle = "Commentary on \(book):\(chapter):\(verse)"
+                        displayTitle = "Commentary on \(bookName) \(chapter):\(verse)"
                     }
                 }
 
@@ -639,7 +828,7 @@ class ModuleSearch {
 
     private func searchDevotionals(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         try database.read { db in
-            var conditions = ["devotional_fts MATCH ?"]
+            var conditions = ["devotional_entries_fts MATCH ?"]
             var arguments: [DatabaseValueConvertible] = [ftsQuery]
 
             if let moduleIds = filter.moduleIds {
@@ -651,10 +840,17 @@ class ModuleSearch {
                 }
             }
 
-            // Date filter
+            // Date filter (new ISO format)
+            if let date = filter.devotionalDate {
+                conditions.append("d.date = ?")
+                arguments.append(date)
+            }
+
+            // Legacy date filter (month_day format, check against date column)
             if let monthDay = filter.monthDay {
-                conditions.append("d.month_day = ?")
-                arguments.append(monthDay)
+                // Match MM-DD portion of YYYY-MM-DD
+                conditions.append("d.date LIKE ?")
+                arguments.append("%-\(monthDay)")
             }
 
             // Tags filter
@@ -667,15 +863,25 @@ class ModuleSearch {
                 }
             }
 
+            // Category filter
+            if let categories = filter.categories, !categories.isEmpty {
+                let categoryStrings = categories.map { $0.rawValue }
+                let placeholders = categoryStrings.map { _ in "?" }.joined(separator: ", ")
+                conditions.append("d.category IN (\(placeholders))")
+                for cat in categoryStrings {
+                    arguments.append(cat)
+                }
+            }
+
             let whereClause = conditions.joined(separator: " AND ")
             let sql = """
                 SELECT
-                    d.id, d.module_id, d.title, d.month_day, d.tags, d.content,
+                    d.id, d.module_id, d.title, d.subtitle, d.date, d.tags, d.category,
                     m.name as module_name,
-                    bm25(devotional_fts) as rank,
-                    snippet(devotional_fts, 1, '<mark>', '</mark>', '...', 32) as snippet
-                FROM devotional_fts f
-                JOIN devotional_entries d ON f.rowid = d.rowid
+                    bm25(devotional_entries_fts) as rank,
+                    snippet(devotional_entries_fts, 1, '<mark>', '</mark>', '...', 32) as snippet
+                FROM devotional_entries_fts f
+                JOIN devotional_entries d ON f.id = d.id
                 JOIN modules m ON d.module_id = m.id
                 WHERE \(whereClause)
                 ORDER BY rank
@@ -686,17 +892,23 @@ class ModuleSearch {
             return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
                 let tagsStr: String? = row["tags"]
                 let tagList = tagsStr?.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+                let dateStr: String? = row["date"]
+
+                // Format display title with subtitle if available
+                let title: String = row["title"]
+                let subtitle: String? = row["subtitle"]
+                let displayTitle = subtitle != nil ? "\(title): \(subtitle!)" : title
 
                 return ModuleSearchResult(
                     id: row["id"],
                     moduleId: row["module_id"],
                     moduleName: row["module_name"],
                     moduleType: .devotional,
-                    title: row["title"],
+                    title: displayTitle,
                     snippet: row["snippet"] ?? "",
                     verseId: nil,
                     rank: -(row["rank"] as Double),
-                    monthDay: row["month_day"],
+                    monthDay: dateStr,  // Use date field for monthDay (backward compatible)
                     tags: tagList
                 )
             }
@@ -740,17 +952,70 @@ class ModuleSearch {
                 let chapter: Int = row["chapter"]
                 let verse: Int = row["verse"]
 
+                let displayTitle: String
+                if let t = title, !t.isEmpty {
+                    displayTitle = t
+                } else {
+                    let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
+                    // Verse 0 means chapter-level note, don't show ":0"
+                    if verse == 0 {
+                        displayTitle = "Note on \(bookName) \(chapter)"
+                    } else {
+                        displayTitle = "Note on \(bookName) \(chapter):\(verse)"
+                    }
+                }
+
                 return ModuleSearchResult(
                     id: row["id"],
                     moduleId: row["module_id"],
                     moduleName: row["module_name"],
                     moduleType: .notes,
-                    title: title ?? "Note on \(book):\(chapter):\(verse)",
+                    title: displayTitle,
                     snippet: row["snippet"] ?? "",
                     verseId: row["verse_id"],
                     rank: -(row["rank"] as Double)
                 )
             }
+        }
+    }
+
+    private func searchTranslations(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+        // Search both bundled and user translations via TranslationDatabase
+        let translationDb = TranslationDatabase.shared
+
+        // Determine which translations to search
+        var translationIds: Set<String>? = filter.translationIds
+
+        // If specific module IDs are set but not translation IDs, use those
+        if translationIds == nil, let moduleIds = filter.moduleIds {
+            translationIds = moduleIds
+        }
+
+        // Perform search
+        let searchResults = try translationDb.searchAllTranslations(
+            query: ftsQuery.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "*", with: ""),
+            translationIds: translationIds,
+            bookRange: filter.bookRange,
+            limit: limit
+        )
+
+        // Convert to ModuleSearchResult
+        return searchResults.map { result in
+            // Get book name from GRDB (or use number if not found)
+            let bookName = (try? BundledModuleDatabase.shared.getBook(id: result.book))?.name ?? "Book \(result.book)"
+
+            let displayTitle = "\(bookName) \(result.chapter):\(result.verse)"
+
+            return ModuleSearchResult(
+                id: result.id,
+                moduleId: result.translationId,
+                moduleName: result.translationAbbrev,
+                moduleType: .translation,
+                title: displayTitle,
+                snippet: result.snippet,
+                verseId: result.ref,
+                rank: result.rank
+            )
         }
     }
 

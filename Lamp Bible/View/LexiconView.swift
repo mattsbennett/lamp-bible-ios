@@ -6,8 +6,71 @@
 //
 
 import SwiftUI
-import RealmSwift
 import GRDB
+
+// MARK: - First Match Scroll Offset
+
+/// Preference key to collect first match offset from text views for scroll-to-match
+private struct FirstMatchOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        // Take the first non-nil value (we only want the first match)
+        if value == nil {
+            value = nextValue()
+        }
+    }
+}
+
+/// Helper to find UIScrollView in the view hierarchy and scroll to offset
+private struct ScrollToOffsetHelper {
+    static func scrollToOffset(_ offset: CGFloat, in view: UIView?, animated: Bool = true) {
+        guard let scrollView = findScrollView(in: view) else { return }
+        // Clamp to max scroll offset to avoid scrolling past content
+        let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+        let targetY = min(max(0, offset - 120), maxScrollY)
+        scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: animated)
+    }
+
+    private static func findScrollView(in view: UIView?) -> UIScrollView? {
+        guard let view = view else { return nil }
+        if let scrollView = view as? UIScrollView {
+            return scrollView
+        }
+        for subview in view.subviews {
+            if let found = findScrollView(in: subview) {
+                return found
+            }
+        }
+        return nil
+    }
+}
+
+/// UIViewRepresentable to capture the hosting view for scroll access
+private struct ScrollViewFinder: UIViewRepresentable {
+    var onScrollViewFound: (UIScrollView?) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async {
+            var current: UIView? = uiView
+            while let view = current {
+                if let scrollView = view as? UIScrollView {
+                    onScrollViewFound(scrollView)
+                    return
+                }
+                current = view.superview
+            }
+            onScrollViewFound(nil)
+        }
+    }
+}
 
 // MARK: - Strong's Reference Linked Text
 
@@ -33,6 +96,7 @@ private enum LinkedTextSegment: Identifiable {
         }
     }
 }
+
 
 /// Parses text into segments, identifying Strong's numbers and verse references
 private func parseLinkedTextSegments(_ text: String) -> [LinkedTextSegment] {
@@ -169,12 +233,15 @@ private func parseVerseReferenceId(_ ref: String) -> Int? {
 
 /// Looks up a book ID from various name formats (full name, OSIS, abbreviation)
 private func lookupBookId(from name: String) -> Int? {
-    let realm = RealmManager.shared.realm
     let normalizedName = name.lowercased().replacingOccurrences(of: ".", with: "")
+    let allBooks = (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
 
-    // Try exact match on various fields
-    if let book = realm.objects(Book.self).filter("name ==[c] %@ OR osisId ==[c] %@ OR osisParatextAbbreviation ==[c] %@",
-                                                   name, name, name).first {
+    // Try exact match on various fields (case insensitive)
+    if let book = allBooks.first(where: {
+        $0.name.lowercased() == name.lowercased() ||
+        $0.osisId.lowercased() == name.lowercased() ||
+        $0.osisParatextAbbreviation.lowercased() == name.lowercased()
+    }) {
         return book.id
     }
 
@@ -216,7 +283,7 @@ private func lookupBookId(from name: String) -> Int? {
     ]
 
     if let osisId = abbreviationMap[normalizedName],
-       let book = realm.objects(Book.self).filter("osisId == %@", osisId).first {
+       let book = allBooks.first(where: { $0.osisId == osisId }) {
         return book.id
     }
 
@@ -232,9 +299,8 @@ private func formatVerseReference(verseId: Int) -> String {
     let verse = verseId % 1000
 
     // Look up book abbreviation
-    let realm = RealmManager.shared.realm
     let bookName: String
-    if let book = realm.objects(Book.self).filter("id == %@", bookId).first {
+    if let book = try? BundledModuleDatabase.shared.getBook(id: bookId) {
         // Capitalize properly: "ROM" -> "Rom", "1SAM" -> "1Sam"
         let raw = book.osisId
         if let firstLetter = raw.first(where: { $0.isLetter }) {
@@ -394,10 +460,10 @@ func countPopoverItemsInText(_ text: String, references: [VerseRef]? = nil) -> I
 /// Counts popover items in a user dictionary sense
 func countPopoverItemsInSense(_ sense: DictionarySense) -> Int {
     var count = 0
-    if let def = sense.definition, !def.isEmpty {
+    if let def = sense.definitionText, !def.isEmpty {
         count += countPopoverItemsInText(def, references: sense.references)
     }
-    if let deriv = sense.derivation, !deriv.isEmpty {
+    if let deriv = sense.derivationText, !deriv.isEmpty {
         count += countPopoverItemsInText(deriv)
     }
     return count
@@ -409,8 +475,8 @@ private func parseUserSensesStatic(_ json: String?) -> [DictionarySense] {
     if let senses = try? JSONDecoder().decode([DictionarySense].self, from: data), !senses.isEmpty {
         // Return senses if any sense has meaningful content (definition, shortDefinition, or gloss)
         let hasContent = senses.contains { sense in
-            (sense.definition != nil && !sense.definition!.isEmpty) ||
-            (sense.shortDefinition != nil && !sense.shortDefinition!.isEmpty) ||
+            (sense.definitionText != nil && !sense.definitionText!.isEmpty) ||
+            (sense.shortDefinitionText != nil && !sense.shortDefinitionText!.isEmpty) ||
             (sense.gloss != nil && !sense.gloss!.isEmpty)
         }
         if hasContent {
@@ -420,29 +486,10 @@ private func parseUserSensesStatic(_ json: String?) -> [DictionarySense] {
     return []
 }
 
-/// Parse BDB senses from JSON and convert to DictionarySense for display compatibility
-private func parseBDBSensesStatic(_ json: String?) -> [DictionarySense] {
-    guard let json = json, !json.isEmpty, let data = json.data(using: .utf8) else { return [] }
-    if let bdbSenses = try? JSONDecoder().decode([BDBSense].self, from: data), !bdbSenses.isEmpty {
-        // Convert BDBSense to DictionarySense for display compatibility
-        return bdbSenses.map { bdbSense in
-            DictionarySense(
-                id: String(bdbSense.id),
-                definition: bdbSense.def,
-                references: bdbSense.references
-            )
-        }
-    }
-    return []
-}
-
 /// Parse senses based on lexicon type
 private func parseSensesForEntry(_ entry: LexiconEntry) -> [DictionarySense] {
-    if entry.lexiconKey == "bdb" {
-        return parseBDBSensesStatic(entry.sensesJson)
-    } else {
-        return parseUserSensesStatic(entry.sensesJson)
-    }
+    // All dictionaries (including BDB) now use the same schema
+    return parseUserSensesStatic(entry.sensesJson)
 }
 
 /// Thread-safe popover count that doesn't require Realm access
@@ -485,10 +532,10 @@ private func countPopoverItemsInTextThreadSafe(_ text: String) -> Int {
 /// Thread-safe popover count for a user dictionary sense
 private func countPopoverItemsInSenseThreadSafe(_ sense: DictionarySense) -> Int {
     var count = 0
-    if let def = sense.definition, !def.isEmpty {
+    if let def = sense.definitionText, !def.isEmpty {
         count += countPopoverItemsInTextThreadSafe(def)
     }
-    if let deriv = sense.derivation, !deriv.isEmpty {
+    if let deriv = sense.derivationText, !deriv.isEmpty {
         count += countPopoverItemsInTextThreadSafe(deriv)
     }
     return count
@@ -556,6 +603,7 @@ struct LexiconTappableItem: Equatable, Identifiable {
         case strongs(String)
         case verseRef(display: String, verseId: Int, endVerseId: Int?, fullRef: String?)
         case bdbRef(String)  // BDB cross-reference (e.g., "BDB871")
+        case lexiconRef(String)  // Lexicon entry cross-reference (e.g., "CWSD_G1234")
     }
 }
 
@@ -593,11 +641,238 @@ struct LexiconSheetState: Equatable, Identifiable {
 private typealias TappableItem = LexiconTappableItem
 private typealias SheetState = LexiconSheetState
 
+// MARK: - Dictionary Definition View (v2.0 Annotated Text Support)
+
+/// Renders a dictionary definition field, supporting both plain text (v1.0) and annotated text (v2.0)
+/// For annotated text, uses AnnotatedDefinitionTextView with sheet integration
+/// For plain text, falls back to LinkedDefinitionText which parses inline patterns
+struct DictionaryDefinitionView: View {
+    let field: FlexibleTextField?
+    let font: Font
+    var fontSize: CGFloat? = nil
+    var translationId: String? = nil
+    var onSearchStrongs: ((String) -> Void)? = nil
+    var onNavigateToVerse: ((Int) -> Void)? = nil
+    var references: [VerseRef]? = nil
+    var isCurrentPage: Bool = true
+    var baseOffset: Int = 0
+    var sharedSheetState: Binding<LexiconSheetState?>? = nil
+    var sharedAllItems: Binding<[LexiconTappableItem]>? = nil
+    var searchTerms: [String] = []  // Search terms to highlight
+    var shouldReportMatchOffset: Bool = false  // Whether to report first match offset for scroll-to-match
+    var scrollCoordinateSpace: String = "lexiconScroll"
+
+    // Track local state for annotated text (used when shared state not provided)
+    @State private var tappableItems: [LexiconTappableItem] = []
+    @State private var localSheetState: LexiconSheetState? = nil
+    @State private var localMatchOffset: CGFloat? = nil  // Local Y offset of first match within text view
+
+    // Use shared state if available, otherwise local
+    private var effectiveSheetState: Binding<LexiconSheetState?> {
+        if let shared = sharedSheetState {
+            return shared
+        }
+        return $localSheetState
+    }
+
+    private var effectiveFontSize: CGFloat {
+        fontSize ?? 15
+    }
+
+    var body: some View {
+        if let field = field {
+            if field.hasAnnotations, isCurrentPage {
+                // Use AnnotatedDefinitionTextView for annotated text (v2.0 format) with sheet integration
+                AnnotatedDefinitionTextView(
+                    annotatedText: field.asAnnotatedText,
+                    fontSize: effectiveFontSize,
+                    baseOffset: baseOffset,
+                    searchTerms: searchTerms,
+                    shouldReportMatchOffset: shouldReportMatchOffset,
+                    onLinkTap: { index in
+                        // Find the tapped item
+                        let allItems = sharedAllItems?.wrappedValue ?? tappableItems
+                        if let item = allItems.first(where: { $0.index == index }) {
+                            effectiveSheetState.wrappedValue = LexiconSheetState(currentItem: item, allItems: allItems)
+                        }
+                    },
+                    onItemsParsed: { items in
+                        tappableItems = items
+                        // Update shared items if using shared state
+                        if let sharedItems = sharedAllItems {
+                            let otherItems = sharedItems.wrappedValue.filter { item in
+                                item.index < baseOffset || item.index >= baseOffset + items.count
+                            }
+                            sharedItems.wrappedValue = (otherItems + items).sorted { $0.index < $1.index }
+                        }
+                    },
+                    onFirstMatchOffset: shouldReportMatchOffset ? { offset in
+                        localMatchOffset = offset
+                    } : nil
+                )
+                // Report absolute match offset via preference when we have both local offset and geometry
+                .background(
+                    GeometryReader { geometry in
+                        Color.clear
+                            .preference(
+                                key: FirstMatchOffsetPreferenceKey.self,
+                                value: shouldReportMatchOffset && localMatchOffset != nil
+                                    ? geometry.frame(in: .named(scrollCoordinateSpace)).minY + (localMatchOffset ?? 0)
+                                    : nil
+                            )
+                    }
+                )
+                // Only show sheet locally if not using shared state
+                .sheet(item: sharedSheetState == nil ? $localSheetState : .constant(nil)) { state in
+                    annotatedSheetContent(state: state)
+                        .presentationDetents([.fraction(0.3), .medium, .large])
+                        .presentationDragIndicator(.visible)
+                        .presentationContentInteraction(.scrolls)
+                }
+            } else if field.hasAnnotations {
+                // Lightweight placeholder for non-current pages
+                Text(field.plainText)
+                    .font(font)
+                    .foregroundStyle(.primary)
+            } else {
+                // Use existing LinkedDefinitionText for plain text (v1.0 backwards compatibility)
+                LinkedDefinitionText(
+                    text: field.plainText,
+                    font: font,
+                    fontSize: fontSize,
+                    translationId: translationId,
+                    onSearchStrongs: onSearchStrongs,
+                    onNavigateToVerse: onNavigateToVerse,
+                    references: references,
+                    isCurrentPage: isCurrentPage,
+                    baseOffset: baseOffset,
+                    sharedSheetState: sharedSheetState,
+                    sharedAllItems: sharedAllItems,
+                    searchTerms: searchTerms,
+                    shouldReportMatchOffset: shouldReportMatchOffset,
+                    scrollCoordinateSpace: scrollCoordinateSpace
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func annotatedSheetContent(state: LexiconSheetState) -> some View {
+        let item = state.currentItem
+        NavigationStack {
+            ScrollView {
+                LexiconSheetItemContent(
+                    itemType: item.type,
+                    translationId: translationId,
+                    onSearchStrongs: onSearchStrongs,
+                    onNavigateToVerse: onNavigateToVerse
+                )
+                .padding()
+            }
+            .navigationTitle(sheetTitle(for: item))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        effectiveSheetState.wrappedValue = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if let navigateAction = sheetNavigateAction(for: item) {
+                        Button {
+                            navigateAction()
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                        }
+                    }
+                }
+            }
+            .toolbar {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if state.allItems.count > 1 {
+                        Button(action: { navigateToPrev(state) }) {
+                            Image(systemName: "chevron.left")
+                                .font(.title3)
+                                .padding(12)
+                                .background(Circle().fill(Color.clear))
+                                .contentShape(Circle())
+                        }
+                        .disabled(!state.canNavigatePrev)
+
+                        Spacer()
+
+                        Text("\(state.currentIndex + 1) of \(state.allItems.count)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                            .padding(.horizontal, 8)
+
+                        Spacer()
+
+                        Button(action: { navigateToNext(state) }) {
+                            Image(systemName: "chevron.right")
+                                .font(.title3)
+                                .padding(12)
+                                .background(Circle().fill(Color.clear))
+                                .contentShape(Circle())
+                        }
+                        .disabled(!state.canNavigateNext)
+                    }
+                }
+            }
+        }
+    }
+
+    private func navigateToPrev(_ state: LexiconSheetState) {
+        guard let newState = state.withPrev() else { return }
+        effectiveSheetState.wrappedValue = newState
+    }
+
+    private func navigateToNext(_ state: LexiconSheetState) {
+        guard let newState = state.withNext() else { return }
+        effectiveSheetState.wrappedValue = newState
+    }
+
+    private func sheetTitle(for item: LexiconTappableItem) -> String {
+        switch item.type {
+        case .strongs(let ref):
+            return ref
+        case .verseRef(let display, _, _, let fullRef):
+            let ref = fullRef ?? display
+            return ref.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+        case .bdbRef(let bdbId):
+            return bdbId
+        case .lexiconRef(let lexiconId):
+            return lexiconId
+        }
+    }
+
+    private func sheetNavigateAction(for item: LexiconTappableItem) -> (() -> Void)? {
+        switch item.type {
+        case .strongs(let ref):
+            if let onSearch = onSearchStrongs {
+                return { onSearch(ref) }
+            }
+        case .verseRef(_, let verseId, _, _):
+            if let onNavigate = onNavigateToVerse {
+                return { onNavigate(verseId) }
+            }
+        case .bdbRef:
+            return nil  // BDB entries don't have external navigation
+        case .lexiconRef:
+            return nil  // Lexicon entries don't have external navigation yet
+        }
+        return nil
+    }
+}
+
 struct LinkedDefinitionText: View {
     let text: String
     let font: Font
     var fontSize: CGFloat? = nil  // Explicit font size (for UIKit rendering)
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var onSearchStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
     var references: [VerseRef]? = nil
@@ -611,9 +886,17 @@ struct LinkedDefinitionText: View {
     var sharedSheetState: Binding<LexiconSheetState?>? = nil
     var sharedAllItems: Binding<[LexiconTappableItem]>? = nil
 
+    // Search terms to highlight
+    var searchTerms: [String] = []
+
+    // Whether this view should report its first match offset for scroll-to-match
+    var shouldReportMatchOffset: Bool = false
+    var scrollCoordinateSpace: String = "lexiconScroll"
+
     // Track local state (used only when shared state is not provided)
     @State private var tappableItems: [TappableItem] = []
     @State private var localSheetState: SheetState? = nil
+    @State private var localMatchOffset: CGFloat? = nil  // Local Y offset of first match within text view
 
     // Use shared state if available, otherwise local
     private var effectiveSheetState: Binding<SheetState?> {
@@ -639,6 +922,7 @@ struct LinkedDefinitionText: View {
     }
 
     var body: some View {
+        // isCurrentPage is now debounced at parent level - only true when swipe finishes
         if isCurrentPage {
             LinkedTextView(
                 text: text,
@@ -646,6 +930,8 @@ struct LinkedDefinitionText: View {
                 fontSize: fontSize,
                 references: references,
                 baseOffset: baseOffset,
+                searchTerms: searchTerms,
+                shouldReportMatchOffset: shouldReportMatchOffset,
                 onLinkTap: { index in
                     // Find the tapped item
                     if let item = tappableItems.first(where: { $0.index == index }) {
@@ -664,6 +950,21 @@ struct LinkedDefinitionText: View {
                         }
                         sharedItems.wrappedValue = (otherItems + items).sorted { $0.index < $1.index }
                     }
+                },
+                onFirstMatchOffset: shouldReportMatchOffset ? { offset in
+                    localMatchOffset = offset
+                } : nil
+            )
+            // Report absolute match offset via preference when we have both local offset and geometry
+            .background(
+                GeometryReader { geometry in
+                    Color.clear
+                        .preference(
+                            key: FirstMatchOffsetPreferenceKey.self,
+                            value: shouldReportMatchOffset && localMatchOffset != nil
+                                ? geometry.frame(in: .named(scrollCoordinateSpace)).minY + (localMatchOffset ?? 0)
+                                : nil
+                        )
                 }
             )
             // Only show sheet locally if not using shared state
@@ -673,13 +974,8 @@ struct LinkedDefinitionText: View {
                     .presentationDragIndicator(.visible)
                     .presentationContentInteraction(.scrolls)
             }
-        } else {
-            // Lightweight placeholder for smooth swiping
-            Text(text)
-                .font(font)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
         }
+        // No placeholder - parent view handles loading state
     }
 
     @ViewBuilder
@@ -689,7 +985,7 @@ struct LinkedDefinitionText: View {
             ScrollView {
                 LexiconSheetItemContent(
                     itemType: item.type,
-                    translation: translation,
+                    translationId: translationId,
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse
                 )
@@ -757,6 +1053,8 @@ struct LinkedDefinitionText: View {
             return displayTitle(for: fullRef, display: display)
         case .bdbRef(let bdbId):
             return bdbId
+        case .lexiconRef(let lexiconId):
+            return lexiconId
         }
     }
 
@@ -772,6 +1070,8 @@ struct LinkedDefinitionText: View {
             }
         case .bdbRef:
             return nil  // BDB entries don't navigate externally
+        case .lexiconRef:
+            return nil  // Lexicon entries don't navigate externally
         }
     }
 
@@ -782,17 +1082,17 @@ struct LinkedDefinitionText: View {
 /// Used consistently across all sheet contexts for uniform styling
 private struct LexiconSheetItemContent: View {
     let itemType: LexiconTappableItem.TappableItemType
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var onSearchStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
 
-    private var user: User {
-        RealmManager.shared.realm.objects(User.self).first!
+    private var userSettings: UserSettings {
+        UserDatabase.shared.getSettings()
     }
 
-    /// Base font size scaled to 80% of user's reader font size
+    /// Base font size at 90% of user's reader font size
     private var baseFontSize: CGFloat {
-        CGFloat(user.readerFontSize) * 0.8
+        CGFloat(userSettings.readerFontSize) * 0.85
     }
 
     // Scaled fonts (matching LexiconEntryView +5% scaling)
@@ -809,7 +1109,7 @@ private struct LexiconSheetItemContent: View {
             case .strongs(let ref):
                 StrongsRefContent(
                     strongsNum: ref,
-                    translation: translation,
+                    translationId: translationId,
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse,
                     baseFontSize: baseFontSize
@@ -821,7 +1121,7 @@ private struct LexiconSheetItemContent: View {
                     verseId: verseId,
                     endVerseId: endVerseId,
                     fullRef: fullRef,
-                    translation: translation,
+                    translationId: translationId,
                     onNavigate: onNavigateToVerse != nil ? { onNavigateToVerse?(verseId) } : nil,
                     baseFontSize: baseFontSize
                 )
@@ -829,7 +1129,16 @@ private struct LexiconSheetItemContent: View {
             case .bdbRef(let bdbId):
                 BDBRefContent(
                     bdbId: bdbId,
-                    translation: translation,
+                    translationId: translationId,
+                    onSearchStrongs: onSearchStrongs,
+                    onNavigateToVerse: onNavigateToVerse,
+                    baseFontSize: baseFontSize
+                )
+
+            case .lexiconRef(let lexiconId):
+                LexiconRefContent(
+                    lexiconId: lexiconId,
+                    translationId: translationId,
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse,
                     baseFontSize: baseFontSize
@@ -843,7 +1152,7 @@ private struct LexiconSheetItemContent: View {
 /// Strong's reference content for sheet display
 private struct StrongsRefContent: View {
     let strongsNum: String
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var onSearchStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
     var baseFontSize: CGFloat = 17
@@ -857,21 +1166,12 @@ private struct StrongsRefContent: View {
     private var caption2Font: Font { .system(size: baseFontSize * 0.735) }
 
     private func loadHitCount() {
-        guard let translationId = translation?.id else { return }
-        let patterns = [
-            "|\(strongsNum)}",
-            "|\(strongsNum),",
-            ",\(strongsNum),",
-            ",\(strongsNum)}",
-            "|\(strongsNum)|",
-            ",\(strongsNum)|"
-        ]
-        let predicates = patterns.map { NSPredicate(format: "t CONTAINS %@", $0) }
-        let compoundPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: predicates)
-        hitCount = RealmManager.shared.realm.objects(Verse.self)
-            .filter("tr == %@", translationId)
-            .filter(compoundPredicate)
-            .count
+        guard let transId = translationId else { return }
+        // Search for Strong's number in annotations_json using GRDB
+        hitCount = (try? TranslationDatabase.shared.countStrongsOccurrences(
+            translationId: transId,
+            strongsNum: strongsNum
+        )) ?? 0
     }
 
     var body: some View {
@@ -937,7 +1237,7 @@ private struct StrongsRefContent: View {
                         text: def,
                         font: bodyFont,
                         fontSize: baseFontSize * 1.024,
-                        translation: translation,
+                        translationId: translationId,
                         onSearchStrongs: onSearchStrongs,
                         onNavigateToVerse: onNavigateToVerse
                     )
@@ -957,7 +1257,7 @@ private struct VerseRefContent: View {
     let verseId: Int
     let endVerseId: Int?
     let fullRef: String?
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var onNavigate: (() -> Void)? = nil
     var baseFontSize: CGFloat = 17
 
@@ -965,12 +1265,15 @@ private struct VerseRefContent: View {
     private var bodyFont: Font { .system(size: baseFontSize * 1.024) }
     private var captionFont: Font { .system(size: baseFontSize * 0.798) }
 
-    private var verses: [Verse] {
-        guard let translation = translation else { return [] }
+    private var verses: [TranslationVerse] {
+        guard let transId = translationId else { return [] }
         let startId = verseId
         let endId = endVerseId ?? verseId
-        return Array(RealmManager.shared.realm.objects(Verse.self)
-            .filter("tr == \(translation.id) AND id >= \(startId) AND id <= \(endId)"))
+        return (try? TranslationDatabase.shared.getVerseRange(
+            translationId: transId,
+            startRef: startId,
+            endRef: endId
+        )) ?? []
     }
 
     private var versesText: AttributedString {
@@ -982,12 +1285,12 @@ private struct VerseRefContent: View {
 
         var result = AttributedString()
         for (index, verse) in verses.enumerated() {
-            var verseNum = AttributedString("\(verse.v)")
+            var verseNum = AttributedString("\(verse.verse)")
             verseNum.font = captionFont
             verseNum.foregroundColor = .secondary
             verseNum.baselineOffset = 4
 
-            var text = AttributedString(" " + stripStrongsAnnotations(verse.t))
+            var text = AttributedString(" " + verse.text)
             text.font = bodyFont
 
             result.append(verseNum)
@@ -1002,7 +1305,7 @@ private struct VerseRefContent: View {
 
     var body: some View {
         Text(versesText)
-            .lineSpacing(4)
+            .lineSpacing(6)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -1010,18 +1313,18 @@ private struct VerseRefContent: View {
 /// BDB reference content for sheet display
 private struct BDBRefContent: View {
     let bdbId: String
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var onSearchStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
     var baseFontSize: CGFloat = 17
 
     var body: some View {
         if let entry = LexiconLookup.lookupBDB(bdbId) {
-            let senses = parseBDBSensesStatic(entry.sensesJson)
+            let senses = parseUserSensesStatic(entry.sensesJson)
             LexiconEntryView(
                 entry: entry,
                 senses: senses,
-                translation: translation,
+                translationId: translationId,
                 onSearchStrongs: onSearchStrongs,
                 onNavigateToVerse: onNavigateToVerse,
                 baseFontSize: baseFontSize
@@ -1033,17 +1336,43 @@ private struct BDBRefContent: View {
     }
 }
 
+/// Lexicon cross-reference content for sheet display (user dictionary entries)
+private struct LexiconRefContent: View {
+    let lexiconId: String
+    var translationId: String? = nil
+    var onSearchStrongs: ((String) -> Void)? = nil
+    var onNavigateToVerse: ((Int) -> Void)? = nil
+    var baseFontSize: CGFloat = 17
+
+    var body: some View {
+        if let entry = LexiconLookup.lookupUserDictionary(lexiconId) {
+            let senses = parseUserSensesStatic(entry.sensesJson)
+            LexiconEntryView(
+                entry: entry,
+                senses: senses,
+                translationId: translationId,
+                onSearchStrongs: onSearchStrongs,
+                onNavigateToVerse: onNavigateToVerse,
+                baseFontSize: baseFontSize
+            )
+        } else {
+            Text("Lexicon entry not found: \(lexiconId)")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 // Legacy wrapper for backward compatibility (popover contexts)
 private struct BDBPopoverForRef: View {
     let bdbId: String
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var onSearchStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
 
     var body: some View {
         BDBRefContent(
             bdbId: bdbId,
-            translation: translation,
+            translationId: translationId,
             onSearchStrongs: onSearchStrongs,
             onNavigateToVerse: onNavigateToVerse
         )
@@ -1060,8 +1389,11 @@ private struct LinkedTextView: UIViewRepresentable {
     let fontSize: CGFloat?  // Explicit font size (preferred over deriving from Font)
     let references: [VerseRef]?
     let baseOffset: Int
+    let searchTerms: [String]  // Search terms to highlight with yellow background
+    var shouldReportMatchOffset: Bool = false  // Whether to report first match offset for scrolling
     let onLinkTap: (Int) -> Void
     let onItemsParsed: ([TappableItem]) -> Void
+    var onFirstMatchOffset: ((CGFloat) -> Void)? = nil  // Callback to report first match Y offset
 
     func makeUIView(context: Context) -> TappableTextView {
         let textView = TappableTextView()
@@ -1078,9 +1410,10 @@ private struct LinkedTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: TappableTextView, context: Context) {
-        // Only update if text changed
-        if context.coordinator.lastText != text {
+        // Only update if text or search terms changed
+        if context.coordinator.lastText != text || context.coordinator.lastSearchTerms != searchTerms {
             context.coordinator.lastText = text
+            context.coordinator.lastSearchTerms = searchTerms
             let (attrString, items) = buildAttributedString()
             textView.attributedText = attrString
             context.coordinator.onLinkTap = onLinkTap
@@ -1090,6 +1423,40 @@ private struct LinkedTextView: UIViewRepresentable {
                 onItemsParsed(items)
             }
         }
+
+        // Report first match offset if requested
+        if shouldReportMatchOffset, let callback = onFirstMatchOffset, !searchTerms.isEmpty {
+            DispatchQueue.main.async {
+                textView.layoutIfNeeded()
+                if let matchRange = self.findFirstMatchRange(in: text) {
+                    // Calculate rect for the match
+                    if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
+                       let end = textView.position(from: start, offset: matchRange.length),
+                       let textRange = textView.textRange(from: start, to: end) {
+                        let rect = textView.firstRect(for: textRange)
+                        if !rect.isNull && !rect.isInfinite {
+                            callback(rect.origin.y)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Find the first match range in the text
+    private func findFirstMatchRange(in content: String) -> NSRange? {
+        let contentLower = content.lowercased()
+        var earliestRange: NSRange? = nil
+        for term in searchTerms {
+            let termLower = term.lowercased()
+            if let range = contentLower.range(of: termLower) {
+                let nsRange = NSRange(range, in: content)
+                if earliestRange == nil || nsRange.location < earliestRange!.location {
+                    earliestRange = nsRange
+                }
+            }
+        }
+        return earliestRange
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1117,7 +1484,7 @@ private struct LinkedTextView: UIViewRepresentable {
 
         // Add paragraph style for better line/paragraph spacing
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = effectiveFontSize * 0.33  // 33% of font size
+        paragraphStyle.lineSpacing = effectiveFontSize * 0.4  // 40% of font size
         paragraphStyle.paragraphSpacing = effectiveFontSize * 0.5  // 50% of font size between paragraphs
         // Force LTR base direction to prevent RTL Hebrew from reordering mixed content
         paragraphStyle.baseWritingDirection = .leftToRight
@@ -1163,6 +1530,23 @@ private struct LinkedTextView: UIViewRepresentable {
             }
         }
 
+        // Apply search term highlighting with yellow background
+        if !searchTerms.isEmpty {
+            let fullString = result.string
+            let fullStringLower = fullString.lowercased()
+
+            for term in searchTerms {
+                let termLower = term.lowercased()
+                var searchStartIndex = fullStringLower.startIndex
+
+                while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
+                    let nsRange = NSRange(range, in: fullString)
+                    result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    searchStartIndex = range.upperBound
+                }
+            }
+        }
+
         return (result, tappableItems)
     }
 
@@ -1186,6 +1570,7 @@ private struct LinkedTextView: UIViewRepresentable {
     class Coordinator {
         var onLinkTap: (Int) -> Void
         var lastText: String = ""
+        var lastSearchTerms: [String] = []
 
         init(onLinkTap: @escaping (Int) -> Void) {
             self.onLinkTap = onLinkTap
@@ -1258,6 +1643,196 @@ private class TappableTextView: UITextView {
     }
 }
 
+// MARK: - Annotated Definition Text View (v2.0 Schema Support)
+
+/// UIKit-based view for rendering v2.0 annotated text with sheet integration
+/// Uses CommentaryRenderer for attributed string generation, with tappable items for sheet navigation
+private struct AnnotatedDefinitionTextView: UIViewRepresentable {
+    let annotatedText: AnnotatedText
+    let fontSize: CGFloat
+    let baseOffset: Int
+    let searchTerms: [String]
+    var shouldReportMatchOffset: Bool = false  // Whether to report first match offset for scrolling
+    let onLinkTap: (Int) -> Void
+    let onItemsParsed: ([TappableItem]) -> Void
+    var onFirstMatchOffset: ((CGFloat) -> Void)? = nil  // Callback to report first match Y offset
+
+    func makeUIView(context: Context) -> TappableTextView {
+        let textView = TappableTextView()
+        textView.isEditable = false
+        textView.isSelectable = false
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        textView.onTappableIndexTap = context.coordinator.handleTap
+        return textView
+    }
+
+    func updateUIView(_ textView: TappableTextView, context: Context) {
+        // Only update if text or search terms changed
+        let textId = "\(annotatedText.text.hashValue)_\(fontSize)"
+        if context.coordinator.lastTextId != textId || context.coordinator.lastSearchTerms != searchTerms {
+            context.coordinator.lastTextId = textId
+            context.coordinator.lastSearchTerms = searchTerms
+            let (attrString, items) = buildAttributedString()
+            textView.attributedText = attrString
+            context.coordinator.onLinkTap = onLinkTap
+            textView.invalidateIntrinsicContentSize()
+
+            DispatchQueue.main.async {
+                onItemsParsed(items)
+            }
+        }
+
+        // Report first match offset if requested
+        if shouldReportMatchOffset, let callback = onFirstMatchOffset, !searchTerms.isEmpty {
+            DispatchQueue.main.async {
+                textView.layoutIfNeeded()
+                if let matchRange = self.findFirstMatchRange(in: annotatedText.text) {
+                    // Calculate rect for the match
+                    if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
+                       let end = textView.position(from: start, offset: matchRange.length),
+                       let textRange = textView.textRange(from: start, to: end) {
+                        let rect = textView.firstRect(for: textRange)
+                        if !rect.isNull && !rect.isInfinite {
+                            callback(rect.origin.y)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Find the first match range in the text
+    private func findFirstMatchRange(in content: String) -> NSRange? {
+        let contentLower = content.lowercased()
+        var earliestRange: NSRange? = nil
+        for term in searchTerms {
+            let termLower = term.lowercased()
+            if let range = contentLower.range(of: termLower) {
+                let nsRange = NSRange(range, in: content)
+                if earliestRange == nil || nsRange.location < earliestRange!.location {
+                    earliestRange = nsRange
+                }
+            }
+        }
+        return earliestRange
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onLinkTap: onLinkTap)
+    }
+
+    @available(iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: TappableTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIScreen.main.bounds.width
+        let constraintSize = CGSize(width: width, height: .greatestFiniteMagnitude)
+        let fittingSize = uiView.sizeThatFits(constraintSize)
+        return CGSize(width: width, height: fittingSize.height)
+    }
+
+    private func buildAttributedString() -> (NSAttributedString, [TappableItem]) {
+        var tappableItems: [TappableItem] = []
+        var itemIndex = baseOffset
+
+        // Use CommentaryRenderer style
+        let style = CommentaryRenderer.Style(
+            uiBodyFont: UIFont.systemFont(ofSize: fontSize),
+            scriptureColor: .blue,
+            strongsColor: .purple,
+            footnoteColor: Color.secondary,
+            abbreviationColor: Color.secondary
+        )
+
+        // Get the base attributed string from CommentaryRenderer
+        let baseAttrString = CommentaryRenderer.renderUIKit(annotatedText, style: style)
+        let mutableAttrString = NSMutableAttributedString(attributedString: baseAttrString)
+
+        // Add tappable index attributes and collect items
+        if let annotations = annotatedText.annotations {
+            for annotation in annotations {
+                guard annotation.start >= 0, annotation.start < annotation.end else { continue }
+
+                // Create tappable item based on annotation type
+                let tappableType: TappableItem.TappableItemType?
+                switch annotation.type {
+                case .strongs:
+                    let strongsNum = annotation.data?.strongs ?? annotation.id ?? ""
+                    if !strongsNum.isEmpty {
+                        tappableType = .strongs(strongsNum)
+                    } else {
+                        tappableType = nil
+                    }
+                case .scripture:
+                    if let sv = annotation.data?.sv {
+                        let display = annotation.text ?? String(annotatedText.text.dropFirst(annotation.start).prefix(annotation.end - annotation.start))
+                        tappableType = .verseRef(display: display, verseId: sv, endVerseId: annotation.data?.ev, fullRef: nil)
+                    } else {
+                        tappableType = nil
+                    }
+                case .lexiconRef:
+                    let lexiconId = annotation.data?.lexiconId ?? annotation.id ?? ""
+                    if !lexiconId.isEmpty {
+                        tappableType = .lexiconRef(lexiconId)
+                    } else {
+                        tappableType = nil
+                    }
+                default:
+                    tappableType = nil
+                }
+
+                if let itemType = tappableType {
+                    tappableItems.append(TappableItem(index: itemIndex, type: itemType))
+
+                    // Add tappable index attribute to the range
+                    let nsRange = NSRange(location: annotation.start, length: annotation.end - annotation.start)
+                    if nsRange.location + nsRange.length <= mutableAttrString.length {
+                        mutableAttrString.addAttribute(TappableIndexAttributeKey, value: itemIndex, range: nsRange)
+                    }
+
+                    itemIndex += 1
+                }
+            }
+        }
+
+        // Apply search term highlighting with yellow background
+        if !searchTerms.isEmpty {
+            let fullString = mutableAttrString.string
+            let fullStringLower = fullString.lowercased()
+
+            for term in searchTerms {
+                let termLower = term.lowercased()
+                var searchStartIndex = fullStringLower.startIndex
+
+                while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
+                    let nsRange = NSRange(range, in: fullString)
+                    mutableAttrString.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    searchStartIndex = range.upperBound
+                }
+            }
+        }
+
+        return (mutableAttrString, tappableItems)
+    }
+
+    class Coordinator {
+        var onLinkTap: (Int) -> Void
+        var lastTextId: String = ""
+        var lastSearchTerms: [String] = []
+
+        init(onLinkTap: @escaping (Int) -> Void) {
+            self.onLinkTap = onLinkTap
+        }
+
+        func handleTap(_ index: Int) {
+            onLinkTap(index)
+        }
+    }
+}
+
 // MARK: - Lexicon Entry Data
 
 struct LexiconEntry: Identifiable {
@@ -1275,7 +1850,7 @@ struct LexiconEntry: Identifiable {
     // Extended fields (used by BDB and user dictionaries)
     let pos: String?  // Part of speech
     let gloss: String?  // Short gloss/meaning
-    let sensesJson: String?  // Full senses data as JSON (BDBSense for BDB, DictionarySense for user dicts)
+    let sensesJson: String?  // Full senses data as JSON (DictionarySense schema for all dictionaries)
     let referencesJson: String?  // Verse references as JSON [{"sv": verseId, "ev": endVerseId}]
 
     // BDB-specific fields
@@ -1325,17 +1900,23 @@ struct LexiconEntryView: View {
     let entry: LexiconEntry
     // Pre-parsed senses passed from parent (BDB and user dictionaries use same format)
     let senses: [DictionarySense]
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var onSearchStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
     var baseFontSize: CGFloat = 17  // Base font size (scaled from user's reader font size)
     var hitCount: Int? = nil  // Number of occurrences in the translation
     var isCurrentPage: Bool = true
+    var searchTerms: [String] = []  // Search terms to highlight
 
     // Shared state for cross-segment navigation
     var baseOffset: Int = 0
     var sharedSheetState: Binding<LexiconSheetState?>? = nil
     var sharedAllItems: Binding<[LexiconTappableItem]>? = nil
+
+    // Scroll-to-match support: which sense/field should report its match offset
+    var reportMatchForSense: Int? = nil  // Sense index (0-based) that should report
+    var reportMatchForField: String? = nil  // Field name within that sense
+    var scrollCoordinateSpace: String = "lexiconScroll"
 
     // Scaled fonts relative to base size
     private var titleFont: Font { .system(size: baseFontSize * 1.4) }  // ~title2 (+5%)
@@ -1477,11 +2058,15 @@ struct LexiconEntryView: View {
                     text: gloss,
                     font: bodyFont,
                     fontSize: baseFontSize,
-                    translation: translation,
+                    translationId: translationId,
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse,
-                    isCurrentPage: isCurrentPage
+                    isCurrentPage: isCurrentPage,
+                    searchTerms: searchTerms,
+                    shouldReportMatchOffset: reportMatchForSense == nil && reportMatchForField == "entry-gloss",
+                    scrollCoordinateSpace: scrollCoordinateSpace
                 )
+                .id("\(entry.id)-entry-gloss")
             }
 
             // Top-level definition (for entries without multiple senses)
@@ -1490,15 +2075,19 @@ struct LexiconEntryView: View {
                     text: def,
                     font: bodyFont,
                     fontSize: baseFontSize,
-                    translation: translation,
+                    translationId: translationId,
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse,
                     references: topLevelReferences,
                     isCurrentPage: isCurrentPage,
                     baseOffset: baseOffset,
                     sharedSheetState: sharedSheetState,
-                    sharedAllItems: sharedAllItems
+                    sharedAllItems: sharedAllItems,
+                    searchTerms: searchTerms,
+                    shouldReportMatchOffset: reportMatchForSense == nil && reportMatchForField == "entry-def",
+                    scrollCoordinateSpace: scrollCoordinateSpace
                 )
+                .id("\(entry.id)-entry-def")
             }
 
             // Senses (BDB and user dictionaries use same format)
@@ -1526,16 +2115,21 @@ struct LexiconEntryView: View {
                             UserDictionarySenseView(
                                 sense: sense,
                                 senseNumber: index + 1,
+                                entryId: entry.id,
                                 hidePartOfSpeech: index == 0 && liftedPartOfSpeech != nil,
                                 baseFontSize: baseFontSize,
-                                translation: translation,
+                                translationId: translationId,
                                 onSearchStrongs: onSearchStrongs,
                                 onNavigateToVerse: onNavigateToVerse,
                                 isCurrentPage: isCurrentPage,
+                                searchTerms: searchTerms,
                                 baseOffset: senseOffsets[index] ?? 0,
                                 sharedSheetState: sharedSheetState,
-                                sharedAllItems: sharedAllItems
+                                sharedAllItems: sharedAllItems,
+                                reportMatchForField: reportMatchForSense == index ? reportMatchForField : nil,
+                                scrollCoordinateSpace: scrollCoordinateSpace
                             )
+                            .id("\(entry.id)-sense-\(index)")
 
                             if index < senses.count - 1 {
                                 Divider()
@@ -1557,6 +2151,7 @@ struct LexiconEntryView: View {
                         .foregroundStyle(.primary)
                 }
                 .padding(.top, 4)
+                .id("\(entry.id)-entry-kjv")
             }
 
             // Derivation - only show for single-sense entries
@@ -1569,12 +2164,16 @@ struct LexiconEntryView: View {
                         text: deriv,
                         font: captionFont,
                         fontSize: baseFontSize * 0.798,
-                        translation: translation,
+                        translationId: translationId,
                         onSearchStrongs: onSearchStrongs,
                         onNavigateToVerse: onNavigateToVerse,
-                        isCurrentPage: isCurrentPage
+                        isCurrentPage: isCurrentPage,
+                        searchTerms: searchTerms,
+                        shouldReportMatchOffset: reportMatchForSense == nil && reportMatchForField == "entry-deriv",
+                        scrollCoordinateSpace: scrollCoordinateSpace
                     )
                 }
+                .id("\(entry.id)-entry-deriv")
             }
         }
     }
@@ -1585,17 +2184,26 @@ struct LexiconEntryView: View {
 struct UserDictionarySenseView: View {
     let sense: DictionarySense
     let senseNumber: Int
+    var entryId: String = ""  // Entry ID for generating field-specific scroll IDs
     var hidePartOfSpeech: Bool = false  // True when POS was lifted to top level
     var baseFontSize: CGFloat = 17
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var onSearchStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
     var isCurrentPage: Bool = true
+    var searchTerms: [String] = []  // Search terms to highlight
 
     // Shared state for cross-segment navigation
     var baseOffset: Int = 0
     var sharedSheetState: Binding<LexiconSheetState?>? = nil
     var sharedAllItems: Binding<[LexiconTappableItem]>? = nil
+
+    // Scroll-to-match support: which field (if any) should report its match offset
+    var reportMatchForField: String? = nil  // "gloss", "definition", "usage", "derivation", or "translationUsage-{version}"
+    var scrollCoordinateSpace: String = "lexiconScroll"
+
+    // Sense index (0-based) for scroll ID generation
+    private var senseIndex: Int { senseNumber - 1 }
 
     // Scaled fonts
     private var bodyFont: Font { .system(size: baseFontSize) }  // definition text (+5%)
@@ -1606,7 +2214,7 @@ struct UserDictionarySenseView: View {
 
     // Count items in definition for offset calculation
     private var definitionItemCount: Int {
-        guard let def = sense.definition, !def.isEmpty else { return 0 }
+        guard let def = sense.definitionText, !def.isEmpty else { return 0 }
         return countPopoverItemsInText(def, references: sense.references)
     }
 
@@ -1635,31 +2243,39 @@ struct UserDictionarySenseView: View {
                             text: gloss,
                             font: bodyFont,
                             fontSize: baseFontSize,
-                            translation: translation,
+                            translationId: translationId,
                             onSearchStrongs: onSearchStrongs,
                             onNavigateToVerse: onNavigateToVerse,
-                            isCurrentPage: isCurrentPage
+                            isCurrentPage: isCurrentPage,
+                            searchTerms: searchTerms,
+                            shouldReportMatchOffset: reportMatchForField == "gloss",
+                            scrollCoordinateSpace: scrollCoordinateSpace
                         )
+                        .id("\(entryId)-sense-\(senseIndex)-gloss")
                     }
 
-                    // Full definition - pass references for accurate linking
-                    if let def = sense.definition, !def.isEmpty {
-                        LinkedDefinitionText(
-                            text: def,
+                    // Full definition - supports both v1.0 plain text and v2.0 annotated text
+                    if sense.definition != nil {
+                        DictionaryDefinitionView(
+                            field: sense.definition,
                             font: bodyFont,
                             fontSize: baseFontSize,
-                            translation: translation,
+                            translationId: translationId,
                             onSearchStrongs: onSearchStrongs,
                             onNavigateToVerse: onNavigateToVerse,
                             references: sense.references,
                             isCurrentPage: isCurrentPage,
                             baseOffset: baseOffset,
                             sharedSheetState: sharedSheetState,
-                            sharedAllItems: sharedAllItems
+                            sharedAllItems: sharedAllItems,
+                            searchTerms: searchTerms,
+                            shouldReportMatchOffset: reportMatchForField == "definition",
+                            scrollCoordinateSpace: scrollCoordinateSpace
                         )
+                        .id("\(entryId)-sense-\(senseIndex)-definition")
                     }
 
-                    // Usage
+                    // Usage - plain text, no scroll-to-match needed (short field)
                     if let usage = sense.usage, !usage.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Usage")
@@ -1669,31 +2285,72 @@ struct UserDictionarySenseView: View {
                                 .font(captionFont)
                                 .foregroundStyle(.secondary)
                         }
+                        .id("\(entryId)-sense-\(senseIndex)-usage")
                     }
 
                     // Derivation - may also contain Strong's refs
-                    if let deriv = sense.derivation, !deriv.isEmpty {
+                    if sense.derivation != nil {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Derivation")
                                 .font(caption2Font)
                                 .foregroundStyle(.tertiary)
-                            LinkedDefinitionText(
-                                text: deriv,
+                            DictionaryDefinitionView(
+                                field: sense.derivation,
                                 font: captionFont,
                                 fontSize: baseFontSize * 0.798,
-                                translation: translation,
+                                translationId: translationId,
                                 onSearchStrongs: onSearchStrongs,
                                 onNavigateToVerse: onNavigateToVerse,
                                 isCurrentPage: isCurrentPage,
                                 baseOffset: baseOffset + definitionItemCount,
                                 sharedSheetState: sharedSheetState,
-                                sharedAllItems: sharedAllItems
+                                sharedAllItems: sharedAllItems,
+                                searchTerms: searchTerms,
+                                shouldReportMatchOffset: reportMatchForField == "derivation",
+                                scrollCoordinateSpace: scrollCoordinateSpace
                             )
+                        }
+                        .id("\(entryId)-sense-\(senseIndex)-derivation")
+                    }
+
+                    // Translation usages from Bible versions
+                    if let usages = sense.translationUsages, !usages.isEmpty {
+                        ForEach(usages, id: \.version) { usage in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(usage.version) Usages")
+                                    .font(caption2Font)
+                                    .foregroundStyle(.tertiary)
+                                LinkedDefinitionText(
+                                    text: formatTranslationUsage(usage),
+                                    font: captionFont,
+                                    fontSize: baseFontSize * 0.798,
+                                    translationId: translationId,
+                                    onSearchStrongs: onSearchStrongs,
+                                    onNavigateToVerse: onNavigateToVerse,
+                                    isCurrentPage: isCurrentPage,
+                                    searchTerms: searchTerms,
+                                    shouldReportMatchOffset: reportMatchForField == "translationUsage-\(usage.version)",
+                                    scrollCoordinateSpace: scrollCoordinateSpace
+                                )
+                                .foregroundStyle(.secondary)
+                            }
+                            .id("\(entryId)-sense-\(senseIndex)-translationUsage-\(usage.version)")
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Formats translation usage as comma-separated "word (count)" items
+    private func formatTranslationUsage(_ usage: TranslationUsage) -> String {
+        usage.translations.map { translation in
+            if let count = translation.count {
+                return "\(translation.word) (\(count))"
+            } else {
+                return translation.word
+            }
+        }.joined(separator: ", ")
     }
 }
 
@@ -1702,71 +2359,80 @@ struct UserDictionarySenseView: View {
 struct LexiconLookup {
     /// Returns all available lexicon entries for a Strong's number
     static func allEntries(for num: String) -> [LexiconEntry] {
-        let realm = RealmManager.shared.realm
         var entries: [LexiconEntry] = []
+        let bundledDb = BundledModuleDatabase.shared
 
         if num.hasPrefix("H") {
-            // Hebrew - Strong's and BDB
-            if let entry = realm.objects(StrongsHebrew.self).filter("id == %@", num).first {
+            // Hebrew - Strong's Hebrew from bundled database
+            if let entry = try? bundledDb.getDictionaryEntry(moduleId: "strongs_hebrew", key: num) {
+                let senses = entry.senses
+                let firstSense = senses.first
                 entries.append(LexiconEntry(
                     id: "\(num)-strongs",
                     strongsId: num,
                     lemma: entry.lemma,
-                    xlit: entry.xlit,
-                    pron: entry.pron,
-                    def: entry.def,
-                    kjv: entry.kjv,
-                    deriv: entry.deriv,
+                    xlit: entry.transliteration,
+                    pron: entry.pronunciation,
+                    def: firstSense?.definition?.plainText,
+                    kjv: firstSense?.usage,
+                    deriv: firstSense?.derivation?.plainText,
                     lexiconKey: "strongs",
-                    lexiconName: "Strong's Hebrew"
+                    lexiconName: "Strong's Hebrew",
+                    sensesJson: entry.sensesJson
                 ))
             }
-            // Look up BDB via StrongsToBDB mapping table
-            if let mapping = realm.object(ofType: StrongsToBDB.self, forPrimaryKey: num) {
-                for bdbId in mapping.bdbIds {
-                    if let bdbEntry = realm.object(ofType: BDBHebrew.self, forPrimaryKey: bdbId) {
+            // Look up BDB via lexicon mapping
+            if let bdbIds = try? bundledDb.getLexiconMappings(sourceKey: num), !bdbIds.isEmpty {
+                for bdbId in bdbIds {
+                    if let bdbEntry = try? bundledDb.getDictionaryEntry(moduleId: "bdb", key: bdbId) {
+                        let senses = bdbEntry.senses
+                        let firstSense = senses.first
                         entries.append(LexiconEntry(
                             id: "\(bdbId)-bdb",
                             strongsId: num,
                             lemma: bdbEntry.lemma,
-                            def: bdbEntry.def,
+                            def: firstSense?.definition?.plainText,
                             lexiconKey: "bdb",
                             lexiconName: "Brown-Driver-Briggs",
-                            pos: bdbEntry.pos,
-                            gloss: bdbEntry.gloss,
+                            pos: firstSense?.partOfSpeech,
+                            gloss: firstSense?.gloss,
                             sensesJson: bdbEntry.sensesJson,
-                            referencesJson: bdbEntry.referencesJson,
-                            bdbId: bdbId,
-                            homograph: bdbEntry.homograph
+                            bdbId: bdbId
                         ))
                     }
                 }
             }
         } else if num.hasPrefix("G") {
-            // Greek - Strong's and Dodson
-            if let entry = realm.objects(StrongsGreek.self).filter("id == %@", num).first {
+            // Greek - Strong's Greek from bundled database
+            if let entry = try? bundledDb.getDictionaryEntry(moduleId: "strongs_greek", key: num) {
+                let senses = entry.senses
+                let firstSense = senses.first
                 entries.append(LexiconEntry(
                     id: "\(num)-strongs",
                     strongsId: num,
                     lemma: entry.lemma,
-                    xlit: entry.xlit,
-                    def: entry.def,
-                    kjv: entry.kjv,
-                    deriv: entry.deriv,
+                    xlit: entry.transliteration,
+                    def: firstSense?.definition?.plainText,
+                    kjv: firstSense?.usage,
+                    deriv: firstSense?.derivation?.plainText,
                     lexiconKey: "strongs",
-                    lexiconName: "Strong's Greek"
+                    lexiconName: "Strong's Greek",
+                    sensesJson: entry.sensesJson
                 ))
             }
-            if let entry = realm.objects(DodsonGreek.self).filter("id == %@", num).first {
-                // Use full def if available, otherwise fall back to short
-                let definition = (entry.def?.isEmpty == false) ? entry.def : entry.short
+            // Dodson Greek from bundled database
+            if let entry = try? bundledDb.getDictionaryEntry(moduleId: "dodson_greek", key: num) {
+                let senses = entry.senses
+                let firstSense = senses.first
+                let definition = firstSense?.definition?.plainText ?? firstSense?.shortDefinition?.plainText
                 entries.append(LexiconEntry(
                     id: "\(num)-dodson",
                     strongsId: num,
                     lemma: entry.lemma,
                     def: definition,
                     lexiconKey: "dodson",
-                    lexiconName: "Dodson"
+                    lexiconName: "Dodson",
+                    sensesJson: entry.sensesJson
                 ))
             }
         }
@@ -1830,36 +2496,73 @@ struct LexiconLookup {
 
     /// Look up a BDB entry directly by its BDB ID (for cross-references like ⦃BDB871⦄)
     static func lookupBDB(_ bdbId: String) -> LexiconEntry? {
-        let realm = RealmManager.shared.realm
-        guard let bdbEntry = realm.object(ofType: BDBHebrew.self, forPrimaryKey: bdbId) else {
+        let bundledDb = BundledModuleDatabase.shared
+        guard let bdbEntry = try? bundledDb.getDictionaryEntry(moduleId: "bdb", key: bdbId) else {
             return nil
         }
 
-        // Find the Strong's number(s) that map to this BDB entry
-        // For display purposes, we use the first one found
-        var strongsId = ""
-        let mappings = realm.objects(StrongsToBDB.self)
-        for mapping in mappings {
-            if mapping.bdbIds.contains(bdbId) {
-                strongsId = mapping.id
-                break
-            }
-        }
+        // Find the Strong's number(s) that map to this BDB entry via reverse lookup
+        let strongsIds = (try? bundledDb.getReverseLexiconMappings(targetKey: bdbId)) ?? []
+        let strongsId = strongsIds.first ?? ""
+
+        let senses = bdbEntry.senses
+        let firstSense = senses.first
 
         return LexiconEntry(
             id: "\(bdbId)-bdb",
             strongsId: strongsId,
             lemma: bdbEntry.lemma,
-            def: bdbEntry.def,
+            def: firstSense?.definition?.plainText,
             lexiconKey: "bdb",
             lexiconName: "Brown-Driver-Briggs",
-            pos: bdbEntry.pos,
-            gloss: bdbEntry.gloss,
+            pos: firstSense?.partOfSpeech,
+            gloss: firstSense?.gloss,
             sensesJson: bdbEntry.sensesJson,
-            referencesJson: bdbEntry.referencesJson,
-            bdbId: bdbId,
-            homograph: bdbEntry.homograph
+            bdbId: bdbId
         )
+    }
+
+    /// Look up a user dictionary entry by its lexicon ID (e.g., "CWSD_G1234" or entry ID)
+    static func lookupUserDictionary(_ lexiconId: String) -> LexiconEntry? {
+        let db = ModuleDatabase.shared
+
+        // Try to find entry by ID first
+        if let entry = try? db.getDictionaryEntry(id: lexiconId) {
+            // Look up module name
+            let moduleName = (try? db.getModule(id: entry.moduleId))?.name ?? entry.moduleId
+            return LexiconEntry(
+                id: entry.id,
+                strongsId: entry.key,
+                lemma: entry.lemma,
+                xlit: entry.transliteration,
+                def: entry.definition,
+                lexiconKey: entry.moduleId,
+                lexiconName: moduleName,
+                sensesJson: entry.sensesJson
+            )
+        }
+
+        // Try parsing as moduleId_key format
+        let parts = lexiconId.split(separator: "_", maxSplits: 1)
+        if parts.count == 2 {
+            let moduleId = String(parts[0])
+            let key = String(parts[1])
+            if let entry = try? db.getDictionaryEntry(moduleId: moduleId, key: key) {
+                let moduleName = (try? db.getModule(id: moduleId))?.name ?? moduleId
+                return LexiconEntry(
+                    id: entry.id,
+                    strongsId: entry.key,
+                    lemma: entry.lemma,
+                    xlit: entry.transliteration,
+                    def: entry.definition,
+                    lexiconKey: entry.moduleId,
+                    lexiconName: moduleName,
+                    sensesJson: entry.sensesJson
+                )
+            }
+        }
+
+        return nil
     }
 
     /// Converts a homograph number to Roman numeral string
@@ -1887,10 +2590,11 @@ struct LexiconPageView: View {
     let parsedEntries: [ParsedLexiconEntryData]
     let totalPopoverCount: Int
     let morphology: String?
-    var translation: Translation? = nil
+    var translationId: String? = nil
     var baseFontSize: CGFloat = 17
-    var isCurrentPage: Bool = true
+    var isCurrentPage: Bool = true  // True when swipe settles on this page (debounced)
     var strongsHitCounts: [String: Int] = [:]  // Hit counts for display
+    var searchTerms: [String] = []  // Search terms to highlight
     var onSearchStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
 
@@ -1898,8 +2602,110 @@ struct LexiconPageView: View {
     @State private var sheetState: LexiconSheetState? = nil
     @State private var allItems: [LexiconTappableItem] = []
 
+    // Scroll-to-match state (only used when searchTerms is not empty)
+    @State private var hasScrolledToMatch: Bool = false
+    @State private var preciseMatchOffset: CGFloat? = nil
+    @State private var scrollViewRef: UIScrollView? = nil
+
+    // Named coordinate space for scroll-to-match
+    private let scrollCoordinateSpaceName = "lexiconScroll"
+
+    // Whether we need scroll-to-match functionality (only from search view)
+    private var needsScrollToMatch: Bool { !searchTerms.isEmpty }
+
     // Scaled fonts
     private var captionFont: Font { .system(size: baseFontSize * 0.798) }  // (+5%)
+
+    /// Find the first entry/sense/field that contains a search term match
+    /// Returns (entryId, senseIndex, fieldName) where senseIndex is nil for entry-level match
+    private var firstMatchLocation: (entryId: String, senseIndex: Int?, field: String?)? {
+        guard !searchTerms.isEmpty else { return nil }
+        for data in parsedEntries {
+            let hasSenses = !data.senses.isEmpty
+
+            // Check entry-level fields first (only for single-sense entries where these are rendered)
+            if !hasSenses {
+                // Check gloss (shown if no def)
+                if data.entry.def == nil, let gloss = data.entry.gloss, !gloss.isEmpty {
+                    if searchTerms.contains(where: { gloss.lowercased().contains($0.lowercased()) }) {
+                        return (data.id, nil, "entry-gloss")
+                    }
+                }
+                // Check definition
+                if let def = data.entry.def, !def.isEmpty {
+                    if searchTerms.contains(where: { def.lowercased().contains($0.lowercased()) }) {
+                        return (data.id, nil, "entry-def")
+                    }
+                }
+                // Check KJV usage
+                if let kjv = data.entry.kjv, !kjv.isEmpty {
+                    if searchTerms.contains(where: { kjv.lowercased().contains($0.lowercased()) }) {
+                        return (data.id, nil, "entry-kjv")
+                    }
+                }
+                // Check derivation
+                if let deriv = data.entry.deriv, !deriv.isEmpty {
+                    if searchTerms.contains(where: { deriv.lowercased().contains($0.lowercased()) }) {
+                        return (data.id, nil, "entry-deriv")
+                    }
+                }
+            }
+
+            // Check senses - check each field individually to know where to scroll
+            for (index, sense) in data.senses.enumerated() {
+                // Check gloss first
+                if let gloss = sense.gloss, !gloss.isEmpty {
+                    if searchTerms.contains(where: { gloss.lowercased().contains($0.lowercased()) }) {
+                        return (data.id, index, "gloss")
+                    }
+                }
+                // Check definition
+                if let def = sense.definitionText, !def.isEmpty {
+                    if searchTerms.contains(where: { def.lowercased().contains($0.lowercased()) }) {
+                        return (data.id, index, "definition")
+                    }
+                }
+                // Check usage
+                if let usage = sense.usage, !usage.isEmpty {
+                    if searchTerms.contains(where: { usage.lowercased().contains($0.lowercased()) }) {
+                        return (data.id, index, "usage")
+                    }
+                }
+                // Check derivation
+                if let deriv = sense.derivationText, !deriv.isEmpty {
+                    if searchTerms.contains(where: { deriv.lowercased().contains($0.lowercased()) }) {
+                        return (data.id, index, "derivation")
+                    }
+                }
+                // Check translation usages
+                if let usages = sense.translationUsages {
+                    for usage in usages {
+                        let usageText = usage.translations.map { $0.word }.joined(separator: " ")
+                        if searchTerms.contains(where: { usageText.lowercased().contains($0.lowercased()) }) {
+                            return (data.id, index, "translationUsage-\(usage.version)")
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Computed scroll target ID based on first match location
+    private var scrollTargetId: String? {
+        guard let location = firstMatchLocation else { return nil }
+        if let senseIndex = location.senseIndex {
+            if let field = location.field {
+                return "\(location.entryId)-sense-\(senseIndex)-\(field)"
+            }
+            return "\(location.entryId)-sense-\(senseIndex)"
+        }
+        // Entry-level field (e.g., "entry-def", "entry-gloss")
+        if let field = location.field {
+            return "\(location.entryId)-\(field)"
+        }
+        return location.entryId
+    }
 
     private func navigateToPrev() {
         guard let current = sheetState, let newState = current.withPrev() else { return }
@@ -1917,51 +2723,148 @@ struct LexiconPageView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                // Only show full content if this is the current page
-                // Otherwise show just the first entry to keep swipe smooth
-                let entriesToShow = isCurrentPage ? parsedEntries : Array(parsedEntries.prefix(1))
-
-                ForEach(entriesToShow) { data in
-                    LexiconEntryView(
-                        entry: data.entry,
-                        senses: data.senses,
-                        translation: translation,
-                        onSearchStrongs: onSearchStrongs,
-                        onNavigateToVerse: onNavigateToVerse,
-                        baseFontSize: baseFontSize,
-                        hitCount: strongsHitCounts[data.entry.strongsId],
-                        isCurrentPage: isCurrentPage,
-                        baseOffset: data.offset,
-                        sharedSheetState: $sheetState,
-                        sharedAllItems: $allItems
-                    )
-
-                    if data.id != entriesToShow.last?.id {
-                        Divider()
-                    }
-                }
-
-                if isCurrentPage, let morph = morphology, !morph.isEmpty {
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Morphology")
-                            .font(captionFont)
-                            .foregroundStyle(.secondary)
-                        Text(morph)
-                            .font(captionFont.monospaced())
-                    }
-                }
+        // Show loading spinner while swiping, content when settled
+        if !isCurrentPage {
+            // Loading state during swipe
+            VStack {
+                Spacer()
+                ProgressView()
+                Spacer()
             }
-            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if needsScrollToMatch {
+            scrollViewWithMatchSupport
+        } else {
+            simpleScrollView
+        }
+    }
+
+    // Simple scroll view for reader view (no search terms)
+    private var simpleScrollView: some View {
+        ScrollView {
+            lexiconContent
+                .padding()
         }
         .sheet(item: $sheetState) { state in
             sheetContent(state: state)
                 .presentationDetents([.fraction(0.4), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationContentInteraction(.scrolls)
+        }
+    }
+
+    // Full scroll view with scroll-to-match support (search view case)
+    private var scrollViewWithMatchSupport: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                lexiconContent
+                    .padding()
+                    .background(
+                        ScrollViewFinder { scrollView in
+                            if scrollViewRef == nil {
+                                scrollViewRef = scrollView
+                            }
+                        }
+                    )
+            }
+            .coordinateSpace(name: scrollCoordinateSpaceName)
+            .onPreferenceChange(FirstMatchOffsetPreferenceKey.self) { offset in
+                if let offset = offset, preciseMatchOffset == nil {
+                    preciseMatchOffset = offset
+                }
+            }
+            .onAppear {
+                if !hasScrolledToMatch {
+                    hasScrolledToMatch = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        if let offset = preciseMatchOffset, let scrollView = scrollViewRef {
+                            let visibleTop = scrollView.contentOffset.y + 120
+                            let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height
+                            let isAlreadyVisible = offset >= visibleTop && offset <= visibleBottom - 50
+
+                            if !isAlreadyVisible {
+                                let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                                let targetY = min(max(0, offset - 120), maxScrollY)
+                                scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+                            }
+                        } else if let targetId = scrollTargetId {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                proxy.scrollTo(targetId, anchor: .top)
+                            }
+                        }
+                    }
+                }
+            }
+            .onChange(of: preciseMatchOffset) { _, newOffset in
+                if hasScrolledToMatch, let offset = newOffset, let scrollView = scrollViewRef {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        let visibleTop = scrollView.contentOffset.y + 120
+                        let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height
+                        let isAlreadyVisible = offset >= visibleTop && offset <= visibleBottom - 50
+
+                        if !isAlreadyVisible {
+                            let maxScrollY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                            let targetY = min(max(0, offset - 120), maxScrollY)
+                            scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+                        }
+                    }
+                }
+            }
+        }
+        .sheet(item: $sheetState) { state in
+            sheetContent(state: state)
+                .presentationDetents([.fraction(0.4), .medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
+        }
+    }
+
+    // Shared content for both scroll view variants (only rendered when page is settled)
+    private var lexiconContent: some View {
+        LazyVStack(alignment: .leading, spacing: 16) {
+            // Only compute match location when needed (has search terms)
+            let matchLocation = needsScrollToMatch ? firstMatchLocation : nil
+
+            ForEach(parsedEntries) { data in
+                let isMatchEntry = matchLocation?.entryId == data.id
+                let matchSenseIndex = isMatchEntry ? matchLocation?.senseIndex : nil
+                let matchFieldName = isMatchEntry ? matchLocation?.field : nil
+
+                LexiconEntryView(
+                    entry: data.entry,
+                    senses: data.senses,
+                    translationId: translationId,
+                    onSearchStrongs: onSearchStrongs,
+                    onNavigateToVerse: onNavigateToVerse,
+                    baseFontSize: baseFontSize,
+                    hitCount: strongsHitCounts[data.entry.strongsId],
+                    isCurrentPage: true,  // Always true here since we only render when settled
+                    searchTerms: searchTerms,
+                    baseOffset: data.offset,
+                    sharedSheetState: $sheetState,
+                    sharedAllItems: $allItems,
+                    reportMatchForSense: matchSenseIndex,
+                    reportMatchForField: matchFieldName,
+                    scrollCoordinateSpace: scrollCoordinateSpaceName
+                )
+                .id(data.id)
+
+                if data.id != parsedEntries.last?.id {
+                    Divider()
+                }
+            }
+
+            if let morph = morphology, !morph.isEmpty {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Morphology")
+                        .font(captionFont)
+                        .foregroundStyle(.secondary)
+                    Text(morph)
+                        .font(captionFont.monospaced())
+                }
+            }
         }
     }
 
@@ -1972,7 +2875,7 @@ struct LexiconPageView: View {
             ScrollView {
                 LexiconSheetItemContent(
                     itemType: item.type,
-                    translation: translation,
+                    translationId: translationId,
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse
                 )
@@ -2001,11 +2904,10 @@ struct LexiconPageView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .bottomBar) {
                     if state.allItems.count > 1 {
-                        Button(action: navigateToPrev) {
+                        Button {
+                            navigateToPrev()
+                        } label: {
                             Image(systemName: "chevron.left")
-                                .font(.title3)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
                         }
                         .disabled(!state.canNavigatePrev)
 
@@ -2019,11 +2921,10 @@ struct LexiconPageView: View {
 
                         Spacer()
 
-                        Button(action: navigateToNext) {
+                        Button {
+                            navigateToNext()
+                        } label: {
                             Image(systemName: "chevron.right")
-                                .font(.title3)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
                         }
                         .disabled(!state.canNavigateNext)
                     }
@@ -2040,6 +2941,8 @@ struct LexiconPageView: View {
             return displayTitle(for: fullRef, display: display)
         case .bdbRef(let bdbId):
             return bdbId
+        case .lexiconRef(let lexiconId):
+            return lexiconId
         }
     }
 
@@ -2055,6 +2958,8 @@ struct LexiconPageView: View {
             }
         case .bdbRef:
             return nil  // BDB entries don't navigate
+        case .lexiconRef:
+            return nil  // Lexicon entries don't navigate
         }
     }
 }
@@ -2070,7 +2975,7 @@ struct StrongsSearchItem: Identifiable {
 /// Search sheet wrapper for presenting from lexicon
 struct LexiconSearchSheet: View {
     let strongsNum: String
-    let translation: Translation
+    let translationId: String
     let fontSize: Int
     let onNavigateToVerse: (Int) -> Void
 
@@ -2082,7 +2987,7 @@ struct LexiconSearchSheet: View {
     var body: some View {
         SearchView(
             isPresented: $isPresented,
-            translation: translation,
+            translationId: translationId,
             requestScrollToVerseId: $requestScrollToVerseId,
             requestScrollAnimated: $requestScrollAnimated,
             initialSearchText: strongsNum,
@@ -2182,7 +3087,7 @@ class LexiconLoader: ObservableObject {
         greekLexiconOrder: String,
         hiddenHebrewLexicons: String = "",
         hiddenGreekLexicons: String = "",
-        translationId: Int? = nil  // For counting hits
+        translationId: String? = nil  // For counting hits (GRDB translation ID)
     ) {
         // Step 1: Fetch all Realm data synchronously on main thread and copy to Sendable structs
         let lexicons = computeAvailableLexicons(
@@ -2240,40 +3145,19 @@ class LexiconLoader: ObservableObject {
         }
     }
 
-    /// Loads Strong's hit counts on main thread (Realm requires main thread)
+    /// Loads Strong's hit counts using GRDB
     /// Called after initial UI update so loading state shows first
-    private func loadHitCounts(for strongs: [String], translationId: Int) {
+    private func loadHitCounts(for strongs: [String], translationId: String) {
         var counts: [String: Int] = [:]
 
         for strongsNum in strongs {
-            counts[strongsNum] = countVersesContainingStrongs(strongsNum, translationId: translationId)
+            counts[strongsNum] = (try? TranslationDatabase.shared.countStrongsOccurrences(
+                translationId: translationId,
+                strongsNum: strongsNum
+            )) ?? 0
         }
 
         strongsHitCounts = counts
-    }
-
-    /// Counts verses containing the Strong's number
-    /// Uses same patterns as SearchView.versesContainingStrongs
-    /// Must be called on main thread (Realm requirement)
-    private func countVersesContainingStrongs(_ strongsNum: String, translationId: Int) -> Int {
-        let patterns = [
-            "|\(strongsNum)}",   // single, end
-            "|\(strongsNum),",   // first in list
-            ",\(strongsNum),",   // middle of list
-            ",\(strongsNum)}",   // end of list
-            "|\(strongsNum)|",   // single with morphology
-            ",\(strongsNum)|"    // end of list with morphology
-        ]
-
-        let predicates = patterns.map {
-            NSPredicate(format: "t CONTAINS %@", $0)
-        }
-        let compoundPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: predicates)
-
-        return RealmManager.shared.realm.objects(Verse.self)
-            .filter("tr == %@", translationId)
-            .filter(compoundPredicate)
-            .count
     }
 
     private func computeAvailableLexicons(
@@ -2345,29 +3229,44 @@ struct LexiconSheetView: View {
     let word: String
     let strongs: [String]
     let morphology: String?
-    let translation: Translation?
+    let translationId: String  // GRDB translation ID
     var onNavigateToVerse: ((Int) -> Void)? = nil
     var restrictToLexicon: String? = nil  // If set, only show this specific lexicon (no pagination)
+    var searchQuery: String? = nil  // If set, highlight search terms and scroll to first match
     @Environment(\.dismiss) private var dismiss
     @State private var currentPage: Int = 0
+    @State private var settledPage: Int = 0  // Debounced - only updates when swipe finishes
+    @State private var settleTask: Task<Void, Never>? = nil
     @State private var searchItem: StrongsSearchItem? = nil
     @State private var requestScrollToVerseId: Int? = nil
     @State private var requestScrollAnimated: Bool = false
-    @AppStorage("greekLexiconOrder") private var greekLexiconOrder: String = "strongs,dodson"
-    @AppStorage("hebrewLexiconOrder") private var hebrewLexiconOrder: String = "strongs,bdb"
-    @AppStorage("hiddenGreekLexicons") private var hiddenGreekLexicons: String = ""
-    @AppStorage("hiddenHebrewLexicons") private var hiddenHebrewLexicons: String = ""
-
     // Use ObservableObject for async loading
     @StateObject private var loader = LexiconLoader()
 
-    private var user: User {
-        RealmManager.shared.realm.objects(User.self).first!
+    private var userSettings: UserSettings {
+        UserDatabase.shared.getSettings()
     }
 
-    /// Base font size scaled to 80% of user's reader font size
+    private var greekLexiconOrder: String { userSettings.greekLexiconOrder }
+    private var hebrewLexiconOrder: String { userSettings.hebrewLexiconOrder }
+    private var hiddenGreekLexicons: String { userSettings.hiddenGreekLexicons }
+    private var hiddenHebrewLexicons: String { userSettings.hiddenHebrewLexicons }
+
+    /// Base font size at 90% of user's reader font size
     private var scaledBaseFontSize: CGFloat {
-        CGFloat(user.readerFontSize) * 0.8
+        CGFloat(userSettings.readerFontSize) * 0.85
+    }
+
+    /// Extract search terms from the query string for highlighting
+    private var searchTerms: [String] {
+        guard let query = searchQuery, !query.isEmpty else { return [] }
+        // Remove quotes and wildcards, split into terms
+        let cleanQuery = query
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return cleanQuery.components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty && $0.count >= 2 }
     }
 
     /// Display name for a lexicon key
@@ -2413,12 +3312,13 @@ struct LexiconSheetView: View {
                                 parsedEntries: loader.cachedParsedData[lexiconKey] ?? [],
                                 totalPopoverCount: loader.cachedTotalCounts[lexiconKey] ?? 0,
                                 morphology: morphology,
-                                translation: translation,
+                                translationId: translationId,
                                 baseFontSize: scaledBaseFontSize,
-                                isCurrentPage: currentPage == index,
+                                isCurrentPage: settledPage == index,  // Only true when swipe finishes
                                 strongsHitCounts: loader.strongsHitCounts,
+                                searchTerms: searchTerms,
                                 // Disable search when restricted to a specific lexicon (e.g., from module search)
-                                onSearchStrongs: (translation != nil && restrictToLexicon == nil) ? openSearch : nil,
+                                onSearchStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openSearch : nil,
                                 onNavigateToVerse: restrictToLexicon == nil ? handleNavigateToVerse : nil
                             )
                             .tag(index)
@@ -2426,6 +3326,16 @@ struct LexiconSheetView: View {
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onChange(of: currentPage) { _, newPage in
+                        // Debounce: only update settledPage after swipe finishes (no change for 250ms)
+                        settleTask?.cancel()
+                        settleTask = Task {
+                            try? await Task.sleep(nanoseconds: 250_000_000)  // 250ms
+                            if !Task.isCancelled {
+                                settledPage = newPage
+                            }
+                        }
+                    }
 
                     // Pill page indicator
                     HStack(spacing: 8) {
@@ -2449,11 +3359,12 @@ struct LexiconSheetView: View {
                             parsedEntries: loader.cachedParsedData[lexiconKey] ?? [],
                             totalPopoverCount: loader.cachedTotalCounts[lexiconKey] ?? 0,
                             morphology: morphology,
-                            translation: translation,
+                            translationId: translationId,
                             baseFontSize: scaledBaseFontSize,
                             strongsHitCounts: loader.strongsHitCounts,
+                            searchTerms: searchTerms,
                             // Disable search when restricted to a specific lexicon (e.g., from module search)
-                            onSearchStrongs: (translation != nil && restrictToLexicon == nil) ? openSearch : nil,
+                            onSearchStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openSearch : nil,
                             onNavigateToVerse: restrictToLexicon == nil ? handleNavigateToVerse : nil
                         )
                     }
@@ -2478,18 +3389,16 @@ struct LexiconSheetView: View {
                     greekLexiconOrder: greekLexiconOrder,
                     hiddenHebrewLexicons: hiddenHebrewLexicons,
                     hiddenGreekLexicons: hiddenGreekLexicons,
-                    translationId: translation?.id
+                    translationId: translationId
                 )
             }
             .sheet(item: $searchItem) { item in
-                if let tr = translation {
-                    LexiconSearchSheet(
-                        strongsNum: item.strongsNum,
-                        translation: tr,
-                        fontSize: Int(user.readerFontSize),
-                        onNavigateToVerse: handleNavigateToVerse
-                    )
-                }
+                LexiconSearchSheet(
+                    strongsNum: item.strongsNum,
+                    translationId: translationId,
+                    fontSize: Int(userSettings.readerFontSize),
+                    onNavigateToVerse: handleNavigateToVerse
+                )
             }
         }
     }
@@ -2501,18 +3410,19 @@ struct LexiconPopoverContent: View {
     let word: String
     let strongs: [String]
     let morphology: String?
-    @AppStorage("greekLexiconOrder") private var greekLexiconOrder: String = "strongs,dodson"
-    @AppStorage("hebrewLexiconOrder") private var hebrewLexiconOrder: String = "strongs,bdb"
-    @AppStorage("hiddenGreekLexicons") private var hiddenGreekLexicons: String = ""
-    @AppStorage("hiddenHebrewLexicons") private var hiddenHebrewLexicons: String = ""
 
-    private var user: User {
-        RealmManager.shared.realm.objects(User.self).first!
+    private var userSettings: UserSettings {
+        UserDatabase.shared.getSettings()
     }
 
-    /// Base font size scaled to 80% of user's reader font size
+    private var greekLexiconOrder: String { userSettings.greekLexiconOrder }
+    private var hebrewLexiconOrder: String { userSettings.hebrewLexiconOrder }
+    private var hiddenGreekLexicons: String { userSettings.hiddenGreekLexicons }
+    private var hiddenHebrewLexicons: String { userSettings.hiddenHebrewLexicons }
+
+    /// Base font size at 90% of user's reader font size
     private var scaledBaseFontSize: CGFloat {
-        CGFloat(user.readerFontSize) * 0.8
+        CGFloat(userSettings.readerFontSize) * 0.85
     }
 
     // Scaled fonts

@@ -6,21 +6,27 @@
 //
 
 import SwiftUI
-import RealmSwift
+import GRDB
 
 struct ChapterListView: View {
     @Binding var currentVerseId: Int
     @Binding var showingBookPicker: Bool
-    let book: Book
-    let verses: Results<Verse>
+    let book: BibleBook
+    let translationId: String
     let loadVersesClosure: () -> Void
+
+    /// Get chapter count for the book from GRDB
+    private var chapterCount: Int {
+        (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: book.id)) ?? 0
+    }
 
     var body: some View {
         List {
-            ForEach(verses) { verse in
+            ForEach(1...max(1, chapterCount), id: \.self) { chapter in
                 HStack {
-                    Button(String("\(book.name) \(verse.c)")) {
-                        currentVerseId = verse.id
+                    Button(String("\(book.name) \(chapter)")) {
+                        // Build verseId in BBCCCVVV format
+                        currentVerseId = book.id * 1000000 + chapter * 1000 + 1
                         loadVersesClosure()
                         showingBookPicker = false
                     }
