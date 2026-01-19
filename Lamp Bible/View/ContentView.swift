@@ -12,9 +12,7 @@ struct ContentView: View {
     @State private var date = Date.now
 
     var body: some View {
-        NavigationStack {
-            PlanView()
-        }
+        PlanView()
     }
 }
 

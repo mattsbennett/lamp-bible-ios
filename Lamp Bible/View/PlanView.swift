@@ -16,6 +16,12 @@ struct PlanView: View {
     @State private var plans: [Plan] = []
     @Environment(\.colorScheme) var colorScheme
 
+    // Deep link navigation
+    @ObservedObject private var deepLinkManager = DeepLinkManager.shared
+    @State private var showDeepLinkReader: Bool = false
+    @State private var deepLinkVerseId: Int? = nil
+    @State private var deepLinkTranslationId: String? = nil
+
     private var iOS26OrLater: Bool {
         if #available(iOS 26, *) {
             return true
@@ -125,6 +131,24 @@ struct PlanView: View {
                             .padding(.vertical, 8)
                             .padding(.horizontal, 20)
                         }
+                    }
+                    .onChange(of: deepLinkManager.pendingVerseId) { _, newVerseId in
+                        if let verseId = newVerseId {
+                            // Capture values and clear pending
+                            deepLinkVerseId = verseId
+                            deepLinkTranslationId = deepLinkManager.pendingTranslationId
+                            deepLinkManager.clearPending()
+
+                            // Trigger navigation
+                            showDeepLinkReader = true
+                        }
+                    }
+                    .navigationDestination(isPresented: $showDeepLinkReader) {
+                        SplitReaderView(
+                            date: $date,
+                            initialVerseId: deepLinkVerseId,
+                            initialTranslationId: deepLinkTranslationId
+                        )
                     }
             }
         }

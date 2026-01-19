@@ -78,6 +78,265 @@ extension String: @retroactive Identifiable {
     public var id: String { self }
 }
 
+// MARK: - Lexicon Text Renderer (URL-based links like CommentaryRenderer)
+
+/// Renders lexicon definition text to NSAttributedString with tappable URL links
+/// Uses lampbible:// URL scheme for consistent handling across the app
+struct LexiconTextRenderer {
+
+    struct Style {
+        var fontSize: CGFloat = 17
+        var linkColor: UIColor = .tintColor
+        var textColor: UIColor = .label
+        var lineSpacing: CGFloat = 6
+        var paragraphSpacing: CGFloat = 8
+        var searchTerms: [String] = []
+
+        var font: UIFont { .systemFont(ofSize: fontSize) }
+    }
+
+    struct RenderResult {
+        let attributedString: NSAttributedString
+        let tappableItems: [LexiconTappableItem]
+    }
+
+    /// Render plain text with embedded references to NSAttributedString
+    /// Parses Strong's (H1234, G5678), verse refs, and BDB refs into tappable links
+    /// URLs include indices for prev/next navigation: lampbible://type/index/value
+    static func render(_ text: String, references: [VerseRef]? = nil, style: Style = Style(), baseOffset: Int = 0) -> RenderResult {
+        let segments = references != nil
+            ? parseLinkedTextWithReferences(text, references: references)
+            : parseLinkedTextSegments(text)
+
+        let result = NSMutableAttributedString()
+        var tappableItems: [LexiconTappableItem] = []
+        var itemIndex = baseOffset
+        let font = style.font
+
+        // Paragraph style
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = style.lineSpacing
+        paragraphStyle.paragraphSpacing = style.paragraphSpacing
+        paragraphStyle.baseWritingDirection = .leftToRight
+
+        for segment in segments {
+            switch segment {
+            case .text(let str):
+                result.append(NSAttributedString(string: str, attributes: [
+                    .font: font,
+                    .foregroundColor: style.textColor,
+                    .paragraphStyle: paragraphStyle
+                ]))
+
+            case .strongs(let ref):
+                // URL: lampbible://strongs/index/ref
+                if let url = URL(string: "lampbible://strongs/\(itemIndex)/\(ref)") {
+                    result.append(NSAttributedString(string: ref, attributes: [
+                        .font: font,
+                        .foregroundColor: style.linkColor,
+                        .paragraphStyle: paragraphStyle,
+                        .link: url
+                    ]))
+                } else {
+                    result.append(NSAttributedString(string: ref, attributes: [
+                        .font: font,
+                        .foregroundColor: style.linkColor,
+                        .paragraphStyle: paragraphStyle
+                    ]))
+                }
+                tappableItems.append(LexiconTappableItem(index: itemIndex, type: .strongs(ref)))
+                itemIndex += 1
+
+            case .verseRef(let display, let verseId, let endVerseId, let fullRef):
+                // URL: lampbible://verse/index/verseId or lampbible://verse/index/verseId/endVerseId
+                let urlString = endVerseId != nil
+                    ? "lampbible://verse/\(itemIndex)/\(verseId)/\(endVerseId!)"
+                    : "lampbible://verse/\(itemIndex)/\(verseId)"
+                if let url = URL(string: urlString) {
+                    result.append(NSAttributedString(string: display, attributes: [
+                        .font: font,
+                        .foregroundColor: style.linkColor,
+                        .paragraphStyle: paragraphStyle,
+                        .link: url
+                    ]))
+                } else {
+                    result.append(NSAttributedString(string: display, attributes: [
+                        .font: font,
+                        .foregroundColor: style.linkColor,
+                        .paragraphStyle: paragraphStyle
+                    ]))
+                }
+                tappableItems.append(LexiconTappableItem(index: itemIndex, type: .verseRef(display: display, verseId: verseId, endVerseId: endVerseId, fullRef: fullRef)))
+                itemIndex += 1
+
+            case .bdbRef(let bdbId):
+                // URL: lampbible://lexicon/index/bdbId
+                if let url = URL(string: "lampbible://lexicon/\(itemIndex)/\(bdbId)") {
+                    result.append(NSAttributedString(string: bdbId, attributes: [
+                        .font: font,
+                        .foregroundColor: style.linkColor,
+                        .paragraphStyle: paragraphStyle,
+                        .link: url
+                    ]))
+                } else {
+                    result.append(NSAttributedString(string: bdbId, attributes: [
+                        .font: font,
+                        .foregroundColor: style.linkColor,
+                        .paragraphStyle: paragraphStyle
+                    ]))
+                }
+                tappableItems.append(LexiconTappableItem(index: itemIndex, type: .bdbRef(bdbId)))
+                itemIndex += 1
+            }
+        }
+
+        // Apply search term highlighting
+        if !style.searchTerms.isEmpty {
+            let fullString = result.string.lowercased()
+            for term in style.searchTerms {
+                let termLower = term.lowercased()
+                var searchStart = fullString.startIndex
+                while let range = fullString.range(of: termLower, range: searchStart..<fullString.endIndex) {
+                    let nsRange = NSRange(range, in: result.string)
+                    result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    searchStart = range.upperBound
+                }
+            }
+        }
+
+        return RenderResult(attributedString: result, tappableItems: tappableItems)
+    }
+}
+
+// MARK: - Lexicon Text View (Efficient UITextView-based rendering)
+
+/// Efficient text view for lexicon definitions using URL-based link handling
+/// Much lighter than creating separate views for each tappable item
+struct LexiconTextView: UIViewRepresentable {
+    let text: String
+    let references: [VerseRef]?
+    let style: LexiconTextRenderer.Style
+    let baseOffset: Int
+    let onLinkTap: (Int) -> Void
+    let onItemsParsed: (([LexiconTappableItem]) -> Void)?
+    var shouldReportMatchOffset: Bool = false
+    var onFirstMatchOffset: ((CGFloat) -> Void)? = nil
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.linkTextAttributes = [:]  // Use attributes from attributed text
+        textView.dataDetectorTypes = []
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        textView.layer.drawsAsynchronously = true
+        textView.delegate = context.coordinator
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        context.coordinator.onLinkTap = onLinkTap
+
+        // Only rebuild if text changed
+        if context.coordinator.lastText != text {
+            context.coordinator.lastText = text
+            context.coordinator.cachedSize = nil
+            let renderResult = LexiconTextRenderer.render(text, references: references, style: style, baseOffset: baseOffset)
+            textView.attributedText = renderResult.attributedString
+            textView.invalidateIntrinsicContentSize()
+
+            // Report parsed items
+            DispatchQueue.main.async { [items = renderResult.tappableItems] in
+                self.onItemsParsed?(items)
+            }
+        }
+
+        // Report first match offset if requested
+        if shouldReportMatchOffset, let callback = onFirstMatchOffset, !style.searchTerms.isEmpty {
+            DispatchQueue.main.async {
+                textView.layoutIfNeeded()
+                if let matchRange = self.findFirstMatchRange(in: self.text) {
+                    // Calculate rect for the match
+                    if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
+                       let end = textView.position(from: start, offset: matchRange.length),
+                       let textRange = textView.textRange(from: start, to: end) {
+                        let rect = textView.firstRect(for: textRange)
+                        if !rect.isNull && !rect.isInfinite {
+                            callback(rect.origin.y)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Find the first match range in the text
+    private func findFirstMatchRange(in content: String) -> NSRange? {
+        let contentLower = content.lowercased()
+        var earliestRange: NSRange? = nil
+        for term in style.searchTerms {
+            let termLower = term.lowercased()
+            if let range = contentLower.range(of: termLower) {
+                let nsRange = NSRange(range, in: content)
+                if earliestRange == nil || nsRange.location < earliestRange!.location {
+                    earliestRange = nsRange
+                }
+            }
+        }
+        return earliestRange
+    }
+
+    @available(iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
+
+        if let cached = context.coordinator.cachedSize, abs(cached.width - width) < 1 {
+            return cached
+        }
+
+        let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let result = CGSize(width: width, height: size.height)
+        context.coordinator.cachedSize = result
+        return result
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onLinkTap: onLinkTap)
+    }
+
+    class Coordinator: NSObject, UITextViewDelegate {
+        var onLinkTap: (Int) -> Void
+        var lastText: String = ""
+        var cachedSize: CGSize?
+
+        init(onLinkTap: @escaping (Int) -> Void) {
+            self.onLinkTap = onLinkTap
+        }
+
+        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
+            handleURL(URL)
+            return false
+        }
+
+        private func handleURL(_ url: URL) {
+            guard url.scheme == "lampbible" else { return }
+
+            let pathComponents = url.pathComponents
+            // URL format: lampbible://type/index/value[/optional]
+            // pathComponents[0] is "/", pathComponents[1] is index
+            guard pathComponents.count >= 2,
+                  let index = Int(pathComponents[1]) else { return }
+
+            onLinkTap(index)
+        }
+    }
+}
+
 // MARK: - Linked Text Segment Parsing
 
 /// A segment of parsed text - either plain text, a Strong's reference, a verse reference, or a BDB cross-reference
@@ -921,17 +1180,42 @@ struct LinkedDefinitionText: View {
         effectiveSheetState.wrappedValue = newState
     }
 
+    /// Build style for LexiconTextView from font/fontSize
+    private var textStyle: LexiconTextRenderer.Style {
+        let effectiveFontSize = fontSize ?? fontPointSize(from: font)
+        return LexiconTextRenderer.Style(
+            fontSize: effectiveFontSize,
+            lineSpacing: effectiveFontSize * 0.4,
+            paragraphSpacing: effectiveFontSize * 0.5,
+            searchTerms: searchTerms
+        )
+    }
+
+    private func fontPointSize(from font: Font) -> CGFloat {
+        switch font {
+        case .largeTitle: return 34
+        case .title: return 28
+        case .title2: return 22
+        case .title3: return 20
+        case .headline: return 17
+        case .body: return 17
+        case .callout: return 16
+        case .subheadline: return 15
+        case .footnote: return 13
+        case .caption: return 12
+        case .caption2: return 11
+        default: return 17
+        }
+    }
+
     var body: some View {
         // isCurrentPage is now debounced at parent level - only true when swipe finishes
         if isCurrentPage {
-            LinkedTextView(
+            LexiconTextView(
                 text: text,
-                font: font,
-                fontSize: fontSize,
                 references: references,
+                style: textStyle,
                 baseOffset: baseOffset,
-                searchTerms: searchTerms,
-                shouldReportMatchOffset: shouldReportMatchOffset,
                 onLinkTap: { index in
                     // Find the tapped item
                     if let item = tappableItems.first(where: { $0.index == index }) {
@@ -951,6 +1235,7 @@ struct LinkedDefinitionText: View {
                         sharedItems.wrappedValue = (otherItems + items).sorted { $0.index < $1.index }
                     }
                 },
+                shouldReportMatchOffset: shouldReportMatchOffset,
                 onFirstMatchOffset: shouldReportMatchOffset ? { offset in
                     localMatchOffset = offset
                 } : nil

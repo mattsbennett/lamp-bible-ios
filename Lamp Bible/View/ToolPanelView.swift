@@ -153,6 +153,41 @@ class ScrollSyncCoordinator {
         }
     }
 
+    /// Scroll the reader to a specific verse ID (book*1000000 + chapter*1000 + verse)
+    /// Returns true if scroll was performed, false if scroll view not ready or position not found
+    @discardableResult
+    func scrollReaderToVerseId(_ verseId: Int) -> Bool {
+        guard let scrollView = readerScrollView else { return false }
+
+        // Try exact match first
+        var targetY: CGFloat? = readerVersePositions[verseId]
+
+        // If no exact match, find closest preceding verse in the same chapter
+        if targetY == nil {
+            let targetVerse = verseId % 1000
+            let chapterPrefix = verseId / 1000 * 1000
+
+            let chapterPositions = readerVersePositions.filter { ($0.key / 1000 * 1000) == chapterPrefix }
+            if let closest = chapterPositions
+                .filter({ ($0.key % 1000) <= targetVerse })
+                .max(by: { $0.key < $1.key }) {
+                targetY = closest.value
+            }
+        }
+
+        guard let y = targetY else { return false }
+
+        // Account for safe area plus navigation toolbar
+        let topOffset = scrollView.safeAreaInsets.top + 44
+        let adjustedY = y - topOffset
+
+        let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+        let clampedY = min(max(0, adjustedY), maxY)
+
+        scrollView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: false)
+        return true
+    }
+
     /// Called when drag ends to reset active scroller
     func scrollEnded(from source: ScrollSource) {
         // Reset active scroller when scroll ends
@@ -925,6 +960,7 @@ struct ToolPanelView: View {
     @State private var commentaryBook: CommentaryBook? = nil
     @State private var commentarySeriesHasCoverage: Bool = false
     @State private var isCommentaryLoading: Bool = false
+    @State private var allCommentaryItems: [PreviewItem] = []  // All tappable items for prev/next navigation
 
     // Devotionals state
     @State private var showingDevotionalPicker: Bool = true
@@ -1735,9 +1771,25 @@ struct ToolPanelView: View {
                     data: data,
                     fontSize: toolFontSize,
                     onScriptureTap: { sv, ev in
-                        let displayText = formatVerseRangeReference(sv, endVerseId: ev)
-                        let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
-                        commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
+                        // Find matching item in allCommentaryItems for prev/next navigation
+                        if let matchingItem = allCommentaryItems.first(where: {
+                            if case .verse(let itemSv, let itemEv, _, _) = $0.type {
+                                return itemSv == sv && itemEv == ev
+                            }
+                            return false
+                        }) {
+                            // Use all verse items for prev/next navigation
+                            let verseItems = allCommentaryItems.filter {
+                                if case .verse = $0.type { return true }
+                                return false
+                            }
+                            commentaryPreviewState = PreviewSheetState(currentItem: matchingItem, allItems: verseItems.isEmpty ? [matchingItem] : verseItems)
+                        } else {
+                            // Fallback: create single item
+                            let displayText = formatVerseRangeReference(sv, endVerseId: ev)
+                            let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
+                            commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
+                        }
                     },
                     onStrongsTap: { strongsKey in
                         commentaryStrongsKey = strongsKey
@@ -1787,6 +1839,77 @@ struct ToolPanelView: View {
         commentarySeriesHasCoverage = coverage
         commentaryBook = bookInfo
         commentaryUnits = units
+
+        // Parse all tappable items for prev/next navigation
+        allCommentaryItems = parseCommentaryItems(from: units)
+    }
+
+    /// Parse all tappable items (verse refs, strongs) from commentary units for prev/next navigation
+    private func parseCommentaryItems(from units: [CommentaryUnit]) -> [PreviewItem] {
+        var items: [PreviewItem] = []
+        var index = 0
+
+        for unit in units {
+            // Parse from introduction
+            if let intro = unit.introduction {
+                for item in parseAnnotatedTextItems(intro, startIndex: &index) {
+                    items.append(item)
+                }
+            }
+            // Parse from translation
+            if let translation = unit.translation {
+                for item in parseAnnotatedTextItems(translation, startIndex: &index) {
+                    items.append(item)
+                }
+            }
+            // Parse from commentary
+            if let commentary = unit.commentary {
+                for item in parseAnnotatedTextItems(commentary, startIndex: &index) {
+                    items.append(item)
+                }
+            }
+        }
+
+        return items
+    }
+
+    /// Parse tappable items from annotated text
+    private func parseAnnotatedTextItems(_ annotatedText: AnnotatedText, startIndex: inout Int) -> [PreviewItem] {
+        guard let annotations = annotatedText.annotations else { return [] }
+
+        var items: [PreviewItem] = []
+        let text = annotatedText.text
+
+        for annotation in annotations {
+            // Get display text from annotation range
+            let scalars = text.unicodeScalars
+            guard annotation.start >= 0, annotation.end > annotation.start,
+                  annotation.start < scalars.count, annotation.end <= scalars.count else { continue }
+
+            let startIdx = scalars.index(scalars.startIndex, offsetBy: annotation.start)
+            let endIdx = scalars.index(scalars.startIndex, offsetBy: annotation.end)
+            let startStringIdx = startIdx.samePosition(in: text) ?? text.startIndex
+            let endStringIdx = endIdx.samePosition(in: text) ?? text.endIndex
+            let displayText = String(text[startStringIdx..<endStringIdx])
+
+            switch annotation.type {
+            case .scripture:
+                if let sv = annotation.data?.sv {
+                    let ev = annotation.data?.ev
+                    items.append(PreviewItem.verse(index: startIndex, verseId: sv, endVerseId: ev, displayText: displayText))
+                    startIndex += 1
+                }
+            case .strongs:
+                if let key = annotation.data?.strongs ?? annotation.id {
+                    items.append(PreviewItem.strongs(index: startIndex, key: key, displayText: displayText))
+                    startIndex += 1
+                }
+            default:
+                break
+            }
+        }
+
+        return items
     }
 
     /// Load notes modules for the picker
@@ -1897,9 +2020,23 @@ struct ToolPanelView: View {
                         ),
                         onScriptureTap: { sv, ev in
                             commentaryFootnote = nil
-                            let displayText = formatVerseRangeReference(sv, endVerseId: ev)
-                            let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
-                            commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
+                            // Find matching item in allCommentaryItems for prev/next navigation
+                            if let matchingItem = allCommentaryItems.first(where: {
+                                if case .verse(let itemSv, let itemEv, _, _) = $0.type {
+                                    return itemSv == sv && itemEv == ev
+                                }
+                                return false
+                            }) {
+                                let verseItems = allCommentaryItems.filter {
+                                    if case .verse = $0.type { return true }
+                                    return false
+                                }
+                                commentaryPreviewState = PreviewSheetState(currentItem: matchingItem, allItems: verseItems.isEmpty ? [matchingItem] : verseItems)
+                            } else {
+                                let displayText = formatVerseRangeReference(sv, endVerseId: ev)
+                                let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
+                                commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
+                            }
                         },
                         onStrongsTap: { strongsKey in
                             commentaryFootnote = nil
@@ -2300,7 +2437,8 @@ struct ToolPanelView: View {
                 onBack: {
                     showingDevotionalPicker = true
                     selectedDevotional = nil
-                }
+                },
+                onNavigateToVerse: onNavigateToVerse
             )
         } else {
             // Fallback: show picker
@@ -3221,51 +3359,65 @@ class VerseReferenceParser {
     }
 }
 
-// MARK: - Interactive Note Content View
+// MARK: - Note Content Renderer (UIKit-based for performance)
 
-struct InteractiveNoteContentView: View {
-    let content: String
-    let fontSize: Int
-    let translationId: String
-    var onNavigateToVerse: ((Int) -> Void)?
+/// Custom attribute key for note tap actions (avoids iOS URL resolution delay)
+private let NoteTappableIndexKey = NSAttributedString.Key("noteTappableIndex")
 
-    @State private var previewState: PreviewSheetState? = nil
+/// Renders note content to NSAttributedString with tappable verse references and styled footnotes
+private struct NoteContentRenderer {
 
-    private var references: [ParsedVerseReference] {
-        VerseReferenceParser.shared.parse(content)
+    struct RenderResult {
+        let attributedString: NSAttributedString
+        let previewItems: [PreviewItem]
     }
 
-    private var previewItems: [PreviewItem] {
-        references.enumerated().map { index, ref in
-            PreviewItem.verse(
-                index: index,
-                verseId: ref.verseId,
-                endVerseId: ref.endVerseId,
-                displayText: ref.displayText
-            )
-        }
-    }
+    /// Render note content with verse references and footnote styling
+    static func render(
+        _ content: String,
+        fontSize: CGFloat,
+        references: [ParsedVerseReference]
+    ) -> RenderResult {
+        let result = NSMutableAttributedString()
+        var previewItems: [PreviewItem] = []
 
-    /// Build AttributedString with tappable verse links and styled footnotes
-    private var styledContent: AttributedString {
         let refs = references.sorted(by: { $0.range.lowerBound < $1.range.lowerBound })
-        var result = AttributedString()
-
         var currentIndex = content.startIndex
+
+        // Base attributes
+        let baseFont = UIFont.systemFont(ofSize: fontSize)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = fontSize * 0.35
+
+        let baseAttributes: [NSAttributedString.Key: Any] = [
+            .font: baseFont,
+            .foregroundColor: UIColor.label,
+            .paragraphStyle: paragraphStyle
+        ]
 
         for (index, ref) in refs.enumerated() {
             // Add text before this reference (with footnote styling)
             if currentIndex < ref.range.lowerBound {
                 let textBefore = String(content[currentIndex..<ref.range.lowerBound])
-                result.append(styledFootnoteText(textBefore))
+                let styledText = renderFootnoteText(textBefore, fontSize: fontSize, baseAttributes: baseAttributes)
+                result.append(styledText)
             }
 
-            // Add the verse reference as a tappable link
-            var verseRef = AttributedString(ref.displayText)
-            verseRef.foregroundColor = .accentColor
-            // Use a custom URL scheme to identify which reference was tapped
-            verseRef.link = URL(string: "verseref://\(index)")
-            result.append(verseRef)
+            // Add the verse reference as a tappable item
+            let verseAttr = NSMutableAttributedString(string: ref.displayText)
+            let verseRange = NSRange(location: 0, length: verseAttr.length)
+            verseAttr.addAttributes(baseAttributes, range: verseRange)
+            verseAttr.addAttribute(.foregroundColor, value: UIColor.tintColor, range: verseRange)
+            verseAttr.addAttribute(NoteTappableIndexKey, value: index, range: verseRange)
+            result.append(verseAttr)
+
+            // Track for prev/next navigation
+            previewItems.append(PreviewItem.verse(
+                index: index,
+                verseId: ref.verseId,
+                endVerseId: ref.endVerseId,
+                displayText: ref.displayText
+            ))
 
             currentIndex = ref.range.upperBound
         }
@@ -3273,40 +3425,20 @@ struct InteractiveNoteContentView: View {
         // Add remaining text after last reference
         if currentIndex < content.endIndex {
             let textAfter = String(content[currentIndex..<content.endIndex])
-            result.append(styledFootnoteText(textAfter))
+            let styledText = renderFootnoteText(textAfter, fontSize: fontSize, baseAttributes: baseAttributes)
+            result.append(styledText)
         }
 
-        return result
+        return RenderResult(attributedString: result, previewItems: previewItems)
     }
 
-    var body: some View {
-        Text(styledContent)
-            .font(.system(size: CGFloat(fontSize)))
-            .environment(\.openURL, OpenURLAction { url in
-                // Handle verse reference taps
-                if url.scheme == "verseref",
-                   let indexStr = url.host,
-                   let index = Int(indexStr) {
-                    let items = previewItems
-                    if index < items.count {
-                        previewState = PreviewSheetState(currentItem: items[index], allItems: items)
-                    }
-                    return .handled
-                }
-                return .systemAction
-            })
-            .sheet(item: $previewState) { _ in
-                PreviewSheet(
-                    state: $previewState,
-                    translationId: translationId,
-                    onNavigateToVerse: onNavigateToVerse
-                )
-            }
-    }
-
-    /// Creates AttributedString with styled footnote references [^n] -> [n] as superscript
-    private func styledFootnoteText(_ text: String) -> AttributedString {
-        var result = AttributedString(text)
+    /// Render text with footnote markers [^n] styled as superscript [n]
+    private static func renderFootnoteText(
+        _ text: String,
+        fontSize: CGFloat,
+        baseAttributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: text, attributes: baseAttributes)
 
         let pattern = "\\[\\^(\\d+)\\]"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
@@ -3318,23 +3450,229 @@ struct InteractiveNoteContentView: View {
 
         // Process in reverse to maintain range validity
         for match in matches.reversed() {
-            guard let swiftRange = Range(match.range, in: text),
-                  let attrRange = Range(swiftRange, in: result),
-                  match.numberOfRanges > 1,
-                  let numberNSRange = Range(match.range(at: 1), in: text) else { continue }
+            guard match.numberOfRanges > 1 else { continue }
 
-            let number = String(text[numberNSRange])
+            let fullRange = match.range
+            let numberRange = match.range(at: 1)
+            let number = nsText.substring(with: numberRange)
 
             // Create styled footnote reference
-            var styledRef = AttributedString("[\(number)]")
-            styledRef.font = .system(size: CGFloat(fontSize) * 0.7)
-            styledRef.foregroundColor = .secondary
-            styledRef.baselineOffset = CGFloat(fontSize) * 0.35
+            let styledRef = NSMutableAttributedString(string: "[\(number)]")
+            let refRange = NSRange(location: 0, length: styledRef.length)
+            styledRef.addAttribute(.font, value: UIFont.systemFont(ofSize: fontSize * 0.7), range: refRange)
+            styledRef.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: refRange)
+            styledRef.addAttribute(.baselineOffset, value: fontSize * 0.35, range: refRange)
 
-            result.replaceSubrange(attrRange, with: styledRef)
+            result.replaceCharacters(in: fullRange, with: styledRef)
         }
 
         return result
+    }
+}
+
+/// Custom UITextView that uses tap gestures for note content
+private class TappableNoteTextView: UITextView {
+    var onTappableIndexTap: ((Int) -> Void)?
+
+    // Use TextKit 1 for reliable character index calculation
+    private let textKit1LayoutManager = NSLayoutManager()
+    private let textKit1TextContainer = NSTextContainer()
+    private let textKit1TextStorage = NSTextStorage()
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        textKit1TextStorage.addLayoutManager(textKit1LayoutManager)
+        textKit1LayoutManager.addTextContainer(textKit1TextContainer)
+        textKit1TextContainer.widthTracksTextView = true
+        textKit1TextContainer.heightTracksTextView = false
+
+        super.init(frame: frame, textContainer: textKit1TextContainer)
+
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tapGesture.cancelsTouchesInView = false
+        addGestureRecognizer(tapGesture)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: self)
+        let textContainerOffset = CGPoint(x: textContainerInset.left, y: textContainerInset.top)
+        let locationInTextContainer = CGPoint(
+            x: location.x - textContainerOffset.x,
+            y: location.y - textContainerOffset.y
+        )
+
+        let characterIndex = textKit1LayoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textKit1TextContainer,
+            fractionOfDistanceBetweenInsertionPoints: nil
+        )
+
+        guard characterIndex < textKit1TextStorage.length else { return }
+
+        let attributes = textKit1TextStorage.attributes(at: characterIndex, effectiveRange: nil)
+        if let tappableIndex = attributes[NoteTappableIndexKey] as? Int {
+            onTappableIndexTap?(tappableIndex)
+        }
+    }
+
+    override var attributedText: NSAttributedString! {
+        didSet {
+            textKit1TextStorage.setAttributedString(attributedText ?? NSAttributedString())
+        }
+    }
+}
+
+/// UIViewRepresentable for note content with caching
+private struct NoteContentTextViewRepresentable: UIViewRepresentable {
+    let content: String
+    let fontSize: CGFloat
+    let references: [ParsedVerseReference]
+    let onTap: (Int) -> Void
+
+    func makeUIView(context: Context) -> TappableNoteTextView {
+        let textView = TappableNoteTextView()
+        textView.isEditable = false
+        textView.isSelectable = false
+        textView.isUserInteractionEnabled = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.linkTextAttributes = [:]
+        textView.dataDetectorTypes = []
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        textView.layer.drawsAsynchronously = true
+        return textView
+    }
+
+    func updateUIView(_ textView: TappableNoteTextView, context: Context) {
+        textView.onTappableIndexTap = onTap
+
+        // Only re-render if content or fontSize changed
+        let cacheKey = "\(content.hashValue)_\(fontSize)"
+        if context.coordinator.lastCacheKey != cacheKey {
+            context.coordinator.lastCacheKey = cacheKey
+            context.coordinator.cachedSize = nil
+
+            let renderResult = NoteContentRenderer.render(content, fontSize: fontSize, references: references)
+            textView.attributedText = renderResult.attributedString
+            context.coordinator.cachedPreviewItems = renderResult.previewItems
+            textView.invalidateIntrinsicContentSize()
+        }
+    }
+
+    @available(iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: TappableNoteTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
+
+        if let cached = context.coordinator.cachedSize, abs(cached.width - width) < 1 {
+            return cached
+        }
+
+        let containerWidth = width - uiView.textContainerInset.left - uiView.textContainerInset.right
+        if uiView.textContainer.size.width != containerWidth {
+            uiView.textContainer.size = CGSize(width: containerWidth, height: .greatestFiniteMagnitude)
+        }
+
+        let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let result = CGSize(width: width, height: size.height)
+        context.coordinator.cachedSize = result
+        return result
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    class Coordinator {
+        var lastCacheKey: String = ""
+        var cachedSize: CGSize?
+        var cachedPreviewItems: [PreviewItem] = []
+    }
+}
+
+// MARK: - Interactive Note Content View
+
+struct InteractiveNoteContentView: View {
+    let content: String
+    let fontSize: Int
+    let translationId: String
+    var onNavigateToVerse: ((Int) -> Void)?
+
+    @State private var previewState: PreviewSheetState? = nil
+    @State private var parsedData: (content: String, refs: [ParsedVerseReference], items: [PreviewItem])?
+
+    // Get or compute cached references
+    private var references: [ParsedVerseReference] {
+        if let data = parsedData, data.content == content {
+            return data.refs
+        }
+        return VerseReferenceParser.shared.parse(content)
+    }
+
+    // Get or compute cached preview items
+    private var previewItems: [PreviewItem] {
+        if let data = parsedData, data.content == content {
+            return data.items
+        }
+        return references.enumerated().map { index, ref in
+            PreviewItem.verse(
+                index: index,
+                verseId: ref.verseId,
+                endVerseId: ref.endVerseId,
+                displayText: ref.displayText
+            )
+        }
+    }
+
+    var body: some View {
+        let refs = references  // Compute once per body evaluation
+        NoteContentTextViewRepresentable(
+            content: content,
+            fontSize: CGFloat(fontSize),
+            references: refs,
+            onTap: { index in
+                let items = previewItems
+                if index < items.count {
+                    previewState = PreviewSheetState(
+                        currentItem: items[index],
+                        allItems: items
+                    )
+                }
+            }
+        )
+        .onAppear {
+            updateCacheIfNeeded()
+        }
+        .onChange(of: content) { _, _ in
+            updateCacheIfNeeded()
+        }
+        .sheet(item: $previewState) { _ in
+            PreviewSheet(
+                state: $previewState,
+                translationId: translationId,
+                onNavigateToVerse: onNavigateToVerse
+            )
+        }
+    }
+
+    private func updateCacheIfNeeded() {
+        if parsedData?.content != content {
+            let refs = VerseReferenceParser.shared.parse(content)
+            let items = refs.enumerated().map { index, ref in
+                PreviewItem.verse(
+                    index: index,
+                    verseId: ref.verseId,
+                    endVerseId: ref.endVerseId,
+                    displayText: ref.displayText
+                )
+            }
+            parsedData = (content, refs, items)
+        }
     }
 
     /// Count the number of verse references in this content
@@ -3681,10 +4019,25 @@ struct VerseSheetContent: View {
         return aPrefix == bPrefix && aNum == bNum
     }
 
+    /// Get the translation name for display
+    private var translationName: String? {
+        guard let translationId = translationId else { return nil }
+        return (try? TranslationDatabase.shared.getTranslation(id: translationId))?.name
+    }
+
     var body: some View {
-        Text(versesText)
-            .lineSpacing(4)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(versesText)
+                .lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let name = translationName {
+                Text(name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
     }
 }
 
@@ -3698,24 +4051,29 @@ struct PreviewItem: Equatable, Identifiable {
     var id: Int { index }
 
     enum ItemType: Equatable {
-        case verse(verseId: Int, endVerseId: Int?, displayText: String)
+        case verse(verseId: Int, endVerseId: Int?, displayText: String, translationId: String?)
         case strongs(key: String, displayText: String)
     }
 
     var displayText: String {
         switch type {
-        case .verse(_, _, let text): return text
+        case .verse(_, _, let text, _): return text
         case .strongs(_, let text): return text
         }
     }
 
     var verseId: Int? {
-        if case .verse(let id, _, _) = type { return id }
+        if case .verse(let id, _, _, _) = type { return id }
         return nil
     }
 
     var endVerseId: Int? {
-        if case .verse(_, let end, _) = type { return end }
+        if case .verse(_, let end, _, _) = type { return end }
+        return nil
+    }
+
+    var translationId: String? {
+        if case .verse(_, _, _, let translation) = type { return translation }
         return nil
     }
 
@@ -3724,8 +4082,8 @@ struct PreviewItem: Equatable, Identifiable {
         return nil
     }
 
-    static func verse(index: Int, verseId: Int, endVerseId: Int? = nil, displayText: String) -> PreviewItem {
-        PreviewItem(index: index, type: .verse(verseId: verseId, endVerseId: endVerseId, displayText: displayText))
+    static func verse(index: Int, verseId: Int, endVerseId: Int? = nil, displayText: String, translationId: String? = nil) -> PreviewItem {
+        PreviewItem(index: index, type: .verse(verseId: verseId, endVerseId: endVerseId, displayText: displayText, translationId: translationId))
     }
 
     static func strongs(index: Int, key: String, displayText: String) -> PreviewItem {
@@ -3780,12 +4138,12 @@ struct PreviewSheet: View {
             if let item = item {
                 ScrollView {
                     switch item.type {
-                    case .verse(let verseId, let endVerseId, _):
+                    case .verse(let verseId, let endVerseId, _, let itemTranslationId):
                         VerseSheetContent(
                             title: item.displayText,
                             verseId: verseId,
                             endVerseId: endVerseId,
-                            translationId: translationId,
+                            translationId: itemTranslationId ?? translationId,
                             onNavigate: nil,
                             contextAmount: contextAmount,
                             highlightQuery: highlightQuery,

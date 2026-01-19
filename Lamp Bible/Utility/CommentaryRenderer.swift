@@ -8,6 +8,22 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Custom Tappable Attributes
+
+/// Custom attribute key for indexed tappable items (avoids iOS URL resolution delay)
+private let CommentaryTappableIndexKey = NSAttributedString.Key("commentaryTappableIndex")
+
+/// Custom attribute key for direct tap action data (for non-indexed rendering)
+private let CommentaryTapActionKey = NSAttributedString.Key("commentaryTapAction")
+
+/// Tap action data stored in attributed string for non-indexed rendering
+private enum CommentaryTapAction {
+    case verse(sv: Int, ev: Int?)
+    case strongs(key: String)
+    case footnote(id: String)
+    case lexicon(id: String)
+}
+
 // MARK: - First Match Scroll Offset (for scroll-to-match in preview sheets)
 
 /// Preference key to collect first match offset from text views for scroll-to-match
@@ -23,6 +39,30 @@ struct CommentaryMatchOffsetPreferenceKey: PreferenceKey {
 }
 
 // MARK: - Commentary Renderer
+
+/// Tappable item extracted from commentary annotations for preview sheet navigation
+struct CommentaryTappableItem: Equatable, Identifiable {
+    let index: Int
+    let type: ItemType
+
+    var id: Int { index }
+
+    enum ItemType: Equatable {
+        case verse(verseId: Int, endVerseId: Int?, displayText: String)
+        case strongs(key: String, displayText: String)
+        case footnote(id: String)
+        case lexicon(id: String, displayText: String)
+    }
+
+    var displayText: String {
+        switch type {
+        case .verse(_, _, let text): return text
+        case .strongs(_, let text): return text
+        case .footnote(let id): return id
+        case .lexicon(_, let text): return text
+        }
+    }
+}
 
 /// Utility for rendering AnnotatedText to AttributedString with proper styling
 struct CommentaryRenderer {
@@ -55,6 +95,12 @@ struct CommentaryRenderer {
             }
             return nil
         }
+    }
+
+    /// Result of rendering with tappable items for navigation
+    struct RenderResult {
+        let attributedString: NSAttributedString
+        let tappableItems: [CommentaryTappableItem]
     }
 
     static var defaultStyle = Style()
@@ -211,10 +257,8 @@ struct CommentaryRenderer {
                     result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
                     if let sv = annotation.data?.sv {
                         let ev = annotation.data?.ev
-                        let urlString = ev != nil ? "lampbible://verse/\(sv)/\(ev!)" : "lampbible://verse/\(sv)"
-                        if let url = URL(string: urlString) {
-                            result.addAttribute(.link, value: url, range: range)
-                        }
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.verse(sv: sv, ev: ev), range: range)
                     }
 
                 case .strongs:
@@ -222,9 +266,9 @@ struct CommentaryRenderer {
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
                     }
-                    if let key = annotation.data?.strongs ?? annotation.id,
-                       let url = URL(string: "lampbible://strongs/\(key)") {
-                        result.addAttribute(.link, value: url, range: range)
+                    if let key = annotation.data?.strongs ?? annotation.id {
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.strongs(key: key), range: range)
                     }
 
                 case .greek:
@@ -241,10 +285,9 @@ struct CommentaryRenderer {
                     result.addAttribute(.baselineOffset, value: 4, range: range)
                     let fnFont = style.uiFootnoteFont ?? UIFont.preferredFont(forTextStyle: .footnote)
                     result.addAttribute(.font, value: fnFont, range: range)
-                    if let id = annotation.id,
-                       let encodedId = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-                       let url = URL(string: "lampbible://footnote/\(encodedId)") {
-                        result.addAttribute(.link, value: url, range: range)
+                    if let id = annotation.id {
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.footnote(id: id), range: range)
                     }
 
                 case .crossref:
@@ -260,9 +303,9 @@ struct CommentaryRenderer {
 
                 case .lexiconRef:
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor), range: range)
-                    if let lexiconId = annotation.data?.lexiconId ?? annotation.id,
-                       let url = URL(string: "lampbible://lexicon/\(lexiconId)") {
-                        result.addAttribute(.link, value: url, range: range)
+                    if let lexiconId = annotation.data?.lexiconId ?? annotation.id {
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.lexicon(id: lexiconId), range: range)
                     }
 
                 case .bold:
@@ -295,10 +338,8 @@ struct CommentaryRenderer {
                 marker.addAttribute(.font, value: fnFont, range: range)
                 marker.addAttribute(.foregroundColor, value: UIColor(style.footnoteColor), range: range)
                 marker.addAttribute(.baselineOffset, value: 4, range: range)
-                if let encodedId = ref.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-                   let url = URL(string: "lampbible://footnote/\(encodedId)") {
-                    marker.addAttribute(.link, value: url, range: range)
-                }
+                // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                marker.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.footnote(id: ref.id), range: range)
 
                 result.insert(marker, at: nsRange.location)
             }
@@ -328,6 +369,197 @@ struct CommentaryRenderer {
         }
 
         return result
+    }
+
+    // MARK: - UIKit Rendering with Tappable Items (for prev/next navigation)
+
+    /// Render AnnotatedText to NSAttributedString with indexed URLs for prev/next navigation
+    /// URLs include indices: lampbible://type/index/value
+    static func renderUIKitWithItems(_ annotatedText: AnnotatedText, style: Style = defaultStyle, baseOffset: Int = 0) -> RenderResult {
+        let text = annotatedText.text
+        let result = NSMutableAttributedString(string: text)
+        let fullRange = NSRange(location: 0, length: result.length)
+        var tappableItems: [CommentaryTappableItem] = []
+        var itemIndex = baseOffset
+
+        // Base Attributes
+        let baseFont = style.uiBodyFont ?? UIFont.preferredFont(forTextStyle: .body)
+        result.addAttribute(.font, value: baseFont, range: fullRange)
+        result.addAttribute(.foregroundColor, value: UIColor.label, range: fullRange)
+
+        // Helper to convert indices
+        func getRange(_ start: Int, _ end: Int) -> NSRange? {
+            let scalars = text.unicodeScalars
+            guard start >= 0, end > start, start < scalars.count, end <= scalars.count else { return nil }
+
+            let startIdx = scalars.index(scalars.startIndex, offsetBy: start)
+            let endIdx = scalars.index(scalars.startIndex, offsetBy: end)
+
+            return NSRange(startIdx..<endIdx, in: text)
+        }
+
+        // Helper to get display text from range
+        func getDisplayText(_ start: Int, _ end: Int) -> String {
+            let scalars = text.unicodeScalars
+            guard start >= 0, end > start, start < scalars.count, end <= scalars.count else { return "" }
+
+            let startIdx = scalars.index(scalars.startIndex, offsetBy: start)
+            let endIdx = scalars.index(scalars.startIndex, offsetBy: end)
+            let startStringIdx = startIdx.samePosition(in: text) ?? text.startIndex
+            let endStringIdx = endIdx.samePosition(in: text) ?? text.endIndex
+
+            return String(text[startStringIdx..<endStringIdx])
+        }
+
+        if let annotations = annotatedText.annotations {
+            for annotation in annotations {
+                guard let range = getRange(annotation.start, annotation.end) else { continue }
+
+                switch annotation.type {
+                case .scripture:
+                    result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
+                    if let sv = annotation.data?.sv {
+                        let ev = annotation.data?.ev
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: range)
+                        let displayText = getDisplayText(annotation.start, annotation.end)
+                        tappableItems.append(CommentaryTappableItem(
+                            index: itemIndex,
+                            type: .verse(verseId: sv, endVerseId: ev, displayText: displayText)
+                        ))
+                        itemIndex += 1
+                    }
+
+                case .strongs:
+                    result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor), range: range)
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+                    if let key = annotation.data?.strongs ?? annotation.id {
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: range)
+                        let displayText = getDisplayText(annotation.start, annotation.end)
+                        tappableItems.append(CommentaryTappableItem(
+                            index: itemIndex,
+                            type: .strongs(key: key, displayText: displayText)
+                        ))
+                        itemIndex += 1
+                    }
+
+                case .greek:
+                    result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+
+                case .hebrew:
+                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
+
+                case .footnote:
+                    result.addAttribute(.foregroundColor, value: UIColor(style.footnoteColor), range: range)
+                    result.addAttribute(.baselineOffset, value: 4, range: range)
+                    let fnFont = style.uiFootnoteFont ?? UIFont.preferredFont(forTextStyle: .footnote)
+                    result.addAttribute(.font, value: fnFont, range: range)
+                    if let id = annotation.id {
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: range)
+                        tappableItems.append(CommentaryTappableItem(
+                            index: itemIndex,
+                            type: .footnote(id: id)
+                        ))
+                        itemIndex += 1
+                    }
+
+                case .crossref:
+                    result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
+
+                case .abbrev:
+                    result.addAttribute(.foregroundColor, value: UIColor(style.abbreviationColor), range: range)
+
+                case .page:
+                    result.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: range)
+                    result.addAttribute(.font, value: style.uiCaptionFont ?? UIFont.preferredFont(forTextStyle: .caption1), range: range)
+
+                case .lexiconRef:
+                    result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor), range: range)
+                    if let lexiconId = annotation.data?.lexiconId ?? annotation.id {
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: range)
+                        let displayText = getDisplayText(annotation.start, annotation.end)
+                        tappableItems.append(CommentaryTappableItem(
+                            index: itemIndex,
+                            type: .lexicon(id: lexiconId, displayText: displayText)
+                        ))
+                        itemIndex += 1
+                    }
+
+                case .bold:
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+
+                case .italic:
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+                }
+            }
+        }
+
+        // Insert Footnotes (Order matters: Reverse to keep indices valid)
+        // Note: Footnote refs are tracked separately from inline footnote annotations
+        if let footnoteRefs = annotatedText.footnoteRefs {
+            let sortedRefs = footnoteRefs.sorted { $0.offset > $1.offset }
+            for ref in sortedRefs {
+                let scalars = text.unicodeScalars
+                guard ref.offset >= 0, ref.offset <= scalars.count else { continue }
+                let idx = scalars.index(scalars.startIndex, offsetBy: ref.offset)
+                let nsRange = NSRange(idx..<idx, in: text)
+
+                // Create Marker
+                let marker = NSMutableAttributedString(string: "[\(ref.id)]")
+                let fnFont = UIFont.preferredFont(forTextStyle: .footnote)
+                let markerRange = NSRange(location: 0, length: marker.length)
+
+                marker.addAttribute(.font, value: fnFont, range: markerRange)
+                marker.addAttribute(.foregroundColor, value: UIColor(style.footnoteColor), range: markerRange)
+                marker.addAttribute(.baselineOffset, value: 4, range: markerRange)
+                // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                marker.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: markerRange)
+                tappableItems.append(CommentaryTappableItem(
+                    index: itemIndex,
+                    type: .footnote(id: ref.id)
+                ))
+                itemIndex += 1
+
+                result.insert(marker, at: nsRange.location)
+            }
+        }
+
+        // Line and paragraph spacing
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 6
+        paragraphStyle.paragraphSpacing = 8
+        result.addAttribute(.paragraphStyle, value: paragraphStyle, range: NSRange(location: 0, length: result.length))
+
+        // Apply search term highlighting with yellow background
+        if !style.searchTerms.isEmpty {
+            let fullString = result.string
+            let fullStringLower = fullString.lowercased()
+
+            for term in style.searchTerms {
+                let termLower = term.lowercased()
+                var searchStartIndex = fullStringLower.startIndex
+
+                while let searchRange = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
+                    let nsRange = NSRange(searchRange, in: fullString)
+                    result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    searchStartIndex = searchRange.upperBound
+                }
+            }
+        }
+
+        return RenderResult(attributedString: result, tappableItems: tappableItems)
     }
 
     /// Render a footnote to AttributedString
@@ -420,6 +652,95 @@ struct AnnotatedTextView: View {
     }
 }
 
+// MARK: - Tappable Commentary Text View
+
+/// Custom UITextView that uses tap gestures instead of URL-based link handling
+/// This avoids the iOS URL resolution delay ("canmaplsdatabase" error)
+private class TappableCommentaryTextView: UITextView {
+    // For indexed taps (renderUIKitWithItems)
+    var onTappableIndexTap: ((Int) -> Void)?
+
+    // For direct action taps (renderUIKit)
+    var onScriptureTap: ((Int, Int?) -> Void)?
+    var onStrongsTap: ((String) -> Void)?
+    var onFootnoteTap: ((String) -> Void)?
+    var onLexiconTap: ((String) -> Void)?
+
+    // Use TextKit 1 for reliable character index calculation
+    private let textKit1LayoutManager = NSLayoutManager()
+    private let textKit1TextContainer = NSTextContainer()
+    private let textKit1TextStorage = NSTextStorage()
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        // Set up TextKit 1 stack
+        textKit1TextStorage.addLayoutManager(textKit1LayoutManager)
+        textKit1LayoutManager.addTextContainer(textKit1TextContainer)
+        textKit1TextContainer.widthTracksTextView = true
+        textKit1TextContainer.heightTracksTextView = false
+
+        super.init(frame: frame, textContainer: textKit1TextContainer)
+
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tapGesture.cancelsTouchesInView = false
+        addGestureRecognizer(tapGesture)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: self)
+
+        // Adjust for text container inset
+        let textContainerOffset = CGPoint(
+            x: textContainerInset.left,
+            y: textContainerInset.top
+        )
+        let locationInTextContainer = CGPoint(
+            x: location.x - textContainerOffset.x,
+            y: location.y - textContainerOffset.y
+        )
+
+        // Get character index at tap location
+        let characterIndex = textKit1LayoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textKit1TextContainer,
+            fractionOfDistanceBetweenInsertionPoints: nil
+        )
+
+        guard characterIndex < textKit1TextStorage.length else { return }
+
+        let attributes = textKit1TextStorage.attributes(at: characterIndex, effectiveRange: nil)
+
+        // Handle indexed taps (for prev/next navigation)
+        if let tappableIndex = attributes[CommentaryTappableIndexKey] as? Int {
+            onTappableIndexTap?(tappableIndex)
+            return
+        }
+
+        // Handle direct action taps (non-indexed)
+        if let action = attributes[CommentaryTapActionKey] as? CommentaryTapAction {
+            switch action {
+            case .verse(let sv, let ev):
+                onScriptureTap?(sv, ev)
+            case .strongs(let key):
+                onStrongsTap?(key)
+            case .footnote(let id):
+                onFootnoteTap?(id)
+            case .lexicon(let id):
+                onLexiconTap?(id)
+            }
+        }
+    }
+
+    override var attributedText: NSAttributedString! {
+        didSet {
+            textKit1TextStorage.setAttributedString(attributedText ?? NSAttributedString())
+        }
+    }
+}
+
 private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
     let annotatedText: AnnotatedText
     let style: CommentaryRenderer.Style
@@ -432,44 +753,33 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
     var shouldReportMatchOffset: Bool = false
     var onFirstMatchOffset: ((CGFloat) -> Void)? = nil
 
-    func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
+    func makeUIView(context: Context) -> TappableCommentaryTextView {
+        let textView = TappableCommentaryTextView()
         textView.isEditable = false
-        textView.isSelectable = true
+        textView.isSelectable = false  // Disable selection for instant tap response
         textView.isUserInteractionEnabled = true
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
         textView.textContainer.lineFragmentPadding = 0
-        textView.linkTextAttributes = [:] // Use attributes from annotated text
-
-        // Disable editing features that might trigger system services
+        textView.linkTextAttributes = [:]
         textView.allowsEditingTextAttributes = false
-
-        // Ensure default font and color are set for visibility
         textView.font = .preferredFont(forTextStyle: .body)
         textView.textColor = .label
-
-        // Disable data detectors to prevent "com.apple.private.coreservices.canmaplsdatabase" logs
-        // and avoid performance hits from system link detection
         textView.dataDetectorTypes = []
-
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
-
-        // Performance optimization: Draw on background thread
         textView.layer.drawsAsynchronously = true
-
-        textView.delegate = context.coordinator
-
-        // Explicitly set text content type to none to avoid any smart suggestions
         textView.textContentType = .none
-
         return textView
     }
 
-    func updateUIView(_ textView: UITextView, context: Context) {
-        context.coordinator.parent = self
+    func updateUIView(_ textView: TappableCommentaryTextView, context: Context) {
+        // Set up tap handlers
+        textView.onScriptureTap = onScriptureTap
+        textView.onStrongsTap = onStrongsTap
+        textView.onFootnoteTap = onFootnoteTap
+        textView.onLexiconTap = onLexiconTap
 
         // Ensure dynamic colors update correctly
         textView.textColor = .label
@@ -522,7 +832,7 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: TappableCommentaryTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
 
         // Return cached size if width hasn't changed significantly
@@ -544,52 +854,190 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(self)
+        Coordinator()
     }
 
-
-    class Coordinator: NSObject, UITextViewDelegate {
-        var parent: AnnotatedUITextViewRepresentable
+    class Coordinator: NSObject {
         var lastText: String = ""
         var lastBodyFontSize: CGFloat = 0
         var cachedSize: CGSize?
+    }
+}
 
-        init(_ parent: AnnotatedUITextViewRepresentable) {
-            self.parent = parent
-        }
+// MARK: - Annotated Text View With Navigation Support
 
-        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
-            handleURL(URL)
-            return false
-        }
+/// Annotated text view that supports prev/next navigation through tappable items
+/// Uses indexed URLs and reports parsed items for sheet navigation
+struct AnnotatedTextViewWithItems: View {
+    let annotatedText: AnnotatedText
+    let style: CommentaryRenderer.Style
+    let baseOffset: Int
+    let onLinkTap: (Int) -> Void
+    let onItemsParsed: (([CommentaryTappableItem]) -> Void)?
 
-        private func handleURL(_ url: URL) {
-            guard url.scheme == "lampbible" else { return }
+    // Scroll-to-match support
+    var shouldReportMatchOffset: Bool = false
+    var scrollCoordinateSpace: String = "commentaryScroll"
 
-            let pathComponents = url.pathComponents
+    @State private var localMatchOffset: CGFloat? = nil
 
-            // Handle URL-encoded components (e.g. from addingPercentEncoding)
-            let valueRaw = pathComponents.count >= 2 ? pathComponents[1] : ""
-            let value = valueRaw.removingPercentEncoding ?? valueRaw
+    init(
+        _ annotatedText: AnnotatedText,
+        style: CommentaryRenderer.Style = CommentaryRenderer.defaultStyle,
+        baseOffset: Int = 0,
+        onLinkTap: @escaping (Int) -> Void,
+        onItemsParsed: (([CommentaryTappableItem]) -> Void)? = nil,
+        shouldReportMatchOffset: Bool = false,
+        scrollCoordinateSpace: String = "commentaryScroll"
+    ) {
+        self.annotatedText = annotatedText
+        self.style = style
+        self.baseOffset = baseOffset
+        self.onLinkTap = onLinkTap
+        self.onItemsParsed = onItemsParsed
+        self.shouldReportMatchOffset = shouldReportMatchOffset
+        self.scrollCoordinateSpace = scrollCoordinateSpace
+    }
 
-            let type = url.host ?? ""
+    var body: some View {
+        AnnotatedUITextViewWithItemsRepresentable(
+            annotatedText: annotatedText,
+            style: style,
+            baseOffset: baseOffset,
+            onLinkTap: onLinkTap,
+            onItemsParsed: onItemsParsed,
+            shouldReportMatchOffset: shouldReportMatchOffset,
+            onFirstMatchOffset: shouldReportMatchOffset ? { offset in
+                localMatchOffset = offset
+            } : nil
+        )
+        .background(
+            GeometryReader { geometry in
+                Color.clear
+                    .preference(
+                        key: CommentaryMatchOffsetPreferenceKey.self,
+                        value: shouldReportMatchOffset && localMatchOffset != nil
+                            ? geometry.frame(in: .named(scrollCoordinateSpace)).minY + (localMatchOffset ?? 0)
+                            : nil
+                    )
+            }
+        )
+    }
+}
 
-            switch type {
-            case "verse":
-                if let sv = Int(value) {
-                    let ev = pathComponents.count >= 3 ? Int(pathComponents[2]) : nil
-                    parent.onScriptureTap?(sv, ev)
-                }
-            case "strongs":
-                parent.onStrongsTap?(value)
-            case "footnote":
-                parent.onFootnoteTap?(value)
-            case "lexicon":
-                parent.onLexiconTap?(value)
-            default:
-                break
+private struct AnnotatedUITextViewWithItemsRepresentable: UIViewRepresentable {
+    let annotatedText: AnnotatedText
+    let style: CommentaryRenderer.Style
+    let baseOffset: Int
+    let onLinkTap: (Int) -> Void
+    let onItemsParsed: (([CommentaryTappableItem]) -> Void)?
+
+    // Scroll-to-match support
+    var shouldReportMatchOffset: Bool = false
+    var onFirstMatchOffset: ((CGFloat) -> Void)? = nil
+
+    func makeUIView(context: Context) -> TappableCommentaryTextView {
+        let textView = TappableCommentaryTextView()
+        textView.isEditable = false
+        textView.isSelectable = false  // Disable selection for instant tap response
+        textView.isUserInteractionEnabled = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.linkTextAttributes = [:]
+        textView.allowsEditingTextAttributes = false
+        textView.font = .preferredFont(forTextStyle: .body)
+        textView.textColor = .label
+        textView.dataDetectorTypes = []
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        textView.layer.drawsAsynchronously = true
+        textView.textContentType = .none
+        return textView
+    }
+
+    func updateUIView(_ textView: TappableCommentaryTextView, context: Context) {
+        // Set up tap handler
+        textView.onTappableIndexTap = onLinkTap
+        textView.textColor = .label
+
+        let currentFontSize = style.uiBodyFont?.pointSize ?? 0
+        if context.coordinator.lastText != annotatedText.text || context.coordinator.lastBodyFontSize != currentFontSize {
+            context.coordinator.lastText = annotatedText.text
+            context.coordinator.lastBodyFontSize = currentFontSize
+            context.coordinator.cachedSize = nil
+
+            let renderResult = CommentaryRenderer.renderUIKitWithItems(annotatedText, style: style, baseOffset: baseOffset)
+            textView.attributedText = renderResult.attributedString
+            textView.invalidateIntrinsicContentSize()
+
+            // Report parsed items
+            DispatchQueue.main.async { [items = renderResult.tappableItems] in
+                self.onItemsParsed?(items)
             }
         }
+
+        // Report first match offset if requested
+        if shouldReportMatchOffset, let callback = onFirstMatchOffset, !style.searchTerms.isEmpty {
+            DispatchQueue.main.async {
+                textView.layoutIfNeeded()
+                if let matchRange = self.findFirstMatchRange(in: annotatedText.text) {
+                    if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
+                       let end = textView.position(from: start, offset: matchRange.length),
+                       let textRange = textView.textRange(from: start, to: end) {
+                        let rect = textView.firstRect(for: textRange)
+                        if !rect.isNull && !rect.isInfinite {
+                            callback(rect.origin.y)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func findFirstMatchRange(in content: String) -> NSRange? {
+        let contentLower = content.lowercased()
+        var earliestRange: NSRange? = nil
+        for term in style.searchTerms {
+            let termLower = term.lowercased()
+            if let range = contentLower.range(of: termLower) {
+                let nsRange = NSRange(range, in: content)
+                if earliestRange == nil || nsRange.location < earliestRange!.location {
+                    earliestRange = nsRange
+                }
+            }
+        }
+        return earliestRange
+    }
+
+    @available(iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: TappableCommentaryTextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
+
+        if let cached = context.coordinator.cachedSize, abs(cached.width - width) < 1 {
+            return cached
+        }
+
+        let containerWidth = width - uiView.textContainerInset.left - uiView.textContainerInset.right
+        if uiView.textContainer.size.width != containerWidth {
+            uiView.textContainer.size = CGSize(width: containerWidth, height: .greatestFiniteMagnitude)
+        }
+
+        let size = uiView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        let result = CGSize(width: width, height: size.height)
+        context.coordinator.cachedSize = result
+        return result
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    class Coordinator: NSObject {
+        var lastText: String = ""
+        var lastBodyFontSize: CGFloat = 0
+        var cachedSize: CGSize?
     }
 }
 
@@ -744,6 +1192,193 @@ struct CommentaryUnitView: View {
         } else {
             print("CommentaryUnitView: Footnote ID '\(footnoteId)' not found. Available: \(footnotes.map { $0.id })")
         }
+    }
+}
+
+// MARK: - Commentary Unit View With Navigation Support
+
+/// Commentary unit view that supports prev/next navigation through tappable items
+/// Collects items from introduction, translation, and commentary sections
+struct CommentaryUnitViewWithItems: View {
+    let unit: CommentaryUnit
+    let abbreviations: [CommentaryAbbreviation]?
+    let style: CommentaryRenderer.Style
+    let baseOffset: Int
+    let onLinkTap: (Int) -> Void
+    let onItemsParsed: (([CommentaryTappableItem]) -> Void)?
+    let onFootnoteTap: ((String, CommentaryFootnote) -> Void)?
+
+    // Display options
+    var hideVerseReference: Bool = false
+
+    // Scroll-to-match support
+    var shouldReportMatchOffset: Bool = false
+    var scrollCoordinateSpace: String = "commentaryScroll"
+
+    // Track items from each section
+    @State private var introItems: [CommentaryTappableItem] = []
+    @State private var translationItems: [CommentaryTappableItem] = []
+    @State private var commentaryItems: [CommentaryTappableItem] = []
+
+    init(
+        unit: CommentaryUnit,
+        abbreviations: [CommentaryAbbreviation]? = nil,
+        style: CommentaryRenderer.Style = CommentaryRenderer.defaultStyle,
+        baseOffset: Int = 0,
+        onLinkTap: @escaping (Int) -> Void,
+        onItemsParsed: (([CommentaryTappableItem]) -> Void)? = nil,
+        onFootnoteTap: ((String, CommentaryFootnote) -> Void)? = nil,
+        hideVerseReference: Bool = false,
+        shouldReportMatchOffset: Bool = false,
+        scrollCoordinateSpace: String = "commentaryScroll"
+    ) {
+        self.unit = unit
+        self.abbreviations = abbreviations
+        self.style = style
+        self.baseOffset = baseOffset
+        self.onLinkTap = onLinkTap
+        self.onItemsParsed = onItemsParsed
+        self.onFootnoteTap = onFootnoteTap
+        self.hideVerseReference = hideVerseReference
+        self.shouldReportMatchOffset = shouldReportMatchOffset
+        self.scrollCoordinateSpace = scrollCoordinateSpace
+    }
+
+    private var introOffset: Int { baseOffset }
+    private var translationOffset: Int { baseOffset + introItems.count }
+    private var commentaryOffset: Int { baseOffset + introItems.count + translationItems.count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Title (for sections/pericopae) or verse reference (for verses)
+            if let title = unit.title, !title.isEmpty {
+                Text(title)
+                    .font(titleFont)
+                    .fontWeight(.semibold)
+            } else if unit.type == .verse, !hideVerseReference {
+                Text(verseReference)
+                    .font(titleFont)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+            }
+
+            // Introduction
+            if let intro = unit.introduction {
+                AnnotatedTextViewWithItems(
+                    intro,
+                    style: style,
+                    baseOffset: introOffset,
+                    onLinkTap: handleLinkTap,
+                    onItemsParsed: { items in
+                        introItems = items
+                        reportAllItems()
+                    },
+                    shouldReportMatchOffset: shouldReportMatchOffset,
+                    scrollCoordinateSpace: scrollCoordinateSpace
+                )
+            }
+
+            // Translation
+            if let translation = unit.translation {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Translation")
+                        .font(.system(size: (style.uiBodyFont?.pointSize ?? 17) - 4))
+                        .foregroundColor(.secondary)
+
+                    AnnotatedTextViewWithItems(
+                        translation,
+                        style: translationStyle,
+                        baseOffset: translationOffset,
+                        onLinkTap: handleLinkTap,
+                        onItemsParsed: { items in
+                            translationItems = items
+                            reportAllItems()
+                        }
+                    )
+                    .italic()
+                }
+                .padding(.vertical, 4)
+            }
+
+            // Commentary
+            if let commentary = unit.commentary {
+                AnnotatedTextViewWithItems(
+                    commentary,
+                    style: style,
+                    baseOffset: commentaryOffset,
+                    onLinkTap: handleLinkTap,
+                    onItemsParsed: { items in
+                        commentaryItems = items
+                        reportAllItems()
+                    },
+                    shouldReportMatchOffset: shouldReportMatchOffset,
+                    scrollCoordinateSpace: scrollCoordinateSpace
+                )
+            }
+        }
+    }
+
+    private var titleFont: Font {
+        let baseSize = style.uiBodyFont?.pointSize ?? 17
+        switch unit.type {
+        case .section:
+            return unit.level == 1 ? .system(size: baseSize + 5, weight: .bold) : .system(size: baseSize + 3, weight: .bold)
+        case .pericope:
+            return .system(size: baseSize, weight: .bold)
+        case .verse:
+            return .system(size: baseSize - 2, weight: .semibold)
+        }
+    }
+
+    private var verseReference: String {
+        let startVerse = unit.sv % 1000
+        let suffix = unit.suffix ?? ""
+
+        if let ev = unit.ev {
+            let endVerse = ev % 1000
+            if endVerse != startVerse {
+                return "vv. \(startVerse)\(suffix)–\(endVerse)"
+            }
+        }
+        return "v. \(startVerse)\(suffix)"
+    }
+
+    private var translationStyle: CommentaryRenderer.Style {
+        var s = style
+        s.bodyFont = style.bodyFont.italic()
+        if let uiFont = s.uiBodyFont {
+            if let descriptor = uiFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                s.uiBodyFont = UIFont(descriptor: descriptor, size: 0)
+            }
+        }
+        return s
+    }
+
+    private func handleLinkTap(_ index: Int) {
+        // Check if it's a footnote tap
+        let allItems = introItems + translationItems + commentaryItems
+        if let item = allItems.first(where: { $0.index == index }) {
+            if case .footnote(let id) = item.type {
+                handleFootnoteTap(id)
+                return
+            }
+        }
+        // Otherwise forward to parent
+        onLinkTap(index)
+    }
+
+    private func handleFootnoteTap(_ footnoteId: String) {
+        guard let footnotes = unit.footnotes else { return }
+
+        if let footnote = footnotes.first(where: { $0.id == footnoteId }) ??
+                          footnotes.first(where: { $0.id.trimmingCharacters(in: .whitespaces) == footnoteId }) {
+            onFootnoteTap?(footnoteId, footnote)
+        }
+    }
+
+    private func reportAllItems() {
+        let allItems = introItems + translationItems + commentaryItems
+        onItemsParsed?(allItems)
     }
 }
 

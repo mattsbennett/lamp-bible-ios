@@ -35,7 +35,6 @@ struct SplitReaderView: View {
     @State private var requestScrollToVerseId: Int? = nil
     @State private var requestScrollAnimated: Bool = true
     @SceneStorage("readerCurrentVerseId") private var currentVerseId: Int = 1001001
-    @State private var hasAppliedInitialVerse: Bool = false
     @AppStorage("toolPanelScrollLinked") private var isScrollLinked: Bool = true
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     @AppStorage("notesPanelOrientation") private var notesPanelOrientation: String = "bottom"
@@ -195,6 +194,7 @@ struct SplitReaderView: View {
             date: $date,
             readingMetaData: readingMetaData,
             translationId: initialTranslationId,
+            initialVerseId: initialVerseId,
             onVerseAction: handleVerseAction,
             requestScrollToVerseId: $requestScrollToVerseId,
             requestScrollAnimated: $requestScrollAnimated,
@@ -203,11 +203,9 @@ struct SplitReaderView: View {
             initialToolbarMode: initialToolbarMode
         )
         .onAppear {
-            // Scroll to initial verse if provided
-            if let verseId = initialVerseId, !hasAppliedInitialVerse {
-                hasAppliedInitialVerse = true
-                requestScrollAnimated = false
-                requestScrollToVerseId = verseId
+            // Enable scroll linking after initial load completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                hasUserScrolled = true
             }
         }
     }

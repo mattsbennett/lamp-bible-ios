@@ -58,6 +58,7 @@ struct DevotionalAnnotationData: Codable, Equatable {
     var url: String?                // External URL for link annotations
     var style: DevotionalEmphasisStyle? // Emphasis style
     var source: String?             // Attribution for quote annotations
+    var translationId: String?      // Translation ID for scripture annotations (e.g., "NIV", "ESV")
 }
 
 struct DevotionalVerseRef: Codable, Equatable {

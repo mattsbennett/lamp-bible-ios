@@ -135,6 +135,7 @@ struct MarkdownDevotionalConverter {
             // Empty line - flush current block
             if trimmed.isEmpty {
                 flushParagraph()
+                flushList()
                 flushBlockquote()
                 continue
             }
@@ -197,14 +198,20 @@ struct MarkdownDevotionalConverter {
             if inBlockquote {
                 blockquoteLines.append(trimmed)
             } else if inList {
-                // Continuation of list item (indented)
-                if !listItems.isEmpty {
+                // Only continue list item if line is indented (starts with whitespace)
+                let isIndented = line.first?.isWhitespace == true
+                if isIndented && !listItems.isEmpty {
+                    // Continuation of list item (indented)
                     let lastContent = listItems[listItems.count - 1].content
                     listItems[listItems.count - 1] = DevotionalListItem(
                         content: DevotionalAnnotatedText(
                             text: lastContent.text + " " + trimmed
                         )
                     )
+                } else {
+                    // Non-indented line ends the list and starts a paragraph
+                    flushList()
+                    currentParagraph.append(trimmed)
                 }
             } else {
                 currentParagraph.append(trimmed)
@@ -417,6 +424,7 @@ struct MarkdownDevotionalConverter {
     /// Parse markdown text into DevotionalAnnotatedText
     static func parseAnnotatedText(_ text: String) -> DevotionalAnnotatedText {
         var annotations: [DevotionalAnnotation] = []
+        var footnoteRefs: [DevotionalFootnoteRef] = []
         var cleanText = text
 
         // Parse bold (**text** or __text__)
@@ -430,12 +438,16 @@ struct MarkdownDevotionalConverter {
         // Parse links [text](url) - including scripture references
         annotations.append(contentsOf: parseLinks(text: &cleanText))
 
+        // Parse footnote references [^id] (not definitions [^id]:)
+        footnoteRefs.append(contentsOf: parseFootnoteReferences(text: &cleanText))
+
         // Parse inline scripture references (e.g., John 3:16, Rom 8:28-30)
         annotations.append(contentsOf: parseScriptureReferences(cleanText))
 
         return DevotionalAnnotatedText(
             text: cleanText,
-            annotations: annotations.isEmpty ? nil : annotations
+            annotations: annotations.isEmpty ? nil : annotations,
+            footnoteRefs: footnoteRefs.isEmpty ? nil : footnoteRefs
         )
     }
 
@@ -539,6 +551,44 @@ struct MarkdownDevotionalConverter {
         }
 
         return annotations
+    }
+
+    private static func parseFootnoteReferences(text: inout String) -> [DevotionalFootnoteRef] {
+        var footnoteRefs: [DevotionalFootnoteRef] = []
+
+        // Match [^id] but NOT [^id]: (which is a footnote definition)
+        let pattern = "\\[\\^([^\\]]+)\\](?!:)"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return footnoteRefs
+        }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+
+        var offsetAdjustment = 0
+
+        for match in matches.reversed() {
+            guard match.numberOfRanges >= 2,
+                  let fullRange = Range(match.range, in: text),
+                  let idRange = Range(match.range(at: 1), in: text) else { continue }
+
+            let footnoteId = String(text[idRange])
+            // Display as [id] without the ^
+            let displayText = "[\(footnoteId)]"
+
+            let startOffset = text.distance(from: text.startIndex, to: fullRange.lowerBound) - offsetAdjustment
+
+            footnoteRefs.append(DevotionalFootnoteRef(
+                id: footnoteId,
+                offset: startOffset
+            ))
+
+            // Replace [^id] with [id] in text
+            text.replaceSubrange(fullRange, with: displayText)
+            offsetAdjustment += (match.range.length - displayText.count)
+        }
+
+        return footnoteRefs
     }
 
     private static func parseScriptureReferences(_ text: String) -> [DevotionalAnnotation] {

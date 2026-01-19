@@ -23,6 +23,33 @@ func splitVerseId(_ number: Int) -> (Int, Int, Int) {
     return (verse, chapter, book)
 }
 
+// MARK: - URL Building
+
+/// Build a human-readable lampbible:// URL from verse ID(s)
+/// Format: lampbible://gen1:1 or lampbible://gen1:1-5 with optional ?translation=NIV
+func buildVerseURL(verseId: Int, endVerseId: Int? = nil, translationId: String? = nil) -> URL? {
+    let (verse, chapter, book) = splitVerseId(verseId)
+    let osisId = BookOsisCache.shared.getOsisId(for: book).lowercased()
+    guard !osisId.isEmpty else { return nil }
+
+    var urlString = "lampbible://\(osisId)\(chapter):\(verse)"
+
+    // Add end verse if in same chapter
+    if let endId = endVerseId {
+        let (endVerse, endChapter, endBook) = splitVerseId(endId)
+        if endBook == book && endChapter == chapter && endVerse > verse {
+            urlString += "-\(endVerse)"
+        }
+    }
+
+    // Add translation as query param if specified
+    if let translation = translationId {
+        urlString += "?translation=\(translation)"
+    }
+
+    return URL(string: urlString)
+}
+
 // MARK: - Module Visibility Helpers
 
 /// Parses a comma-separated string of hidden translation IDs into a Set (String IDs for GRDB)

@@ -604,6 +604,15 @@ struct ChapterTextView: UIViewRepresentable {
                 guard let textView = self.textView else { return }
                 guard !self.verseRanges.isEmpty else { return }
 
+                // If text container isn't sized yet, retry after a delay
+                if textView.textContainer.size.width <= 0 {
+                    self.versePositionsDirty = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.scheduleVersePositionCalculation(containerWidth: containerWidth)
+                    }
+                    return
+                }
+
                 // If container width changed, it affects layout -> positions.
                 self.lastVersePositionsContainerWidth = containerWidth
                 self.versePositionsDirty = false
@@ -848,6 +857,7 @@ struct ReaderView: View {
     @State private var animateScroll: Bool = true
     @StateObject private var positionTracker = VersePositionTracker()
     @State private var pendingScrollVerseId: Int? = nil  // Tracks verse to scroll to after positions update
+    @State private var positionsVersion: Int = 0  // Incremented when positions are calculated
     @State private var scrollCleanupId: UUID = UUID() // To prevent race conditions in scroll cleanup
     @State private var isProgrammaticScroll: Bool = false  // Ignore scroll detection during programmatic scrolls
     @State private var isUserDragging: Bool = false // Track active user interaction
@@ -875,10 +885,19 @@ struct ReaderView: View {
 
     var onVerseAction: ((Int, VerseAction) -> Void)?
 
+    // Initial verse to scroll to on load (handled internally with proper timing)
+    private let initialVerseId: Int?
+    @State private var hasAppliedInitialVerseId: Bool = false
+
+    // Initial translation to use on load (overrides SceneStorage)
+    private let initialTranslationId: String?
+    @State private var hasAppliedInitialTranslationId: Bool = false
+
     init(
         date: Binding<Date>,
         readingMetaData: [ReadingMetaData]? = nil,
         translationId: String? = nil,
+        initialVerseId: Int? = nil,
         onVerseAction: ((Int, VerseAction) -> Void)? = nil,
         requestScrollToVerseId: Binding<Int?> = .constant(nil),
         requestScrollAnimated: Binding<Bool> = .constant(true),
@@ -887,6 +906,8 @@ struct ReaderView: View {
         toolbarsHidden: Binding<Bool> = .constant(false),
         initialToolbarMode: BottomToolbarMode? = nil
     ) {
+        self.initialVerseId = initialVerseId
+        self.initialTranslationId = translationId
         _date = date
         _readingMetaData = State(initialValue: readingMetaData)
         _requestedToolbarMode = State(initialValue: initialToolbarMode)
@@ -895,13 +916,6 @@ struct ReaderView: View {
         // Load user settings
         let settings = UserDatabase.shared.getSettings()
         _userSettings = State(initialValue: settings)
-
-        // Translation is stored in @SceneStorage - only set if explicitly provided
-        // Scene storage persists the session translation across view recreation
-        // If empty, it will be set to user.readerTranslationId in onAppear
-        if let explicitTranslationId = translationId {
-            _translationId = SceneStorage(wrappedValue: explicitTranslationId, "readerTranslationId")
-        }
 
         // Load translation metadata (will be updated in onAppear if needed)
         let metadataId = translationId ?? settings.readerTranslationId
@@ -1081,15 +1095,9 @@ struct ReaderView: View {
         if loadingCase == LOADING_HISTORY, let targetId = targetVerseId {
             currentVerseId = targetId
             // animateScroll is set by caller (onChange handler)
+            // Set pendingScrollVerseId - the onPositionsCalculated callback will
+            // trigger the scroll when verse positions are ready
             pendingScrollVerseId = targetId
-
-            // Scroll after layout completes
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
-                if let yPos = positionTracker.positions[targetId] {
-                    pendingScrollVerseId = nil
-                    scrollTargetY = max(0, yPos + 1 - 20)
-                }
-            }
         } else if let firstVerse = verses.first {
             currentVerseId = firstVerse.ref
             pendingScrollVerseId = nil
@@ -1193,7 +1201,10 @@ struct ReaderView: View {
                                 onScrollToPosition: { (yPosition: CGFloat) -> Void in
                                     scrollTargetY = yPosition
                                 },
-                                onPositionsCalculated: nil,
+                                onPositionsCalculated: { (_: [Int: CGFloat]) -> Void in
+                                    // Signal that positions were calculated - onChange handler will check pendingScrollVerseId
+                                    positionsVersion += 1
+                                },
                                 isUserScrolling: isScrolling
                             )
                             .id("chapter_\(chapterNumber)_\(translationId)")
@@ -1249,6 +1260,15 @@ struct ReaderView: View {
                         // The pending scroll will reposition after layout completes
                         proxy.scrollTo("top", anchor: .top)
                         isLoading = false
+
+                        // Fallback: use UIKit scroll after layout settles
+                        if pendingScrollVerseId != nil {
+                            Task { @MainActor in
+                                // Wait for view to be added to window and laid out
+                                try? await Task.sleep(nanoseconds: 100_000_000)  // 0.1s
+                                await checkPendingScroll()
+                            }
+                        }
                     }
                 }
                 .onChange(of: currentReadingIndex) {
@@ -1339,6 +1359,30 @@ struct ReaderView: View {
                                     isProgrammaticScroll = false
                                 }
                             }
+                        }
+                    }
+                }
+                .onChange(of: positionsVersion) {
+                    // When positions are calculated, check if we have a pending scroll
+                    guard let targetId = pendingScrollVerseId else { return }
+                    let positions = positionTracker.positions
+
+                    if let yPos = positions[targetId] {
+                        // Exact match found
+                        pendingScrollVerseId = nil
+                        scrollTargetY = max(0, yPos + 1 - 20)
+                    } else if !positions.isEmpty {
+                        // No exact match - find closest verse at or before target
+                        let targetVerse = targetId % 1000
+                        let targetChapterPrefix = targetId / 1000 * 1000
+
+                        // Look for verses in the same chapter
+                        let chapterPositions = positions.filter { ($0.key / 1000 * 1000) == targetChapterPrefix }
+                        if let closestEntry = chapterPositions
+                            .filter({ ($0.key % 1000) <= targetVerse })
+                            .max(by: { $0.key < $1.key }) {
+                            pendingScrollVerseId = nil
+                            scrollTargetY = max(0, closestEntry.value + 1 - 20)
                         }
                     }
                 }
@@ -1457,6 +1501,25 @@ struct ReaderView: View {
                 hasAppliedInitialMode = true
             }
 
+            // Handle initial translation (from deep links)
+            if let initTranslation = initialTranslationId, !hasAppliedInitialTranslationId {
+                hasAppliedInitialTranslationId = true
+                translationId = initTranslation
+                if let translation = try? TranslationDatabase.shared.getTranslation(id: initTranslation) {
+                    translationAbbreviation = translation.abbreviation
+                    translationName = translation.name
+                }
+            }
+
+            // Handle initial verse navigation (from deep links)
+            if let verseId = initialVerseId, !hasAppliedInitialVerseId {
+                hasAppliedInitialVerseId = true
+                currentVerseId = verseId
+                animateScroll = false
+                loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: verseId)
+                return
+            }
+
             // Determine which content to load based on mode
             let effectiveMode = (plansWithReadings.isEmpty && requestedToolbarMode == .plan) ? .search : (requestedToolbarMode ?? toolbarMode)
 
@@ -1521,6 +1584,56 @@ struct ReaderView: View {
             }
 
             NavigationHistory.shared.updateCurrentPosition(to: verseId)
+        }
+    }
+
+    /// Checks for a pending scroll and performs it if positions are available
+    @MainActor
+    private func checkPendingScroll(retryCount: Int = 0) async {
+        guard let targetId = pendingScrollVerseId else { return }
+
+        let positions = positionTracker.positions
+
+        // If positions aren't ready yet, wait and retry
+        if positions.isEmpty && retryCount < 20 {
+            try? await Task.sleep(nanoseconds: 50_000_000)  // 0.05s
+            await checkPendingScroll(retryCount: retryCount + 1)
+            return
+        }
+
+        // Update the coordinator with latest positions before trying to scroll
+        if !positions.isEmpty {
+            ScrollSyncCoordinator.shared.updateReaderVersePositions(positions)
+        }
+
+        // Try to scroll using the UIKit-based ScrollSyncCoordinator
+        if ScrollSyncCoordinator.shared.scrollReaderToVerseId(targetId) {
+            pendingScrollVerseId = nil
+            return
+        }
+
+        // If scroll view not ready yet, retry
+        if ScrollSyncCoordinator.shared.readerScrollView == nil && retryCount < 20 {
+            try? await Task.sleep(nanoseconds: 50_000_000)  // 0.05s
+            await checkPendingScroll(retryCount: retryCount + 1)
+            return
+        }
+
+        // Final fallback - try SwiftUI scroll target
+        if let yPos = positions[targetId] {
+            pendingScrollVerseId = nil
+            scrollTargetY = max(0, yPos + 1 - 20)
+        } else {
+            // Try to find closest verse
+            let targetVerse = targetId % 1000
+            let targetChapterPrefix = targetId / 1000 * 1000
+            let chapterPositions = positions.filter { ($0.key / 1000 * 1000) == targetChapterPrefix }
+            if let closestEntry = chapterPositions
+                .filter({ ($0.key % 1000) <= targetVerse })
+                .max(by: { $0.key < $1.key }) {
+                pendingScrollVerseId = nil
+                scrollTargetY = max(0, closestEntry.value + 1 - 20)
+            }
         }
     }
 

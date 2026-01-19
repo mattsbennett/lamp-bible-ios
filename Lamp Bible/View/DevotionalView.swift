@@ -31,11 +31,13 @@ enum DevotionalEditMode: String, CaseIterable {
 
 struct DevotionalView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     // Configuration
     let initialDevotional: Devotional
     let moduleId: String
     var onBack: (() -> Void)?
+    var onNavigateToVerse: ((Int) -> Void)?
     let initialMode: DevotionalViewMode
 
     // State
@@ -60,6 +62,23 @@ struct DevotionalView: View {
     @State private var syncPollingTask: Task<Void, Never>?
     @State private var showingSyncStatusPopover: Bool = false
 
+    // Preview sheet navigation (for scripture/strongs references)
+    @State private var previewState: PreviewSheetState? = nil
+    @State private var allDevotionalItems: [PreviewItem] = []
+
+    // Link editor state
+    @State private var showingLinkEditor: Bool = false
+    @State private var linkEditorSelectedText: String = ""
+    @State private var linkEditorSelectionRange: NSRange? = nil
+
+    // Footnote editor state
+    @State private var showingFootnoteEditor: Bool = false
+    @State private var footnoteEditorCursorPosition: Int = 0
+
+    // Scripture quote state
+    @State private var showingScriptureQuoteSheet: Bool = false
+    @State private var showingQuotePopover: Bool = false
+
     enum DevotionalSaveState {
         case idle
         case saving
@@ -67,10 +86,11 @@ struct DevotionalView: View {
         case error
     }
 
-    init(devotional: Devotional, moduleId: String, initialMode: DevotionalViewMode = .read, onBack: (() -> Void)? = nil) {
+    init(devotional: Devotional, moduleId: String, initialMode: DevotionalViewMode = .read, onBack: (() -> Void)? = nil, onNavigateToVerse: ((Int) -> Void)? = nil) {
         self.initialDevotional = devotional
         self.moduleId = moduleId
         self.onBack = onBack
+        self.onNavigateToVerse = onNavigateToVerse
         self.initialMode = initialMode
         _devotional = State(initialValue: devotional)
         _mode = State(initialValue: initialMode)
@@ -147,6 +167,51 @@ struct DevotionalView: View {
                 scheduleAutoSave()
             }
         }
+        .sheet(item: $previewState) { state in
+            let itemTranslationId = state.currentItem.translationId
+            let effectiveTranslationId = itemTranslationId ?? UserDatabase.shared.getSettings().readerTranslationId
+            PreviewSheet(
+                state: $previewState,
+                translationId: effectiveTranslationId,
+                onNavigateToVerse: onNavigateToVerse ?? { verseId in
+                    // Use deep link URL when callback not provided
+                    if let url = buildVerseURL(verseId: verseId, translationId: itemTranslationId) {
+                        openURL(url)
+                    }
+                }
+            )
+        }
+        .sheet(isPresented: $showingLinkEditor) {
+            LinkEditorSheet(
+                selectedText: linkEditorSelectedText,
+                onSave: { linkType in
+                    insertLink(linkType)
+                },
+                onCancel: {
+                    showingLinkEditor = false
+                }
+            )
+        }
+        .sheet(isPresented: $showingFootnoteEditor) {
+            FootnoteEditorSheet(
+                onSave: { content in
+                    insertFootnote(content)
+                },
+                onCancel: {
+                    showingFootnoteEditor = false
+                }
+            )
+        }
+        .sheet(isPresented: $showingScriptureQuoteSheet) {
+            ScriptureQuoteSheet(
+                onInsert: { citation, quotation in
+                    insertScriptureQuote(citation: citation, quotation: quotation)
+                },
+                onCancel: {
+                    showingScriptureQuoteSheet = false
+                }
+            )
+        }
         .onDisappear {
             saveTask?.cancel()
             syncPollingTask?.cancel()
@@ -192,27 +257,39 @@ struct DevotionalView: View {
                 }
                 syncPollingTask = startSyncStatusPolling()
             }
+
+            // Parse all tappable items for preview navigation
+            allDevotionalItems = parseDevotionalItems(from: devotional)
+        }
+        .onChange(of: devotional) { _, newDevotional in
+            // Re-parse items when devotional changes
+            allDevotionalItems = parseDevotionalItems(from: newDevotional)
         }
     }
 
     // MARK: - Present Mode
 
     private var presentModeView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: presentLineSpacing) {
-                // Title - same size as body in present mode
-                Text(devotional.meta.title)
-                    .font(.system(size: presentFontSize, weight: .bold))
-                    .padding(.bottom, 20)
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: presentLineSpacing) {
+                    // Title - same size as body in present mode
+                    Text(devotional.meta.title)
+                        .font(.system(size: presentFontSize, weight: .bold))
+                        .padding(.bottom, 20)
 
-                // Content
-                DevotionalContentRenderer(
-                    content: devotional.content,
-                    style: presentStyle
-                )
+                    // Content
+                    DevotionalContentRenderer(
+                        content: devotional.content,
+                        style: presentStyle
+                    )
+                }
+                .padding(.horizontal, 32)
+                .padding(.vertical, 48)
+                // Allow overscroll so last line can be scrolled to top of screen
+                // Subtract one line height so the last line remains visible
+                .padding(.bottom, geometry.size.height - presentFontSize - 96)
             }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 48)
         }
     }
 
@@ -245,6 +322,10 @@ struct DevotionalView: View {
         style.headingSpacing = presentFontSize * 0.8  // Same as paragraph
         style.listItemSpacing = presentFontSize * 0.3
         style.isPresentMode = true  // Remove indentation
+        // Make links match text color in present mode (no distracting highlights)
+        style.linkColor = .primary
+        style.scriptureColor = .primary
+        style.strongsColor = .primary
         return style
     }
 
@@ -344,13 +425,14 @@ struct DevotionalView: View {
                 DevotionalContentRenderer(
                     content: devotional.content,
                     style: readStyle,
-                    onScriptureTap: { sv, ev in
-                        // TODO: Navigate to verse
-                        print("Scripture tap: \(sv) - \(ev ?? 0)")
+                    onScriptureTap: { sv, ev, translationId in
+                        handleScriptureTap(sv: sv, ev: ev, translationId: translationId)
                     },
                     onStrongsTap: { key in
-                        // TODO: Show Strong's
-                        print("Strong's tap: \(key)")
+                        handleStrongsTap(key: key)
+                    },
+                    onLinkTap: { url in
+                        handleLinkTap(url: url)
                     }
                 )
 
@@ -362,8 +444,15 @@ struct DevotionalView: View {
                     DevotionalFootnotesView(
                         footnotes: footnotes,
                         style: readStyle,
-                        onScriptureTap: nil,
-                        onStrongsTap: nil
+                        onScriptureTap: { sv, ev, translationId in
+                            handleScriptureTap(sv: sv, ev: ev, translationId: translationId)
+                        },
+                        onStrongsTap: { key in
+                            handleStrongsTap(key: key)
+                        },
+                        onLinkTap: { url in
+                            handleLinkTap(url: url)
+                        }
                     )
                 }
             }
@@ -429,6 +518,12 @@ struct DevotionalView: View {
                 fontSize: fontSize,
                 onCoordinatorReady: { coordinator in
                     richTextCoordinator = coordinator
+                    // Set up callback for "Add Link" context menu item
+                    coordinator.onAddLinkRequested = { [self] selectedText, range in
+                        linkEditorSelectedText = selectedText
+                        linkEditorSelectionRange = range
+                        showingLinkEditor = true
+                    }
                 }
             )
             .id(visualEditorRefreshId)  // Force recreate when switching from markdown mode
@@ -519,15 +614,137 @@ struct DevotionalView: View {
 
                 Divider().frame(height: 24)
 
-                // Quote
-                Button(action: { richTextCoordinator?.applyStyle(.quote) }) {
+                // Quote (menu with Regular/Scripture options)
+                Menu {
+                    Button(action: {
+                        richTextCoordinator?.applyStyle(.quote)
+                    }) {
+                        Label("Regular Quote", systemImage: "text.quote")
+                    }
+
+                    Button(action: {
+                        showingScriptureQuoteSheet = true
+                    }) {
+                        Label("Scripture Quote", systemImage: "book.closed")
+                    }
+                } label: {
                     formattingButton(icon: "text.quote", label: nil)
+                }
+
+                Divider().frame(height: 24)
+
+                // Link
+                Button(action: { openLinkEditor() }) {
+                    formattingButton(icon: "link", label: nil)
+                }
+
+                // Footnote
+                Button(action: { openFootnoteEditor() }) {
+                    formattingButton(icon: "note.text", label: nil)
                 }
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
         }
         .background(Color(.systemGray6))
+    }
+
+    private func openLinkEditor() {
+        guard let coordinator = richTextCoordinator,
+              let textView = coordinator.textView else { return }
+
+        let selectedRange = textView.selectedRange
+        guard selectedRange.length > 0 else {
+            // No selection - could show an alert or just return
+            return
+        }
+
+        // Get selected text
+        let attributedText = textView.attributedText ?? NSAttributedString()
+        let selectedText = (attributedText.string as NSString).substring(with: selectedRange)
+
+        linkEditorSelectedText = selectedText
+        linkEditorSelectionRange = selectedRange
+        showingLinkEditor = true
+    }
+
+    private func insertLink(_ linkType: LinkEditorSheet.LinkType) {
+        showingLinkEditor = false
+
+        guard let coordinator = richTextCoordinator,
+              let range = linkEditorSelectionRange else { return }
+
+        let url: String
+        switch linkType {
+        case .url(let urlString):
+            url = urlString
+        case .scripture(let verseId, let endVerseId):
+            // Use human-readable format: lampbible://gen1:1 or lampbible://gen1:1-5
+            url = formatScriptureURL(verseId: verseId, endVerseId: endVerseId)
+        case .strongs(let key):
+            url = "lampbible://strongs/\(key)"
+        }
+
+        coordinator.insertLink(url: url, range: range)
+        hasUnsavedChanges = true
+        scheduleAutoSave()
+    }
+
+    private func openFootnoteEditor() {
+        guard let coordinator = richTextCoordinator,
+              let textView = coordinator.textView else { return }
+
+        // Get cursor position
+        footnoteEditorCursorPosition = textView.selectedRange.location
+        showingFootnoteEditor = true
+    }
+
+    private func insertFootnote(_ content: String) {
+        showingFootnoteEditor = false
+
+        guard let coordinator = richTextCoordinator,
+              !content.isEmpty else { return }
+
+        // Generate footnote ID based on existing footnotes
+        let footnoteId = getNextFootnoteId()
+
+        // Insert footnote reference at cursor and append definition at end
+        coordinator.insertFootnote(id: footnoteId, content: content, at: footnoteEditorCursorPosition)
+        hasUnsavedChanges = true
+        scheduleAutoSave()
+    }
+
+    private func getNextFootnoteId() -> String {
+        // Count existing footnotes in the markdown content
+        let pattern = "\\[\\^(\\d+)\\]"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return "1"
+        }
+
+        let matches = regex.matches(in: markdownContent, range: NSRange(markdownContent.startIndex..., in: markdownContent))
+        var maxId = 0
+
+        for match in matches {
+            if let range = Range(match.range(at: 1), in: markdownContent),
+               let id = Int(markdownContent[range]) {
+                maxId = max(maxId, id)
+            }
+        }
+
+        return String(maxId + 1)
+    }
+
+    private func insertScriptureQuote(citation: String, quotation: String) {
+        showingScriptureQuoteSheet = false
+
+        guard let coordinator = richTextCoordinator else { return }
+
+        // Format as blockquoted citation - two lines, both with > prefix
+        // Line 1: > (Gen 1:1-5 ESV)
+        // Line 2: > The quoted text...
+        coordinator.insertScriptureQuote(citation: citation, quotation: quotation)
+        hasUnsavedChanges = true
+        scheduleAutoSave()
     }
 
     private func formattingButton(icon: String, label: String?) -> some View {
@@ -755,6 +972,297 @@ struct DevotionalView: View {
         }
     }
 
+    // MARK: - Preview Navigation
+
+    /// Handle scripture tap by showing preview sheet with prev/next navigation
+    private func handleScriptureTap(sv: Int, ev: Int?, translationId: String? = nil) {
+        // Find matching item in allDevotionalItems for prev/next navigation
+        if let matchingItem = allDevotionalItems.first(where: {
+            if case .verse(let itemSv, let itemEv, _, _) = $0.type {
+                return itemSv == sv && itemEv == ev
+            }
+            return false
+        }) {
+            // If translationId was passed directly, update the item with it
+            let itemToUse: PreviewItem
+            if let directTranslation = translationId, matchingItem.translationId == nil {
+                // Create new item with the translation from the tap
+                itemToUse = PreviewItem.verse(index: matchingItem.index, verseId: sv, endVerseId: ev, displayText: matchingItem.displayText, translationId: directTranslation)
+            } else {
+                itemToUse = matchingItem
+            }
+            // Use all verse items for prev/next navigation
+            let verseItems = allDevotionalItems.filter {
+                if case .verse = $0.type { return true }
+                return false
+            }
+            previewState = PreviewSheetState(currentItem: itemToUse, allItems: verseItems.isEmpty ? [itemToUse] : verseItems)
+        } else {
+            // Fallback: create single item with translation if provided
+            let displayText = formatVerseRangeReference(sv, endVerseId: ev)
+            let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText, translationId: translationId)
+            previewState = PreviewSheetState(currentItem: item, allItems: [item])
+        }
+    }
+
+    /// Handle strongs tap by showing preview sheet with prev/next navigation
+    private func handleStrongsTap(key: String) {
+        // Find matching item in allDevotionalItems for prev/next navigation
+        if let matchingItem = allDevotionalItems.first(where: {
+            if case .strongs(let itemKey, _) = $0.type {
+                return itemKey == key
+            }
+            return false
+        }) {
+            // Use all strongs items for prev/next navigation
+            let strongsItems = allDevotionalItems.filter {
+                if case .strongs = $0.type { return true }
+                return false
+            }
+            previewState = PreviewSheetState(currentItem: matchingItem, allItems: strongsItems.isEmpty ? [matchingItem] : strongsItems)
+        } else {
+            // Fallback: create single item
+            let item = PreviewItem.strongs(index: 0, key: key, displayText: key)
+            previewState = PreviewSheetState(currentItem: item, allItems: [item])
+        }
+    }
+
+    /// Handle link tap by parsing lampbible:// URLs and showing preview sheet
+    private func handleLinkTap(url: URL) {
+        // Parse the URL to determine type
+        guard let lampbibleUrl = LampbibleURL.parse(url) else {
+            // Unknown format - try to open as external URL
+            UIApplication.shared.open(url)
+            return
+        }
+
+        switch lampbibleUrl {
+        case .verse(let verseId, let endVerseId, let translationId):
+            handleScriptureTap(sv: verseId, ev: endVerseId, translationId: translationId)
+        case .strongs(let key):
+            handleStrongsTap(key: key)
+        case .external(let externalUrl):
+            UIApplication.shared.open(externalUrl)
+        }
+    }
+
+    /// Format verse range for display text
+    private func formatVerseRangeReference(_ sv: Int, endVerseId: Int?) -> String {
+        let bookId = sv / 1000000
+        let chapter = (sv % 1000000) / 1000
+        let verse = sv % 1000
+
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
+
+        if let ev = endVerseId {
+            let endVerse = ev % 1000
+            if endVerse != verse {
+                return "\(bookName) \(chapter):\(verse)-\(endVerse)"
+            }
+        }
+        return "\(bookName) \(chapter):\(verse)"
+    }
+
+    /// Format scripture URL in human-readable format: lampbible://gen1:1 or lampbible://gen1:1-5
+    private func formatScriptureURL(verseId: Int, endVerseId: Int?) -> String {
+        let bookId = verseId / 1000000
+        let chapter = (verseId % 1000000) / 1000
+        let verse = verseId % 1000
+
+        // Get OSIS ID for the book (e.g., "Gen", "Exo")
+        let osisId = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.osisId.lowercased() ?? "gen"
+
+        if let ev = endVerseId {
+            let endVerse = ev % 1000
+            if endVerse != verse {
+                return "lampbible://\(osisId)\(chapter):\(verse)-\(endVerse)"
+            }
+        }
+        return "lampbible://\(osisId)\(chapter):\(verse)"
+    }
+
+    /// Parse all tappable items from devotional content for prev/next navigation
+    private func parseDevotionalItems(from devotional: Devotional) -> [PreviewItem] {
+        var items: [PreviewItem] = []
+        var index = 0
+
+        // Parse summary if present
+        if let summary = devotional.summary {
+            switch summary {
+            case .plain:
+                break // No annotations in plain text
+            case .annotated(let annotated):
+                parseDevotionalAnnotatedText(annotated, into: &items, index: &index)
+            }
+        }
+
+        // Parse content blocks
+        for block in devotional.content.allBlocks {
+            if let content = block.content {
+                parseDevotionalAnnotatedText(content, into: &items, index: &index)
+            }
+            // Parse list items
+            if let listItems = block.items {
+                parseDevotionalListItems(listItems, into: &items, index: &index)
+            }
+        }
+
+        // Parse footnotes if present
+        if let footnotes = devotional.footnotes {
+            for footnote in footnotes {
+                switch footnote.content {
+                case .plain:
+                    break
+                case .annotated(let annotated):
+                    parseDevotionalAnnotatedText(annotated, into: &items, index: &index)
+                }
+            }
+        }
+
+        return items
+    }
+
+    /// Parse annotations from a DevotionalAnnotatedText and add to items array
+    private func parseDevotionalAnnotatedText(_ annotatedText: DevotionalAnnotatedText, into items: inout [PreviewItem], index: inout Int) {
+        let text = annotatedText.text
+
+        // If we have annotations, use them
+        if let annotations = annotatedText.annotations, !annotations.isEmpty {
+            let scalars = text.unicodeScalars
+
+            for annotation in annotations {
+                // Get display text from annotation range
+                guard annotation.start >= 0, annotation.end > annotation.start,
+                      annotation.start < scalars.count, annotation.end <= scalars.count else { continue }
+
+                let startIdx = scalars.index(scalars.startIndex, offsetBy: annotation.start)
+                let endIdx = scalars.index(scalars.startIndex, offsetBy: annotation.end)
+                let startStringIdx = startIdx.samePosition(in: text) ?? text.startIndex
+                let endStringIdx = endIdx.samePosition(in: text) ?? text.endIndex
+                let displayText = String(text[startStringIdx..<endStringIdx])
+
+                switch annotation.type {
+                case .scripture:
+                    if let sv = annotation.data?.sv {
+                        let ev = annotation.data?.ev
+                        // Check annotation data first, then text after annotation, then display text itself
+                        let translationId = annotation.data?.translationId
+                            ?? extractTranslationAfterAnnotation(text: text, annotationEnd: annotation.end)
+                            ?? extractTranslationFromText(displayText)
+                        items.append(PreviewItem.verse(index: index, verseId: sv, endVerseId: ev, displayText: displayText, translationId: translationId))
+                        index += 1
+                    }
+                case .strongs:
+                    if let key = annotation.data?.strongs {
+                        items.append(PreviewItem.strongs(index: index, key: key, displayText: displayText))
+                        index += 1
+                    }
+                default:
+                    break
+                }
+            }
+        } else {
+            // No annotations - parse plain text for verse references
+            let parser = VerseReferenceParser.shared
+            let refs = parser.parse(text)
+            for ref in refs {
+                let verseId = ref.bookId * 1000000 + ref.chapter * 1000 + ref.startVerse
+                let endVerseId = ref.endVerse.map { ref.bookId * 1000000 + ref.chapter * 1000 + $0 }
+                // Check for translation after the reference in the original text
+                let translationId = extractTranslationAfterReference(text: text, refRange: ref.range)
+                items.append(PreviewItem.verse(index: index, verseId: verseId, endVerseId: endVerseId, displayText: ref.displayText, translationId: translationId))
+                index += 1
+            }
+        }
+    }
+
+    /// Extract translation ID from display text like "Genesis 1:1 NIV" or "(John 3:16 ESV)"
+    private func extractTranslationFromText(_ text: String) -> String? {
+        // Get the last word after trimming
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = trimmed.split(separator: " ")
+        guard components.count >= 2 else { return nil }
+
+        // Strip punctuation (parentheses, periods, commas, etc.) from the last word
+        let lastWord = String(components.last!)
+            .trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+            .uppercased()
+        return isKnownTranslation(lastWord)
+    }
+
+    /// Extract translation ID that appears after an annotation end position
+    private func extractTranslationAfterAnnotation(text: String, annotationEnd: Int) -> String? {
+        let scalars = text.unicodeScalars
+        guard annotationEnd < scalars.count else { return nil }
+
+        let endIdx = scalars.index(scalars.startIndex, offsetBy: annotationEnd)
+        guard let endStringIdx = endIdx.samePosition(in: text) else { return nil }
+
+        let afterAnnotation = String(text[endStringIdx...])
+        let trimmed = afterAnnotation.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Get the first word after the annotation by splitting on whitespace/newlines
+        let firstWord = trimmed.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).first.map { String($0) }
+        guard let word = firstWord else { return nil }
+
+        // Strip punctuation and check
+        let cleaned = word.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased()
+        return isKnownTranslation(cleaned)
+    }
+
+    /// Extract translation ID that appears after a verse reference in text
+    private func extractTranslationAfterReference(text: String, refRange: Range<String.Index>) -> String? {
+        // Look for text after the reference
+        let afterRef = String(text[refRange.upperBound...])
+        let trimmed = afterRef.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Get the first word after the reference by splitting on whitespace/newlines
+        let firstWord = trimmed.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).first.map { String($0) }
+        guard let word = firstWord else { return nil }
+
+        // Remove any trailing punctuation
+        let cleaned = word.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased()
+        return isKnownTranslation(cleaned)
+    }
+
+    /// Check if a string is a known translation ID, returns the normalized ID if found
+    private func isKnownTranslation(_ id: String) -> String? {
+        // Common Bible translation abbreviations
+        let knownTranslations: Set<String> = [
+            "NIV", "ESV", "KJV", "NKJV", "NLT", "NASB", "NASB95", "NASB20",
+            "CSB", "HCSB", "RSV", "NRSV", "ASV", "AMP", "MSG", "NET", "NCV",
+            "CEV", "GNT", "GNB", "TEV", "TLB", "PHILLIPS", "WEB", "YLT",
+            "DARBY", "DRB", "ERV", "EXB", "GW", "ICB", "ISV", "JUB", "LEB",
+            "MEV", "MOUNCE", "NABRE", "NIRV", "NIVUK", "OJB", "RGT", "TPT",
+            "VOICE", "WE", "WYC", "BSB", "LSB", "NRSVUE"
+        ]
+
+        // Check exact match first
+        if knownTranslations.contains(id) {
+            return id
+        }
+
+        // Check if it's a plural form (e.g., "KJVs", "BSBs")
+        if id.hasSuffix("S"), id.count > 1 {
+            let singular = String(id.dropLast())
+            if knownTranslations.contains(singular) {
+                return singular
+            }
+        }
+
+        return nil
+    }
+
+    /// Parse list items recursively for annotations
+    private func parseDevotionalListItems(_ listItems: [DevotionalListItem], into items: inout [PreviewItem], index: inout Int) {
+        for item in listItems {
+            parseDevotionalAnnotatedText(item.content, into: &items, index: &index)
+            if let children = item.children {
+                parseDevotionalListItems(children, into: &items, index: &index)
+            }
+        }
+    }
+
     // MARK: - Sync Status
 
     @MainActor
@@ -801,6 +1309,616 @@ struct DevotionalView: View {
         }
         .padding()
         .presentationCompactAdaptation(.popover)
+    }
+}
+
+// MARK: - Link Editor Sheet
+
+struct LinkEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let selectedText: String
+    let onSave: (LinkType) -> Void
+    let onCancel: () -> Void
+
+    enum LinkType {
+        case url(String)
+        case scripture(verseId: Int, endVerseId: Int?)
+        case strongs(key: String)
+    }
+
+    enum LinkMode: String, CaseIterable {
+        case url = "URL"
+        case scripture = "Scripture"
+        case strongs = "Strong's"
+    }
+
+    @State private var linkMode: LinkMode = .scripture
+    @State private var urlText: String = ""
+    @State private var strongsKey: String = ""
+
+    // Scripture picker state
+    @State private var detectedReference: ParsedVerseReference?
+    @State private var selectedBook: Int = 1
+    @State private var selectedChapter: Int = 1
+    @State private var selectedStartVerse: Int = 1
+    @State private var selectedEndVerse: Int? = nil
+    @State private var useEndVerse: Bool = false
+
+    private var books: [(id: Int, name: String)] {
+        (try? BundledModuleDatabase.shared.getAllBooks())?.map { ($0.id, $0.name) } ?? []
+    }
+
+    private var chapters: [Int] {
+        // Use a default translation to get chapter count
+        let translationId = UserDatabase.shared.getSettings().readerTranslationId
+        let count = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: selectedBook)) ?? 50
+        return Array(1...max(1, count))
+    }
+
+    private var verses: [Int] {
+        let translationId = UserDatabase.shared.getSettings().readerTranslationId
+        let count = (try? TranslationDatabase.shared.getVerseCount(translationId: translationId, book: selectedBook, chapter: selectedChapter)) ?? 30
+        return Array(1...max(1, count))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Selected text: \"\(selectedText)\"")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("Link Type") {
+                    Picker("Type", selection: $linkMode) {
+                        ForEach(LinkMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                switch linkMode {
+                case .url:
+                    Section("URL") {
+                        TextField("https://example.com", text: $urlText)
+                            .keyboardType(.URL)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
+                    }
+
+                case .scripture:
+                    if let detected = detectedReference {
+                        Section("Detected Reference") {
+                            HStack {
+                                Text(detected.displayText)
+                                    .foregroundColor(.accentColor)
+                                Spacer()
+                                Button("Use This") {
+                                    saveDetectedReference(detected)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                        }
+                    }
+
+                    Section("Or Select Manually") {
+                        Picker("Book", selection: $selectedBook) {
+                            ForEach(books, id: \.id) { book in
+                                Text(book.name).tag(book.id)
+                            }
+                        }
+
+                        Picker("Chapter", selection: $selectedChapter) {
+                            ForEach(chapters, id: \.self) { chapter in
+                                Text("\(chapter)").tag(chapter)
+                            }
+                        }
+
+                        Picker("Start Verse", selection: $selectedStartVerse) {
+                            ForEach(verses, id: \.self) { verse in
+                                Text("\(verse)").tag(verse)
+                            }
+                        }
+
+                        Toggle("Include End Verse", isOn: $useEndVerse)
+
+                        if useEndVerse {
+                            Picker("End Verse", selection: Binding(
+                                get: { selectedEndVerse ?? selectedStartVerse },
+                                set: { selectedEndVerse = $0 }
+                            )) {
+                                ForEach(verses.filter { $0 >= selectedStartVerse }, id: \.self) { verse in
+                                    Text("\(verse)").tag(verse)
+                                }
+                            }
+                        }
+                    }
+
+                case .strongs:
+                    Section("Strong's Number") {
+                        TextField("G1234 or H5678", text: $strongsKey)
+                            .autocapitalization(.allCharacters)
+                            .autocorrectionDisabled()
+                    }
+                }
+            }
+            .navigationTitle("Add Link")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        saveLink()
+                    }
+                    .disabled(!isValid)
+                }
+            }
+            .onAppear {
+                detectReference()
+            }
+            .onChange(of: selectedBook) { _, _ in
+                // Reset chapter and verse when book changes
+                selectedChapter = 1
+                selectedStartVerse = 1
+                selectedEndVerse = nil
+            }
+            .onChange(of: selectedChapter) { _, _ in
+                // Reset verse when chapter changes
+                selectedStartVerse = 1
+                selectedEndVerse = nil
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var isValid: Bool {
+        switch linkMode {
+        case .url:
+            return !urlText.isEmpty && URL(string: urlText) != nil
+        case .scripture:
+            return true // Manual picker always has valid selection
+        case .strongs:
+            return !strongsKey.isEmpty && (strongsKey.hasPrefix("G") || strongsKey.hasPrefix("H"))
+        }
+    }
+
+    private func detectReference() {
+        let parser = VerseReferenceParser.shared
+        let refs = parser.parse(selectedText)
+        if let first = refs.first {
+            detectedReference = first
+            // Also set the picker to match
+            selectedBook = first.bookId
+            selectedChapter = first.chapter
+            selectedStartVerse = first.startVerse
+            if let end = first.endVerse {
+                useEndVerse = true
+                selectedEndVerse = end
+            }
+        }
+    }
+
+    private func saveDetectedReference(_ ref: ParsedVerseReference) {
+        let verseId = ref.bookId * 1000000 + ref.chapter * 1000 + ref.startVerse
+        let endVerseId = ref.endVerse.map { ref.bookId * 1000000 + ref.chapter * 1000 + $0 }
+        onSave(.scripture(verseId: verseId, endVerseId: endVerseId))
+    }
+
+    private func saveLink() {
+        switch linkMode {
+        case .url:
+            var url = urlText
+            if !url.contains("://") {
+                url = "https://" + url
+            }
+            onSave(.url(url))
+
+        case .scripture:
+            let verseId = selectedBook * 1000000 + selectedChapter * 1000 + selectedStartVerse
+            let endVerseId: Int?
+            if useEndVerse, let ev = selectedEndVerse, ev > selectedStartVerse {
+                endVerseId = selectedBook * 1000000 + selectedChapter * 1000 + ev
+            } else {
+                endVerseId = nil
+            }
+            onSave(.scripture(verseId: verseId, endVerseId: endVerseId))
+
+        case .strongs:
+            onSave(.strongs(key: strongsKey.uppercased()))
+        }
+    }
+}
+
+// MARK: - Footnote Editor Sheet
+
+struct FootnoteEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var footnoteContent: String = ""
+    @FocusState private var isTextFieldFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Footnote Content") {
+                    TextEditor(text: $footnoteContent)
+                        .frame(minHeight: 100)
+                        .focused($isTextFieldFocused)
+                }
+
+                Section {
+                    Text("A footnote reference will be inserted at the cursor position, and the footnote content will be added to the footnotes section at the bottom of the document.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Add Footnote")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        onSave(footnoteContent)
+                    }
+                    .disabled(footnoteContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .onAppear {
+                isTextFieldFocused = true
+            }
+        }
+        .presentationDetents([.medium])
+    }
+}
+
+// MARK: - Scripture Quote Sheet
+
+struct ScriptureQuoteSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let onInsert: (String, String) -> Void  // (citation, quotation)
+    let onCancel: () -> Void
+
+    // Translation picker
+    @State private var selectedTranslationId: String = ""
+    @State private var availableTranslations: [TranslationModule] = []
+
+    // Start verse picker state
+    @State private var startBook: Int = 1
+    @State private var startChapter: Int = 1
+    @State private var startVerse: Int = 1
+
+    // End verse picker state
+    @State private var endBook: Int = 1
+    @State private var endChapter: Int = 1
+    @State private var endVerse: Int = 1
+
+    // Options
+    @State private var includeVerseNumbers: Bool = false
+
+    // Preview
+    @State private var previewText: String = ""
+    @State private var isLoadingPreview: Bool = false
+
+    private var books: [(id: Int, name: String)] {
+        (try? BundledModuleDatabase.shared.getAllBooks())?.map { ($0.id, $0.name) } ?? []
+    }
+
+    private func chapters(for book: Int) -> [Int] {
+        let count = (try? TranslationDatabase.shared.getChapterCount(translationId: selectedTranslationId, book: book)) ?? 50
+        return Array(1...max(1, count))
+    }
+
+    private func verses(for book: Int, chapter: Int) -> [Int] {
+        let count = (try? TranslationDatabase.shared.getVerseCount(translationId: selectedTranslationId, book: book, chapter: chapter)) ?? 30
+        return Array(1...max(1, count))
+    }
+
+    private func bookName(for bookId: Int) -> String {
+        books.first { $0.id == bookId }?.name ?? "Genesis"
+    }
+
+    private var selectedTranslationAbbreviation: String {
+        availableTranslations.first { $0.id == selectedTranslationId }?.abbreviation ?? selectedTranslationId.uppercased()
+    }
+
+    private var startRef: Int {
+        startBook * 1000000 + startChapter * 1000 + startVerse
+    }
+
+    private var endRef: Int {
+        endBook * 1000000 + endChapter * 1000 + endVerse
+    }
+
+    private var isValidRange: Bool {
+        endRef >= startRef
+    }
+
+    /// Convert **n** markdown bold to styled AttributedString for preview
+    private var styledPreviewText: AttributedString {
+        var result = AttributedString()
+        var currentText = previewText
+
+        // Find all **text** patterns and convert to bold
+        while let startRange = currentText.range(of: "**") {
+            // Add text before **
+            let beforeText = String(currentText[currentText.startIndex..<startRange.lowerBound])
+            result.append(AttributedString(beforeText))
+
+            // Find closing **
+            let afterStart = currentText.index(startRange.upperBound, offsetBy: 0)
+            let remaining = String(currentText[afterStart...])
+            if let endRange = remaining.range(of: "**") {
+                // Extract bold text
+                let boldText = String(remaining[remaining.startIndex..<endRange.lowerBound])
+                var boldAttr = AttributedString(boldText)
+                boldAttr.font = .body.bold()
+                result.append(boldAttr)
+
+                // Continue after closing **
+                let afterEnd = remaining.index(endRange.upperBound, offsetBy: 0)
+                currentText = String(remaining[afterEnd...])
+            } else {
+                // No closing **, just add the rest as-is
+                result.append(AttributedString(String(currentText[startRange.lowerBound...])))
+                currentText = ""
+            }
+        }
+
+        // Add any remaining text
+        if !currentText.isEmpty {
+            result.append(AttributedString(currentText))
+        }
+
+        return result
+    }
+
+    private var citation: String {
+        let startBookName = bookName(for: startBook)
+        let endBookName = bookName(for: endBook)
+        let abbrev = selectedTranslationAbbreviation
+
+        if startBook == endBook {
+            // Same book
+            if startChapter == endChapter {
+                // Same chapter
+                if startVerse == endVerse {
+                    // Single verse
+                    return "(\(startBookName) \(startChapter):\(startVerse) \(abbrev))"
+                } else {
+                    // Verse range in same chapter
+                    return "(\(startBookName) \(startChapter):\(startVerse)-\(endVerse) \(abbrev))"
+                }
+            } else {
+                // Different chapters in same book
+                return "(\(startBookName) \(startChapter):\(startVerse)-\(endChapter):\(endVerse) \(abbrev))"
+            }
+        } else {
+            // Different books
+            return "(\(startBookName) \(startChapter):\(startVerse) - \(endBookName) \(endChapter):\(endVerse) \(abbrev))"
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Translation") {
+                    Picker("Translation", selection: $selectedTranslationId) {
+                        ForEach(availableTranslations, id: \.id) { translation in
+                            Text("\(translation.abbreviation) - \(translation.name)").tag(translation.id)
+                        }
+                    }
+                }
+
+                Section("Start Verse") {
+                    Picker("Book", selection: $startBook) {
+                        ForEach(books, id: \.id) { book in
+                            Text(book.name).tag(book.id)
+                        }
+                    }
+
+                    Picker("Chapter", selection: $startChapter) {
+                        ForEach(chapters(for: startBook), id: \.self) { chapter in
+                            Text("\(chapter)").tag(chapter)
+                        }
+                    }
+
+                    Picker("Verse", selection: $startVerse) {
+                        ForEach(verses(for: startBook, chapter: startChapter), id: \.self) { verse in
+                            Text("\(verse)").tag(verse)
+                        }
+                    }
+                }
+
+                Section("End Verse") {
+                    Picker("Book", selection: $endBook) {
+                        ForEach(books, id: \.id) { book in
+                            Text(book.name).tag(book.id)
+                        }
+                    }
+
+                    Picker("Chapter", selection: $endChapter) {
+                        ForEach(chapters(for: endBook), id: \.self) { chapter in
+                            Text("\(chapter)").tag(chapter)
+                        }
+                    }
+
+                    Picker("Verse", selection: $endVerse) {
+                        ForEach(verses(for: endBook, chapter: endChapter), id: \.self) { verse in
+                            Text("\(verse)").tag(verse)
+                        }
+                    }
+
+                    if !isValidRange {
+                        Text("End verse must be after start verse")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+
+                Section("Options") {
+                    Toggle("Include verse numbers", isOn: $includeVerseNumbers)
+                }
+
+                Section("Preview") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(citation)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+
+                        if isLoadingPreview {
+                            ProgressView()
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding()
+                        } else if !isValidRange {
+                            Text("Invalid verse range")
+                                .foregroundColor(.secondary)
+                                .italic()
+                        } else if previewText.isEmpty {
+                            Text("Select a passage to preview")
+                                .foregroundColor(.secondary)
+                                .italic()
+                        } else {
+                            // Render with bold verse numbers styled, not raw **
+                            Text(styledPreviewText)
+                                .font(.body)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("Insert Scripture Quote")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Insert") {
+                        onInsert(citation, previewText)
+                    }
+                    .disabled(previewText.isEmpty || !isValidRange)
+                }
+            }
+            .onAppear {
+                loadTranslations()
+            }
+            .onChange(of: selectedTranslationId) { _, _ in
+                loadPreview()
+            }
+            .onChange(of: startBook) { _, newValue in
+                startChapter = 1
+                startVerse = 1
+                // If end is before start, update end to match start
+                if endBook < newValue {
+                    endBook = newValue
+                    endChapter = 1
+                    endVerse = 1
+                }
+                loadPreview()
+            }
+            .onChange(of: startChapter) { _, newValue in
+                startVerse = 1
+                // If same book and end chapter is before start, update
+                if startBook == endBook && endChapter < newValue {
+                    endChapter = newValue
+                    endVerse = 1
+                }
+                loadPreview()
+            }
+            .onChange(of: startVerse) { _, newValue in
+                // If same book/chapter and end verse is before start, update
+                if startBook == endBook && startChapter == endChapter && endVerse < newValue {
+                    endVerse = newValue
+                }
+                loadPreview()
+            }
+            .onChange(of: endBook) { _, _ in
+                endChapter = min(endChapter, chapters(for: endBook).last ?? 1)
+                endVerse = min(endVerse, verses(for: endBook, chapter: endChapter).last ?? 1)
+                loadPreview()
+            }
+            .onChange(of: endChapter) { _, _ in
+                endVerse = min(endVerse, verses(for: endBook, chapter: endChapter).last ?? 1)
+                loadPreview()
+            }
+            .onChange(of: endVerse) { _, _ in
+                loadPreview()
+            }
+            .onChange(of: includeVerseNumbers) { _, _ in
+                loadPreview()
+            }
+        }
+        .presentationDetents([.large])
+    }
+
+    private func loadTranslations() {
+        availableTranslations = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
+
+        // Use default translation from settings
+        let settings = UserDatabase.shared.getSettings()
+        if availableTranslations.contains(where: { $0.id == settings.readerTranslationId }) {
+            selectedTranslationId = settings.readerTranslationId
+        } else if let first = availableTranslations.first {
+            selectedTranslationId = first.id
+        }
+
+        loadPreview()
+    }
+
+    private func loadPreview() {
+        guard !selectedTranslationId.isEmpty, isValidRange else {
+            previewText = ""
+            return
+        }
+
+        isLoadingPreview = true
+
+        Task {
+            do {
+                let verses = try TranslationDatabase.shared.getVerseRange(
+                    translationId: selectedTranslationId,
+                    startRef: startRef,
+                    endRef: endRef
+                )
+
+                let text: String
+                if includeVerseNumbers {
+                    // Include verse numbers as bold: **1** text **2** text
+                    text = verses.map { "**\($0.verse)** \($0.text)" }.joined(separator: " ")
+                } else {
+                    // Join verse text without verse numbers
+                    text = verses.map { $0.text }.joined(separator: " ")
+                }
+
+                await MainActor.run {
+                    previewText = text
+                    isLoadingPreview = false
+                }
+            } catch {
+                await MainActor.run {
+                    previewText = "Error loading verses"
+                    isLoadingPreview = false
+                }
+            }
+        }
     }
 }
 
@@ -1012,12 +2130,21 @@ struct RichTextEditor: UIViewRepresentable {
         textView.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 60, right: 12)
         textView.isScrollEnabled = true
         textView.allowsEditingTextAttributes = true
+        let initialParagraphStyle = NSMutableParagraphStyle()
+        initialParagraphStyle.lineSpacing = fontSize * 0.5
+        initialParagraphStyle.paragraphSpacing = fontSize * 0.8
         textView.typingAttributes = [
             .font: UIFont.systemFont(ofSize: fontSize),
-            .foregroundColor: UIColor.label
+            .foregroundColor: UIColor.label,
+            .paragraphStyle: initialParagraphStyle
         ]
         context.coordinator.textView = textView
         context.coordinator.fontSize = fontSize
+
+        // Add custom edit menu interaction for "Add Link" context menu item
+        let editMenuInteraction = UIEditMenuInteraction(delegate: context.coordinator)
+        textView.addInteraction(editMenuInteraction)
+        context.coordinator.editMenuInteraction = editMenuInteraction
 
         // Load initial content - set flag to prevent textViewDidChange from overwriting
         context.coordinator.isProgrammaticallyChanging = true
@@ -1117,6 +2244,11 @@ struct RichTextEditor: UIViewRepresentable {
         }
     }
 
+    // Block type for tracking transitions
+    private enum VisualBlockType {
+        case paragraph, heading, list, blockquote, empty
+    }
+
     // Convert markdown to NSAttributedString (hiding syntax)
     func markdownToAttributedString(_ markdown: String, fontSize: CGFloat) -> NSAttributedString {
         let result = NSMutableAttributedString()
@@ -1129,10 +2261,33 @@ struct RichTextEditor: UIViewRepresentable {
         let boldFont = UIFont.boldSystemFont(ofSize: fontSize)
 
         let lines = markdown.components(separatedBy: "\n")
+        var previousBlockType: VisualBlockType = .empty
+
+        // Helper to determine block type of a line
+        func blockType(of line: String) -> VisualBlockType {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { return .empty }
+            if trimmed.hasPrefix("# ") || trimmed.hasPrefix("## ") || trimmed.hasPrefix("### ") { return .heading }
+            if trimmed.hasPrefix("> ") { return .blockquote }
+            if trimmed.range(of: "^(\\t|  )*- ", options: .regularExpression) != nil { return .list }
+            if trimmed.range(of: "^(\\t|  )*\\d+\\. ", options: .regularExpression) != nil { return .list }
+            if trimmed == "---" { return .paragraph }
+            return .paragraph
+        }
+
+        // Helper to find next non-empty line's block type
+        func nextBlockType(after index: Int) -> VisualBlockType {
+            for i in (index + 1)..<lines.count {
+                let type = blockType(of: lines[i])
+                if type != .empty { return type }
+            }
+            return .empty
+        }
 
         for (index, line) in lines.enumerated() {
-            // Skip empty lines - we use paragraph spacing instead
+            // Track empty lines for block transitions
             if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                previousBlockType = .empty
                 continue
             }
             var processedLine = line
@@ -1140,12 +2295,14 @@ struct RichTextEditor: UIViewRepresentable {
             var lineColor: UIColor = UIColor.label
             var customAttributes: [NSAttributedString.Key: Any] = [:]
             var listMarkerLength = 0  // Length of bullet/number prefix for secondary color
+            var currentBlockType: VisualBlockType = .paragraph
 
             // Headings
             if line.hasPrefix("### ") {
                 processedLine = String(line.dropFirst(4))
                 lineFont = h3Font
                 customAttributes[.headingLevel] = 3
+                currentBlockType = .heading
                 let paragraphStyle = NSMutableParagraphStyle()
                 paragraphStyle.paragraphSpacing = fontSize * 1.2
                 customAttributes[.paragraphStyle] = paragraphStyle
@@ -1153,6 +2310,7 @@ struct RichTextEditor: UIViewRepresentable {
                 processedLine = String(line.dropFirst(3))
                 lineFont = h2Font
                 customAttributes[.headingLevel] = 2
+                currentBlockType = .heading
                 let paragraphStyle = NSMutableParagraphStyle()
                 paragraphStyle.paragraphSpacing = fontSize * 1.2
                 customAttributes[.paragraphStyle] = paragraphStyle
@@ -1160,6 +2318,7 @@ struct RichTextEditor: UIViewRepresentable {
                 processedLine = String(line.dropFirst(2))
                 lineFont = h1Font
                 customAttributes[.headingLevel] = 1
+                currentBlockType = .heading
                 let paragraphStyle = NSMutableParagraphStyle()
                 paragraphStyle.paragraphSpacing = fontSize * 1.2
                 customAttributes[.paragraphStyle] = paragraphStyle
@@ -1168,12 +2327,19 @@ struct RichTextEditor: UIViewRepresentable {
             else if line.hasPrefix("> ") {
                 processedLine = String(line.dropFirst(2))
                 customAttributes[.blockquote] = true
+                currentBlockType = .blockquote
                 lineColor = blockquoteColor
                 let paragraphStyle = NSMutableParagraphStyle()
                 paragraphStyle.firstLineHeadIndent = 20
                 paragraphStyle.headIndent = 20
-                paragraphStyle.paragraphSpacing = fontSize * 0.8
                 paragraphStyle.lineSpacing = fontSize * 0.5
+                // Only add paragraph spacing if NOT followed by another blockquote
+                let nextType = nextBlockType(after: index)
+                if nextType == .blockquote {
+                    paragraphStyle.paragraphSpacing = 0
+                } else {
+                    paragraphStyle.paragraphSpacing = fontSize * 0.8
+                }
                 customAttributes[.paragraphStyle] = paragraphStyle
             }
             // Bullet lists (with optional indentation via tabs or spaces)
@@ -1184,12 +2350,19 @@ struct RichTextEditor: UIViewRepresentable {
                 listMarkerLength = indentLevel + 2  // tabs + "• "
                 customAttributes[.bulletList] = true
                 customAttributes[.listIndentLevel] = indentLevel
+                currentBlockType = .list
                 let paragraphStyle = NSMutableParagraphStyle()
                 let baseIndent: CGFloat = 20 + CGFloat(indentLevel) * 20  // 20pt base + nested indent
                 paragraphStyle.firstLineHeadIndent = baseIndent
                 paragraphStyle.headIndent = baseIndent + 20
-                paragraphStyle.paragraphSpacing = 0  // Minimal spacing - line height provides visual separation
                 paragraphStyle.lineSpacing = fontSize * 0.5
+                // Add paragraph spacing only if this is the last list item (next non-empty is not a list)
+                let nextType = nextBlockType(after: index)
+                if nextType == .list {
+                    paragraphStyle.paragraphSpacing = 0
+                } else {
+                    paragraphStyle.paragraphSpacing = fontSize * 0.8
+                }
                 customAttributes[.paragraphStyle] = paragraphStyle
             }
             // Numbered lists (with optional indentation)
@@ -1206,13 +2379,33 @@ struct RichTextEditor: UIViewRepresentable {
                 }
                 customAttributes[.numberedList] = true
                 customAttributes[.listIndentLevel] = indentLevel
+                currentBlockType = .list
                 let paragraphStyle = NSMutableParagraphStyle()
                 let baseIndent: CGFloat = 20 + CGFloat(indentLevel) * 20  // 20pt base + nested indent
                 paragraphStyle.firstLineHeadIndent = baseIndent
                 paragraphStyle.headIndent = baseIndent + 24
-                paragraphStyle.paragraphSpacing = 0  // Minimal spacing - line height provides visual separation
                 paragraphStyle.lineSpacing = fontSize * 0.5
+                // Add paragraph spacing only if this is the last list item (next non-empty is not a list)
+                let nextType = nextBlockType(after: index)
+                if nextType == .list {
+                    paragraphStyle.paragraphSpacing = 0
+                } else {
+                    paragraphStyle.paragraphSpacing = fontSize * 0.8
+                }
                 customAttributes[.paragraphStyle] = paragraphStyle
+            }
+            // Horizontal rule: --- (rendered as a visual separator line)
+            else if line.trimmingCharacters(in: .whitespaces) == "---" {
+                // Render as a centered line of em-dashes with secondary color
+                processedLine = "———————————"
+                lineColor = UIColor.separator
+                currentBlockType = .paragraph
+                let paragraphStyle = NSMutableParagraphStyle()
+                paragraphStyle.alignment = .center
+                paragraphStyle.paragraphSpacing = fontSize * 0.5
+                paragraphStyle.paragraphSpacingBefore = fontSize * 0.5
+                customAttributes[.paragraphStyle] = paragraphStyle
+                customAttributes[.horizontalRule] = true
             }
 
             // Add default paragraph style for regular paragraphs if not already set
@@ -1225,6 +2418,8 @@ struct RichTextEditor: UIViewRepresentable {
                 paragraphStyle.tailIndent = 0
                 paragraphStyle.paragraphSpacing = fontSize * 0.8
                 paragraphStyle.lineSpacing = fontSize * 0.5
+                // List/blockquote spacing is now handled on the last item of those blocks,
+                // so no need to add paragraphSpacingBefore here
                 customAttributes[.paragraphStyle] = paragraphStyle
             }
 
@@ -1278,6 +2473,9 @@ struct RichTextEditor: UIViewRepresentable {
                 ]
                 result.append(NSAttributedString(string: "\n", attributes: newlineAttrs))
             }
+
+            // Update previous block type for next iteration
+            previousBlockType = currentBlockType
         }
 
         return result
@@ -1324,6 +2522,74 @@ struct RichTextEditor: UIViewRepresentable {
             }
         }
 
+        // Links: [text](url)
+        if let regex = try? NSRegularExpression(pattern: "\\[(.+?)\\]\\((.+?)\\)", options: []) {
+            var offset = 0
+            let currentString = result.string
+            let matches = regex.matches(in: currentString, options: [], range: NSRange(location: 0, length: currentString.count))
+            for match in matches {
+                guard match.numberOfRanges >= 3 else { continue }
+                let adjustedRange = NSRange(location: match.range.location - offset, length: match.range.length)
+                let textRange = NSRange(location: match.range(at: 1).location - offset, length: match.range(at: 1).length)
+                let urlRange = match.range(at: 2)
+
+                if adjustedRange.location >= 0 && adjustedRange.location + adjustedRange.length <= result.length,
+                   let range = Range(textRange, in: result.string),
+                   let urlSwiftRange = Range(urlRange, in: currentString) {
+                    let linkText = String(result.string[range])
+                    let urlString = String(currentString[urlSwiftRange])
+
+                    var linkAttrs: [NSAttributedString.Key: Any] = [
+                        .font: baseFont,
+                        .foregroundColor: UIColor.systemBlue,
+                        .link: urlString
+                    ]
+
+                    // Add underline for visual distinction
+                    linkAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+
+                    let replacement = NSAttributedString(string: linkText, attributes: linkAttrs)
+                    result.replaceCharacters(in: adjustedRange, with: replacement)
+                    offset += match.range.length - linkText.count
+                }
+            }
+        }
+
+        // Footnote references: [^id] - convert to [id] and style as superscript
+        // Only match references, not definitions (which have : after)
+        if let regex = try? NSRegularExpression(pattern: "\\[\\^(\\d+)\\](?!:)", options: []) {
+            var offset = 0
+            let currentString = result.string
+            let matches = regex.matches(in: currentString, options: [], range: NSRange(location: 0, length: currentString.count))
+
+            for match in matches {
+                guard match.numberOfRanges >= 2 else { continue }
+                let adjustedRange = NSRange(location: match.range.location - offset, length: match.range.length)
+                let idRange = match.range(at: 1)
+
+                if adjustedRange.location >= 0 && adjustedRange.location + adjustedRange.length <= result.length,
+                   let idSwiftRange = Range(idRange, in: currentString) {
+                    let footnoteId = String(currentString[idSwiftRange])
+
+                    // Style as superscript with secondary color, display as [id] not [^id]
+                    let superscriptFont = UIFont.systemFont(ofSize: fontSize * 0.7)
+                    let baselineOffset = fontSize * 0.35
+                    let footnoteAttrs: [NSAttributedString.Key: Any] = [
+                        .font: superscriptFont,
+                        .baselineOffset: baselineOffset,
+                        .foregroundColor: UIColor.secondaryLabel,
+                        .footnoteRef: footnoteId
+                    ]
+
+                    // Replace [^id] with [id] (remove the ^)
+                    let displayText = "[\(footnoteId)]"
+                    let replacement = NSAttributedString(string: displayText, attributes: footnoteAttrs)
+                    result.replaceCharacters(in: adjustedRange, with: replacement)
+                    offset += match.range.length - displayText.count
+                }
+            }
+        }
+
         return result
     }
 
@@ -1332,7 +2598,7 @@ struct RichTextEditor: UIViewRepresentable {
         attributed.string
     }
 
-    class Coordinator: NSObject, UITextViewDelegate {
+    class Coordinator: NSObject, UITextViewDelegate, UIEditMenuInteractionDelegate {
         var parent: RichTextEditor
         var isEditing = false
         var isProgrammaticallyChanging = false  // Prevent textViewDidChange from overwriting during style apply
@@ -1342,6 +2608,12 @@ struct RichTextEditor: UIViewRepresentable {
 
         // Store attributed string with custom attrs since UITextView strips them
         var currentAttributedString: NSAttributedString?
+
+        // Edit menu interaction for custom context menu items
+        var editMenuInteraction: UIEditMenuInteraction?
+
+        // Callback for when "Add Link" is tapped in context menu
+        var onAddLinkRequested: ((String, NSRange) -> Void)?
 
         // Helper to compare colors by resolving them to concrete values
         // Uses the blockquoteColor defined in Coordinator (line ~1940)
@@ -1373,6 +2645,85 @@ struct RichTextEditor: UIViewRepresentable {
 
         init(_ parent: RichTextEditor) {
             self.parent = parent
+        }
+
+        // MARK: - UIEditMenuInteractionDelegate (fallback)
+
+        func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            // This is a fallback - the main edit menu customization is done via textView(_:editMenuForTextIn:suggestedActions:)
+            return UIMenu(children: filterFormattingActions(suggestedActions))
+        }
+
+        // MARK: - UITextViewDelegate Edit Menu (iOS 16+)
+
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            var actions = filterFormattingActions(suggestedActions)
+
+            // Add "Add Link" action if there's a selection
+            if range.length > 0 {
+                let addLinkAction = UIAction(title: "Add Link", image: UIImage(systemName: "link")) { [weak self] _ in
+                    guard let self = self,
+                          let textView = self.textView else { return }
+
+                    let selectedRange = textView.selectedRange
+                    let attributedText = textView.attributedText ?? NSAttributedString()
+                    let selectedText = (attributedText.string as NSString).substring(with: selectedRange)
+
+                    // Call the callback to trigger the link editor
+                    self.onAddLinkRequested?(selectedText, selectedRange)
+                }
+                actions.append(addLinkAction)
+            }
+
+            return UIMenu(children: actions)
+        }
+
+        /// Filter out built-in formatting actions that are incompatible with markdown editing
+        private func filterFormattingActions(_ actions: [UIMenuElement]) -> [UIMenuElement] {
+            // Formatting-related identifiers to filter out
+            let formattingIdentifiers: Set<String> = [
+                "com.apple.TextEditor.Bold",
+                "com.apple.TextEditor.Italic",
+                "com.apple.TextEditor.Underline",
+                "com.apple.UIKit.format",
+                "com.apple.menu.format"
+            ]
+
+            // Formatting-related titles to filter out (fallback if identifiers don't match)
+            let formattingTitles: Set<String> = [
+                "Bold", "Italic", "Underline", "Format", "BIU"
+            ]
+
+            return actions.compactMap { element -> UIMenuElement? in
+                // Check UIAction
+                if let action = element as? UIAction {
+                    if formattingIdentifiers.contains(action.identifier.rawValue) {
+                        return nil
+                    }
+                    if formattingTitles.contains(action.title) {
+                        return nil
+                    }
+                    return action
+                }
+
+                // Check UIMenu (e.g., "Format" submenu)
+                if let menu = element as? UIMenu {
+                    if formattingIdentifiers.contains(menu.identifier.rawValue) {
+                        return nil
+                    }
+                    if formattingTitles.contains(menu.title) {
+                        return nil
+                    }
+                    // Recursively filter children of submenus
+                    let filteredChildren = filterFormattingActions(menu.children)
+                    if filteredChildren.isEmpty {
+                        return nil
+                    }
+                    return menu.replacingChildren(filteredChildren)
+                }
+
+                return element
+            }
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
@@ -1437,6 +2788,8 @@ struct RichTextEditor: UIViewRepresentable {
             newTypingAttrs[.foregroundColor] = UIColor.label  // Default
 
             let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.firstLineHeadIndent = 0  // Explicitly reset
+            paragraphStyle.headIndent = 0  // Explicitly reset
             paragraphStyle.lineSpacing = fontSize * 0.5
             paragraphStyle.paragraphSpacing = fontSize * 0.8
 
@@ -1491,6 +2844,90 @@ struct RichTextEditor: UIViewRepresentable {
             // Sync markdown content on every change to ensure edits are saved
             // This is necessary because onDisappear may not be able to access the coordinator
             parent.text = attributedStringToMarkdown(currentAttributedString!)
+
+            // Clean up stale blockquote indentation at cursor position
+            // This handles the case where a blockquote is selection-deleted but the
+            // paragraph style indentation remains on surrounding text
+            cleanupStaleBlockquoteIndentation(textView: textView)
+        }
+
+        private func cleanupStaleBlockquoteIndentation(textView: UITextView) {
+            let cursorPos = textView.selectedRange.location
+            guard cursorPos <= textView.attributedText.length else { return }
+            guard textView.attributedText.length > 0 else { return }
+
+            // Check if we're at a position with a stale paragraph indentation
+            let checkPos = min(cursorPos, textView.attributedText.length - 1)
+            guard checkPos >= 0 else { return }
+
+            let attrs = textView.attributedText.attributes(at: checkPos, effectiveRange: nil)
+
+            // If the position has blockquote indentation but isn't marked as blockquote
+            if let paragraphStyle = attrs[.paragraphStyle] as? NSParagraphStyle,
+               (paragraphStyle.firstLineHeadIndent > 0 || paragraphStyle.headIndent > 0),
+               attrs[.blockquote] as? Bool != true,
+               attrs[.bulletList] as? Bool != true,
+               attrs[.numberedList] as? Bool != true {
+
+                // Also verify the markdown source doesn't indicate a blockquote
+                // Find which visual line this corresponds to
+                let currentText = textView.attributedText.string
+                var visualLineNumber = 0
+                var currentPos = 0
+                let visualLines = currentText.components(separatedBy: "\n")
+
+                for (index, line) in visualLines.enumerated() {
+                    let lineEnd = currentPos + line.count
+                    if checkPos <= lineEnd || index == visualLines.count - 1 {
+                        visualLineNumber = index
+                        break
+                    }
+                    currentPos = lineEnd + 1
+                }
+
+                // Map visual line to markdown line
+                let markdownLines = parent.text.components(separatedBy: "\n")
+                var nonEmptyCount = 0
+                var markdownLineIndex = 0
+
+                for (index, mdLine) in markdownLines.enumerated() {
+                    if !mdLine.trimmingCharacters(in: .whitespaces).isEmpty {
+                        if nonEmptyCount == visualLineNumber {
+                            markdownLineIndex = index
+                            break
+                        }
+                        nonEmptyCount += 1
+                    }
+                }
+
+                let markdownLine = markdownLineIndex < markdownLines.count ? markdownLines[markdownLineIndex] : ""
+
+                // Only clean up if markdown also confirms it's NOT a blockquote/list
+                guard !markdownLine.hasPrefix("> ") else { return }
+                guard markdownLine.range(of: "^(\\t|  )*- ", options: .regularExpression) == nil else { return }
+                guard markdownLine.range(of: "^(\\t|  )*\\d+\\. ", options: .regularExpression) == nil else { return }
+
+                // Get the line range
+                let nsString = textView.attributedText.string as NSString
+                let lineRange = nsString.lineRange(for: NSRange(location: checkPos, length: 0))
+
+                // Create clean paragraph style
+                let cleanStyle = NSMutableParagraphStyle()
+                cleanStyle.firstLineHeadIndent = 0
+                cleanStyle.headIndent = 0
+                cleanStyle.lineSpacing = fontSize * 0.5
+                cleanStyle.paragraphSpacing = fontSize * 0.8
+
+                // Apply clean style to the line
+                isProgrammaticallyChanging = true
+                let mutableAttr = NSMutableAttributedString(attributedString: textView.attributedText)
+                mutableAttr.addAttribute(.paragraphStyle, value: cleanStyle, range: lineRange)
+                mutableAttr.removeAttribute(.blockquote, range: lineRange)
+                textView.attributedText = mutableAttr
+                currentAttributedString = mutableAttr
+                textView.selectedRange = NSRange(location: cursorPos, length: 0)
+                isProgrammaticallyChanging = false
+            }
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
@@ -1567,16 +3004,24 @@ struct RichTextEditor: UIViewRepresentable {
                 if lineStart < textView.attributedText.length {
                     let attrs = textView.attributedText.attributes(at: lineStart, effectiveRange: nil)
 
-                    // Check if deleting at start of blockquote line - exit blockquote mode
-                    if attrs[.blockquote] as? Bool == true && range.location == lineStart {
-                        DispatchQueue.main.async {
-                            self.removeBlockquoteFromLine(textView: textView, lineRange: lineRange)
+                    // Check if deleting at start of an EMPTY blockquote line - exit blockquote mode
+                    // Only trigger for single-character delete (backspace), not for selection delete
+                    // Only remove formatting if the line is empty (just whitespace)
+                    if attrs[.blockquote] as? Bool == true && range.location == lineStart && range.length == 1 {
+                        let line = currentString.substring(with: lineRange).trimmingCharacters(in: .whitespacesAndNewlines)
+                        // Only remove blockquote formatting if the line is empty
+                        if line.isEmpty {
+                            DispatchQueue.main.async {
+                                self.removeBlockquoteFromLine(textView: textView, lineRange: lineRange)
+                            }
+                            return false
                         }
-                        return false
+                        // If line has content, just do normal backspace (merge with previous line)
                     }
 
                     // Check if deleting bullet character
-                    if attrs[.bulletList] as? Bool == true {
+                    // Only trigger for single-character delete (backspace), not for selection delete
+                    if attrs[.bulletList] as? Bool == true && range.length == 1 {
                         let line = currentString.substring(with: lineRange)
                         let indentLevel = attrs[.listIndentLevel] as? Int ?? 0
                         let bulletPrefix = String(repeating: "\t", count: indentLevel) + "• "
@@ -1595,7 +3040,8 @@ struct RichTextEditor: UIViewRepresentable {
                     }
 
                     // Check if deleting numbered list item
-                    if attrs[.numberedList] as? Bool == true {
+                    // Only trigger for single-character delete (backspace), not for selection delete
+                    if attrs[.numberedList] as? Bool == true && range.length == 1 {
                         let line = currentString.substring(with: lineRange)
                         let indentLevel = attrs[.listIndentLevel] as? Int ?? 0
 
@@ -2049,6 +3495,14 @@ struct RichTextEditor: UIViewRepresentable {
                         // If .blockquote is nil (stripped by UITextView) or false,
                         // we treat it as regular paragraph to avoid corruption
                     }
+
+                    // Check for horizontal rule
+                    if prefix.isEmpty && lineMarkdown.isEmpty {
+                        if attrs[.horizontalRule] as? Bool == true || line.contains("———————————") {
+                            lineMarkdown = "---"
+                            currentBlockType = .paragraph
+                        }
+                    }
                 }
 
                 if lineMarkdown.isEmpty {
@@ -2120,6 +3574,27 @@ struct RichTextEditor: UIViewRepresentable {
                         chunk = "*" + chunk + "*"
                     }
 
+                    // Handle links - convert to markdown [text](url) format
+                    if let link = attrs[.link] {
+                        let urlString: String
+                        if let url = link as? URL {
+                            urlString = url.absoluteString
+                        } else if let str = link as? String {
+                            urlString = str
+                        } else {
+                            urlString = ""
+                        }
+                        if !urlString.isEmpty {
+                            chunk = "[\(chunk)](\(urlString))"
+                        }
+                    }
+
+                    // Handle footnote references - convert [id] back to [^id] in markdown
+                    if let footnoteId = attrs[.footnoteRef] as? String {
+                        // The visual display is [id], convert to markdown [^id]
+                        chunk = "[^\(footnoteId)]"
+                    }
+
                     result += chunk
                     i = rangeEnd
                 } else {
@@ -2173,6 +3648,218 @@ struct RichTextEditor: UIViewRepresentable {
 
             // Convert using our stored version that has custom attributes
             parent.text = attributedStringToMarkdown(mutableAttr)
+        }
+
+        /// Insert a link (URL, scripture, or strongs) for the given range
+        func insertLink(url: String, range: NSRange) {
+            guard let textView = textView else { return }
+
+            let mutableAttr = NSMutableAttributedString(attributedString: currentAttributedString ?? textView.attributedText)
+
+            guard range.location + range.length <= mutableAttr.length else { return }
+
+            // Add link attribute - store as custom attribute to avoid iOS URL resolution
+            // The markdown converter will convert this to [text](url) format
+            mutableAttr.addAttribute(.link, value: url, range: range)
+            mutableAttr.addAttribute(.foregroundColor, value: UIColor.systemBlue, range: range)
+
+            // Store the attributed string
+            currentAttributedString = mutableAttr
+
+            // Update text view
+            isProgrammaticallyChanging = true
+            textView.attributedText = mutableAttr
+            textView.selectedRange = NSRange(location: range.location + range.length, length: 0)
+            isProgrammaticallyChanging = false
+
+            // Convert to markdown
+            parent.text = attributedStringToMarkdown(mutableAttr)
+        }
+
+        /// Insert a footnote reference at the cursor and append the definition at the end
+        func insertFootnote(id: String, content: String, at position: Int) {
+            guard let textView = textView else { return }
+
+            let mutableAttr = NSMutableAttributedString(attributedString: currentAttributedString ?? textView.attributedText)
+
+            // Ensure position is valid
+            let insertPosition = min(position, mutableAttr.length)
+
+            // Create the footnote reference [id] styled as superscript (display without ^)
+            // The footnoteRef attribute stores the id so markdown conversion adds [^id]
+            let footnoteRef = "[\(id)]"
+            let superscriptFont = UIFont.systemFont(ofSize: fontSize * 0.7)
+            let baselineOffset = fontSize * 0.35
+            let refAttrs: [NSAttributedString.Key: Any] = [
+                .font: superscriptFont,
+                .baselineOffset: baselineOffset,
+                .foregroundColor: UIColor.secondaryLabel,
+                .footnoteRef: id  // Custom attribute to track footnote refs - markdown converter uses this
+            ]
+            let refAttrString = NSAttributedString(string: footnoteRef, attributes: refAttrs)
+
+            // Insert footnote reference at cursor position
+            mutableAttr.insert(refAttrString, at: insertPosition)
+
+            // Check if document already has a footnotes section (marked by ---)
+            let currentText = mutableAttr.string
+            let hasFootnotesSection = currentText.contains("\n\n---\n")
+
+            // Build the footnote definition
+            let defAttrs = defaultParagraphAttributes()
+            let footnoteDefinition: String
+            if hasFootnotesSection {
+                // Append to existing footnotes section
+                footnoteDefinition = "\n[^\(id)]: \(content)"
+            } else {
+                // Create new footnotes section with rule
+                footnoteDefinition = "\n\n---\n\n[^\(id)]: \(content)"
+            }
+            let defAttrString = NSAttributedString(string: footnoteDefinition, attributes: defAttrs)
+            mutableAttr.append(defAttrString)
+
+            // Store the attributed string
+            currentAttributedString = mutableAttr
+
+            // Update text view
+            isProgrammaticallyChanging = true
+            textView.attributedText = mutableAttr
+            // Move cursor to after the inserted reference
+            textView.selectedRange = NSRange(location: insertPosition + footnoteRef.count, length: 0)
+            isProgrammaticallyChanging = false
+
+            // Convert to markdown
+            parent.text = attributedStringToMarkdown(mutableAttr)
+        }
+
+        /// Insert a scripture quote as a blockquote with citation and text
+        func insertScriptureQuote(citation: String, quotation: String) {
+            guard let textView = textView else { return }
+
+            let mutableAttr = NSMutableAttributedString(attributedString: currentAttributedString ?? textView.attributedText)
+
+            // Get cursor position
+            let insertPosition = textView.selectedRange.location
+
+            // Build blockquote style attributes - NO paragraph spacing within blockquote
+            let blockquoteParagraphStyle = NSMutableParagraphStyle()
+            blockquoteParagraphStyle.firstLineHeadIndent = 20
+            blockquoteParagraphStyle.headIndent = 20
+            blockquoteParagraphStyle.paragraphSpacing = 0  // No spacing between citation and quotation
+            blockquoteParagraphStyle.lineSpacing = fontSize * 0.5
+
+            let quoteAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: fontSize),
+                .foregroundColor: blockquoteColor,
+                .paragraphStyle: blockquoteParagraphStyle,
+                .blockquote: true
+            ]
+
+            // Build clean paragraph style for after the blockquote
+            let cleanParagraphStyle = NSMutableParagraphStyle()
+            cleanParagraphStyle.firstLineHeadIndent = 0
+            cleanParagraphStyle.headIndent = 0
+            cleanParagraphStyle.paragraphSpacing = fontSize * 0.8
+            cleanParagraphStyle.lineSpacing = fontSize * 0.5
+
+            let cleanAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: fontSize),
+                .foregroundColor: UIColor.label,
+                .paragraphStyle: cleanParagraphStyle,
+                .blockquote: false,
+                .bulletList: false,
+                .numberedList: false
+            ]
+
+            // Add single newline before if not already at start of line
+            var prefix = ""
+            if insertPosition > 0 {
+                let textBefore = (mutableAttr.string as NSString).substring(to: insertPosition)
+                if !textBefore.hasSuffix("\n") {
+                    prefix = "\n"
+                }
+            }
+
+            // Convert markdown bold (**n**) to attributed string bold for visual editor
+            let processedQuotation = convertMarkdownBoldToAttributed(quotation, baseAttrs: quoteAttrs)
+
+            // Build the quote content: citation on first line, quotation on second
+            let quoteAttrString = NSMutableAttributedString()
+
+            // Add prefix if needed
+            if !prefix.isEmpty {
+                quoteAttrString.append(NSAttributedString(string: prefix, attributes: quoteAttrs))
+            }
+
+            // Add citation line
+            quoteAttrString.append(NSAttributedString(string: citation + "\n", attributes: quoteAttrs))
+
+            // Add quotation with bold verse numbers
+            quoteAttrString.append(processedQuotation)
+
+            // Insert at cursor position
+            mutableAttr.insert(quoteAttrString, at: insertPosition)
+
+            // Store the attributed string
+            currentAttributedString = mutableAttr
+
+            // Update text view
+            isProgrammaticallyChanging = true
+            textView.attributedText = mutableAttr
+            // Move cursor to end of inserted quote
+            textView.selectedRange = NSRange(location: insertPosition + quoteAttrString.length, length: 0)
+
+            // Set typing attributes - still blockquote since cursor is at end of blockquote
+            textView.typingAttributes = quoteAttrs
+            isProgrammaticallyChanging = false
+
+            // Convert to markdown
+            parent.text = attributedStringToMarkdown(mutableAttr)
+        }
+
+        /// Convert **text** markdown bold to NSAttributedString with bold font
+        private func convertMarkdownBoldToAttributed(_ text: String, baseAttrs: [NSAttributedString.Key: Any]) -> NSMutableAttributedString {
+            let result = NSMutableAttributedString()
+            var currentIndex = text.startIndex
+
+            // Regex to find **text** patterns
+            let pattern = "\\*\\*(.+?)\\*\\*"
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+                return NSMutableAttributedString(string: text, attributes: baseAttrs)
+            }
+
+            let nsText = text as NSString
+            let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+
+            var lastEnd = 0
+            for match in matches {
+                // Add text before this match
+                if match.range.location > lastEnd {
+                    let beforeRange = NSRange(location: lastEnd, length: match.range.location - lastEnd)
+                    let beforeText = nsText.substring(with: beforeRange)
+                    result.append(NSAttributedString(string: beforeText, attributes: baseAttrs))
+                }
+
+                // Add the bold text (without **)
+                let contentRange = match.range(at: 1)
+                let boldText = nsText.substring(with: contentRange)
+                var boldAttrs = baseAttrs
+                if let baseFont = baseAttrs[.font] as? UIFont {
+                    boldAttrs[.font] = UIFont.boldSystemFont(ofSize: baseFont.pointSize)
+                }
+                boldAttrs[.isBold] = true
+                result.append(NSAttributedString(string: boldText, attributes: boldAttrs))
+
+                lastEnd = match.range.location + match.range.length
+            }
+
+            // Add remaining text after last match
+            if lastEnd < nsText.length {
+                let remainingText = nsText.substring(from: lastEnd)
+                result.append(NSAttributedString(string: remainingText, attributes: baseAttrs))
+            }
+
+            return result
         }
 
         private func applyParagraphStyle(to attr: NSMutableAttributedString, in range: NSRange, textView: UITextView) {
@@ -2546,6 +4233,8 @@ extension NSAttributedString.Key {
     static let listIndentLevel = NSAttributedString.Key("listIndentLevel")
     static let isBold = NSAttributedString.Key("isBold")
     static let isItalic = NSAttributedString.Key("isItalic")
+    static let footnoteRef = NSAttributedString.Key("footnoteRef")
+    static let horizontalRule = NSAttributedString.Key("horizontalRule")
 }
 
 // MARK: - Preview

@@ -8,6 +8,127 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Custom Tappable Attribute
+
+/// Custom attribute key for tap action data (avoids iOS URL resolution delay)
+private let DevotionalTapActionKey = NSAttributedString.Key("devotionalTapAction")
+
+/// Tap action data stored in attributed string
+private enum DevotionalTapAction {
+    case verse(sv: Int, ev: Int?, translationId: String?)
+    case strongs(key: String)
+    case footnote(id: String)
+    case externalURL(url: URL)
+}
+
+// MARK: - Lampbible URL Parser
+
+/// Parses lampbible:// URLs in both formats:
+/// - Human-readable: lampbible://gen1:1 or lampbible://gen1:1-5?translation=NIV
+/// - Legacy numeric: lampbible://verse/43003016 or lampbible://verse/43003016/43003020?translation=NIV
+enum LampbibleURL {
+    case verse(verseId: Int, endVerseId: Int?, translationId: String?)
+    case strongs(key: String)
+    case external(url: URL)
+
+    /// Parse a URL into a LampbibleURL
+    static func parse(_ url: URL) -> LampbibleURL? {
+        guard url.scheme == "lampbible" else {
+            return .external(url: url)
+        }
+
+        // Extract translation from query string
+        let translationId = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name == "translation" })?
+            .value
+
+        let urlString = url.absoluteString
+        // Remove query string for path parsing
+        let pathOnly = urlString.split(separator: "?").first.map(String.init) ?? urlString
+
+        // Handle legacy format: lampbible://verse/43003016
+        if pathOnly.hasPrefix("lampbible://verse/") {
+            let pathParts = pathOnly.dropFirst("lampbible://verse/".count).split(separator: "/")
+            if let first = pathParts.first, let verseId = Int(first) {
+                let endVerseId = pathParts.count > 1 ? Int(pathParts[1]) : nil
+                return .verse(verseId: verseId, endVerseId: endVerseId, translationId: translationId)
+            }
+        }
+
+        // Handle strongs format: lampbible://strongs/G1234
+        if pathOnly.hasPrefix("lampbible://strongs/") {
+            let key = String(pathOnly.dropFirst("lampbible://strongs/".count))
+            if !key.isEmpty {
+                return .strongs(key: key)
+            }
+        }
+
+        // Handle human-readable format: lampbible://gen1:1 or lampbible://gen1:1-5
+        // Pattern: bookOsisId + chapter + ":" + verse + optional("-" + endVerse)
+        let path = String(pathOnly.dropFirst("lampbible://".count)).lowercased()
+
+        // Use NSRegularExpression for compatibility
+        let pattern = "^([a-z0-9]+)(\\d+):(\\d+)(?:-(\\d+))?$"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
+              let match = regex.firstMatch(in: path, options: [], range: NSRange(path.startIndex..., in: path)) else {
+            return nil
+        }
+
+        // Extract capture groups
+        guard match.numberOfRanges >= 4,
+              let osisRange = Range(match.range(at: 1), in: path),
+              let chapterRange = Range(match.range(at: 2), in: path),
+              let verseRange = Range(match.range(at: 3), in: path) else {
+            return nil
+        }
+
+        let osisId = String(path[osisRange])
+        guard let chapter = Int(path[chapterRange]),
+              let verse = Int(path[verseRange]) else { return nil }
+
+        // Look up book ID from OSIS ID
+        guard let bookId = lookupBookId(osisId: osisId) else { return nil }
+
+        let verseId = bookId * 1000000 + chapter * 1000 + verse
+        var endVerseId: Int? = nil
+
+        // Check for end verse (optional capture group 4)
+        if match.numberOfRanges >= 5 && match.range(at: 4).location != NSNotFound,
+           let endVerseRange = Range(match.range(at: 4), in: path),
+           let endVerse = Int(path[endVerseRange]), endVerse > verse {
+            endVerseId = bookId * 1000000 + chapter * 1000 + endVerse
+        }
+
+        return .verse(verseId: verseId, endVerseId: endVerseId, translationId: translationId)
+    }
+
+    /// Parse a URL string into a LampbibleURL
+    static func parse(_ urlString: String) -> LampbibleURL? {
+        guard let url = URL(string: urlString) else { return nil }
+        return parse(url)
+    }
+
+    /// Look up book ID from OSIS ID
+    private static func lookupBookId(osisId: String) -> Int? {
+        // Cache for OSIS ID to book ID mapping
+        struct Cache {
+            static var osisToBookId: [String: Int]? = nil
+        }
+
+        if Cache.osisToBookId == nil {
+            Cache.osisToBookId = [:]
+            if let books = try? BundledModuleDatabase.shared.getAllBooks() {
+                for book in books {
+                    Cache.osisToBookId?[book.osisId.lowercased()] = book.id
+                }
+            }
+        }
+
+        return Cache.osisToBookId?[osisId.lowercased()]
+    }
+}
+
 // MARK: - Devotional Renderer Style
 
 struct DevotionalRendererStyle {
@@ -177,6 +298,24 @@ struct DevotionalBlockRenderer {
             return NSRange(startIdx..<endIdx, in: text)
         }
 
+        // Check if we have scripture annotations - if not, auto-parse from plain text
+        let hasScriptureAnnotations = annotatedText.annotations?.contains { $0.type == .scripture } ?? false
+
+        if !hasScriptureAnnotations {
+            // Auto-parse verse references from plain text
+            let parser = VerseReferenceParser.shared
+            let refs = parser.parse(text)
+            for ref in refs {
+                let nsRange = NSRange(ref.range, in: text)
+                let verseId = ref.bookId * 1000000 + ref.chapter * 1000 + ref.startVerse
+                let endVerseId = ref.endVerse.map { ref.bookId * 1000000 + ref.chapter * 1000 + $0 }
+                // Extract translation from text after reference
+                let translationId = extractTranslationAfterRange(text: text, range: ref.range)
+                result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: nsRange)
+                result.addAttribute(DevotionalTapActionKey, value: DevotionalTapAction.verse(sv: verseId, ev: endVerseId, translationId: translationId), range: nsRange)
+            }
+        }
+
         if let annotations = annotatedText.annotations {
             for annotation in annotations {
                 guard let range = getRange(annotation.start, annotation.end) else { continue }
@@ -186,10 +325,10 @@ struct DevotionalBlockRenderer {
                     result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
                     if let sv = annotation.data?.sv {
                         let ev = annotation.data?.ev
-                        let urlString = ev != nil ? "lampbible://verse/\(sv)/\(ev!)" : "lampbible://verse/\(sv)"
-                        if let url = URL(string: urlString) {
-                            result.addAttribute(.link, value: url, range: range)
-                        }
+                        // Get translation from annotation data or extract from text after annotation
+                        let translationId = annotation.data?.translationId ?? extractTranslationAfterIndex(text: text, index: annotation.end)
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(DevotionalTapActionKey, value: DevotionalTapAction.verse(sv: sv, ev: ev, translationId: translationId), range: range)
                     }
 
                 case .strongs:
@@ -197,9 +336,9 @@ struct DevotionalBlockRenderer {
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
                     }
-                    if let key = annotation.data?.strongs,
-                       let url = URL(string: "lampbible://strongs/\(key)") {
-                        result.addAttribute(.link, value: url, range: range)
+                    if let key = annotation.data?.strongs {
+                        // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                        result.addAttribute(DevotionalTapActionKey, value: DevotionalTapAction.strongs(key: key), range: range)
                     }
 
                 case .greek:
@@ -214,7 +353,8 @@ struct DevotionalBlockRenderer {
                 case .link:
                     result.addAttribute(.foregroundColor, value: UIColor(style.linkColor), range: range)
                     if let urlString = annotation.data?.url, let url = URL(string: urlString) {
-                        result.addAttribute(.link, value: url, range: range)
+                        // Use custom tappable attribute for external URLs too
+                        result.addAttribute(DevotionalTapActionKey, value: DevotionalTapAction.externalURL(url: url), range: range)
                     }
 
                 case .emphasis:
@@ -258,10 +398,8 @@ struct DevotionalBlockRenderer {
                 marker.addAttribute(.font, value: fnFont, range: markerRange)
                 marker.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: markerRange)
                 marker.addAttribute(.baselineOffset, value: 4, range: markerRange)
-                if let encodedId = ref.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-                   let url = URL(string: "lampbible://footnote/\(encodedId)") {
-                    marker.addAttribute(.link, value: url, range: markerRange)
-                }
+                // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
+                marker.addAttribute(DevotionalTapActionKey, value: DevotionalTapAction.footnote(id: ref.id), range: markerRange)
 
                 result.insert(marker, at: nsRange.location)
             }
@@ -275,6 +413,52 @@ struct DevotionalBlockRenderer {
 
         return result
     }
+
+    /// Extract translation ID from text after a string range
+    private static func extractTranslationAfterRange(text: String, range: Range<String.Index>) -> String? {
+        let afterRef = String(text[range.upperBound...])
+        return extractTranslationFromStart(afterRef)
+    }
+
+    /// Extract translation ID from text after a character index
+    private static func extractTranslationAfterIndex(text: String, index: Int) -> String? {
+        let scalars = text.unicodeScalars
+        guard index < scalars.count else { return nil }
+        let endIdx = scalars.index(scalars.startIndex, offsetBy: index)
+        guard let endStringIdx = endIdx.samePosition(in: text) else { return nil }
+        let afterAnnotation = String(text[endStringIdx...])
+        return extractTranslationFromStart(afterAnnotation)
+    }
+
+    /// Extract translation from the start of a string
+    private static func extractTranslationFromStart(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Get first word by splitting on whitespace AND newlines
+        let firstWord = trimmed.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).first.map { String($0) }
+        guard let word = firstWord else { return nil }
+        // Strip punctuation and check
+        let cleaned = word.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased()
+        return isKnownTranslation(cleaned)
+    }
+
+    /// Check if a string is a known translation ID, returns normalized ID or nil
+    private static func isKnownTranslation(_ id: String) -> String? {
+        let knownTranslations: Set<String> = [
+            "NIV", "ESV", "KJV", "NKJV", "NLT", "NASB", "NASB95", "NASB20",
+            "CSB", "HCSB", "RSV", "NRSV", "ASV", "AMP", "MSG", "NET", "NCV",
+            "CEV", "GNT", "GNB", "TEV", "TLB", "PHILLIPS", "WEB", "YLT",
+            "DARBY", "DRB", "ERV", "EXB", "GW", "ICB", "ISV", "JUB", "LEB",
+            "MEV", "MOUNCE", "NABRE", "NIRV", "NIVUK", "OJB", "RGT", "TPT",
+            "VOICE", "WE", "WYC", "BSB", "LSB", "NRSVUE"
+        ]
+        if knownTranslations.contains(id) { return id }
+        // Check plural form (e.g., "KJVs", "BSBs")
+        if id.hasSuffix("S"), id.count > 1 {
+            let singular = String(id.dropLast())
+            if knownTranslations.contains(singular) { return singular }
+        }
+        return nil
+    }
 }
 
 // MARK: - SwiftUI Views for Devotional Content
@@ -282,7 +466,7 @@ struct DevotionalBlockRenderer {
 struct DevotionalAnnotatedTextView: View {
     let annotatedText: DevotionalAnnotatedText
     let style: DevotionalRendererStyle
-    let onScriptureTap: ((Int, Int?) -> Void)?
+    let onScriptureTap: ((Int, Int?, String?) -> Void)?
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String) -> Void)?
     let onLinkTap: ((URL) -> Void)?
@@ -290,7 +474,7 @@ struct DevotionalAnnotatedTextView: View {
     init(
         _ annotatedText: DevotionalAnnotatedText,
         style: DevotionalRendererStyle = .default,
-        onScriptureTap: ((Int, Int?) -> Void)? = nil,
+        onScriptureTap: ((Int, Int?, String?) -> Void)? = nil,
         onStrongsTap: ((String) -> Void)? = nil,
         onFootnoteTap: ((String) -> Void)? = nil,
         onLinkTap: ((URL) -> Void)? = nil
@@ -315,18 +499,96 @@ struct DevotionalAnnotatedTextView: View {
     }
 }
 
+// MARK: - Tappable Devotional Text View
+
+/// Custom UITextView that uses tap gestures instead of URL-based link handling
+/// This avoids the iOS URL resolution delay ("canmaplsdatabase" error)
+private class TappableDevotionalTextView: UITextView {
+    var onScriptureTap: ((Int, Int?, String?) -> Void)?
+    var onStrongsTap: ((String) -> Void)?
+    var onFootnoteTap: ((String) -> Void)?
+    var onLinkTap: ((URL) -> Void)?
+
+    // Use TextKit 1 for reliable character index calculation
+    private let textKit1LayoutManager = NSLayoutManager()
+    private let textKit1TextContainer = NSTextContainer()
+    private let textKit1TextStorage = NSTextStorage()
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        // Set up TextKit 1 stack
+        textKit1TextStorage.addLayoutManager(textKit1LayoutManager)
+        textKit1LayoutManager.addTextContainer(textKit1TextContainer)
+        textKit1TextContainer.widthTracksTextView = true
+        textKit1TextContainer.heightTracksTextView = false
+
+        super.init(frame: frame, textContainer: textKit1TextContainer)
+
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tapGesture.cancelsTouchesInView = false
+        addGestureRecognizer(tapGesture)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: self)
+
+        // Adjust for text container inset
+        let textContainerOffset = CGPoint(
+            x: textContainerInset.left,
+            y: textContainerInset.top
+        )
+        let locationInTextContainer = CGPoint(
+            x: location.x - textContainerOffset.x,
+            y: location.y - textContainerOffset.y
+        )
+
+        // Get character index at tap location
+        let characterIndex = textKit1LayoutManager.characterIndex(
+            for: locationInTextContainer,
+            in: textKit1TextContainer,
+            fractionOfDistanceBetweenInsertionPoints: nil
+        )
+
+        guard characterIndex < textKit1TextStorage.length else { return }
+
+        let attributes = textKit1TextStorage.attributes(at: characterIndex, effectiveRange: nil)
+
+        if let action = attributes[DevotionalTapActionKey] as? DevotionalTapAction {
+            switch action {
+            case .verse(let sv, let ev, let translationId):
+                onScriptureTap?(sv, ev, translationId)
+            case .strongs(let key):
+                onStrongsTap?(key)
+            case .footnote(let id):
+                onFootnoteTap?(id)
+            case .externalURL(let url):
+                onLinkTap?(url)
+            }
+        }
+    }
+
+    override var attributedText: NSAttributedString! {
+        didSet {
+            textKit1TextStorage.setAttributedString(attributedText ?? NSAttributedString())
+        }
+    }
+}
+
 private struct DevotionalUITextViewRepresentable: UIViewRepresentable {
     let annotatedText: DevotionalAnnotatedText
     let style: DevotionalRendererStyle
-    let onScriptureTap: ((Int, Int?) -> Void)?
+    let onScriptureTap: ((Int, Int?, String?) -> Void)?
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String) -> Void)?
     let onLinkTap: ((URL) -> Void)?
 
-    func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
+    func makeUIView(context: Context) -> TappableDevotionalTextView {
+        let textView = TappableDevotionalTextView()
         textView.isEditable = false
-        textView.isSelectable = true
+        textView.isSelectable = false  // Disable selection for instant tap response
         textView.isUserInteractionEnabled = true
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
@@ -340,21 +602,24 @@ private struct DevotionalUITextViewRepresentable: UIViewRepresentable {
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
         textView.layer.drawsAsynchronously = true
-        textView.delegate = context.coordinator
         textView.textContentType = .none
-
         return textView
     }
 
-    func updateUIView(_ textView: UITextView, context: Context) {
-        context.coordinator.parent = self
+    func updateUIView(_ textView: TappableDevotionalTextView, context: Context) {
+        // Set up tap handlers
+        textView.onScriptureTap = onScriptureTap
+        textView.onStrongsTap = onStrongsTap
+        textView.onFootnoteTap = onFootnoteTap
+        textView.onLinkTap = onLinkTap
+
         textView.textColor = .label
         let nsAttributed = DevotionalBlockRenderer.renderUIKit(annotatedText, style: style)
         textView.attributedText = nsAttributed
     }
 
     @available(iOS 16.0, *)
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: TappableDevotionalTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
         let containerWidth = width - uiView.textContainerInset.left - uiView.textContainerInset.right
         if uiView.textContainer.size.width != containerWidth {
@@ -365,47 +630,11 @@ private struct DevotionalUITextViewRepresentable: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(self)
+        Coordinator()
     }
 
-    class Coordinator: NSObject, UITextViewDelegate {
-        var parent: DevotionalUITextViewRepresentable
-
-        init(_ parent: DevotionalUITextViewRepresentable) {
-            self.parent = parent
-        }
-
-        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
-            handleURL(URL)
-            return false
-        }
-
-        private func handleURL(_ url: URL) {
-            guard url.scheme == "lampbible" else {
-                // External URL
-                parent.onLinkTap?(url)
-                return
-            }
-
-            let pathComponents = url.pathComponents
-            let valueRaw = pathComponents.count >= 2 ? pathComponents[1] : ""
-            let value = valueRaw.removingPercentEncoding ?? valueRaw
-            let type = url.host ?? ""
-
-            switch type {
-            case "verse":
-                if let sv = Int(value) {
-                    let ev = pathComponents.count >= 3 ? Int(pathComponents[2]) : nil
-                    parent.onScriptureTap?(sv, ev)
-                }
-            case "strongs":
-                parent.onStrongsTap?(value)
-            case "footnote":
-                parent.onFootnoteTap?(value)
-            default:
-                break
-            }
-        }
+    class Coordinator: NSObject {
+        // No longer need coordinator state since tap handling is in the text view
     }
 }
 
@@ -414,7 +643,7 @@ private struct DevotionalUITextViewRepresentable: UIViewRepresentable {
 struct DevotionalContentBlockView: View {
     let block: DevotionalContentBlock
     let style: DevotionalRendererStyle
-    let onScriptureTap: ((Int, Int?) -> Void)?
+    let onScriptureTap: ((Int, Int?, String?) -> Void)?
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String) -> Void)?
     let onLinkTap: ((URL) -> Void)?
@@ -422,7 +651,7 @@ struct DevotionalContentBlockView: View {
     init(
         block: DevotionalContentBlock,
         style: DevotionalRendererStyle = .default,
-        onScriptureTap: ((Int, Int?) -> Void)? = nil,
+        onScriptureTap: ((Int, Int?, String?) -> Void)? = nil,
         onStrongsTap: ((String) -> Void)? = nil,
         onFootnoteTap: ((String) -> Void)? = nil,
         onLinkTap: ((URL) -> Void)? = nil
@@ -490,6 +719,13 @@ struct DevotionalContentBlockView: View {
         s.bodyFont = style.blockquoteFont
         s.textColor = style.blockquoteColor
         s.uiTextColor = UIColor.secondaryLabel
+        s.paragraphSpacing = 0  // No paragraph spacing - VStack padding handles inter-block spacing
+        // In present mode, links should inherit the blockquote text color
+        if style.isPresentMode {
+            s.linkColor = style.blockquoteColor
+            s.scriptureColor = style.blockquoteColor
+            s.strongsColor = style.blockquoteColor
+        }
         return s
     }
 
@@ -544,7 +780,7 @@ struct DevotionalContentBlockView: View {
 struct DevotionalContentRenderer: View {
     let content: DevotionalContent
     let style: DevotionalRendererStyle
-    let onScriptureTap: ((Int, Int?) -> Void)?
+    let onScriptureTap: ((Int, Int?, String?) -> Void)?
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String) -> Void)?
     let onLinkTap: ((URL) -> Void)?
@@ -552,7 +788,7 @@ struct DevotionalContentRenderer: View {
     init(
         content: DevotionalContent,
         style: DevotionalRendererStyle = .default,
-        onScriptureTap: ((Int, Int?) -> Void)? = nil,
+        onScriptureTap: ((Int, Int?, String?) -> Void)? = nil,
         onStrongsTap: ((String) -> Void)? = nil,
         onFootnoteTap: ((String) -> Void)? = nil,
         onLinkTap: ((URL) -> Void)? = nil
@@ -566,12 +802,11 @@ struct DevotionalContentRenderer: View {
     }
 
     var body: some View {
-        // Use paragraphSpacing + lineSpacing for VStack spacing to match visual editor
-        // (visual editor has paragraphSpacing after newlines plus line height contribution)
-        VStack(alignment: .leading, spacing: style.paragraphSpacing + style.lineSpacing) {
+        // Use custom spacing logic to match visual editor behavior
+        VStack(alignment: .leading, spacing: 0) {
             switch content {
             case .blocks(let blocks):
-                ForEach(blocks) { block in
+                ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                     DevotionalContentBlockView(
                         block: block,
                         style: style,
@@ -580,6 +815,7 @@ struct DevotionalContentRenderer: View {
                         onFootnoteTap: onFootnoteTap,
                         onLinkTap: onLinkTap
                     )
+                    .padding(.bottom, spacingAfter(block: block, nextBlock: blocks.indices.contains(index + 1) ? blocks[index + 1] : nil))
                 }
 
             case .structured(let structured):
@@ -588,11 +824,27 @@ struct DevotionalContentRenderer: View {
         }
     }
 
+    /// Calculate spacing after a block based on the next block type
+    /// - Consecutive blockquotes get zero spacing (matching visual editor)
+    /// - All other blocks get normal paragraph + line spacing
+    private func spacingAfter(block: DevotionalContentBlock, nextBlock: DevotionalContentBlock?) -> CGFloat {
+        // No spacing after the last block
+        guard nextBlock != nil else { return 0 }
+
+        // Consecutive blockquotes get zero spacing
+        if block.type == .blockquote, nextBlock?.type == .blockquote {
+            return 0
+        }
+
+        // All other blocks get normal spacing
+        return style.paragraphSpacing + style.lineSpacing
+    }
+
     @ViewBuilder
     private func renderStructuredContent(_ structured: DevotionalStructuredContent) -> some View {
         // Introduction
         if let intro = structured.introduction {
-            ForEach(intro) { block in
+            ForEach(Array(intro.enumerated()), id: \.element.id) { index, block in
                 DevotionalContentBlockView(
                     block: block,
                     style: style,
@@ -601,6 +853,7 @@ struct DevotionalContentRenderer: View {
                     onFootnoteTap: onFootnoteTap,
                     onLinkTap: onLinkTap
                 )
+                .padding(.bottom, spacingAfter(block: block, nextBlock: intro.indices.contains(index + 1) ? intro[index + 1] : nil))
             }
         }
 
@@ -613,7 +866,7 @@ struct DevotionalContentRenderer: View {
 
         // Conclusion
         if let conclusion = structured.conclusion {
-            ForEach(conclusion) { block in
+            ForEach(Array(conclusion.enumerated()), id: \.element.id) { index, block in
                 DevotionalContentBlockView(
                     block: block,
                     style: style,
@@ -622,6 +875,7 @@ struct DevotionalContentRenderer: View {
                     onFootnoteTap: onFootnoteTap,
                     onLinkTap: onLinkTap
                 )
+                .padding(.bottom, spacingAfter(block: block, nextBlock: conclusion.indices.contains(index + 1) ? conclusion[index + 1] : nil))
             }
         }
     }
@@ -629,15 +883,16 @@ struct DevotionalContentRenderer: View {
     @ViewBuilder
     private func renderSection(_ section: DevotionalSection) -> AnyView {
         AnyView(
-            VStack(alignment: .leading, spacing: style.paragraphSpacing + style.lineSpacing) {
+            VStack(alignment: .leading, spacing: 0) {
                 // Section title
                 Text(section.title)
                     .font(sectionFont(level: section.level ?? 1))
                     .fontWeight(.bold)
+                    .padding(.bottom, style.paragraphSpacing + style.lineSpacing)
 
                 // Section blocks
                 if let blocks = section.blocks {
-                    ForEach(blocks) { block in
+                    ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                         DevotionalContentBlockView(
                             block: block,
                             style: style,
@@ -646,6 +901,7 @@ struct DevotionalContentRenderer: View {
                             onFootnoteTap: onFootnoteTap,
                             onLinkTap: onLinkTap
                         )
+                        .padding(.bottom, spacingAfter(block: block, nextBlock: blocks.indices.contains(index + 1) ? blocks[index + 1] : nil))
                     }
                 }
 
@@ -669,8 +925,9 @@ struct DevotionalContentRenderer: View {
 struct DevotionalFootnotesView: View {
     let footnotes: [DevotionalFootnote]
     let style: DevotionalRendererStyle
-    let onScriptureTap: ((Int, Int?) -> Void)?
+    let onScriptureTap: ((Int, Int?, String?) -> Void)?
     let onStrongsTap: ((String) -> Void)?
+    let onLinkTap: ((URL) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -694,7 +951,8 @@ struct DevotionalFootnotesView: View {
                                 annotatedText,
                                 style: footnoteStyle,
                                 onScriptureTap: onScriptureTap,
-                                onStrongsTap: onStrongsTap
+                                onStrongsTap: onStrongsTap,
+                                onLinkTap: onLinkTap
                             )
                         }
                     }
