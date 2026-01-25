@@ -53,6 +53,37 @@ enum SearchMode: String, CaseIterable, Codable {
     }
 }
 
+/// Search mode for module search
+enum ModuleSearchMode: String, CaseIterable, Codable {
+    case text = "text"
+    case strongsKey = "key"
+    case highlightColor = "color"
+
+    var displayName: String {
+        switch self {
+        case .text: return "Text"
+        case .strongsKey: return "Strong's Key"
+        case .highlightColor: return "Highlight Color"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .text: return "textformat"
+        case .strongsKey: return "number"
+        case .highlightColor: return "paintpalette"
+        }
+    }
+
+    var placeholder: String {
+        switch self {
+        case .text: return "Search modules..."
+        case .strongsKey: return "H430, G2316..."
+        case .highlightColor: return "Select colors..."
+        }
+    }
+}
+
 struct SearchHistoryEntry: Codable, Equatable {
     let query: String
     let mode: SearchMode
@@ -108,21 +139,17 @@ class SearchStateManager: ObservableObject {
 
 struct ModuleSearchHistoryEntry: Codable, Equatable {
     let query: String
-    let types: Set<ModuleType>
+    let searchMode: ModuleSearchMode
     let moduleIds: Set<String>?
-    let searchByKey: Bool
     let tags: Set<String>
 
     var filterSummary: String {
         var parts: [String] = []
-        if types.count < ModuleType.allCases.count {
-            parts.append(types.map { $0.rawValue }.sorted().joined(separator: ", "))
+        if searchMode != .text {
+            parts.append(searchMode.displayName)
         }
         if let ids = moduleIds, !ids.isEmpty {
             parts.append("\(ids.count) modules")
-        }
-        if searchByKey {
-            parts.append("by key")
         }
         if !tags.isEmpty {
             parts.append("\(tags.count) tags")
@@ -304,32 +331,33 @@ struct SearchView: View {
     // Module search
     private let moduleSearch = ModuleSearch.shared
 
-    // Bible search filters
-    @State private var showBibleFilters: Bool = true  // Show by default for Bible
-
     // Module search filters
     @State private var showModuleFilters: Bool = false
-    @State private var filterTypes: Set<ModuleType> = Set(ModuleType.allCases)
     @State private var filterModuleIds: Set<String>? = nil
-    @State private var searchByKey: Bool = false  // Toggle for key vs text search
+    @State private var moduleSearchMode: ModuleSearchMode = .text
     @State private var filterTags: Set<String> = []
     @State private var availableModules: [SearchableModule] = []
     @State private var availableTags: [String] = []
+    @State private var availableHighlightColors: [HighlightColor] = []
+
+    // Highlight color search
+    @State private var filterHighlightColors: Set<String> = []  // For text search color filtering
+    @State private var selectedSearchColors: Set<String> = []  // Colors selected in color search mode
+    @State private var colorSearchTranslationId: String? = nil  // Filter by translation in color search mode
 
     // Module result sheets
     @State private var selectedLexiconEntry: ModuleSearchResult? = nil
     @State private var selectedDevotional: ModuleSearchResult? = nil
     @State private var selectedNote: ModuleSearchResult? = nil
     @State private var selectedCommentary: ModuleSearchResult? = nil
+    @State private var selectedHighlight: ModuleSearchResult? = nil
+    @State private var selectedTranslation: ModuleSearchResult? = nil
 
     private let maxHistorySize = 20
 
     private var moduleSearchPlaceholder: String {
         if searchScope == .modules {
-            if searchByKey && filterTypes.contains(.dictionary) {
-                return "H430, G2316, BDB871..."
-            }
-            return "Search modules..."
+            return moduleSearchMode.placeholder
         }
         return searchMode.placeholder
     }
@@ -346,24 +374,14 @@ struct SearchView: View {
         return translation.featuresJson?.contains("strongs") ?? false
     }
 
-    /// Count of active Bible search filters
-    private var bibleFilterCount: Int {
-        searchMode == .strongs ? 1 : 0
-    }
-
     /// Count of active module search filters
     private var moduleFilterCount: Int {
         var count = 0
-        if filterTypes.count < ModuleType.allCases.count { count += 1 }
         if filterModuleIds != nil { count += 1 }
-        if searchByKey { count += 1 }
         if !filterTags.isEmpty { count += 1 }
+        if moduleSearchMode == .text && !filterHighlightColors.isEmpty { count += 1 }
+        if moduleSearchMode == .highlightColor && colorSearchTranslationId != nil { count += 1 }
         return count
-    }
-
-    /// Current active filter count based on scope
-    private var activeFilterCount: Int {
-        searchScope == .modules ? moduleFilterCount : bibleFilterCount
     }
 
     private var searchHistory: [SearchHistoryEntry] {
@@ -410,9 +428,8 @@ struct SearchView: View {
         var history = moduleSearchHistory
         let entry = ModuleSearchHistoryEntry(
             query: query,
-            types: filterTypes,
+            searchMode: moduleSearchMode,
             moduleIds: filterModuleIds,
-            searchByKey: searchByKey,
             tags: filterTags
         )
         // Remove if already exists with same query and filters (to move to top)
@@ -441,46 +458,10 @@ struct SearchView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 // Custom search bar
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-
-                    TextField(moduleSearchPlaceholder, text: searchText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(searchScope == .bible && searchMode == .strongs ? .asciiCapable : .default)
-                        .submitLabel(.search)
-                        .onSubmit {
-                            submitSearch()
-                        }
-
-                    if !currentSearchText.isEmpty {
-                        Button {
-                            searchText.wrappedValue = ""
-                            // Clear results using stateManager
-                            if searchScope == .bible {
-                                stateManager.clearBibleResults()
-                            } else {
-                                stateManager.clearModuleResults()
-                            }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(UIColor.secondarySystemBackground))
-                .cornerRadius(10)
-                .padding(.horizontal)
-                .padding(.top, 8)
-                .padding(.bottom, 8)
-
-                // Bible filters (only show if translation has Strong's annotations)
-                if searchScope == .bible && translationHasStrongsAnnotations && showBibleFilters {
-                    bibleFilterSection
+                if searchScope == .modules && moduleSearchMode == .highlightColor {
+                    highlightColorSearchBar
+                } else {
+                    textSearchBar
                 }
 
                 // Module search filters
@@ -490,9 +471,11 @@ struct SearchView: View {
 
                 Divider()
 
-                // Content
+                // Content - frame ensures consistent sizing during state transitions
                 Group {
-                    if currentSearchText.isEmpty {
+                    // Check for valid search input (text or colors in color mode)
+                    let hasValidInput = !currentSearchText.isEmpty || (moduleSearchMode == .highlightColor && !selectedSearchColors.isEmpty)
+                    if !hasValidInput {
                         emptySearchState
                     } else if isSearching {
                         loadingState
@@ -511,6 +494,7 @@ struct SearchView: View {
                         resultsList
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.inline)
@@ -575,22 +559,17 @@ struct SearchView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 12) {
-                        // Filter button with badge
-                        if searchScope == .modules || (searchScope == .bible && translationHasStrongsAnnotations) {
+                        // Filter button with badge (modules only)
+                        if searchScope == .modules {
                             Button {
                                 withAnimation(.easeInOut(duration: 0.2)) {
-                                    if searchScope == .modules {
-                                        showModuleFilters.toggle()
-                                    } else {
-                                        showBibleFilters.toggle()
-                                    }
+                                    showModuleFilters.toggle()
                                 }
                             } label: {
-                                let isShowing = searchScope == .modules ? showModuleFilters : showBibleFilters
                                 HStack(spacing: 0) {
-                                    Image(systemName: isShowing ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                                    if activeFilterCount > 0 {
-                                        Text("\(activeFilterCount)")
+                                    Image(systemName: showModuleFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                                    if moduleFilterCount > 0 {
+                                        Text("\(moduleFilterCount)")
                                             .font(.system(size: 10, weight: .bold))
                                             .foregroundColor(.white)
                                             .frame(minWidth: 14, minHeight: 14)
@@ -665,10 +644,9 @@ struct SearchView: View {
                                     Menu {
                                         ForEach(Array(moduleSearchHistory.enumerated()), id: \.offset) { _, entry in
                                             Button {
-                                                // Restore filters
-                                                filterTypes = entry.types
+                                                // Restore search mode and filters
+                                                moduleSearchMode = entry.searchMode
                                                 filterModuleIds = entry.moduleIds
-                                                searchByKey = entry.searchByKey
                                                 filterTags = entry.tags
                                                 moduleSearchText = entry.query
                                                 DispatchQueue.main.async {
@@ -726,6 +704,18 @@ struct SearchView: View {
                     resultsVisible = false
                 }
             }
+            .onChange(of: moduleSearchMode) {
+                // Clear module filter if selected modules aren't valid for new mode
+                if let selectedIds = filterModuleIds {
+                    let validIds = Set(filteredAvailableModules.map { $0.id })
+                    let filteredSelection = selectedIds.intersection(validIds)
+                    filterModuleIds = filteredSelection.isEmpty ? nil : filteredSelection
+                }
+                // Clear results when switching module search modes
+                moduleSearchResults = []
+                totalResultCount = 0
+                resultsVisible = false
+            }
             .onChange(of: searchScope) {
                 // Clear results when switching scope - don't auto-search, let user see their previous text
                 searchResults = []
@@ -737,9 +727,10 @@ struct SearchView: View {
                 // Reload settings in case they changed
                 userSettings = UserDatabase.shared.getSettings()
 
-                // Load available modules and tags for filters
+                // Load available modules, tags, and colors for filters
                 availableModules = moduleSearch.getSearchableModules()
                 availableTags = moduleSearch.getAllDevotionalTags()
+                availableHighlightColors = moduleSearch.getAllHighlightColors()
 
                 // Override scope if specified (e.g., from lexicon Strong's search)
                 if let scope = initialSearchScope {
@@ -780,65 +771,208 @@ struct SearchView: View {
         }
     }
 
-    // MARK: - Bible Filter Section
+    // MARK: - Text Search Bar
 
-    private var bibleFilterSection: some View {
+    /// Standard text/key search bar
+    private var textSearchBar: some View {
         HStack(spacing: 8) {
-            Button {
-                searchMode = searchMode == .strongs ? .text : .strongs
-                // Search is triggered by onChange(of: searchMode)
-            } label: {
-                HStack {
-                    Image(systemName: "number")
-                        .font(.caption)
-                    Text("By Key")
-                        .font(.caption)
+            // Search mode selector
+            if searchScope == .modules {
+                Menu {
+                    ForEach(ModuleSearchMode.allCases, id: \.self) { mode in
+                        Button {
+                            moduleSearchMode = mode
+                            moduleSearchResults = []
+                            totalResultCount = 0
+                        } label: {
+                            Label(mode.displayName, systemImage: mode.icon)
+                        }
+                    }
+                } label: {
+                    Image(systemName: moduleSearchMode.icon)
+                        .foregroundStyle(Color.accentColor)
                 }
-                .foregroundColor(searchMode == .strongs ? .white : .primary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(searchMode == .strongs ? Color.accentColor : Color(UIColor.tertiarySystemFill))
-                .clipShape(Capsule())
+            } else if translationHasStrongsAnnotations {
+                // Bible search mode selector (only if translation supports Strong's)
+                Menu {
+                    ForEach(SearchMode.allCases, id: \.self) { mode in
+                        Button {
+                            searchMode = mode
+                        } label: {
+                            Label(mode.rawValue, systemImage: mode.icon)
+                        }
+                    }
+                } label: {
+                    Image(systemName: searchMode.icon)
+                        .foregroundStyle(Color.accentColor)
+                }
+            } else {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
             }
 
-            Spacer()
+            TextField(moduleSearchPlaceholder, text: searchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(searchBarKeyboardType)
+                .submitLabel(.search)
+                .onSubmit {
+                    submitSearch()
+                }
+
+            if !currentSearchText.isEmpty {
+                Button {
+                    searchText.wrappedValue = ""
+                    if searchScope == .bible {
+                        stateManager.clearBibleResults()
+                    } else {
+                        stateManager.clearModuleResults()
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .background(Color(UIColor.secondarySystemBackground))
+        .cornerRadius(10)
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
     }
 
-    // MARK: - Module Filter Section
+    private var searchBarKeyboardType: UIKeyboardType {
+        if searchScope == .bible && searchMode == .strongs {
+            return .asciiCapable
+        } else if moduleSearchMode == .strongsKey {
+            return .asciiCapable
+        }
+        return .default
+    }
 
-    private var moduleFilterSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Module type chips
+    // MARK: - Highlight Color Search Bar
+
+    /// Color selection bar shown when searching highlights by color
+    private var highlightColorSearchBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                // Search mode selector menu
+                Menu {
+                    ForEach(ModuleSearchMode.allCases, id: \.self) { mode in
+                        Button {
+                            moduleSearchMode = mode
+                            // Clear results when switching modes
+                            moduleSearchResults = []
+                            totalResultCount = 0
+                        } label: {
+                            Label(mode.displayName, systemImage: mode.icon)
+                        }
+                    }
+                } label: {
+                    Image(systemName: moduleSearchMode.icon)
+                        .foregroundStyle(Color.accentColor)
+                }
+
+                Text(selectedSearchColors.isEmpty ? "Select colors to search" : "\(selectedSearchColors.count) color\(selectedSearchColors.count == 1 ? "" : "s") selected")
+                    .foregroundStyle(selectedSearchColors.isEmpty ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minHeight: 22)  // Match TextField height
+
+                if !selectedSearchColors.isEmpty {
+                    Button {
+                        selectedSearchColors.removeAll()
+                        moduleSearchResults = []
+                        totalResultCount = 0
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(UIColor.secondarySystemBackground))
+            .cornerRadius(10)
+            .padding(.horizontal)
+            .padding(.top, 8)
+
+            // Color choices
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(ModuleType.allCases, id: \.self) { type in
-                        FilterChip(
-                            title: type.displayName,
-                            isSelected: filterTypes.contains(type),
-                            color: typeColor(for: type)
-                        ) {
-                            if filterTypes.contains(type) {
-                                filterTypes.remove(type)
+                HStack(spacing: 10) {
+                    ForEach(availableHighlightColors, id: \.hex) { color in
+                        Button {
+                            if selectedSearchColors.contains(color.hex) {
+                                selectedSearchColors.remove(color.hex)
                             } else {
-                                filterTypes.insert(type)
+                                selectedSearchColors.insert(color.hex)
                             }
-                            if !currentSearchText.isEmpty {
+                            // Trigger search when colors change
+                            if !selectedSearchColors.isEmpty {
                                 DispatchQueue.main.async { submitSearch() }
+                            } else {
+                                moduleSearchResults = []
+                                totalResultCount = 0
                             }
+                        } label: {
+                            Circle()
+                                .fill(color.color)
+                                .frame(width: 36, height: 36)
+                                .overlay {
+                                    if selectedSearchColors.contains(color.hex) {
+                                        Image(systemName: "checkmark")
+                                            .font(.body.bold())
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                                .overlay {
+                                    Circle()
+                                        .strokeBorder(selectedSearchColors.contains(color.hex) ? Color.primary : Color.clear, lineWidth: 2)
+                                }
                         }
                     }
                 }
                 .padding(.horizontal)
             }
 
-            // Module filter and Strong's toggle on same row
-            HStack(spacing: 8) {
-                if !availableModules.isEmpty {
+        }
+        .padding(.bottom, 8)
+    }
+
+    /// Translations that have highlight sets
+    private var highlightTranslations: [TranslationModule] {
+        let highlightSets = (try? ModuleDatabase.shared.getAllHighlightSets()) ?? []
+        let translationIds = Set(highlightSets.map { $0.translationId })
+        let allTranslations = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
+        return allTranslations.filter { translationIds.contains($0.id) }
+    }
+
+    // MARK: - Module Filter Section
+
+    /// Modules available for filtering based on current search mode
+    private var filteredAvailableModules: [SearchableModule] {
+        switch moduleSearchMode {
+        case .text:
+            return availableModules
+        case .strongsKey:
+            // Only dictionaries and translations support Strong's key search
+            return availableModules.filter { $0.type == .dictionary || $0.type == .translation }
+        case .highlightColor:
+            // No module filter for highlight color mode (use translation filter instead)
+            return []
+        }
+    }
+
+    private var moduleFilterSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Module picker for filtering specific modules (not shown in highlight color mode)
+            if !filteredAvailableModules.isEmpty {
+                HStack {
                     ModuleFilterPicker(
-                        availableModules: modulesForSelectedTypes,
+                        availableModules: filteredAvailableModules,
                         selectedModuleIds: $filterModuleIds,
                         onChanged: {
                             if !currentSearchText.isEmpty {
@@ -846,35 +980,13 @@ struct SearchView: View {
                             }
                         }
                     )
+                    Spacer()
                 }
-
-                if filterTypes.contains(.dictionary) {
-                    Button {
-                        searchByKey.toggle()
-                        if !currentSearchText.isEmpty {
-                            DispatchQueue.main.async { submitSearch() }
-                        }
-                    } label: {
-                        HStack {
-                            Image(systemName: "number")
-                                .font(.caption)
-                            Text("By Key")
-                                .font(.caption)
-                        }
-                        .foregroundStyle(searchByKey ? .white : .primary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(searchByKey ? Color.accentColor : Color(UIColor.tertiarySystemFill))
-                        .clipShape(Capsule())
-                    }
-                }
-
-                Spacer()
+                .padding(.horizontal)
             }
-            .padding(.horizontal)
 
-            // Devotional-specific: Tags filter
-            if filterTypes.contains(.devotional) && !availableTags.isEmpty {
+            // Devotional-specific: Tags filter (only in text mode)
+            if moduleSearchMode == .text && !availableTags.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Tags")
                         .font(.caption)
@@ -904,69 +1016,177 @@ struct SearchView: View {
                     }
                 }
             }
+
+            // Highlight color filter (only in text mode)
+            if moduleSearchMode == .text && !availableHighlightColors.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Filter by Highlight Color")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(availableHighlightColors, id: \.hex) { color in
+                                Button {
+                                    if filterHighlightColors.contains(color.hex) {
+                                        filterHighlightColors.remove(color.hex)
+                                    } else {
+                                        filterHighlightColors.insert(color.hex)
+                                    }
+                                    if !currentSearchText.isEmpty {
+                                        DispatchQueue.main.async { submitSearch() }
+                                    }
+                                } label: {
+                                    Circle()
+                                        .fill(color.color)
+                                        .frame(width: 28, height: 28)
+                                        .overlay {
+                                            if filterHighlightColors.contains(color.hex) {
+                                                Image(systemName: "checkmark")
+                                                    .font(.caption.bold())
+                                                    .foregroundStyle(.white)
+                                            }
+                                        }
+                                        .overlay {
+                                            Circle()
+                                                .strokeBorder(filterHighlightColors.contains(color.hex) ? Color.primary : Color.clear, lineWidth: 2)
+                                        }
+                                }
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                }
+            }
+
+            // Translation filter for color search mode
+            if moduleSearchMode == .highlightColor && highlightTranslations.count > 1 {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Translation")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(highlightTranslations, id: \.id) { translation in
+                                FilterChip(
+                                    title: translation.abbreviation.uppercased(),
+                                    isSelected: colorSearchTranslationId == translation.id,
+                                    color: .blue
+                                ) {
+                                    if colorSearchTranslationId == translation.id {
+                                        colorSearchTranslationId = nil
+                                    } else {
+                                        colorSearchTranslationId = translation.id
+                                    }
+                                    if !selectedSearchColors.isEmpty {
+                                        DispatchQueue.main.async { submitSearch() }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                }
+            }
         }
         .padding(.vertical, 8)
-    }
-
-    private var modulesForSelectedTypes: [SearchableModule] {
-        availableModules.filter { filterTypes.contains($0.type) }
-    }
-
-    private func typeColor(for type: ModuleType) -> Color {
-        switch type {
-        case .translation: return .gray
-        case .notes: return .blue
-        case .commentary: return .green
-        case .devotional: return .orange
-        case .dictionary: return .purple
-        case .plan: return .teal
-        }
     }
 
     // MARK: - View States
 
     private var emptySearchState: some View {
-        ContentUnavailableView(
-            searchScope == .modules ? "Search Modules" : (searchMode == .strongs ? "Strong's Search" : "Search the Bible"),
-            systemImage: searchScope == .modules ? "folder.badge.questionmark" : (searchMode == .strongs ? "number" : "magnifyingglass"),
-            description: Text(searchScope == .modules
-                ? "Search notes, commentaries, devotionals, and dictionaries"
-                : (searchMode == .strongs
-                    ? "Enter a Strong's number (H430, G2316, TH8804)"
-                    : "Enter at least 2 characters to search"))
+        let (title, icon, description): (String, String, String) = {
+            if searchScope == .modules {
+                switch moduleSearchMode {
+                case .text:
+                    return ("Search Modules", "folder.badge.questionmark", "Search notes, commentaries, devotionals, and dictionaries")
+                case .strongsKey:
+                    return ("Strong's Key Search", "number", "Enter a Strong's number (H430, G2316)")
+                case .highlightColor:
+                    return ("Search by Color", "paintpalette", "Select highlight colors to search")
+                }
+            } else {
+                if searchMode == .strongs {
+                    return ("Strong's Search", "number", "Enter a Strong's number (H430, G2316, TH8804)")
+                } else {
+                    return ("Search the Bible", "magnifyingglass", "Enter at least 2 characters to search")
+                }
+            }
+        }()
+        return ContentUnavailableView(
+            title,
+            systemImage: icon,
+            description: Text(description)
         )
     }
 
     private var moduleNoResultsState: some View {
-        ContentUnavailableView(
+        let description: String = {
+            if moduleSearchMode == .highlightColor {
+                return "No highlights found with the selected colors"
+            } else {
+                return "No modules found matching \"\(currentSearchText)\""
+            }
+        }()
+        return ContentUnavailableView(
             "No Module Results",
             systemImage: "folder.badge.questionmark",
-            description: Text("No modules found matching \"\(currentSearchText)\"")
+            description: Text(description)
         )
+    }
+
+    /// Group results by module type for sectioned display
+    private var groupedModuleResults: [(type: ModuleType, results: [ModuleSearchResult])] {
+        let grouped = Dictionary(grouping: moduleSearchResults) { $0.moduleType }
+        // Order by type display order (dictionary, translation, commentary, notes, devotional, highlights)
+        let typeOrder: [ModuleType] = [.dictionary, .translation, .commentary, .notes, .devotional, .highlights]
+        return typeOrder.compactMap { type in
+            if let results = grouped[type], !results.isEmpty {
+                return (type: type, results: results)
+            }
+            return nil
+        }
     }
 
     private var moduleResultsList: some View {
         List {
+            // Header with total count
             Section {
-                ForEach(moduleSearchResults) { result in
-                    let isLast = result.id == moduleSearchResults.last?.id
-                    ModuleSearchResultRow(
-                        result: result,
-                        searchQuery: currentSearchText,
-                        fontSize: fontSize,
-                        onNavigate: {
-                            handleModuleResultTap(result)
-                        }
-                    )
-                    .id(result.id)
-                    .listRowSeparator(isLast ? .hidden : .visible, edges: .bottom)
-                }
+                EmptyView()
             } header: {
-                // Negative count means "X+" (more results available)
                 if totalResultCount < 0 {
                     Text("\(-totalResultCount)+ results")
                 } else {
                     Text("\(totalResultCount) results")
+                }
+            }
+
+            // Grouped results by module type
+            ForEach(groupedModuleResults, id: \.type) { group in
+                Section {
+                    ForEach(group.results) { result in
+                        let isLast = result.id == group.results.last?.id
+                        ModuleSearchResultRow(
+                            result: result,
+                            searchQuery: currentSearchText,
+                            fontSize: fontSize,
+                            onNavigate: {
+                                handleModuleResultTap(result)
+                            }
+                        )
+                        .id(result.id)
+                        .listRowSeparator(isLast ? .hidden : .visible, edges: .bottom)
+                    }
+                } header: {
+                    HStack {
+                        Text(group.type.displayName)
+                        Spacer()
+                        Text("\(group.results.count)")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -1007,12 +1227,34 @@ struct SearchView: View {
         .sheet(item: $selectedCommentary) { result in
             CommentaryEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId, searchQuery: currentSearchText, translationId: translationId)
         }
+        .sheet(item: $selectedHighlight) { result in
+            HighlightPreviewSheet(
+                result: result,
+                onNavigate: { verseId in
+                    selectedHighlight = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        navigateToHighlightedVerse(verseId)
+                    }
+                }
+            )
+        }
+        .sheet(item: $selectedTranslation) { result in
+            TranslationSearchPreviewSheet(
+                result: result,
+                onNavigate: { verseId in
+                    selectedTranslation = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        navigateToVerse(verseId, translationId: result.moduleId)
+                    }
+                }
+            )
+        }
     }
 
     private func handleModuleResultTap(_ result: ModuleSearchResult) {
         switch result.moduleType {
         case .translation:
-            break  // Translations are not searched via module search
+            selectedTranslation = result
         case .dictionary:
             selectedLexiconEntry = result
         case .devotional:
@@ -1022,7 +1264,9 @@ struct SearchView: View {
         case .commentary:
             selectedCommentary = result
         case .plan:
-            break  // Plans are not searched via module search
+            break  // Plans have dedicated UI
+        case .highlights:
+            selectedHighlight = result
         }
     }
 
@@ -1043,11 +1287,14 @@ struct SearchView: View {
 
     private var loadingState: some View {
         VStack {
+            Spacer()
             ProgressView()
                 .padding()
             Text("Searching...")
                 .foregroundStyle(.secondary)
+            Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var noResultsState: some View {
@@ -1199,29 +1446,51 @@ struct SearchView: View {
     private func performModuleSearchAsync(showLoadingState: Bool = true) async {
         let query = moduleSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Build filter
+        // Build filter based on search mode
         var filter = ModuleSearchFilter()
-        filter.types = filterTypes
         filter.moduleIds = filterModuleIds
 
-        // Search by key mode - use query as Strong's key
-        if searchByKey && filterTypes.contains(.dictionary) {
+        switch moduleSearchMode {
+        case .text:
+            // Text search - search all module types
+            filter.types = Set(ModuleType.searchableTypes)
+            // Tags filter for devotionals
+            if !filterTags.isEmpty {
+                filter.tags = filterTags
+            }
+            // Color filter for highlights
+            if !filterHighlightColors.isEmpty {
+                filter.highlightColors = filterHighlightColors
+            }
+            filter.highlightColorOnly = false
+
+        case .strongsKey:
+            // Strong's key search - only dictionaries and translations with Strong's support
+            filter.types = [.dictionary, .translation]
             let key = query.uppercased()
             if !key.isEmpty {
                 filter.strongsKey = key
             }
-        }
 
-        // Tags filter
-        if !filterTags.isEmpty {
-            filter.tags = filterTags
+        case .highlightColor:
+            // Color search - only highlights
+            filter.types = [.highlights]
+            if !selectedSearchColors.isEmpty {
+                filter.highlightColors = selectedSearchColors
+            }
+            filter.highlightColorOnly = true
+            // Filter by translation if specified
+            if let translationId = colorSearchTranslationId {
+                filter.translationIds = [translationId]
+            }
         }
 
         // Validation
         let hasQuery = query.count >= 2
         let hasKeyFilter = filter.strongsKey != nil
+        let hasColorSearch = moduleSearchMode == .highlightColor && !selectedSearchColors.isEmpty
 
-        guard hasQuery || hasKeyFilter else {
+        guard hasQuery || hasKeyFilter || hasColorSearch else {
             moduleSearchResults = []
             totalResultCount = 0
             return
@@ -1236,7 +1505,8 @@ struct SearchView: View {
 
         do {
             // Request one extra to detect if there are more results
-            let results = try moduleSearch.search(query: searchByKey ? "" : query, filter: filter, limit: resultLimit + 1)
+            let searchQuery = (moduleSearchMode == .strongsKey || moduleSearchMode == .highlightColor) ? "" : query
+            let results = try moduleSearch.search(query: searchQuery, filter: filter, limit: resultLimit + 1)
             let hasMoreResults = results.count > resultLimit
             let limitedResults = hasMoreResults ? Array(results.prefix(resultLimit)) : results
 
@@ -1285,8 +1555,8 @@ struct SearchView: View {
         let looksLikeStrongsNumber = isValidStrongsQuery(query)
         let looksLikeBDBId = isValidBDBQuery(query)
 
-        if (looksLikeStrongsNumber || looksLikeBDBId) && filterTypes.contains(.dictionary) {
-            searchByKey = true
+        if looksLikeStrongsNumber || looksLikeBDBId {
+            moduleSearchMode = .strongsKey
         }
     }
 
@@ -1331,6 +1601,36 @@ struct SearchView: View {
                let animatedBinding = requestScrollAnimatedBinding {
                 animatedBinding.wrappedValue = false
                 scrollBinding.wrappedValue = result.id
+            }
+            dismissView()
+        }
+    }
+
+    /// Navigate to a highlighted verse by verseId
+    private func navigateToHighlightedVerse(_ verseId: Int) {
+        if isStandaloneMode {
+            navigateToVerseId = verseId
+        } else {
+            if let scrollBinding = requestScrollToVerseIdBinding,
+               let animatedBinding = requestScrollAnimatedBinding {
+                animatedBinding.wrappedValue = false
+                scrollBinding.wrappedValue = verseId
+            }
+            dismissView()
+        }
+    }
+
+    private func navigateToVerse(_ verseId: Int, translationId: String) {
+        if isStandaloneMode {
+            // Set translation and navigate
+            selectedTranslationIdString = translationId
+            navigateToVerseId = verseId
+        } else {
+            // In sheet mode, just scroll to the verse (can't change translation from here)
+            if let scrollBinding = requestScrollToVerseIdBinding,
+               let animatedBinding = requestScrollAnimatedBinding {
+                animatedBinding.wrappedValue = false
+                scrollBinding.wrappedValue = verseId
             }
             dismissView()
         }
@@ -1697,6 +1997,7 @@ struct ModuleSearchResultRow: View {
         case .devotional: return .orange
         case .dictionary: return .purple
         case .plan: return .teal
+        case .highlights: return .yellow
         }
     }
 
@@ -1828,8 +2129,32 @@ struct ModuleSearchResultRow: View {
                 if !visibleText.isEmpty {
                     var attrText = AttributedString(visibleText)
                     if segment.isHighlighted {
-                        attrText.foregroundColor = .accentColor
-                        attrText.font = .system(size: 15 * scaleFactor).bold()
+                        // For highlight results, show actual highlight styling
+                        if result.moduleType == .highlights,
+                           let colorHex = result.highlightColor {
+                            let highlightColor = HighlightColor(hex: colorHex)
+                            let style = result.highlightStyle ?? .highlight
+
+                            attrText.foregroundColor = .primary
+
+                            switch style {
+                            case .highlight:
+                                attrText.backgroundColor = highlightColor.highlightColor
+                            case .underlineSolid:
+                                attrText.underlineStyle = Text.LineStyle(pattern: .solid)
+                                attrText.uiKit.underlineColor = highlightColor.uiColor
+                            case .underlineDashed:
+                                attrText.underlineStyle = Text.LineStyle(pattern: .dash)
+                                attrText.uiKit.underlineColor = highlightColor.uiColor
+                            case .underlineDotted:
+                                attrText.underlineStyle = Text.LineStyle(pattern: .dot)
+                                attrText.uiKit.underlineColor = highlightColor.uiColor
+                            }
+                        } else {
+                            // Default search highlighting
+                            attrText.foregroundColor = .accentColor
+                            attrText.font = .system(size: 15 * scaleFactor).bold()
+                        }
                     } else {
                         attrText.foregroundColor = .secondary
                     }
@@ -2012,7 +2337,7 @@ struct ModuleFilterPicker: View {
 
             // Group by type
             let grouped = Dictionary(grouping: availableModules) { $0.type }
-            ForEach(ModuleType.allCases, id: \.self) { type in
+            ForEach(ModuleType.searchableTypes, id: \.self) { type in
                 if let modules = grouped[type], !modules.isEmpty {
                     let seriesGroups = modulesBySeries(for: type)
                     if shouldUseSeriesGrouping(for: type) && !seriesGroups.isEmpty {
@@ -3010,5 +3335,261 @@ private struct BibleResultsListView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Highlight Preview Sheet
+
+struct HighlightPreviewSheet: View {
+    let result: ModuleSearchResult
+    var onNavigate: ((Int) -> Void)?
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Verse text with highlight
+                    if let verseId = result.verseId {
+                        HighlightedVerseContent(
+                            verseId: verseId,
+                            highlightSetId: result.moduleId,
+                            snippet: result.snippet
+                        )
+                        .padding()
+                    }
+
+                    // Module info
+                    Text(result.moduleName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal)
+                }
+            }
+            .navigationTitle(result.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if let verseId = result.verseId {
+                        Button {
+                            onNavigate?(verseId)
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                        }
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+/// Shows verse text with highlight styling applied
+private struct HighlightedVerseContent: View {
+    let verseId: Int
+    let highlightSetId: String
+    let snippet: String
+
+    @State private var verseText: String = ""
+    @State private var highlights: [HighlightEntry] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !verseText.isEmpty {
+                highlightedText
+                    .font(.body)
+                    .lineSpacing(6)
+            } else {
+                // Fallback to snippet
+                Text(snippet)
+                    .font(.body)
+                    .lineSpacing(6)
+            }
+        }
+        .task {
+            await loadVerseAndHighlights()
+        }
+    }
+
+    private var highlightedText: Text {
+        guard !highlights.isEmpty else {
+            return Text(verseText)
+        }
+
+        // Build AttributedString with highlight styling
+        var attrString = AttributedString(verseText)
+
+        // Sort highlights by start position
+        let sortedHighlights = highlights.sorted { $0.sc < $1.sc }
+
+        for highlight in sortedHighlights {
+            let startIndex = max(highlight.sc, 0)
+            let endIndex = min(highlight.ec, verseText.count)
+
+            guard startIndex < verseText.count && endIndex > startIndex else { continue }
+
+            // Get range in AttributedString
+            let strStart = verseText.index(verseText.startIndex, offsetBy: startIndex)
+            let strEnd = verseText.index(verseText.startIndex, offsetBy: endIndex)
+
+            guard let attrStart = AttributedString.Index(strStart, within: attrString),
+                  let attrEnd = AttributedString.Index(strEnd, within: attrString) else { continue }
+
+            let range = attrStart..<attrEnd
+            let color = highlight.highlightColor.color
+
+            switch highlight.highlightStyle {
+            case .highlight:
+                attrString[range].backgroundColor = color.opacity(0.4)
+            case .underlineSolid:
+                attrString[range].underlineStyle = Text.LineStyle(pattern: .solid)
+                attrString[range].uiKit.underlineColor = UIColor(color)
+            case .underlineDashed:
+                attrString[range].underlineStyle = Text.LineStyle(pattern: .dash)
+                attrString[range].uiKit.underlineColor = UIColor(color)
+            case .underlineDotted:
+                attrString[range].underlineStyle = Text.LineStyle(pattern: .dot)
+                attrString[range].uiKit.underlineColor = UIColor(color)
+            }
+        }
+
+        return Text(attrString)
+    }
+
+    @MainActor
+    private func loadVerseAndHighlights() async {
+        // Get the highlight set to find the translation
+        guard let set = try? ModuleDatabase.shared.getHighlightSet(id: highlightSetId) else { return }
+
+        // Load verse text
+        if let verse = try? TranslationDatabase.shared.getVerse(translationId: set.translationId, ref: verseId) {
+            verseText = verse.text
+        }
+
+        // Load highlights for this verse
+        highlights = (try? ModuleDatabase.shared.getHighlights(setId: highlightSetId, ref: verseId)) ?? []
+    }
+}
+
+// MARK: - Translation Search Preview Sheet
+
+struct TranslationSearchPreviewSheet: View {
+    let result: ModuleSearchResult
+    var onNavigate: ((Int) -> Void)?
+
+    @Environment(\.dismiss) private var dismiss
+
+    /// Parse snippet with <mark> tags into highlighted AttributedString
+    private var highlightedSnippet: AttributedString {
+        let snippet = result.snippet
+
+        // Parse marks and build attributed string
+        var attributedResult = AttributedString()
+        var remaining = snippet
+
+        while !remaining.isEmpty {
+            if let markStart = remaining.range(of: "<mark>") {
+                // Text before mark
+                let before = String(remaining[..<markStart.lowerBound])
+                if !before.isEmpty {
+                    var attrText = AttributedString(before)
+                    attrText.foregroundColor = .primary
+                    attributedResult.append(attrText)
+                }
+                remaining = String(remaining[markStart.upperBound...])
+
+                // Find closing mark
+                if let markEnd = remaining.range(of: "</mark>") {
+                    let marked = String(remaining[..<markEnd.lowerBound])
+                    var attrText = AttributedString(marked)
+                    attrText.foregroundColor = .accentColor
+                    attrText.font = .body.bold()
+                    attributedResult.append(attrText)
+                    remaining = String(remaining[markEnd.upperBound...])
+                } else {
+                    // No closing tag, treat rest as marked
+                    var attrText = AttributedString(remaining)
+                    attrText.foregroundColor = .accentColor
+                    attrText.font = .body.bold()
+                    attributedResult.append(attrText)
+                    remaining = ""
+                }
+            } else {
+                // No more marks
+                var attrText = AttributedString(remaining)
+                attrText.foregroundColor = .primary
+                attributedResult.append(attrText)
+                remaining = ""
+            }
+        }
+
+        return attributedResult
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Verse text with highlighted words
+                    Text(highlightedSnippet)
+                        .font(.body)
+                        .lineSpacing(6)
+                        .padding()
+
+                    // Strong's key if present
+                    if let strongsKey = result.strongsKey {
+                        HStack {
+                            Text("Strong's:")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(strongsKey)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal)
+                    }
+
+                    // Translation info
+                    Text(result.moduleName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal)
+                }
+            }
+            .navigationTitle(result.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if let verseId = result.verseId {
+                        Button {
+                            onNavigate?(verseId)
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                        }
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }

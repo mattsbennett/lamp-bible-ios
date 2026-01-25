@@ -44,6 +44,9 @@ struct SearchResult: Identifiable {
         self.snippet = searchResult.snippet
         self._chapter = searchResult.chapter
         self._verse = searchResult.verse
+        // Strip FTS <mark> tags from text for display
         self._text = searchResult.snippet
+            .replacingOccurrences(of: "<mark>", with: "")
+            .replacingOccurrences(of: "</mark>", with: "")
     }
 }

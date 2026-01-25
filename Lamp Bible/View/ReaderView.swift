@@ -10,6 +10,195 @@ import SwiftUI
 import UIKit
 import GRDB
 
+// MARK: - Custom Layout Manager for Compact Backgrounds
+
+/// Custom NSLayoutManager that draws background colors with reduced height
+/// and rounded corners to match text height rather than full line height
+class CompactBackgroundLayoutManager: NSLayoutManager {
+
+    /// Amount to trim from bottom of background rects (where line spacing is added)
+    var lineSpacingTrim: CGFloat = 0
+
+    /// Corner radius for highlight backgrounds (0 = square corners)
+    var cornerRadius: CGFloat = 3
+
+    override func fillBackgroundRectArray(_ rectArray: UnsafePointer<CGRect>, count rectCount: Int, forCharacterRange charRange: NSRange, color: UIColor) {
+        guard let context = UIGraphicsGetCurrentContext() else {
+            super.fillBackgroundRectArray(rectArray, count: rectCount, forCharacterRange: charRange, color: color)
+            return
+        }
+
+        context.saveGState()
+        context.setFillColor(color.cgColor)
+
+        for i in 0..<rectCount {
+            var rect = rectArray[i]
+
+            // Adjust rect to trim line spacing
+            if lineSpacingTrim > 0 && rect.height > lineSpacingTrim {
+                rect.origin.y += lineSpacingTrim / 3  // Shift down to center
+                rect.size.height -= lineSpacingTrim
+            }
+
+            // Draw with rounded corners
+            let path = UIBezierPath(roundedRect: rect, cornerRadius: min(cornerRadius, rect.height / 2))
+            context.addPath(path.cgPath)
+        }
+
+        context.fillPath()
+        context.restoreGState()
+    }
+}
+
+// MARK: - Custom Text View with Compact Selection
+
+/// Custom UITextView that adjusts selection highlight height to match text (excluding line spacing)
+class CompactSelectionTextView: UITextView {
+
+    /// Amount to trim from selection rect heights
+    var selectionHeightTrim: CGFloat = 0
+
+    override func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
+        let originalRects = super.selectionRects(for: range)
+
+        guard selectionHeightTrim > 0 else { return originalRects }
+
+        return originalRects.map { original in
+            CompactSelectionRect(original: original, heightTrim: selectionHeightTrim)
+        }
+    }
+}
+
+/// Custom UITextSelectionRect that reduces height to exclude line spacing
+private class CompactSelectionRect: UITextSelectionRect {
+    private let original: UITextSelectionRect
+    private let heightTrim: CGFloat
+
+    init(original: UITextSelectionRect, heightTrim: CGFloat) {
+        self.original = original
+        self.heightTrim = heightTrim
+        super.init()
+    }
+
+    override var rect: CGRect {
+        var r = original.rect
+        if r.height > heightTrim {
+            r.origin.y += heightTrim / 3  // Shift down to center
+            r.size.height -= heightTrim
+        }
+        return r
+    }
+
+    override var writingDirection: NSWritingDirection { original.writingDirection }
+    override var containsStart: Bool { original.containsStart }
+    override var containsEnd: Bool { original.containsEnd }
+    override var isVertical: Bool { original.isVertical }
+}
+
+// MARK: - Chapter Navigation Button
+
+enum ChapterNavigationDirection {
+    case previous
+    case next
+}
+
+/// Minimal arrow button for navigating between chapters with circular progress indicator
+struct ChapterNavigationButton: View {
+    let direction: ChapterNavigationDirection
+    let progress: CGFloat  // 0 = no pull, 1 = threshold reached, can exceed 1
+    let chapterLabel: String?  // e.g., "Genesis 49" - shown when threshold reached
+    let action: () -> Void
+
+    private let circleSize: CGFloat = 30
+
+    private var iconName: String {
+        switch direction {
+        case .previous:
+            return "arrow.up"
+        case .next:
+            return "arrow.down"
+        }
+    }
+
+    // Clamp progress to 0...1 for visual calculations
+    private var clampedProgress: CGFloat {
+        min(1.0, max(0, progress))
+    }
+
+    // Whether threshold has been reached
+    private var isThresholdReached: Bool {
+        progress >= 1.0
+    }
+
+    // Stroke color
+    private var strokeColor: Color {
+        Color.secondary.opacity(0.4 + clampedProgress * 0.3)
+    }
+
+    // Fill color when threshold reached
+    private var fillColor: Color {
+        Color.secondary
+    }
+
+    // Arrow color - inverts when threshold reached
+    private var arrowColor: Color {
+        if isThresholdReached {
+            return Color(UIColor.systemBackground)
+        } else {
+            return Color.secondary.opacity(0.4 + clampedProgress * 0.3)
+        }
+    }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if isThresholdReached {
+                    // Filled circle when threshold reached
+                    Circle()
+                        .fill(fillColor)
+                        .frame(width: circleSize, height: circleSize)
+                } else {
+                    // Progress stroke - draws clockwise from top
+                    Circle()
+                        .trim(from: 0, to: clampedProgress)
+                        .stroke(strokeColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .frame(width: circleSize, height: circleSize)
+                        .rotationEffect(.degrees(-90))  // Start from top (12 o'clock)
+                }
+
+                // Arrow icon
+                Image(systemName: iconName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(arrowColor)
+            }
+            .overlay {
+                // Chapter label as overlay so it doesn't affect layout
+                if isThresholdReached, let label = chapterLabel {
+                    Text(label)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .fixedSize()
+                        .offset(y: direction == .previous ? -30 : 30)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: isThresholdReached)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .frame(height: 44)
+    }
+}
+
+// MARK: - Bottom Button Position Tracking
+
+/// PreferenceKey to track the bottom button's vertical position
+struct BottomButtonMinYKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = min(value, nextValue())
+    }
+}
+
 // MARK: - Verse Position Tracker
 
 class VersePositionTracker: ObservableObject {
@@ -61,6 +250,7 @@ struct ChapterTextView: UIViewRepresentable {
     let chapter: Int
     let showBookTitle: Bool
     let showStrongsHints: Bool
+    let highlightsByVerse: [Int: [HighlightEntry]]  // Highlights keyed by verse ref
     let onAddNote: (TranslationVerse) -> Void
     let onShowStrongs: (AnnotatedWord) -> Void
     var onSearchText: ((String) -> Void)?
@@ -84,12 +274,15 @@ struct ChapterTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> UITextView {
         // Use TextKit 1 explicitly for layoutManager access
         let textContainer = NSTextContainer()
-        let layoutManager = NSLayoutManager()
+        let layoutManager = CompactBackgroundLayoutManager()
+        // Trim line spacing from highlight backgrounds so they fit the text height
+        layoutManager.lineSpacingTrim = lineSpacing * 1.2
         let textStorage = NSTextStorage()
         textStorage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
 
-        let textView = UITextView(frame: .zero, textContainer: textContainer)
+        let textView = CompactSelectionTextView(frame: .zero, textContainer: textContainer)
+        textView.selectionHeightTrim = lineSpacing
         textView.isEditable = false
         textView.isSelectable = !isSimplifiedText
         textView.isScrollEnabled = false
@@ -135,11 +328,19 @@ struct ChapterTextView: UIViewRepresentable {
         if context.coordinator.lastBuildKey != effectiveKey {
             context.coordinator.lastBuildKey = effectiveKey
 
+            // Preserve selection during rebuild
+            let savedSelection = textView.selectedRange
+
             if isSimplifiedText {
                 textView.attributedText = buildSimplifiedAttributedString()
             } else {
                 let attributedString = buildAttributedString(coordinator: context.coordinator)
                 textView.attributedText = attributedString
+            }
+
+            // Restore selection if it was valid
+            if savedSelection.length > 0 && savedSelection.location + savedSelection.length <= textView.attributedText.length {
+                textView.selectedRange = savedSelection
             }
 
             textView.invalidateIntrinsicContentSize()
@@ -153,17 +354,16 @@ struct ChapterTextView: UIViewRepresentable {
         // Note: Scroll-to-verse is handled by onChange(of: versePositions) in ReaderView
         // This ensures scrolling happens after positions are calculated
 
-        // While scrolling, disable UITextView interactions entirely to reduce overhead.
+        // Keep text view always selectable - only disable user interaction during active scrolling
+        // to reduce overhead, but this doesn't affect selectability
         if !isSimplifiedText {
-            let allowInteraction = !isUserScrolling
-            if textView.isUserInteractionEnabled != allowInteraction {
-                textView.isUserInteractionEnabled = allowInteraction
+            // Always keep selectable
+            if !textView.isSelectable {
+                textView.isSelectable = true
             }
-            if textView.isSelectable != allowInteraction {
-                textView.isSelectable = allowInteraction
-                if !allowInteraction {
-                    textView.selectedRange = NSRange(location: 0, length: 0)
-                }
+            // Always keep user interaction enabled (removing scroll optimization that was causing issues)
+            if !textView.isUserInteractionEnabled {
+                textView.isUserInteractionEnabled = true
             }
         }
     }
@@ -240,6 +440,7 @@ struct ChapterTextView: UIViewRepresentable {
         let result = NSMutableAttributedString()
         coordinator.verseRanges.removeAll()
         coordinator.verseNumberRanges.removeAll()
+        coordinator.verseTextRanges.removeAll()
 
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = lineSpacing
@@ -249,6 +450,13 @@ struct ChapterTextView: UIViewRepresentable {
             .font: UIFont.systemFont(ofSize: fontSize),
             .paragraphStyle: paragraphStyle,
             .foregroundColor: UIColor.label
+        ]
+
+        // Superscription (verse 0) uses muted italic text like headings
+        let superscriptionAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.italicSystemFont(ofSize: fontSize),
+            .paragraphStyle: paragraphStyle,
+            .foregroundColor: UIColor.secondaryLabel
         ]
 
         let headerParagraphStyle = NSMutableParagraphStyle()
@@ -328,7 +536,9 @@ struct ChapterTextView: UIViewRepresentable {
 
             // Render any section headings before this verse
             let verseRef = verse.book * 1000000 + verse.chapter * 1000 + verse.verse
+            var hadHeadingsBeforeVerse = false
             if let verseHeadings = headingsByRef[verseRef] {
+                hadHeadingsBeforeVerse = true
                 for heading in verseHeadings {
                     let headingText = NSAttributedString(string: "\(heading.text)\n", attributes: sectionHeadingAttributes)
                     result.append(headingText)
@@ -346,6 +556,12 @@ struct ChapterTextView: UIViewRepresentable {
                 paragraphBreakStyle.paragraphSpacingBefore = lineSpacing
                 result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraphBreakStyle]))
             }
+            // Always add spacing after headings to match mid-chapter heading appearance
+            else if hadHeadingsBeforeVerse {
+                let postHeadingStyle = NSMutableParagraphStyle()
+                postHeadingStyle.paragraphSpacingBefore = lineSpacing
+                result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: postHeadingStyle]))
+            }
 
             let verseStart = result.length
 
@@ -362,14 +578,24 @@ struct ChapterTextView: UIViewRepresentable {
                 .verseId: verse.ref
             ]
 
+            // Use muted styling for superscriptions (verse 0)
+            let isSuperscription = verse.verse == 0
+            let verseTextAttributes = isSuperscription ? superscriptionAttributes : textAttributes
+
             let verseNumberStart = result.length
-            // Add poetry indentation before verse number
-            if !indentString.isEmpty {
+            // Add poetry indentation before verse number (skip for superscriptions)
+            if !indentString.isEmpty && !isSuperscription {
                 result.append(NSAttributedString(string: indentString, attributes: textAttributes))
             }
-            let verseNumber = NSAttributedString(string: "\(verse.verse) ", attributes: verseNumberAttributes)
-            result.append(verseNumber)
-            coordinator.verseNumberRanges[verse.ref] = NSRange(location: verseNumberStart, length: verseNumber.length)
+            // Skip verse number for superscriptions (verse 0)
+            if !isSuperscription {
+                let verseNumber = NSAttributedString(string: "\(verse.verse) ", attributes: verseNumberAttributes)
+                result.append(verseNumber)
+                coordinator.verseNumberRanges[verse.ref] = NSRange(location: verseNumberStart, length: verseNumber.length)
+            }
+
+            // Track where verse text content starts (for highlight positioning)
+            let verseTextStart = result.length
 
             // Verse text - check for Strong's annotations
             if let annotations = verse.annotations, !annotations.isEmpty {
@@ -423,16 +649,35 @@ struct ChapterTextView: UIViewRepresentable {
                     }
 
                     // Add plain text before this annotation
+                    // Must split at red-letter boundaries to apply correct styling
                     if annotation.start > currentIndex {
-                        let startIdx = verseText.index(verseText.startIndex, offsetBy: currentIndex)
-                        let endIdx = verseText.index(verseText.startIndex, offsetBy: min(annotation.start, verseText.count))
-                        let plainPart = String(verseText[startIdx..<endIdx])
-                        // Apply red letter styling if in red letter range
-                        var plainAttributes = textAttributes
-                        if isInRedLetter(currentIndex) {
-                            plainAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                        var segmentStart = currentIndex
+                        let segmentEnd = min(annotation.start, verseText.count)
+
+                        while segmentStart < segmentEnd {
+                            // Find the next boundary (red-letter start or end)
+                            var nextBoundary = segmentEnd
+                            for (rlStart, rlEnd) in redLetterRanges {
+                                if rlStart > segmentStart && rlStart < nextBoundary {
+                                    nextBoundary = rlStart
+                                }
+                                if rlEnd > segmentStart && rlEnd < nextBoundary {
+                                    nextBoundary = rlEnd
+                                }
+                            }
+
+                            let startIdx = verseText.index(verseText.startIndex, offsetBy: segmentStart)
+                            let endIdx = verseText.index(verseText.startIndex, offsetBy: nextBoundary)
+                            let plainPart = String(verseText[startIdx..<endIdx])
+
+                            var plainAttributes = verseTextAttributes
+                            if isInRedLetter(segmentStart) {
+                                plainAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                            }
+                            result.append(NSAttributedString(string: plainPart, attributes: plainAttributes))
+
+                            segmentStart = nextBoundary
                         }
-                        result.append(NSAttributedString(string: plainPart, attributes: plainAttributes))
                     }
 
                     // Add annotated text
@@ -454,7 +699,7 @@ struct ChapterTextView: UIViewRepresentable {
                             morphology: grouped?.morphology,
                             isAnnotated: !strongsArray.isEmpty
                         )
-                        var strongsAttributes = textAttributes
+                        var strongsAttributes = verseTextAttributes
                         strongsAttributes[.strongsWord] = annotatedWord
 
                         // Apply red letter color if in red letter range
@@ -474,7 +719,7 @@ struct ChapterTextView: UIViewRepresentable {
                         break
 
                     case .added:
-                        var addedAttributes = textAttributes
+                        var addedAttributes = verseTextAttributes
                         addedAttributes[.font] = UIFont.italicSystemFont(ofSize: fontSize)
                         if inRedLetter {
                             addedAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
@@ -482,7 +727,7 @@ struct ChapterTextView: UIViewRepresentable {
                         result.append(NSAttributedString(string: annotatedText, attributes: addedAttributes))
 
                     case .divineName:
-                        var divineNameAttributes = textAttributes
+                        var divineNameAttributes = verseTextAttributes
                         // Small caps effect for divine name (LORD, GOD)
                         if let descriptor = UIFont.systemFont(ofSize: fontSize).fontDescriptor.withSymbolicTraits([.traitBold]) {
                             divineNameAttributes[.font] = UIFont(descriptor: descriptor, size: fontSize)
@@ -494,7 +739,7 @@ struct ChapterTextView: UIViewRepresentable {
 
                     default:
                         // footnote, selah, variant - render as plain text (with red letter if applicable)
-                        var defaultAttributes = textAttributes
+                        var defaultAttributes = verseTextAttributes
                         if inRedLetter {
                             defaultAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
                         }
@@ -505,22 +750,42 @@ struct ChapterTextView: UIViewRepresentable {
                 }
 
                 // Add remaining plain text after last annotation
+                // Must split at red-letter boundaries to apply correct styling
                 if currentIndex < verseText.count {
-                    let startIdx = verseText.index(verseText.startIndex, offsetBy: currentIndex)
-                    let remainingText = String(verseText[startIdx...])
-                    // Apply red letter styling if in red letter range
-                    var remainingAttributes = textAttributes
-                    if isInRedLetter(currentIndex) {
-                        remainingAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                    var segmentStart = currentIndex
+                    let segmentEnd = verseText.count
+
+                    while segmentStart < segmentEnd {
+                        // Find the next boundary (red-letter start or end)
+                        var nextBoundary = segmentEnd
+                        for (rlStart, rlEnd) in redLetterRanges {
+                            if rlStart > segmentStart && rlStart < nextBoundary {
+                                nextBoundary = rlStart
+                            }
+                            if rlEnd > segmentStart && rlEnd < nextBoundary {
+                                nextBoundary = rlEnd
+                            }
+                        }
+
+                        let startIdx = verseText.index(verseText.startIndex, offsetBy: segmentStart)
+                        let endIdx = verseText.index(verseText.startIndex, offsetBy: nextBoundary)
+                        let plainPart = String(verseText[startIdx..<endIdx])
+
+                        var plainAttributes = verseTextAttributes
+                        if isInRedLetter(segmentStart) {
+                            plainAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                        }
+                        result.append(NSAttributedString(string: plainPart, attributes: plainAttributes))
+
+                        segmentStart = nextBoundary
                     }
-                    result.append(NSAttributedString(string: remainingText, attributes: remainingAttributes))
                 }
             } else if hasStrongsAnnotations(verse.text) {
                 // Legacy regex format for old translations with {word|H1234} syntax
                 let annotatedWords = parseAnnotatedVerse(verse.text)
                 for word in annotatedWords {
                     if word.isAnnotated {
-                        var strongsAttributes = textAttributes
+                        var strongsAttributes = verseTextAttributes
                         strongsAttributes[.strongsWord] = word
 
                         if showStrongsHints {
@@ -531,15 +796,19 @@ struct ChapterTextView: UIViewRepresentable {
                         let wordText = NSAttributedString(string: word.text, attributes: strongsAttributes)
                         result.append(wordText)
                     } else {
-                        let plainText = NSAttributedString(string: word.text, attributes: textAttributes)
+                        let plainText = NSAttributedString(string: word.text, attributes: verseTextAttributes)
                         result.append(plainText)
                     }
                 }
             } else {
                 // No annotations - render plain text
-                let verseText = NSAttributedString(string: verse.text, attributes: textAttributes)
+                let verseText = NSAttributedString(string: verse.text, attributes: verseTextAttributes)
                 result.append(verseText)
             }
+
+            // Store verse text range (for highlight positioning - text content only, no verse number)
+            let verseTextLength = result.length - verseTextStart
+            coordinator.verseTextRanges[verse.ref] = NSRange(location: verseTextStart, length: verseTextLength)
 
             // Store verse range for scrolling
             coordinator.verseRanges[verse.ref] = NSRange(location: verseStart, length: result.length - verseStart)
@@ -560,7 +829,57 @@ struct ChapterTextView: UIViewRepresentable {
             }
         }
 
+        // Apply highlights from HighlightManager
+        applyHighlights(to: result, coordinator: coordinator)
+
         return result
+    }
+
+    /// Apply highlights to the attributed string based on passed-in highlights
+    private func applyHighlights(to result: NSMutableAttributedString, coordinator: Coordinator) {
+        // Get highlights for each verse from the passed-in dictionary
+        for verse in verses {
+            guard let highlights = highlightsByVerse[verse.ref], !highlights.isEmpty else { continue }
+
+            // Get the text range for this verse
+            guard let verseTextRange = coordinator.verseTextRanges[verse.ref] else { continue }
+
+            for highlight in highlights {
+                // Calculate the NSRange within the attributed string
+                // highlight.sc and highlight.ec are character offsets within the verse text
+                let highlightStart = verseTextRange.location + highlight.sc
+                let highlightLength = min(highlight.ec - highlight.sc, verseTextRange.length - highlight.sc)
+
+                guard highlightLength > 0 && highlightStart < result.length else { continue }
+
+                let highlightRange = NSRange(
+                    location: highlightStart,
+                    length: min(highlightLength, result.length - highlightStart)
+                )
+
+                // Apply styling based on highlight style
+                switch highlight.highlightStyle {
+                case .highlight:
+                    // Background color fill with alpha
+                    let backgroundColor = highlight.highlightColor.uiColor.withAlphaComponent(0.4)
+                    result.addAttribute(.backgroundColor, value: backgroundColor, range: highlightRange)
+
+                case .underlineSolid:
+                    result.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: highlightRange)
+                    result.addAttribute(.underlineColor, value: highlight.highlightColor.uiColor, range: highlightRange)
+
+                case .underlineDashed:
+                    let style = NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDash.rawValue
+                    result.addAttribute(.underlineStyle, value: style, range: highlightRange)
+                    result.addAttribute(.underlineColor, value: highlight.highlightColor.uiColor, range: highlightRange)
+
+                case .underlineDotted:
+                    let style = NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue
+                    result.addAttribute(.underlineStyle, value: style, range: highlightRange)
+                    result.addAttribute(.underlineColor, value: highlight.highlightColor.uiColor, range: highlightRange)
+                }
+            }
+        }
     }
 
     class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
@@ -568,6 +887,7 @@ struct ChapterTextView: UIViewRepresentable {
         weak var textView: UITextView?
         var verseRanges: [Int: NSRange] = [:]
         var verseNumberRanges: [Int: NSRange] = [:]
+        var verseTextRanges: [Int: NSRange] = [:]  // Verse text content ranges (excluding verse number)
         var verseYPositions: [Int: CGFloat] = [:]
         var lastBuildKey: String = ""
 
@@ -584,9 +904,10 @@ struct ChapterTextView: UIViewRepresentable {
         }
 
         func buildKey() -> String {
-            // Create a key that uniquely identifies the content
+            // Create a key that uniquely identifies the content (including highlights)
             let verseIds = parent.verses.map { $0.ref }.description
-            return "\(verseIds)-\(parent.fontSize)-\(parent.chapter)-\(parent.showStrongsHints)"
+            let highlightCount = parent.highlightsByVerse.values.reduce(0) { $0 + $1.count }
+            return "\(verseIds)-\(parent.fontSize)-\(parent.chapter)-\(parent.showStrongsHints)-\(highlightCount)"
         }
 
         func markVersePositionsDirty() {
@@ -781,23 +1102,342 @@ struct ChapterTextView: UIViewRepresentable {
         // MARK: - UITextViewDelegate (Text Selection Menu)
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-            guard range.length > 0,
-                  let onSearch = parent.onSearchText else {
+            guard range.length > 0 else {
                 return UIMenu(children: suggestedActions)
             }
 
-            let selectedText = (textView.text as NSString).substring(with: range)
+            var actions = suggestedActions
 
-            let searchAction = UIAction(title: "Search", image: UIImage(systemName: "magnifyingglass")) { _ in
-                onSearch(selectedText)
+            // Check if selection overlaps with existing highlights
+            let overlappingHighlights = findHighlightsInRange(range)
+
+            if !overlappingHighlights.isEmpty {
+                // Add Remove Highlight action
+                let removeAction = UIAction(title: "Remove Highlight", image: UIImage(systemName: "highlighter"), attributes: .destructive) { [weak self] _ in
+                    self?.removeHighlightsInRange(range)
+                }
+                actions.insert(removeAction, at: 0)
+            } else {
+                // Add Highlight action
+                let highlightAction = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
+                    self?.createHighlightForSelection(range)
+                }
+                actions.insert(highlightAction, at: 0)
             }
 
-            // Insert Search near the beginning (after first action, which is typically Copy)
-            var actions = suggestedActions
-            let insertIndex = min(1, actions.count)
-            actions.insert(searchAction, at: insertIndex)
+            // Add Search action
+            if let onSearch = parent.onSearchText {
+                let selectedText = (textView.text as NSString).substring(with: range)
+                let searchAction = UIAction(title: "Search", image: UIImage(systemName: "magnifyingglass")) { _ in
+                    onSearch(selectedText)
+                }
+                let insertIndex = min(1, actions.count)
+                actions.insert(searchAction, at: insertIndex)
+            }
 
             return UIMenu(children: actions)
+        }
+
+        /// Find highlights that overlap with the given text range
+        private func findHighlightsInRange(_ range: NSRange) -> [(verseRef: Int, highlight: HighlightEntry)] {
+            var results: [(verseRef: Int, highlight: HighlightEntry)] = []
+
+            for (verseRef, verseTextRange) in verseTextRanges {
+                let selectionStart = range.location
+                let selectionEnd = range.location + range.length
+                let verseStart = verseTextRange.location
+                let verseEnd = verseTextRange.location + verseTextRange.length
+
+                // Check if selection overlaps with this verse
+                if selectionStart < verseEnd && selectionEnd > verseStart {
+                    // Get highlights for this verse
+                    let highlights = parent.highlightsByVerse[verseRef] ?? []
+
+                    for highlight in highlights {
+                        // Convert highlight character offsets to absolute positions
+                        let highlightAbsStart = verseStart + highlight.sc
+                        let highlightAbsEnd = verseStart + highlight.ec
+
+                        // Check if selection overlaps with this highlight
+                        if selectionStart < highlightAbsEnd && selectionEnd > highlightAbsStart {
+                            results.append((verseRef: verseRef, highlight: highlight))
+                        }
+                    }
+                }
+            }
+
+            return results
+        }
+
+        /// Remove highlights that overlap with the given text range (supports partial removal with whitespace trimming)
+        private func removeHighlightsInRange(_ range: NSRange) {
+            let selectionStart = range.location
+            let selectionEnd = range.location + range.length
+
+            guard let text = textView?.text else { return }
+
+            Task { @MainActor in
+                for (verseRef, verseTextRange) in verseTextRanges {
+                    let verseStart = verseTextRange.location
+                    let verseEnd = verseTextRange.location + verseTextRange.length
+
+                    // Check if selection overlaps with this verse
+                    guard selectionStart < verseEnd && selectionEnd > verseStart else { continue }
+
+                    // Get verse text for whitespace trimming
+                    let verseTextStart = text.index(text.startIndex, offsetBy: verseStart)
+                    let verseTextEnd = text.index(text.startIndex, offsetBy: min(verseEnd, text.count))
+                    let verseText = String(text[verseTextStart..<verseTextEnd])
+
+                    // Convert selection to verse-relative offsets
+                    let selScInVerse = max(0, selectionStart - verseStart)
+                    let selEcInVerse = min(verseTextRange.length, selectionEnd - verseStart)
+
+                    // Get highlights for this verse
+                    let highlights = parent.highlightsByVerse[verseRef] ?? []
+
+                    for highlight in highlights {
+                        // Check if selection overlaps with this highlight
+                        guard selScInVerse < highlight.ec && selEcInVerse > highlight.sc else { continue }
+
+                        guard let highlightId = highlight.id else {
+                            print("[Highlight] WARNING: Highlight has no ID - reloading...")
+                            let (_, chapter, book) = splitVerseId(verseRef)
+                            HighlightManager.shared.loadHighlightsForChapter(book: book, chapter: chapter)
+                            return
+                        }
+
+                        do {
+                            // Determine removal type based on overlap
+                            let coversStart = selScInVerse <= highlight.sc
+                            let coversEnd = selEcInVerse >= highlight.ec
+
+                            if coversStart && coversEnd {
+                                // Selection covers entire highlight → remove
+                                print("[Highlight] Removing entire highlight id=\(highlightId)")
+                                try HighlightManager.shared.removeHighlight(highlight)
+                            } else if coversStart {
+                                // Selection covers start → shrink highlight to start after selection
+                                var newSc = selEcInVerse
+                                // Trim leading whitespace from new start
+                                while newSc < highlight.ec {
+                                    let charIndex = verseText.index(verseText.startIndex, offsetBy: newSc)
+                                    if verseText[charIndex].isWhitespace {
+                                        newSc += 1
+                                    } else {
+                                        break
+                                    }
+                                }
+                                if newSc < highlight.ec {
+                                    print("[Highlight] Shrinking highlight id=\(highlightId) start: \(highlight.sc) -> \(newSc)")
+                                    try HighlightManager.shared.updateHighlight(highlight, newSc: newSc, newEc: highlight.ec)
+                                } else {
+                                    // Nothing left after trimming
+                                    try HighlightManager.shared.removeHighlight(highlight)
+                                }
+                            } else if coversEnd {
+                                // Selection covers end → shrink highlight to end before selection
+                                var newEc = selScInVerse
+                                // Trim trailing whitespace from new end
+                                while newEc > highlight.sc {
+                                    let charIndex = verseText.index(verseText.startIndex, offsetBy: newEc - 1)
+                                    if verseText[charIndex].isWhitespace {
+                                        newEc -= 1
+                                    } else {
+                                        break
+                                    }
+                                }
+                                if newEc > highlight.sc {
+                                    print("[Highlight] Shrinking highlight id=\(highlightId) end: \(highlight.ec) -> \(newEc)")
+                                    try HighlightManager.shared.updateHighlight(highlight, newSc: highlight.sc, newEc: newEc)
+                                } else {
+                                    // Nothing left after trimming
+                                    try HighlightManager.shared.removeHighlight(highlight)
+                                }
+                            } else {
+                                // Selection in middle → split into two highlights
+                                print("[Highlight] Splitting highlight id=\(highlightId) at \(selScInVerse)-\(selEcInVerse)")
+
+                                // Calculate trimmed bounds for "before" part (trim trailing whitespace)
+                                var beforeEc = selScInVerse
+                                while beforeEc > highlight.sc {
+                                    let charIndex = verseText.index(verseText.startIndex, offsetBy: beforeEc - 1)
+                                    if verseText[charIndex].isWhitespace {
+                                        beforeEc -= 1
+                                    } else {
+                                        break
+                                    }
+                                }
+
+                                // Calculate trimmed bounds for "after" part (trim leading whitespace)
+                                var afterSc = selEcInVerse
+                                while afterSc < highlight.ec {
+                                    let charIndex = verseText.index(verseText.startIndex, offsetBy: afterSc)
+                                    if verseText[charIndex].isWhitespace {
+                                        afterSc += 1
+                                    } else {
+                                        break
+                                    }
+                                }
+
+                                // Update or remove the "before" part
+                                if beforeEc > highlight.sc {
+                                    try HighlightManager.shared.updateHighlight(highlight, newSc: highlight.sc, newEc: beforeEc)
+                                } else {
+                                    try HighlightManager.shared.removeHighlight(highlight)
+                                }
+
+                                // Create the "after" part if it has content
+                                if afterSc < highlight.ec {
+                                    try HighlightManager.shared.addHighlight(
+                                        ref: verseRef,
+                                        startChar: afterSc,
+                                        endChar: highlight.ec,
+                                        style: highlight.highlightStyle,
+                                        color: highlight.highlightColor
+                                    )
+                                }
+                            }
+                        } catch {
+                            print("[Highlight] Error modifying highlight: \(error)")
+                        }
+                    }
+                }
+            }
+
+            // Clear selection
+            textView?.selectedRange = NSRange(location: 0, length: 0)
+        }
+
+        /// Create a highlight for the given text range (auto-trims whitespace)
+        private func createHighlightForSelection(_ range: NSRange) {
+            print("[Highlight] Creating highlight for range: \(range), verseTextRanges count: \(verseTextRanges.count)")
+
+            guard let text = textView?.text else { return }
+
+            // Find which verse this selection is in
+            for (verseRef, verseTextRange) in verseTextRanges {
+                // Check if selection overlaps with this verse's text
+                let selectionStart = range.location
+                let selectionEnd = range.location + range.length
+                let verseStart = verseTextRange.location
+                let verseEnd = verseTextRange.location + verseTextRange.length
+
+                // Check for overlap
+                if selectionStart < verseEnd && selectionEnd > verseStart {
+                    // Calculate character offsets within the verse text
+                    var sc = max(0, selectionStart - verseStart)
+                    var ec = min(verseTextRange.length, selectionEnd - verseStart)
+
+                    // Auto-trim whitespace from selection
+                    let verseTextStart = text.index(text.startIndex, offsetBy: verseStart)
+                    let verseTextEnd = text.index(text.startIndex, offsetBy: min(verseEnd, text.count))
+                    let verseText = String(text[verseTextStart..<verseTextEnd])
+
+                    // Trim leading whitespace
+                    while sc < ec {
+                        let charIndex = verseText.index(verseText.startIndex, offsetBy: sc)
+                        if verseText[charIndex].isWhitespace {
+                            sc += 1
+                        } else {
+                            break
+                        }
+                    }
+
+                    // Trim trailing whitespace
+                    while ec > sc {
+                        let charIndex = verseText.index(verseText.startIndex, offsetBy: ec - 1)
+                        if verseText[charIndex].isWhitespace {
+                            ec -= 1
+                        } else {
+                            break
+                        }
+                    }
+
+                    if ec > sc {
+                        print("[Highlight] Adding highlight to verse \(verseRef), sc: \(sc), ec: \(ec) (trimmed)")
+
+                        // Check if highlights are hidden
+                        if HighlightManager.shared.highlightsHidden {
+                            // Check for overlapping highlights
+                            let overlapping = HighlightManager.shared.getOverlappingHighlights(ref: verseRef, startChar: sc, endChar: ec)
+
+                            if overlapping.isEmpty {
+                                // No overlap - silently enable highlights and create
+                                Task { @MainActor in
+                                    HighlightManager.shared.highlightsHidden = false
+                                    do {
+                                        try HighlightManager.shared.addHighlight(ref: verseRef, startChar: sc, endChar: ec)
+                                        print("[Highlight] Highlight added (auto-enabled visibility)")
+                                    } catch {
+                                        print("[Highlight] Error adding highlight: \(error)")
+                                    }
+                                }
+                            } else {
+                                // Has overlap - show dialog
+                                showHighlightConflictDialog(verseRef: verseRef, sc: sc, ec: ec)
+                            }
+                        } else {
+                            // Highlights visible - just add normally
+                            Task { @MainActor in
+                                do {
+                                    try HighlightManager.shared.addHighlight(ref: verseRef, startChar: sc, endChar: ec)
+                                    print("[Highlight] Highlight added successfully")
+                                } catch {
+                                    print("[Highlight] Error adding highlight: \(error)")
+                                }
+                            }
+                        }
+
+                        // Clear selection after highlighting
+                        textView?.selectedRange = NSRange(location: 0, length: 0)
+                        return // Only highlight once per selection
+                    }
+                }
+            }
+            print("[Highlight] No matching verse found for selection")
+        }
+
+        /// Show dialog when highlighting would overlap existing highlights while highlights are hidden
+        private func showHighlightConflictDialog(verseRef: Int, sc: Int, ec: Int) {
+            guard let viewController = textView?.window?.rootViewController else {
+                print("[Highlight] No view controller found for alert")
+                return
+            }
+
+            // Find the topmost presented controller
+            var topController = viewController
+            while let presented = topController.presentedViewController {
+                topController = presented
+            }
+
+            let alert = UIAlertController(
+                title: "Highlights Hidden",
+                message: "This selection overlaps with existing highlights that are currently hidden.",
+                preferredStyle: .alert
+            )
+
+            alert.addAction(UIAlertAction(title: "Show Highlights", style: .default) { _ in
+                Task { @MainActor in
+                    HighlightManager.shared.highlightsHidden = false
+                }
+            })
+
+            alert.addAction(UIAlertAction(title: "Modify Existing", style: .destructive) { _ in
+                Task { @MainActor in
+                    HighlightManager.shared.highlightsHidden = false
+                    do {
+                        try HighlightManager.shared.addHighlight(ref: verseRef, startChar: sc, endChar: ec)
+                        print("[Highlight] Highlight added (overwrote existing)")
+                    } catch {
+                        print("[Highlight] Error adding highlight: \(error)")
+                    }
+                }
+            })
+
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+
+            topController.present(alert, animated: true)
         }
     }
 }
@@ -828,6 +1468,7 @@ private class ScrollDebouncer {
 struct ReaderView: View {
     @Environment(\.dismiss) var dismiss
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
+    @ObservedObject private var highlightManager = HighlightManager.shared
 
     private var showStrongsHints: Bool { userSettings.showStrongsHints }
 
@@ -883,6 +1524,12 @@ struct ReaderView: View {
 
     @State private var isHistoryNavigation: Bool = false
 
+    // Pull-to-refresh progress (0.0 to 1.0+) for arrow scaling
+    @State private var pullProgressTop: CGFloat = 0
+    @State private var pullProgressBottom: CGFloat = 0
+    // Track when bottom button should stick at top (scrolled above visible area)
+    @State private var bottomButtonAboveViewport: Bool = false
+
     var onVerseAction: ((Int, VerseAction) -> Void)?
 
     // Initial verse to scroll to on load (handled internally with proper timing)
@@ -892,6 +1539,18 @@ struct ReaderView: View {
     // Initial translation to use on load (overrides SceneStorage)
     private let initialTranslationId: String?
     @State private var hasAppliedInitialTranslationId: Bool = false
+
+    // Horizontal split toolbar integration
+    private let isHorizontalSplit: Bool
+    @Binding private var toolPanelMode: ToolPanelMode
+    private let toolDisplayName: String
+    @Binding private var isScrollLinked: Bool
+    @Binding private var toolFontSize: Int
+    private let onHideToolPanel: (() -> Void)?
+    private let onToggleSplitOrientation: (() -> Void)?
+    private let notesModules: [Module]
+    private let commentarySeries: [String]
+    private let devotionalsModules: [Module]
 
     init(
         date: Binding<Date>,
@@ -904,8 +1563,30 @@ struct ReaderView: View {
         visibleVerseId: Binding<Int> = .constant(1001001),
         scrollOrigin: Binding<ScrollOrigin> = .constant(.none),
         toolbarsHidden: Binding<Bool> = .constant(false),
-        initialToolbarMode: BottomToolbarMode? = nil
+        initialToolbarMode: BottomToolbarMode? = nil,
+        // Horizontal split toolbar integration
+        isHorizontalSplit: Bool = false,
+        toolPanelMode: Binding<ToolPanelMode> = .constant(.commentary),
+        toolDisplayName: String = "",
+        isScrollLinked: Binding<Bool> = .constant(true),
+        toolFontSize: Binding<Int> = .constant(16),
+        onHideToolPanel: (() -> Void)? = nil,
+        onToggleSplitOrientation: (() -> Void)? = nil,
+        notesModules: [Module] = [],
+        commentarySeries: [String] = [],
+        devotionalsModules: [Module] = []
     ) {
+        self.isHorizontalSplit = isHorizontalSplit
+        _toolPanelMode = toolPanelMode
+        self.toolDisplayName = toolDisplayName
+        _isScrollLinked = isScrollLinked
+        _toolFontSize = toolFontSize
+        self.onHideToolPanel = onHideToolPanel
+        self.onToggleSplitOrientation = onToggleSplitOrientation
+        self.notesModules = notesModules
+        self.commentarySeries = commentarySeries
+        self.devotionalsModules = devotionalsModules
+
         self.initialVerseId = initialVerseId
         self.initialTranslationId = translationId
         _date = date
@@ -993,7 +1674,13 @@ struct ReaderView: View {
         let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
 
         VStack(spacing: 0) {
-            Text("\(translationAbbreviation) · \(book?.name ?? "") \(currentChapter)")
+            HStack(spacing: 4) {
+                Text("\(translationAbbreviation) · \(book?.name ?? "") \(currentChapter)")
+                // Show active tool in split-right view
+                if isHorizontalSplit && !toolDisplayName.isEmpty {
+                    Text("· \(toolDisplayName)")
+                }
+            }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity)
@@ -1077,6 +1764,8 @@ struct ReaderView: View {
                 // Use explicitly passed translation ID, or fall back to current translation
                 let newTranslationId = forTranslationId ?? translationId
                 translationId = newTranslationId
+                // Reload highlight sets for the new translation
+                HighlightManager.shared.loadSetsForTranslation(newTranslationId)
                 let content = try TranslationDatabase.shared.getChapter(translationId: newTranslationId, book: currentBook, chapter: currentChapter)
                 verses = content.verses
                 headings = content.headings
@@ -1108,6 +1797,10 @@ struct ReaderView: View {
             NavigationHistory.shared.recordNavigation(to: currentVerseId, isHistoryNavigation: false)
         }
 
+        // Load highlights for the new chapter
+        let (_, newChapter, newBook) = splitVerseId(currentVerseId)
+        HighlightManager.shared.loadHighlightsForChapter(book: newBook, chapter: newChapter)
+
         isLoading = true
         isHistoryNavigation = false
     }
@@ -1135,6 +1828,74 @@ struct ReaderView: View {
             return (book + 1, 1)
         }
         return (book, chapter)  // Already at end
+    }
+
+    /// Check if there's a previous chapter available
+    private func hasPreviousChapter(book: Int, chapter: Int) -> Bool {
+        return !(book == 1 && chapter == 1)
+    }
+
+    /// Check if there's a next chapter available
+    private func hasNextChapter(book: Int, chapter: Int) -> Bool {
+        if book == 66 {
+            let chapterCount = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: 66)) ?? 22
+            return chapter < chapterCount
+        }
+        return true
+    }
+
+    /// Get the label for the previous chapter (e.g., "Genesis 49")
+    private var previousChapterLabel: String? {
+        guard let firstVerse = verses.first,
+              hasPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter) else {
+            return nil
+        }
+        let (prevBook, prevChapter) = getPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter)
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: prevBook))?.name ?? "Book \(prevBook)"
+        return "\(bookName) \(prevChapter)"
+    }
+
+    /// Get the label for the next chapter (e.g., "Exodus 1")
+    private var nextChapterLabel: String? {
+        guard let firstVerse = verses.first,
+              hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) else {
+            return nil
+        }
+        let (nextBook, nextChapter) = getNextChapter(book: firstVerse.book, chapter: firstVerse.chapter, translationId: translationId)
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: nextBook))?.name ?? "Book \(nextBook)"
+        return "\(bookName) \(nextChapter)"
+    }
+
+    /// Navigate to the previous chapter, scrolling to the end
+    private func goToPreviousChapter() {
+        // Reset pull progress immediately to hide sticky buttons
+        pullProgressTop = 0
+        pullProgressBottom = 0
+
+        guard let firstVerse = verses.first else { return }
+        let (prevBook, prevChapter) = getPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter)
+
+        // Don't navigate if already at beginning
+        if prevBook == firstVerse.book && prevChapter == firstVerse.chapter {
+            return
+        }
+
+        // Get the last verse of the previous chapter to scroll there
+        let lastVerseRef = (try? TranslationDatabase.shared.getLastVerseRef(translationId: translationId, book: prevBook, chapter: prevChapter)) ?? (prevBook * 1000000 + prevChapter * 1000 + 1)
+
+        // Use LOADING_HISTORY with targetVerseId to scroll to the last verse
+        animateScroll = false
+        loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: lastVerseRef)
+    }
+
+    /// Navigate to the next chapter, scrolling to the beginning
+    private func goToNextChapter() {
+        // Reset pull progress immediately to hide sticky buttons
+        pullProgressTop = 0
+        pullProgressBottom = 0
+
+        // Simply load next chapter - it scrolls to first verse by default
+        loadVerses(loadingCase: LOADING_NEXT_CHAPTER)
     }
 
     var body: some View {
@@ -1168,6 +1929,26 @@ struct ReaderView: View {
                             onScrollFullyStopped: { () -> Void in
                                 // Re-enable text interactions when scroll completely stops
                                 isScrolling = false
+                            },
+                            onPullToLoadPrevious: {
+                                // Pull-to-refresh at top - load previous chapter
+                                if readingMetaData == nil, let firstVerse = verses.first,
+                                   hasPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
+                                    goToPreviousChapter()
+                                }
+                            },
+                            onPullToLoadNext: {
+                                // Pull-to-refresh at bottom - load next chapter
+                                if readingMetaData == nil, let firstVerse = verses.first,
+                                   hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
+                                    goToNextChapter()
+                                }
+                            },
+                            onPullProgressTop: { progress in
+                                pullProgressTop = progress
+                            },
+                            onPullProgressBottom: { progress in
+                                pullProgressBottom = progress
                             }
                         )
                             .frame(width: 1, height: 1)
@@ -1176,6 +1957,18 @@ struct ReaderView: View {
                             Color.clear
                                 .frame(height: 1)
                                 .id("top")
+
+                            // Previous chapter button (only show for non-plan readings)
+                            if readingMetaData == nil, let firstVerse = verses.first,
+                               hasPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
+                                ChapterNavigationButton(
+                                    direction: .previous,
+                                    progress: pullProgressTop,
+                                    chapterLabel: previousChapterLabel,
+                                    action: goToPreviousChapter
+                                )
+                                .padding(.bottom, 20)
+                            }
 
                             ChapterTextView(
                                 verses: Array(verses),
@@ -1186,6 +1979,7 @@ struct ReaderView: View {
                                 chapter: chapterNumber,
                                 showBookTitle: showBookTitle,
                                 showStrongsHints: showStrongsHints,
+                                highlightsByVerse: highlightManager.highlightsHidden ? [:] : highlightManager.highlightsByVerse,
                                 onAddNote: { (verse: TranslationVerse) -> Void in
                                     onVerseAction?(verse.verse, .addNote)
                                 },
@@ -1209,6 +2003,27 @@ struct ReaderView: View {
                             )
                             .id("chapter_\(chapterNumber)_\(translationId)")
 
+                            // Next chapter button (inline, hidden when sticky overlay shows)
+                            if readingMetaData == nil, let firstVerse = verses.first,
+                               hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
+                                ChapterNavigationButton(
+                                    direction: .next,
+                                    progress: pullProgressBottom,
+                                    chapterLabel: nextChapterLabel,
+                                    action: goToNextChapter
+                                )
+                                .padding(.top, 16)
+                                .opacity(bottomButtonAboveViewport || pullProgressBottom > 0 ? 0 : 1)
+                                .background(
+                                    GeometryReader { buttonGeo in
+                                        Color.clear.preference(
+                                            key: BottomButtonMinYKey.self,
+                                            value: buttonGeo.frame(in: .global).minY
+                                        )
+                                    }
+                                )
+                            }
+
                             // Overscroll padding: allows last line to scroll to top for scroll-sync
                             Color.clear
                                 .frame(height: max(0, geometry.size.height - 50))
@@ -1223,6 +2038,14 @@ struct ReaderView: View {
                                     .id("scrollTarget")
                             }
                         }
+                    }
+                }
+                .onPreferenceChange(BottomButtonMinYKey.self) { minY in
+                    // Button is above viewport if its top is above the safe area + space for content
+                    let threshold = geometry.safeAreaInsets.top + 44
+                    let isAbove = minY < threshold
+                    if isAbove != bottomButtonAboveViewport {
+                        bottomButtonAboveViewport = isAbove
                     }
                 }
                 .simultaneousGesture(
@@ -1387,6 +2210,39 @@ struct ReaderView: View {
                     }
                 }
                 } // ScrollViewReader
+
+                // Sticky overlay for bottom button
+                if readingMetaData == nil,
+                   let firstVerse = verses.first,
+                   hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
+                    if bottomButtonAboveViewport {
+                        // Stick at top (below nav bar) when scrolled up past visible area
+                        // Leave space at top for last line of content to show through
+                        VStack(spacing: 0) {
+                            Color.clear.frame(height: 44)  // Space for content
+                            ChapterNavigationButton(
+                                direction: .next,
+                                progress: pullProgressBottom,
+                                chapterLabel: nextChapterLabel,
+                                action: goToNextChapter
+                            )
+                            .background(Color(UIColor.systemBackground))
+                            Spacer()
+                        }
+                    } else if pullProgressBottom > 0 {
+                        // Stick at bottom during overscroll
+                        VStack {
+                            Spacer()
+                            ChapterNavigationButton(
+                                direction: .next,
+                                progress: pullProgressBottom,
+                                chapterLabel: nextChapterLabel,
+                                action: goToNextChapter
+                            )
+                            .background(Color(UIColor.systemBackground))
+                        }
+                    }
+                }
             } // GeometryReader
             .navigationBarBackButtonHidden(true)
             .toolbar {
@@ -1444,7 +2300,18 @@ struct ReaderView: View {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             toolbarsHidden = true
                         }
-                    }
+                    },
+                    // Horizontal split integration
+                    isHorizontalSplit: isHorizontalSplit,
+                    toolPanelMode: $toolPanelMode,
+                    toolDisplayName: toolDisplayName,
+                    isScrollLinked: $isScrollLinked,
+                    toolFontSize: $toolFontSize,
+                    onHideToolPanel: onHideToolPanel,
+                    onToggleSplitOrientation: onToggleSplitOrientation,
+                    notesModules: notesModules,
+                    commentarySeries: commentarySeries,
+                    devotionalsModules: devotionalsModules
                 )
             }
             .sheet(isPresented: $showingBookPicker) {
@@ -1471,12 +2338,19 @@ struct ReaderView: View {
             .toolbar(toolbarsHidden ? .hidden : .visible, for: .navigationBar, .bottomBar)
             .statusBarHidden(toolbarsHidden)
             .safeAreaInset(edge: .top) {
-                if toolbarsHidden {
+                // In horizontal split, parent (SplitReaderView) handles the full-width collapsed header
+                if toolbarsHidden && !isHorizontalSplit {
                     collapsedHeader
                 }
             }
         }
         .onAppear {
+            // Validate currentVerseId - reset to Genesis 1:1 if invalid
+            // Valid verse IDs are >= 1001001 (book 1, chapter 1, verse 1)
+            if currentVerseId < 1001001 {
+                currentVerseId = 1001001
+            }
+
             // Initialize translation from user default if not already set in scene storage
             if translationId.isEmpty {
                 translationId = userSettings.readerTranslationId
@@ -1486,6 +2360,9 @@ struct ReaderView: View {
                 translationAbbreviation = translation.abbreviation
                 translationName = translation.name
             }
+
+            // Load highlight sets for this translation
+            HighlightManager.shared.loadSetsForTranslation(translationId)
 
             // Load plan readings for plan mode
             loadPlanReadings()

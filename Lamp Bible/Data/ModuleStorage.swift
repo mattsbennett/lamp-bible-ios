@@ -93,6 +93,12 @@ protocol ModuleStorage {
 
     /// Get sync status for a specific file
     func getSyncStatus(type: ModuleType, fileName: String) async -> ModuleSyncStatus
+
+    /// Read file at arbitrary path (relative to base storage)
+    func readFile(path: String) async throws -> Data
+
+    /// Write file at arbitrary path (relative to base storage)
+    func writeFile(path: String, data: Data) async throws
 }
 
 // MARK: - Module Storage Extensions
@@ -136,6 +142,8 @@ extension ModuleStorage {
             return "Notes"
         case .plan:
             return "Plans"
+        case .highlights:
+            return "Highlights"
         }
     }
 

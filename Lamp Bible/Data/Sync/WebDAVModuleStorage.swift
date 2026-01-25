@@ -14,8 +14,28 @@ import CryptoKit
 class WebDAVModuleStorage: ModuleStorage {
     private let client: WebDAVClient
 
-    /// Cache of ETags for change detection
-    private var etagCache: [String: String] = [:]
+    /// Cache of ETags for change detection (thread-safe access via lock)
+    private var _etagCache: [String: String] = [:]
+    private let etagCacheLock = NSLock()
+
+    /// Thread-safe access to etag cache
+    private func getEtagFromCache(_ key: String) -> String? {
+        etagCacheLock.lock()
+        defer { etagCacheLock.unlock() }
+        return _etagCache[key]
+    }
+
+    private func setEtagInCache(_ key: String, _ value: String) {
+        etagCacheLock.lock()
+        defer { etagCacheLock.unlock() }
+        _etagCache[key] = value
+    }
+
+    private func removeEtagFromCache(_ key: String) {
+        etagCacheLock.lock()
+        defer { etagCacheLock.unlock() }
+        _etagCache.removeValue(forKey: key)
+    }
 
     /// Initialize with WebDAV client
     /// - Parameters:
@@ -56,7 +76,7 @@ class WebDAVModuleStorage: ModuleStorage {
                 // Cache ETag
                 if let etag = item.etag {
                     let cacheKey = "\(type.rawValue)/\(item.name)"
-                    etagCache[cacheKey] = etag
+                    setEtagInCache(cacheKey, etag)
                 }
 
                 return ModuleFileInfo(
@@ -97,7 +117,7 @@ class WebDAVModuleStorage: ModuleStorage {
         // Update ETag cache
         if let etag = try? await client.getETag(filePath) {
             let cacheKey = "\(type.rawValue)/\(fileName)"
-            etagCache[cacheKey] = etag
+            setEtagInCache(cacheKey, etag)
         }
     }
 
@@ -109,7 +129,7 @@ class WebDAVModuleStorage: ModuleStorage {
 
             // Remove from cache
             let cacheKey = "\(type.rawValue)/\(fileName)"
-            etagCache.removeValue(forKey: cacheKey)
+            removeEtagFromCache(cacheKey)
         } catch WebDAVError.notFound {
             // Already deleted - ignore
         } catch {
@@ -121,7 +141,7 @@ class WebDAVModuleStorage: ModuleStorage {
         let cacheKey = "\(type.rawValue)/\(fileName)"
 
         // Return cached ETag if available
-        if let cached = etagCache[cacheKey] {
+        if let cached = getEtagFromCache(cacheKey) {
             return cached
         }
 
@@ -130,7 +150,7 @@ class WebDAVModuleStorage: ModuleStorage {
         let etag = try await client.getETag(filePath)
 
         if let etag = etag {
-            etagCache[cacheKey] = etag
+            setEtagInCache(cacheKey, etag)
         }
 
         return etag
@@ -173,6 +193,46 @@ class WebDAVModuleStorage: ModuleStorage {
         } catch {
             return .notAvailable
         }
+    }
+
+    // MARK: - Generic File Access
+
+    func readFile(path: String) async throws -> Data {
+        do {
+            return try await client.download(path)
+        } catch WebDAVError.notFound {
+            throw ModuleStorageError.fileNotFound(path)
+        } catch {
+            throw error
+        }
+    }
+
+    func writeFile(path: String, data: Data) async throws {
+        // Create parent directories recursively if needed
+        let components = path.components(separatedBy: "/")
+        if components.count > 1 {
+            // Create each directory level
+            var currentPath = ""
+            for component in components.dropLast() {
+                if currentPath.isEmpty {
+                    currentPath = component
+                } else {
+                    currentPath += "/\(component)"
+                }
+                do {
+                    try await client.createDirectory(currentPath)
+                } catch WebDAVError.httpError(405, _) {
+                    // Directory exists
+                } catch WebDAVError.conflict {
+                    // Directory already exists
+                } catch {
+                    // Log but continue - directory might exist
+                    print("[WebDAV] Could not create directory \(currentPath): \(error)")
+                }
+            }
+        }
+
+        try await client.upload(data, to: path)
     }
 
     // MARK: - Helpers

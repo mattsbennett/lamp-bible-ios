@@ -102,7 +102,7 @@ struct PlanView: View {
                                 NavigationLink(destination: DevotionalPickerView(
                                     isFullScreen: false,
                                     showNewProminent: true,
-                                    moduleId: "devotionals"
+                                    initialModuleId: "devotionals"
                                 )) {
                                     VStack(spacing: 4) {
                                         Image(systemName: "pencil.line")

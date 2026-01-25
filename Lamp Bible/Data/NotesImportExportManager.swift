@@ -6,10 +6,15 @@
 //
 
 import Foundation
+import UIKit
 
 /// Manages markdown import/export for user notes
-/// Import: iCloud/Documents/Import/*.md → parsed and saved to database, file deleted
-/// Export: Database → iCloud/Documents/Export/{book}.md
+/// Import: iCloud/Documents/Import/Notes/*.md → parsed and saved to database, file deleted
+/// Export: Database → iCloud/Documents/Export/Notes/{book}.md
+///
+/// Media files are stored in a shared `media/` folder:
+/// - Export: `Export/Notes/media/{filename}`
+/// - Import: `Import/Notes/media/{filename}`
 class NotesImportExportManager {
     static let shared = NotesImportExportManager()
 
@@ -29,12 +34,12 @@ class NotesImportExportManager {
 
     var importDirectoryURL: URL? {
         guard let docs = documentsURL else { return nil }
-        return docs.appendingPathComponent("Import")
+        return docs.appendingPathComponent("Import").appendingPathComponent("Notes")
     }
 
     var exportDirectoryURL: URL? {
         guard let docs = documentsURL else { return nil }
-        return docs.appendingPathComponent("Export")
+        return docs.appendingPathComponent("Export").appendingPathComponent("Notes")
     }
 
     // MARK: - Book Name Mappings
@@ -1540,6 +1545,378 @@ class NotesImportExportManager {
             bookNumber: bookNumber,
             chapters: chapters
         )
+    }
+
+    // MARK: - Media Export Helpers
+
+    /// Export media files to the shared media folder
+    private func exportMediaFiles(
+        _ mediaRefs: [MediaReference],
+        moduleId: String,
+        to exportDir: URL
+    ) throws {
+        guard !mediaRefs.isEmpty else { return }
+
+        let mediaDir = exportDir.appendingPathComponent("media")
+
+        // Create media directory if needed
+        if !fileManager.fileExists(atPath: mediaDir.path) {
+            try fileManager.createDirectory(at: mediaDir, withIntermediateDirectories: true)
+        }
+
+        for mediaRef in mediaRefs {
+            guard let sourceURL = ModuleMediaStorage.shared.getMediaURL(
+                for: mediaRef,
+                moduleId: moduleId
+            ) else {
+                print("[NotesExport] Media file not found: \(mediaRef.filename)")
+                continue
+            }
+
+            let destURL = mediaDir.appendingPathComponent(mediaRef.filename)
+
+            // Skip if already exists (shared across notes)
+            if fileManager.fileExists(atPath: destURL.path) {
+                continue
+            }
+
+            try fileManager.copyItem(at: sourceURL, to: destURL)
+            print("[NotesExport] Copied media: \(mediaRef.filename)")
+        }
+    }
+
+    /// Generate markdown with proper media file references
+    private func generateMarkdownWithMedia(_ notesBook: UserNotesBook, moduleId: String) -> String {
+        // Build a map of mediaId -> filename for replacement
+        var mediaFilenames: [String: String] = [:]
+        if let media = notesBook.media {
+            for mediaRef in media {
+                mediaFilenames[mediaRef.id] = mediaRef.filename
+            }
+        }
+
+        // Generate base markdown
+        var markdown = generateMarkdown(from: notesBook)
+
+        // Replace media ID references with actual filenames
+        for (mediaId, filename) in mediaFilenames {
+            markdown = markdown.replacingOccurrences(
+                of: "media/\(mediaId)",
+                with: "media/\(filename)"
+            )
+        }
+
+        return markdown
+    }
+
+    /// Export notes for a single book with media support
+    func exportNotesWithMedia(moduleId: String, bookNumber: Int) async throws -> URL {
+        guard let exportDir = exportDirectoryURL else {
+            throw ExportError.directoryNotAvailable
+        }
+
+        // Create export directory if needed
+        if !fileManager.fileExists(atPath: exportDir.path) {
+            try fileManager.createDirectory(at: exportDir, withIntermediateDirectories: true)
+        }
+
+        let notesBook = try loadNotesForBook(moduleId: moduleId, bookNumber: bookNumber)
+
+        // Export media files if present
+        if let media = notesBook.media, !media.isEmpty {
+            try exportMediaFiles(media, moduleId: moduleId, to: exportDir)
+        }
+
+        // Generate markdown with media references
+        let markdown = generateMarkdownWithMedia(notesBook, moduleId: moduleId)
+        let bookName = bookNames[bookNumber] ?? notesBook.book
+        let fileName = "\(bookName).md"
+        let fileURL = exportDir.appendingPathComponent(fileName)
+
+        try markdown.write(to: fileURL, atomically: true, encoding: .utf8)
+        print("[NotesExport] Exported \(fileName)")
+
+        return fileURL
+    }
+
+    /// Export all notes with media to the export directory
+    func exportAllNotesWithMedia(moduleId: String = "notes") async throws -> [URL] {
+        guard let exportDir = exportDirectoryURL else {
+            throw ExportError.directoryNotAvailable
+        }
+
+        // Create export directory if needed
+        if !fileManager.fileExists(atPath: exportDir.path) {
+            try fileManager.createDirectory(at: exportDir, withIntermediateDirectories: true)
+        }
+
+        // Get all book numbers that have notes
+        let bookNumbers = try ModuleDatabase.shared.getBookNumbersWithNotes(moduleId: moduleId)
+
+        if bookNumbers.isEmpty {
+            throw ExportError.noNotesFound
+        }
+
+        var exportedURLs: [URL] = []
+
+        for bookNumber in bookNumbers.sorted() {
+            do {
+                let url = try await exportNotesWithMedia(moduleId: moduleId, bookNumber: bookNumber)
+                exportedURLs.append(url)
+            } catch {
+                print("[NotesExport] Failed to export book \(bookNumber): \(error)")
+            }
+        }
+
+        return exportedURLs
+    }
+
+    // MARK: - Media Import Helpers
+
+    /// Import media files referenced in the note content
+    private func importMediaReferences(
+        for notesBook: UserNotesBook,
+        from mediaDir: URL,
+        moduleId: String
+    ) async throws -> UserNotesBook {
+        var updatedBook = notesBook
+
+        // Check if media directory exists
+        guard fileManager.fileExists(atPath: mediaDir.path) else {
+            return notesBook
+        }
+
+        // Find media files in the media directory
+        let mediaFiles = try? fileManager.contentsOfDirectory(at: mediaDir, includingPropertiesForKeys: nil)
+        guard let files = mediaFiles, !files.isEmpty else {
+            return notesBook
+        }
+
+        var mediaRefs: [MediaReference] = []
+
+        // Scan all chapter content for media references
+        for chapter in notesBook.chapters {
+            // Check introduction
+            if let intro = chapter.introduction {
+                let foundMedia = try await importMediaFromContent(
+                    intro.plainText,
+                    mediaFiles: files,
+                    moduleId: moduleId
+                )
+                mediaRefs.append(contentsOf: foundMedia)
+            }
+
+            // Check verses
+            if let verses = chapter.verses {
+                for verse in verses {
+                    let foundMedia = try await importMediaFromContent(
+                        verse.commentary.plainText,
+                        mediaFiles: files,
+                        moduleId: moduleId
+                    )
+                    mediaRefs.append(contentsOf: foundMedia)
+                }
+            }
+        }
+
+        if !mediaRefs.isEmpty {
+            updatedBook.media = mediaRefs
+        }
+
+        return updatedBook
+    }
+
+    /// Import media files found in content text
+    private func importMediaFromContent(
+        _ content: String,
+        mediaFiles: [URL],
+        moduleId: String
+    ) async throws -> [MediaReference] {
+        var mediaRefs: [MediaReference] = []
+
+        // Pattern to find image references: ![caption](media/filename)
+        let imagePattern = #"!\[([^\]]*)\]\(media/([^)]+)\)"#
+        // Pattern to find audio references: [caption](media/filename.m4a|mp3|wav|etc)
+        let audioPattern = #"\[([^\]]*)\]\(media/([^)]+\.(?:m4a|mp3|wav|aac|ogg))\)"#
+
+        if let imageRegex = try? NSRegularExpression(pattern: imagePattern),
+           let audioRegex = try? NSRegularExpression(pattern: audioPattern) {
+
+            let range = NSRange(content.startIndex..., in: content)
+
+            // Find images
+            for match in imageRegex.matches(in: content, range: range) {
+                if let filenameRange = Range(match.range(at: 2), in: content) {
+                    let filename = String(content[filenameRange])
+                    if let sourceURL = mediaFiles.first(where: { $0.lastPathComponent == filename }) {
+                        let mediaRef = try await importMediaFile(from: sourceURL, moduleId: moduleId)
+                        mediaRefs.append(mediaRef)
+                    }
+                }
+            }
+
+            // Find audio
+            for match in audioRegex.matches(in: content, range: range) {
+                if let filenameRange = Range(match.range(at: 2), in: content) {
+                    let filename = String(content[filenameRange])
+                    if let sourceURL = mediaFiles.first(where: { $0.lastPathComponent == filename }) {
+                        let mediaRef = try await importMediaFile(from: sourceURL, moduleId: moduleId)
+                        mediaRefs.append(mediaRef)
+                    }
+                }
+            }
+        }
+
+        return mediaRefs
+    }
+
+    /// Import a media file and create a reference
+    private func importMediaFile(
+        from sourceURL: URL,
+        moduleId: String
+    ) async throws -> MediaReference {
+        let ext = sourceURL.pathExtension.lowercased()
+
+        // Determine type from extension
+        let isImage = ["jpg", "jpeg", "png", "gif", "webp", "heic"].contains(ext)
+        let isAudio = ["m4a", "mp3", "wav", "aac", "ogg"].contains(ext)
+
+        if isImage {
+            // Load and save image
+            guard let image = UIImage(contentsOfFile: sourceURL.path) else {
+                throw ImportError.parseError("Failed to load image: \(sourceURL.lastPathComponent)")
+            }
+            return try ModuleMediaStorage.shared.saveImage(
+                image,
+                moduleId: moduleId
+            )
+        } else if isAudio {
+            // Copy and process audio
+            return try await ModuleMediaStorage.shared.saveAudio(
+                from: sourceURL,
+                moduleId: moduleId
+            )
+        } else {
+            throw ImportError.parseError("Unsupported media type: \(ext)")
+        }
+    }
+
+    /// Process imports with media support
+    func processImportsWithMedia() async throws -> [ImportResult] {
+        print("[NotesImport] processImportsWithMedia() called")
+        guard let importDir = importDirectoryURL else {
+            print("[NotesImport] Import directory not available")
+            return []
+        }
+        print("[NotesImport] Import directory: \(importDir.path)")
+
+        // Create import directory if needed
+        if !fileManager.fileExists(atPath: importDir.path) {
+            try fileManager.createDirectory(at: importDir, withIntermediateDirectories: true)
+            print("[NotesImport] Created import directory")
+            return []
+        }
+
+        // Find all .md files
+        let contents = try fileManager.contentsOfDirectory(at: importDir, includingPropertiesForKeys: nil)
+        let mdFiles = contents.filter { $0.pathExtension.lowercased() == "md" }
+
+        if mdFiles.isEmpty {
+            return []
+        }
+
+        print("[NotesImport] Found \(mdFiles.count) markdown file(s) to import")
+
+        // Check for media directory
+        let mediaDir = importDir.appendingPathComponent("media")
+
+        var results: [ImportResult] = []
+
+        for fileURL in mdFiles {
+            do {
+                let result = try await importMarkdownFileWithMedia(at: fileURL, mediaDir: mediaDir)
+                results.append(result)
+
+                if result.success {
+                    // Delete file after successful import
+                    try fileManager.removeItem(at: fileURL)
+                    print("[NotesImport] Deleted imported file: \(fileURL.lastPathComponent)")
+                }
+            } catch {
+                results.append(ImportResult(
+                    fileName: fileURL.lastPathComponent,
+                    bookName: "",
+                    bookNumber: 0,
+                    chapterCount: 0,
+                    verseCount: 0,
+                    success: false,
+                    error: error.localizedDescription
+                ))
+                print("[NotesImport] Error importing \(fileURL.lastPathComponent): \(error)")
+            }
+        }
+
+        return results
+    }
+
+    /// Import a single markdown file with media support
+    private func importMarkdownFileWithMedia(at url: URL, mediaDir: URL) async throws -> ImportResult {
+        let content = try String(contentsOf: url, encoding: .utf8)
+        let moduleId = "notes"
+
+        // Check if this is a multi-book file
+        if isMultiBookFile(content) {
+            var books = try parseMultiBookMarkdown(content: content)
+
+            var totalChapters = 0
+            var totalVerses = 0
+
+            for i in 0..<books.count {
+                // Import media references for each book
+                books[i] = try await importMediaReferences(
+                    for: books[i],
+                    from: mediaDir,
+                    moduleId: moduleId
+                )
+                try await saveNotesToDatabase(books[i])
+                totalChapters += books[i].chapters.count
+                totalVerses += books[i].chapters.reduce(0) { $0 + ($1.verses?.count ?? 0) }
+            }
+
+            return ImportResult(
+                fileName: url.lastPathComponent,
+                bookName: "\(books.count) books",
+                bookNumber: 0,
+                chapterCount: totalChapters,
+                verseCount: totalVerses,
+                success: true,
+                error: nil
+            )
+        } else {
+            var notesBook = try parseMarkdownToNotes(content: content, filename: url.lastPathComponent)
+
+            // Import media references
+            notesBook = try await importMediaReferences(
+                for: notesBook,
+                from: mediaDir,
+                moduleId: moduleId
+            )
+
+            // Save to database
+            try await saveNotesToDatabase(notesBook)
+
+            let verseCount = notesBook.chapters.reduce(0) { $0 + ($1.verses?.count ?? 0) }
+
+            return ImportResult(
+                fileName: url.lastPathComponent,
+                bookName: notesBook.book,
+                bookNumber: notesBook.bookNumber,
+                chapterCount: notesBook.chapters.count,
+                verseCount: verseCount,
+                success: true,
+                error: nil
+            )
+        }
     }
 
     // MARK: - Errors

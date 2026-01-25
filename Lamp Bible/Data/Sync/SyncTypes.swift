@@ -48,7 +48,7 @@ struct SyncSettings: Codable {
     var lastModuleSyncDate: Date?
 
     init(
-        backend: SyncBackend = .icloudDrive,
+        backend: SyncBackend = .none,
         webdavURL: String? = nil,
         webdavUsername: String? = nil,
         lastSyncDate: Date? = nil,
@@ -64,7 +64,7 @@ struct SyncSettings: Codable {
     }
 
     static var `default`: SyncSettings {
-        SyncSettings(backend: .icloudDrive)
+        SyncSettings(backend: .none)
     }
 }
 

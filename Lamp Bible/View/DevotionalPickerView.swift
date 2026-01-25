@@ -6,16 +6,18 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct DevotionalPickerView: View {
     // Configuration
     var isFullScreen: Bool = false
     var showNewProminent: Bool = false
-    var moduleId: String = "devotionals"
+    var initialModuleId: String = "devotionals"
     var onSelect: ((Devotional) -> Void)?
     var onBack: (() -> Void)?
 
     // State
+    @State private var selectedModuleId: String = ""
     @State private var devotionals: [Devotional] = []
     @State private var searchText: String = ""
     @State private var sortOption: DevotionalSortOption = .dateNewest
@@ -27,6 +29,19 @@ struct DevotionalPickerView: View {
     @State private var showingSortMenu: Bool = false
     @State private var showingFilterSheet: Bool = false
     @State private var showingExportOptions: Bool = false
+    @State private var showingFileImporter: Bool = false
+    @State private var importError: String? = nil
+    @State private var showingImportError: Bool = false
+    @State private var showingImportPreview: Bool = false
+    @State private var importPreview: LampFilePreview? = nil
+    @State private var pendingImportURL: URL? = nil
+    @State private var devotionalModules: [Module] = []
+    @State private var selectedImportModuleId: String = ""
+
+    /// The currently selected module
+    private var selectedModule: Module? {
+        devotionalModules.first { $0.id == selectedModuleId }
+    }
 
     // Filtered results
     private var filteredDevotionals: [Devotional] {
@@ -74,50 +89,58 @@ struct DevotionalPickerView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            VStack(spacing: 0) {
-                // Search bar
-                searchBar
+        VStack(spacing: 0) {
+            // Search bar
+            searchBar
 
-                // Filter indicators
-                if hasActiveFilters {
-                    filterIndicators
-                }
-
-                // Main content
-                if isLoading {
-                    ProgressView("Loading...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if filteredDevotionals.isEmpty {
-                    emptyState
-                } else {
-                    devotionalList
-                }
+            // Filter indicators
+            if hasActiveFilters {
+                filterIndicators
             }
 
-            // Floating action button for new devotional (only when list has items)
-            if !isLoading && !filteredDevotionals.isEmpty {
-                Button(action: { showingNewDevotional = true }) {
-                    Image(systemName: "plus")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .frame(width: 56, height: 56)
-                        .background(Color.accentColor)
-                        .clipShape(Circle())
-                        .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
-                }
-                .padding(.trailing, 16)
-                .padding(.bottom, 16)
+            // Main content
+            if isLoading {
+                ProgressView("Loading...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if filteredDevotionals.isEmpty {
+                emptyState
+            } else {
+                devotionalList
             }
         }
-        .navigationTitle("Devotionals")
-        .navigationBarTitleDisplayMode(isFullScreen ? .large : .inline)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let onBack = onBack {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: onBack) {
                         Image(systemName: "chevron.left")
+                    }
+                }
+            }
+
+            ToolbarItem(placement: .principal) {
+                Menu {
+                    ForEach(devotionalModules, id: \.id) { module in
+                        Button {
+                            if selectedModuleId != module.id {
+                                selectedModuleId = module.id
+                                loadDevotionals()
+                            }
+                        } label: {
+                            HStack {
+                                Text(module.name)
+                                if module.id == selectedModuleId {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(selectedModule?.name ?? "Devotionals")
+                            .fontWeight(.semibold)
+                        Image(systemName: "chevron.down")
+                            .font(.caption)
                     }
                 }
             }
@@ -155,13 +178,30 @@ struct DevotionalPickerView: View {
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
                     }
+
+                    Button(action: { showingFileImporter = true }) {
+                        Label("Import Devotional", systemImage: "doc.badge.plus")
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                 }
             }
+
+            // Bottom toolbar with new devotional button
+            if !isLoading && !filteredDevotionals.isEmpty {
+                ToolbarItem(placement: .bottomBar) {
+                    Spacer()
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Button(action: { showingNewDevotional = true }) {
+                        Image(systemName: "plus")
+                            .font(.body.weight(.semibold))
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showingNewDevotional) {
-            DevotionalEditorSheet(moduleId: moduleId) { newDevotional in
+            DevotionalEditorSheet(moduleId: selectedModuleId) { newDevotional in
                 loadDevotionals()
             }
         }
@@ -172,9 +212,93 @@ struct DevotionalPickerView: View {
                 availableCategories: availableCategories
             )
         }
+        .fileImporter(
+            isPresented: $showingFileImporter,
+            allowedContentTypes: [.lampFile, .json, .plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFileImport(result)
+        }
+        .alert("Import Error", isPresented: $showingImportError) {
+            Button("OK") { }
+        } message: {
+            Text(importError ?? "Unknown error")
+        }
+        .sheet(isPresented: $showingImportPreview) {
+            if let preview = importPreview {
+                ImportPreviewSheet(
+                    preview: preview,
+                    devotionalModules: devotionalModules,
+                    defaultModuleId: selectedModuleId,
+                    onImport: { importModuleId in
+                        selectedImportModuleId = importModuleId
+                        performImport()
+                    },
+                    onCancel: {
+                        cleanupPendingImport()
+                    }
+                )
+            }
+        }
         .task {
             loadDevotionals()
         }
+    }
+
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+
+            // Start accessing the security-scoped resource
+            guard url.startAccessingSecurityScopedResource() else {
+                importError = "Could not access the selected file"
+                showingImportError = true
+                return
+            }
+
+            // Store the URL for later import (keep security scope active)
+            pendingImportURL = url
+
+            do {
+                // Preview the file
+                let preview = try DevotionalSharingManager.shared.previewFile(url)
+                importPreview = preview
+                showingImportPreview = true
+            } catch {
+                url.stopAccessingSecurityScopedResource()
+                pendingImportURL = nil
+                importError = error.localizedDescription
+                showingImportError = true
+            }
+
+        case .failure(let error):
+            importError = error.localizedDescription
+            showingImportError = true
+        }
+    }
+
+    private func performImport() {
+        guard let url = pendingImportURL else { return }
+
+        // Use the selected module ID, or fall back to current module
+        let targetModuleId = selectedImportModuleId.isEmpty ? selectedModuleId : selectedImportModuleId
+
+        do {
+            _ = try DevotionalSharingManager.shared.importAndSave(url, moduleId: targetModuleId)
+            loadDevotionals()
+        } catch {
+            importError = error.localizedDescription
+            showingImportError = true
+        }
+
+        cleanupPendingImport()
+    }
+
+    private func cleanupPendingImport() {
+        pendingImportURL?.stopAccessingSecurityScopedResource()
+        pendingImportURL = nil
+        importPreview = nil
     }
 
     // MARK: - Subviews
@@ -279,13 +403,14 @@ struct DevotionalPickerView: View {
                         DevotionalListRow(devotional: devotional)
                     }
                     .buttonStyle(.plain)
-                    .listRowSeparator(devotional.meta.id == filteredDevotionals.last?.meta.id ? .hidden : .visible)
+                    .listRowSeparator(.hidden, edges: devotional.meta.id == filteredDevotionals.first?.meta.id ? .top : [])
+                    .listRowSeparator(devotional.meta.id == filteredDevotionals.last?.meta.id ? .hidden : .visible, edges: .bottom)
                 } else {
                     // When used standalone - navigate to DevotionalView
                     NavigationLink {
                         DevotionalView(
                             devotional: devotional,
-                            moduleId: moduleId,
+                            moduleId: selectedModuleId,
                             initialMode: .read,
                             onBack: {
                                 loadDevotionals()
@@ -294,7 +419,8 @@ struct DevotionalPickerView: View {
                     } label: {
                         DevotionalListRow(devotional: devotional)
                     }
-                    .listRowSeparator(devotional.meta.id == filteredDevotionals.last?.meta.id ? .hidden : .visible)
+                    .listRowSeparator(.hidden, edges: devotional.meta.id == filteredDevotionals.first?.meta.id ? .top : [])
+                    .listRowSeparator(devotional.meta.id == filteredDevotionals.last?.meta.id ? .hidden : .visible, edges: .bottom)
                 }
             }
             .onDelete(perform: deleteDevotionals)
@@ -314,16 +440,28 @@ struct DevotionalPickerView: View {
                 // Ensure the default devotionals module exists
                 try await ModuleSyncManager.shared.ensureDefaultDevotionalsModule()
 
+                // Load available devotional modules first
+                devotionalModules = try ModuleDatabase.shared.getAllModules(type: .devotional)
+
+                // Ensure we have a valid selected module
+                if selectedModuleId.isEmpty {
+                    selectedModuleId = initialModuleId
+                }
+                // If the selected module doesn't exist, fall back to first available
+                if !devotionalModules.contains(where: { $0.id == selectedModuleId }) {
+                    selectedModuleId = devotionalModules.first?.id ?? "devotionals"
+                }
+
                 // Load devotionals with current sort
                 devotionals = try DevotionalStorage.shared.getDevotionals(
-                    moduleId: moduleId,
+                    moduleId: selectedModuleId,
                     filter: DevotionalFilterOptions(),
                     sort: sortOption
                 )
 
                 // Load available tags and categories for filtering
-                availableTags = try DevotionalStorage.shared.getAllTags(moduleId: moduleId)
-                availableCategories = try DevotionalStorage.shared.getUsedCategories(moduleId: moduleId)
+                availableTags = try DevotionalStorage.shared.getAllTags(moduleId: selectedModuleId)
+                availableCategories = try DevotionalStorage.shared.getUsedCategories(moduleId: selectedModuleId)
             } catch {
                 print("Failed to load devotionals: \(error)")
             }
@@ -346,7 +484,7 @@ struct DevotionalPickerView: View {
     private func exportAll() {
         Task {
             do {
-                let urls = try await DevotionalImportExportManager.shared.exportAllDevotionals(moduleId: moduleId)
+                let urls = try await DevotionalImportExportManager.shared.exportAllDevotionals(moduleId: selectedModuleId)
                 print("Exported \(urls.count) devotionals")
             } catch {
                 print("Export failed: \(error)")
@@ -357,7 +495,7 @@ struct DevotionalPickerView: View {
     private func exportToSingleFile() {
         Task {
             do {
-                let url = try await DevotionalImportExportManager.shared.exportAllToSingleFile(moduleId: moduleId)
+                let url = try await DevotionalImportExportManager.shared.exportAllToSingleFile(moduleId: selectedModuleId)
                 print("Exported to \(url.path)")
             } catch {
                 print("Export failed: \(error)")

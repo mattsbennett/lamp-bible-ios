@@ -8,6 +8,13 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Footnote Helper
+
+/// Strip ^ prefix from footnote IDs (handles old data that may have included the caret)
+private func cleanFootnoteId(_ id: String) -> String {
+    id.hasPrefix("^") ? String(id.dropFirst()) : id
+}
+
 // MARK: - Custom Tappable Attribute
 
 /// Custom attribute key for tap action data (avoids iOS URL resolution delay)
@@ -185,7 +192,27 @@ struct DevotionalBlockRenderer {
         var result = AttributedString(annotatedText.text)
         result.font = style.bodyFont
 
+        // Calculate footnote font size relative to body font (matching visual edit mode)
+        let baseFontSize = style.uiBodyFont?.pointSize ?? 17
+        let footnoteFontSize = baseFontSize * 0.7
+        let footnoteBaselineOffset = baseFontSize * 0.3
+
         guard let annotations = annotatedText.annotations else {
+            // Still need to handle footnote refs even without other annotations (skip in present mode)
+            if !style.isPresentMode, let footnoteRefs = annotatedText.footnoteRefs {
+                let sortedRefs = footnoteRefs.sorted { $0.offset > $1.offset }
+                for ref in sortedRefs {
+                    guard ref.offset >= 0 else { continue }
+                    let insertIndex = result.index(result.startIndex, offsetByUnicodeScalars: ref.offset)
+                    let cleanId = cleanFootnoteId(ref.id)
+                    var marker = AttributedString("[\(cleanId)]")
+                    marker.foregroundColor = .accentColor
+                    marker.font = .system(size: footnoteFontSize)
+                    marker.baselineOffset = footnoteBaselineOffset
+                    marker.link = URL(string: "lampbible://footnote/\(cleanId)")
+                    result.insert(marker, at: insertIndex)
+                }
+            }
             return result
         }
 
@@ -256,17 +283,18 @@ struct DevotionalBlockRenderer {
             }
         }
 
-        // Insert footnote reference markers
-        if let footnoteRefs = annotatedText.footnoteRefs {
+        // Insert footnote reference markers as [N] with superscript styling (skip in present mode)
+        if !style.isPresentMode, let footnoteRefs = annotatedText.footnoteRefs {
             let sortedRefs = footnoteRefs.sorted { $0.offset > $1.offset }
             for ref in sortedRefs {
                 guard ref.offset >= 0 else { continue }
                 let insertIndex = result.index(result.startIndex, offsetByUnicodeScalars: ref.offset)
-                var marker = AttributedString("[\(ref.id)]")
-                marker.foregroundColor = .secondary
-                marker.font = .footnote
-                marker.baselineOffset = 4
-                marker.link = URL(string: "lampbible://footnote/\(ref.id)")
+                let cleanId = cleanFootnoteId(ref.id)
+                var marker = AttributedString("[\(cleanId)]")
+                marker.foregroundColor = .accentColor
+                marker.font = .system(size: footnoteFontSize)
+                marker.baselineOffset = footnoteBaselineOffset
+                marker.link = URL(string: "lampbible://footnote/\(cleanId)")
 
                 result.insert(marker, at: insertIndex)
             }
@@ -382,24 +410,29 @@ struct DevotionalBlockRenderer {
             }
         }
 
-        // Insert Footnotes
-        if let footnoteRefs = annotatedText.footnoteRefs {
+        // Insert Footnotes as [N] with superscript styling (skip in present mode)
+        if !style.isPresentMode, let footnoteRefs = annotatedText.footnoteRefs {
             let sortedRefs = footnoteRefs.sorted { $0.offset > $1.offset }
+            // Calculate relative font size (70% of body, 30% baseline offset)
+            let footnoteFontSize = baseFont.pointSize * 0.7
+            let footnoteBaselineOffset = baseFont.pointSize * 0.3
+
             for ref in sortedRefs {
                 let scalars = text.unicodeScalars
                 guard ref.offset >= 0, ref.offset <= scalars.count else { continue }
-                let idx = scalars.index(scalars.startIndex, offsetBy: ref.offset)
+                let idx = scalars.index(scalars.startIndex, offsetBy: min(ref.offset, scalars.count))
                 let nsRange = NSRange(idx..<idx, in: text)
 
-                let marker = NSMutableAttributedString(string: "[\(ref.id)]")
-                let fnFont = UIFont.preferredFont(forTextStyle: .footnote)
+                let cleanId = cleanFootnoteId(ref.id)
+                let marker = NSMutableAttributedString(string: "[\(cleanId)]")
+                let fnFont = UIFont.systemFont(ofSize: footnoteFontSize)
                 let markerRange = NSRange(location: 0, length: marker.length)
 
                 marker.addAttribute(.font, value: fnFont, range: markerRange)
-                marker.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: markerRange)
-                marker.addAttribute(.baselineOffset, value: 4, range: markerRange)
+                marker.addAttribute(.foregroundColor, value: UIColor.tintColor, range: markerRange)
+                marker.addAttribute(.baselineOffset, value: footnoteBaselineOffset as NSNumber, range: markerRange)
                 // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
-                marker.addAttribute(DevotionalTapActionKey, value: DevotionalTapAction.footnote(id: ref.id), range: markerRange)
+                marker.addAttribute(DevotionalTapActionKey, value: DevotionalTapAction.footnote(id: cleanId), range: markerRange)
 
                 result.insert(marker, at: nsRange.location)
             }
@@ -648,13 +681,23 @@ struct DevotionalContentBlockView: View {
     let onFootnoteTap: ((String) -> Void)?
     let onLinkTap: ((URL) -> Void)?
 
+    // Media context for image/audio blocks
+    let mediaRefs: [DevotionalMediaReference]?
+    let devotionalId: String?
+    let moduleId: String?
+    let onImageTap: ((DevotionalMediaReference, URL?) -> Void)?
+
     init(
         block: DevotionalContentBlock,
         style: DevotionalRendererStyle = .default,
         onScriptureTap: ((Int, Int?, String?) -> Void)? = nil,
         onStrongsTap: ((String) -> Void)? = nil,
         onFootnoteTap: ((String) -> Void)? = nil,
-        onLinkTap: ((URL) -> Void)? = nil
+        onLinkTap: ((URL) -> Void)? = nil,
+        mediaRefs: [DevotionalMediaReference]? = nil,
+        devotionalId: String? = nil,
+        moduleId: String? = nil,
+        onImageTap: ((DevotionalMediaReference, URL?) -> Void)? = nil
     ) {
         self.block = block
         self.style = style
@@ -662,6 +705,10 @@ struct DevotionalContentBlockView: View {
         self.onStrongsTap = onStrongsTap
         self.onFootnoteTap = onFootnoteTap
         self.onLinkTap = onLinkTap
+        self.mediaRefs = mediaRefs
+        self.devotionalId = devotionalId
+        self.moduleId = moduleId
+        self.onImageTap = onImageTap
     }
 
     var body: some View {
@@ -706,6 +753,95 @@ struct DevotionalContentBlockView: View {
                     }
                 }
             }
+
+        case .image:
+            imageBlockView
+
+        case .audio:
+            audioBlockView
+        }
+    }
+
+    // MARK: - Image Block
+
+    @ViewBuilder
+    private var imageBlockView: some View {
+        if let mediaId = block.mediaId,
+           let mediaRef = mediaRefs?.first(where: { $0.id == mediaId }),
+           let devId = devotionalId,
+           let modId = moduleId {
+            let imageURL = DevotionalMediaStorage.shared.getMediaURL(
+                for: mediaRef,
+                devotionalId: devId,
+                moduleId: modId
+            )
+            ImageBlockView(
+                block: block,
+                mediaRef: mediaRef,
+                imageURL: imageURL,
+                alignment: block.alignment ?? .center,
+                onTap: {
+                    onImageTap?(mediaRef, imageURL)
+                }
+            )
+        } else {
+            // Placeholder for missing media
+            VStack(spacing: 8) {
+                Image(systemName: "photo")
+                    .font(.largeTitle)
+                    .foregroundColor(.secondary)
+                Text("Image not found")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .frame(height: 150)
+            .frame(maxWidth: .infinity)
+            .background(Color(UIColor.secondarySystemBackground))
+            .cornerRadius(8)
+        }
+    }
+
+    // MARK: - Audio Block
+
+    @ViewBuilder
+    private var audioBlockView: some View {
+        if let mediaId = block.mediaId,
+           let mediaRef = mediaRefs?.first(where: { $0.id == mediaId }),
+           let devId = devotionalId,
+           let modId = moduleId {
+            let audioURL = DevotionalMediaStorage.shared.getMediaURL(
+                for: mediaRef,
+                devotionalId: devId,
+                moduleId: modId
+            )
+            if style.isPresentMode && block.autoplay == true {
+                PresentModeAudioBlockView(
+                    block: block,
+                    mediaRef: mediaRef,
+                    audioURL: audioURL
+                )
+            } else {
+                AudioBlockView(
+                    block: block,
+                    mediaRef: mediaRef,
+                    audioURL: audioURL,
+                    showWaveform: block.showWaveform ?? true
+                )
+            }
+        } else {
+            // Placeholder for missing media
+            HStack(spacing: 12) {
+                Image(systemName: "waveform")
+                    .font(.title2)
+                    .foregroundColor(.secondary)
+                Text("Audio not found")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding()
+            .background(Color(UIColor.secondarySystemBackground))
+            .cornerRadius(12)
         }
     }
 
@@ -785,13 +921,23 @@ struct DevotionalContentRenderer: View {
     let onFootnoteTap: ((String) -> Void)?
     let onLinkTap: ((URL) -> Void)?
 
+    // Media context
+    let mediaRefs: [DevotionalMediaReference]?
+    let devotionalId: String?
+    let moduleId: String?
+    let onImageTap: ((DevotionalMediaReference, URL?) -> Void)?
+
     init(
         content: DevotionalContent,
         style: DevotionalRendererStyle = .default,
         onScriptureTap: ((Int, Int?, String?) -> Void)? = nil,
         onStrongsTap: ((String) -> Void)? = nil,
         onFootnoteTap: ((String) -> Void)? = nil,
-        onLinkTap: ((URL) -> Void)? = nil
+        onLinkTap: ((URL) -> Void)? = nil,
+        mediaRefs: [DevotionalMediaReference]? = nil,
+        devotionalId: String? = nil,
+        moduleId: String? = nil,
+        onImageTap: ((DevotionalMediaReference, URL?) -> Void)? = nil
     ) {
         self.content = content
         self.style = style
@@ -799,6 +945,10 @@ struct DevotionalContentRenderer: View {
         self.onStrongsTap = onStrongsTap
         self.onFootnoteTap = onFootnoteTap
         self.onLinkTap = onLinkTap
+        self.mediaRefs = mediaRefs
+        self.devotionalId = devotionalId
+        self.moduleId = moduleId
+        self.onImageTap = onImageTap
     }
 
     var body: some View {
@@ -813,7 +963,11 @@ struct DevotionalContentRenderer: View {
                         onScriptureTap: onScriptureTap,
                         onStrongsTap: onStrongsTap,
                         onFootnoteTap: onFootnoteTap,
-                        onLinkTap: onLinkTap
+                        onLinkTap: onLinkTap,
+                        mediaRefs: mediaRefs,
+                        devotionalId: devotionalId,
+                        moduleId: moduleId,
+                        onImageTap: onImageTap
                     )
                     .padding(.bottom, spacingAfter(block: block, nextBlock: blocks.indices.contains(index + 1) ? blocks[index + 1] : nil))
                 }
@@ -851,7 +1005,11 @@ struct DevotionalContentRenderer: View {
                     onScriptureTap: onScriptureTap,
                     onStrongsTap: onStrongsTap,
                     onFootnoteTap: onFootnoteTap,
-                    onLinkTap: onLinkTap
+                    onLinkTap: onLinkTap,
+                    mediaRefs: mediaRefs,
+                    devotionalId: devotionalId,
+                    moduleId: moduleId,
+                    onImageTap: onImageTap
                 )
                 .padding(.bottom, spacingAfter(block: block, nextBlock: intro.indices.contains(index + 1) ? intro[index + 1] : nil))
             }
@@ -873,7 +1031,11 @@ struct DevotionalContentRenderer: View {
                     onScriptureTap: onScriptureTap,
                     onStrongsTap: onStrongsTap,
                     onFootnoteTap: onFootnoteTap,
-                    onLinkTap: onLinkTap
+                    onLinkTap: onLinkTap,
+                    mediaRefs: mediaRefs,
+                    devotionalId: devotionalId,
+                    moduleId: moduleId,
+                    onImageTap: onImageTap
                 )
                 .padding(.bottom, spacingAfter(block: block, nextBlock: conclusion.indices.contains(index + 1) ? conclusion[index + 1] : nil))
             }
@@ -899,7 +1061,11 @@ struct DevotionalContentRenderer: View {
                             onScriptureTap: onScriptureTap,
                             onStrongsTap: onStrongsTap,
                             onFootnoteTap: onFootnoteTap,
-                            onLinkTap: onLinkTap
+                            onLinkTap: onLinkTap,
+                            mediaRefs: mediaRefs,
+                            devotionalId: devotionalId,
+                            moduleId: moduleId,
+                            onImageTap: onImageTap
                         )
                         .padding(.bottom, spacingAfter(block: block, nextBlock: blocks.indices.contains(index + 1) ? blocks[index + 1] : nil))
                     }
@@ -933,19 +1099,23 @@ struct DevotionalFootnotesView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Notes")
                 .font(.headline)
+                .foregroundColor(.secondary)
                 .padding(.bottom, 4)
 
             ForEach(footnotes) { footnote in
-                HStack(alignment: .top, spacing: 8) {
-                    Text("[\(footnote.id)]")
-                        .font(.footnote.bold())
-                        .foregroundColor(.secondary)
+                let cleanId = cleanFootnoteId(footnote.id)
+                HStack(alignment: .top, spacing: 6) {
+                    Text("[\(cleanId)]")
+                        .font(.footnote)
+                        .foregroundColor(.accentColor)
+                        .frame(minWidth: 24, alignment: .trailing)
 
                     Group {
                         switch footnote.content {
                         case .plain(let text):
                             Text(text)
                                 .font(.footnote)
+                                .foregroundColor(.secondary)
                         case .annotated(let annotatedText):
                             DevotionalAnnotatedTextView(
                                 annotatedText,
@@ -957,16 +1127,19 @@ struct DevotionalFootnotesView: View {
                         }
                     }
                 }
+                .id("footnote-\(cleanId)")
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(Color.secondary.opacity(0.1))
+        .background(Color.secondary.opacity(0.08))
         .cornerRadius(8)
     }
 
     private var footnoteStyle: DevotionalRendererStyle {
         var s = style
         s.bodyFont = .footnote
+        s.textColor = .secondary
         return s
     }
 }

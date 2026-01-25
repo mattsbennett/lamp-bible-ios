@@ -24,6 +24,8 @@ struct ModuleSearchResult: Identifiable {
     var monthDay: String? = nil
     var tags: [String]? = nil
     var strongsKey: String? = nil
+    var highlightColor: String? = nil  // Hex color for highlight results
+    var highlightStyle: HighlightStyle? = nil  // Style for highlight results
 
     // For navigation
     var book: Int? { verseId.map { $0 / 1000000 } }
@@ -55,6 +57,10 @@ struct ModuleSearchFilter {
     // Translation filters
     var translationIds: Set<String>? = nil  // Specific translations to search
     var bookRange: ClosedRange<Int>? = nil  // Book range (1-39 OT, 40-66 NT)
+
+    // Highlight filters
+    var highlightColors: Set<String>? = nil  // Filter by highlight color hex values
+    var highlightColorOnly: Bool = false     // Search by color only (no text query required)
 
     static var `default`: ModuleSearchFilter { ModuleSearchFilter() }
 }
@@ -116,7 +122,7 @@ class ModuleSearch {
             print("Failed to get translations: \(error)")
         }
 
-        // User modules from SQLite
+        // User modules from SQLite (excluding highlights - those are added via highlight sets below)
         do {
             let userModules = try database.getAllModules()
 
@@ -124,6 +130,11 @@ class ModuleSearch {
             let commentarySeriesInfo = getCommentarySeriesInfo()
 
             for module in userModules {
+                // Skip highlight modules - they're added via highlight sets below
+                if module.type == .highlights {
+                    continue
+                }
+
                 if module.type == .commentary, let seriesInfo = commentarySeriesInfo[module.id] {
                     modules.append(SearchableModule(
                         id: module.id,
@@ -149,6 +160,22 @@ class ModuleSearch {
             }
         } catch {
             print("Failed to get user modules: \(error)")
+        }
+
+        // Highlight sets
+        do {
+            let highlightSets = try database.getAllHighlightSets()
+            for set in highlightSets {
+                modules.append(SearchableModule(
+                    id: set.id,
+                    name: set.name,
+                    type: .highlights,
+                    isBundled: false,
+                    seriesAbbrev: set.translationId.uppercased()
+                ))
+            }
+        } catch {
+            print("Failed to get highlight sets: \(error)")
         }
 
         return modules
@@ -213,6 +240,28 @@ class ModuleSearch {
         }
     }
 
+    /// Get all unique highlight colors used across all highlight sets
+    /// Returns default colors plus any custom colors found in highlights
+    func getAllHighlightColors() -> [HighlightColor] {
+        var colors = Set(HighlightColor.defaultColors.map { $0.hex })
+
+        // Add any custom colors from existing highlights
+        if let customHexes = try? database.getUniqueHighlightColors() {
+            for hex in customHexes {
+                colors.insert(hex.uppercased())
+            }
+        }
+
+        // Return sorted by default order first, then custom colors
+        let defaultHexes = Set(HighlightColor.defaultColors.map { $0.hex })
+        let sortedColors = HighlightColor.defaultColors + colors
+            .filter { !defaultHexes.contains($0) }
+            .sorted()
+            .map { HighlightColor(hex: $0) }
+
+        return sortedColors
+    }
+
     // MARK: - Unified Search
 
     /// Search across all module types with filters
@@ -222,11 +271,12 @@ class ModuleSearch {
         // Escape FTS5 special characters and prepare query
         let ftsQuery = prepareFTSQuery(query)
 
-        // Allow empty query for dictionary key search
+        // Allow empty query for dictionary key search or highlight color-only search
         let hasTextQuery = !ftsQuery.isEmpty
         let hasKeyFilter = filter.strongsKey != nil
+        let hasColorFilter = filter.highlightColorOnly && filter.highlightColors != nil
 
-        guard hasTextQuery || hasKeyFilter else { return [] }
+        guard hasTextQuery || hasKeyFilter || hasColorFilter else { return [] }
 
         if filter.types.contains(.dictionary) {
             // User dictionaries (SQLite)
@@ -255,8 +305,17 @@ class ModuleSearch {
             results.append(contentsOf: try searchNotes(ftsQuery: ftsQuery, filter: filter, limit: limit))
         }
 
-        if filter.types.contains(.translation) && hasTextQuery {
-            results.append(contentsOf: try searchTranslations(ftsQuery: ftsQuery, filter: filter, limit: limit))
+        if filter.types.contains(.translation) {
+            if hasTextQuery {
+                results.append(contentsOf: try searchTranslations(ftsQuery: ftsQuery, filter: filter, limit: limit))
+            } else if hasKeyFilter {
+                // Strong's key search for translations with Strong's support
+                results.append(contentsOf: try searchTranslationsByStrongs(filter: filter, limit: limit))
+            }
+        }
+
+        if filter.types.contains(.highlights) && (hasTextQuery || hasColorFilter) {
+            results.append(contentsOf: try searchHighlights(query: query, filter: filter, limit: limit))
         }
 
         // Sort by rank (higher is better match)
@@ -1019,6 +1078,60 @@ class ModuleSearch {
         }
     }
 
+    /// Search translations by Strong's number
+    private func searchTranslationsByStrongs(filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+        guard let strongsKey = filter.strongsKey else { return [] }
+
+        let translationDb = TranslationDatabase.shared
+
+        // Get all translations and filter to those with Strong's support
+        let allTranslations = try translationDb.getAllTranslations()
+        let strongsTranslations = allTranslations.filter { $0.features?.strongs == true }
+
+        // If specific module IDs are set, filter to those
+        let translationsToSearch: [TranslationModule]
+        if let moduleIds = filter.moduleIds {
+            translationsToSearch = strongsTranslations.filter { moduleIds.contains($0.id) }
+        } else {
+            translationsToSearch = strongsTranslations
+        }
+
+        guard !translationsToSearch.isEmpty else { return [] }
+
+        var results: [ModuleSearchResult] = []
+        let limitPerTranslation = max(5, limit / translationsToSearch.count)
+
+        for translation in translationsToSearch {
+            let searchResults = try translationDb.searchVersesByStrongs(
+                translationId: translation.id,
+                strongsNum: strongsKey,
+                bookRange: filter.bookRange,
+                limit: limitPerTranslation
+            )
+
+            for result in searchResults {
+                let bookName = (try? BundledModuleDatabase.shared.getBook(id: result.book))?.name ?? "Book \(result.book)"
+                let displayTitle = "\(bookName) \(result.chapter):\(result.verse)"
+
+                results.append(ModuleSearchResult(
+                    id: "\(result.translationId)-\(result.ref)",
+                    moduleId: result.translationId,
+                    moduleName: result.translationAbbrev,
+                    moduleType: .translation,
+                    title: displayTitle,
+                    snippet: result.snippet,
+                    verseId: result.ref,
+                    rank: result.rank,
+                    strongsKey: strongsKey
+                ))
+            }
+
+            if results.count >= limit { break }
+        }
+
+        return Array(results.prefix(limit))
+    }
+
     // MARK: - Dictionary-Specific Search
 
     /// Search dictionaries by key (Strong's number)
@@ -1087,5 +1200,135 @@ class ModuleSearch {
         }
 
         return ftsTerms.joined(separator: " ")
+    }
+
+    // MARK: - Highlight Search
+
+    /// Search highlights - either by verse text or by color only
+    private func searchHighlights(query: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+        var results: [ModuleSearchResult] = []
+
+        // Get highlight sets to search
+        let allSets = try database.getAllHighlightSets()
+        var setsToSearch: [HighlightSet] = allSets
+
+        // Filter by module IDs (highlight set IDs)
+        if let moduleIds = filter.moduleIds {
+            setsToSearch = setsToSearch.filter { moduleIds.contains($0.id) }
+        }
+
+        // Filter by translation IDs (for color search filtering by translation)
+        if let translationIds = filter.translationIds {
+            setsToSearch = setsToSearch.filter { translationIds.contains($0.translationId) }
+        }
+
+        guard !setsToSearch.isEmpty else { return [] }
+
+        let searchQuery = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasTextQuery = !searchQuery.isEmpty
+
+        for set in setsToSearch {
+            // Get all highlights for this set
+            var highlights = try database.getAllHighlights(setId: set.id)
+
+            // Filter by color if specified
+            if let colorFilter = filter.highlightColors, !colorFilter.isEmpty {
+                highlights = highlights.filter { entry in
+                    let entryColor = entry.color?.uppercased() ?? "FFCC00"  // Default yellow
+                    return colorFilter.contains(entryColor)
+                }
+            }
+
+            guard !highlights.isEmpty else { continue }
+
+            // Get verse texts for highlighted verses from the translation
+            let translationId = set.translationId
+            let verseRefs = Array(Set(highlights.map { $0.ref }))
+
+            // Fetch verses from translation
+            let versesById = try getVerseTexts(translationId: translationId, refs: verseRefs)
+
+            // Create results for each highlight
+            for highlight in highlights {
+                guard let verseText = versesById[highlight.ref] else { continue }
+
+                // If we have a text query, check if the verse text contains it
+                if hasTextQuery {
+                    guard verseText.lowercased().contains(searchQuery) else { continue }
+                }
+
+                // Build result
+                let bookId = highlight.ref / 1_000_000
+                let chapter = (highlight.ref % 1_000_000) / 1000
+                let verse = highlight.ref % 1000
+                let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "Book \(bookId)"
+                let title = "\(bookName) \(chapter):\(verse)"
+
+                // Create snippet - show highlighted portion marked for styling
+                let snippet: String
+                if highlight.sc >= 0 && highlight.ec > highlight.sc && highlight.ec <= verseText.count {
+                    let startIndex = verseText.index(verseText.startIndex, offsetBy: highlight.sc)
+                    let endIndex = verseText.index(verseText.startIndex, offsetBy: min(highlight.ec, verseText.count))
+                    let highlightedText = String(verseText[startIndex..<endIndex])
+                    // Wrap in mark tags so the UI applies highlight styling
+                    snippet = "<mark>\(highlightedText)</mark>"
+                } else {
+                    // Wrap entire text in mark tags
+                    snippet = "<mark>\(verseText)</mark>"
+                }
+
+                // Calculate rank based on text match quality
+                let rank: Double
+                if hasTextQuery {
+                    // Boost exact matches
+                    if snippet.lowercased() == searchQuery {
+                        rank = 10.0
+                    } else if snippet.lowercased().hasPrefix(searchQuery) {
+                        rank = 8.0
+                    } else {
+                        rank = 5.0
+                    }
+                } else {
+                    // Color-only search - rank by recency (newer highlights first)
+                    rank = 1.0
+                }
+
+                var result = ModuleSearchResult(
+                    id: "highlight-\(set.id)-\(highlight.id ?? 0)",
+                    moduleId: set.id,
+                    moduleName: set.name,
+                    moduleType: .highlights,
+                    title: title,
+                    snippet: snippet,
+                    verseId: highlight.ref,
+                    rank: rank
+                )
+                result.highlightColor = highlight.color ?? "FFCC00"
+                result.highlightStyle = highlight.highlightStyle
+                results.append(result)
+
+                if results.count >= limit { break }
+            }
+
+            if results.count >= limit { break }
+        }
+
+        return results
+    }
+
+    /// Helper to get verse texts from a translation
+    private func getVerseTexts(translationId: String, refs: [Int]) throws -> [Int: String] {
+        guard !refs.isEmpty else { return [:] }
+
+        var result: [Int: String] = [:]
+
+        // Get verses using the translation database
+        for ref in refs {
+            if let verse = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref) {
+                result[ref] = verse.text
+            }
+        }
+
+        return result
     }
 }

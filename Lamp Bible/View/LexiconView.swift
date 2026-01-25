@@ -717,15 +717,45 @@ func countPopoverItemsInText(_ text: String, references: [VerseRef]? = nil) -> I
 }
 
 /// Counts popover items in a user dictionary sense
+/// For v2.0 annotated text, counts tappable annotations (scripture, strongs, lexiconRef)
+/// For v1.0 plain text, counts markers (⟦...⟧, ⟨...⟩, ⦃...⦄)
 func countPopoverItemsInSense(_ sense: DictionarySense) -> Int {
     var count = 0
-    if let def = sense.definitionText, !def.isEmpty {
-        count += countPopoverItemsInText(def, references: sense.references)
+
+    // Count items in definition
+    if let definition = sense.definition {
+        if definition.hasAnnotations {
+            // v2.0 format: count tappable annotations
+            count += countTappableAnnotations(definition.asAnnotatedText)
+        } else {
+            // v1.0 format: count markers in plain text
+            count += countPopoverItemsInText(definition.plainText, references: sense.references)
+        }
     }
-    if let deriv = sense.derivationText, !deriv.isEmpty {
-        count += countPopoverItemsInText(deriv)
+
+    // Count items in derivation
+    if let derivation = sense.derivation {
+        if derivation.hasAnnotations {
+            count += countTappableAnnotations(derivation.asAnnotatedText)
+        } else {
+            count += countPopoverItemsInText(derivation.plainText)
+        }
     }
+
     return count
+}
+
+/// Counts tappable annotations in annotated text (scripture, strongs, lexiconRef)
+private func countTappableAnnotations(_ annotatedText: AnnotatedText) -> Int {
+    guard let annotations = annotatedText.annotations else { return 0 }
+    return annotations.filter { annotation in
+        switch annotation.type {
+        case .scripture, .strongs, .lexiconRef:
+            return true
+        default:
+            return false
+        }
+    }.count
 }
 
 /// Parse senses from JSON for user dictionaries (thread-safe, no Realm access)
@@ -791,12 +821,27 @@ private func countPopoverItemsInTextThreadSafe(_ text: String) -> Int {
 /// Thread-safe popover count for a user dictionary sense
 private func countPopoverItemsInSenseThreadSafe(_ sense: DictionarySense) -> Int {
     var count = 0
-    if let def = sense.definitionText, !def.isEmpty {
-        count += countPopoverItemsInTextThreadSafe(def)
+
+    // Count items in definition
+    if let definition = sense.definition {
+        if definition.hasAnnotations {
+            // v2.0 format: count tappable annotations
+            count += countTappableAnnotations(definition.asAnnotatedText)
+        } else {
+            // v1.0 format: count markers in plain text
+            count += countPopoverItemsInTextThreadSafe(definition.plainText)
+        }
     }
-    if let deriv = sense.derivationText, !deriv.isEmpty {
-        count += countPopoverItemsInTextThreadSafe(deriv)
+
+    // Count items in derivation
+    if let derivation = sense.derivation {
+        if derivation.hasAnnotations {
+            count += countTappableAnnotations(derivation.asAnnotatedText)
+        } else {
+            count += countPopoverItemsInTextThreadSafe(derivation.plainText)
+        }
     }
+
     return count
 }
 
@@ -1098,14 +1143,32 @@ struct DictionaryDefinitionView: View {
         switch item.type {
         case .strongs(let ref):
             return ref
-        case .verseRef(let display, _, _, let fullRef):
-            let ref = fullRef ?? display
-            return ref.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+        case .verseRef(let display, let verseId, _, let fullRef):
+            // Use fullRef if available, otherwise check if display is a short form like "v1"
+            if let ref = fullRef, !ref.isEmpty {
+                return ref.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            }
+            // If display is short (e.g., "v1", "1", "14-15"), generate full reference from verseId
+            let trimmed = display.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            if trimmed.count < 10 && !trimmed.contains(where: { $0.isLetter && $0.isUppercase }) {
+                // Looks like a short form - generate full reference
+                return formatVerseReference(verseId)
+            }
+            return trimmed
         case .bdbRef(let bdbId):
             return bdbId
         case .lexiconRef(let lexiconId):
             return lexiconId
         }
+    }
+
+    /// Format a verse ID (BBCCCVVV) into a human-readable reference like "Gen 1:1"
+    private func formatVerseReference(_ verseId: Int) -> String {
+        let book = verseId / 1000000
+        let chapter = (verseId % 1000000) / 1000
+        let verse = verseId % 1000
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
+        return "\(bookName) \(chapter):\(verse)"
     }
 
     private func sheetNavigateAction(for item: LexiconTappableItem) -> (() -> Void)? {
@@ -1334,13 +1397,31 @@ struct LinkedDefinitionText: View {
         switch item.type {
         case .strongs(let ref):
             return ref
-        case .verseRef(let display, _, _, let fullRef):
-            return displayTitle(for: fullRef, display: display)
+        case .verseRef(let display, let verseId, _, let fullRef):
+            // Use fullRef if available, otherwise check if display is a short form like "v1"
+            if let ref = fullRef, !ref.isEmpty {
+                return ref.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            }
+            // If display is short (e.g., "v1", "1", "14-15"), generate full reference from verseId
+            let trimmed = display.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            if trimmed.count < 10 && !trimmed.contains(where: { $0.isLetter && $0.isUppercase }) {
+                return formatVerseReference(verseId)
+            }
+            return trimmed
         case .bdbRef(let bdbId):
             return bdbId
         case .lexiconRef(let lexiconId):
             return lexiconId
         }
+    }
+
+    /// Format a verse ID (BBCCCVVV) into a human-readable reference like "Gen 1:1"
+    private func formatVerseReference(_ verseId: Int) -> String {
+        let book = verseId / 1000000
+        let chapter = (verseId % 1000000) / 1000
+        let verse = verseId % 1000
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
+        return "\(bookName) \(chapter):\(verse)"
     }
 
     private func sheetNavigateAction(for item: TappableItem) -> (() -> Void)? {
@@ -1561,6 +1642,12 @@ private struct VerseRefContent: View {
         )) ?? []
     }
 
+    /// Get the translation name for display
+    private var translationName: String? {
+        guard let transId = translationId else { return nil }
+        return (try? TranslationDatabase.shared.getTranslation(id: transId))?.name
+    }
+
     private var versesText: AttributedString {
         if verses.isEmpty {
             var notFound = AttributedString("Verse not found")
@@ -1589,9 +1676,18 @@ private struct VerseRefContent: View {
     }
 
     var body: some View {
-        Text(versesText)
-            .lineSpacing(6)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(versesText)
+                .lineSpacing(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let name = translationName {
+                Text(name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
     }
 }
 
@@ -3222,13 +3318,31 @@ struct LexiconPageView: View {
         switch item.type {
         case .strongs(let ref):
             return ref
-        case .verseRef(let display, _, _, let fullRef):
-            return displayTitle(for: fullRef, display: display)
+        case .verseRef(let display, let verseId, _, let fullRef):
+            // Use fullRef if available, otherwise check if display is a short form like "v1"
+            if let ref = fullRef, !ref.isEmpty {
+                return ref.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            }
+            // If display is short (e.g., "v1", "1", "14-15"), generate full reference from verseId
+            let trimmed = display.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            if trimmed.count < 10 && !trimmed.contains(where: { $0.isLetter && $0.isUppercase }) {
+                return formatVerseReference(verseId)
+            }
+            return trimmed
         case .bdbRef(let bdbId):
             return bdbId
         case .lexiconRef(let lexiconId):
             return lexiconId
         }
+    }
+
+    /// Format a verse ID (BBCCCVVV) into a human-readable reference like "Gen 1:1"
+    private func formatVerseReference(_ verseId: Int) -> String {
+        let book = verseId / 1000000
+        let chapter = (verseId % 1000000) / 1000
+        let verse = verseId % 1000
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
+        return "\(bookName) \(chapter):\(verse)"
     }
 
     private func sheetNavigateAction(for item: LexiconTappableItem) -> (() -> Void)? {

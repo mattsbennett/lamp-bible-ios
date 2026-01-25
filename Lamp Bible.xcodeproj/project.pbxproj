@@ -41,7 +41,19 @@
 		B85B899B2F1C73D7004B4F61 /* WebDAVModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */; };
 		B85B899C2F1C73D7004B4F61 /* SyncableEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89912F1C73D7004B4F61 /* SyncableEntry.swift */; };
 		B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89922F1C73D7004B4F61 /* SyncCoordinator.swift */; };
-		B85B899F2F1CB10F004B4F61 /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B85B899E2F1CB10F004B4F61 /* bundled_modules.db.zlib */; };
+		B85B89A42F1F11CC004B4F61 /* ImageBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */; };
+		B85B89A52F1F11CC004B4F61 /* ImagePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */; };
+		B85B89A62F1F11CC004B4F61 /* ModuleMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */; };
+		B85B89A72F1F11CC004B4F61 /* ImportPreviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */; };
+		B85B89A92F1F11E1004B4F61 /* WaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A82F1F11E1004B4F61 /* WaveformView.swift */; };
+		B85B89AC2F1F1206004B4F61 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89AB2F1F1206004B4F61 /* AudioRecorder.swift */; };
+		B85B89AD2F1F1206004B4F61 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89AA2F1F1206004B4F61 /* AudioPlayer.swift */; };
+		B85B89B12F1F1285004B4F61 /* DevotionalMediaStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89AE2F1F1285004B4F61 /* DevotionalMediaStorage.swift */; };
+		B85B89B22F1F1285004B4F61 /* DevotionalSharingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89AF2F1F1285004B4F61 /* DevotionalSharingManager.swift */; };
+		B85B89B32F1F1285004B4F61 /* ModuleMediaStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89B02F1F1285004B4F61 /* ModuleMediaStorage.swift */; };
+		B85B89B62F1F2A20004B4F61 /* AudioRecorderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89B52F1F2A20004B4F61 /* AudioRecorderSheet.swift */; };
+		B85B89B72F1F2A20004B4F61 /* AudioBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89B42F1F2A20004B4F61 /* AudioBlockView.swift */; };
+		B85B89B92F21D151004B4F61 /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B85B89B82F21D151004B4F61 /* bundled_modules.db.zlib */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
 		B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */; };
 		B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD02F008237006DC53D /* ToolPanelView.swift */; };
@@ -71,6 +83,11 @@
 		B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */; };
 		B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */; };
 		B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229942F12032700A58F81 /* NotesImportExportManager.swift */; };
+		B85B89C02F21E000004B4F61 /* HighlightModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89BF2F21E000004B4F61 /* HighlightModels.swift */; };
+		B85B89C22F21E000004B4F61 /* HighlightManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C12F21E000004B4F61 /* HighlightManager.swift */; };
+		B85B89C42F21E000004B4F61 /* HighlightImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */; };
+		B85B89C62F21E000004B4F61 /* HighlightControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */; };
+		B85B89C82F21E000004B4F61 /* HighlightSetPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */; };
 		B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229962F16A00000A58F81 /* NoteConflictView.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
@@ -138,7 +155,19 @@
 		B85B89942F1C73D7004B4F61 /* SyncTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncTypes.swift; sourceTree = "<group>"; };
 		B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVClient.swift; sourceTree = "<group>"; };
 		B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVModuleStorage.swift; sourceTree = "<group>"; };
-		B85B899E2F1CB10F004B4F61 /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
+		B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageBlockView.swift; sourceTree = "<group>"; };
+		B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePickerSheet.swift; sourceTree = "<group>"; };
+		B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportPreviewSheet.swift; sourceTree = "<group>"; };
+		B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleMediaView.swift; sourceTree = "<group>"; };
+		B85B89A82F1F11E1004B4F61 /* WaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformView.swift; sourceTree = "<group>"; };
+		B85B89AA2F1F1206004B4F61 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
+		B85B89AB2F1F1206004B4F61 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
+		B85B89AE2F1F1285004B4F61 /* DevotionalMediaStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalMediaStorage.swift; sourceTree = "<group>"; };
+		B85B89AF2F1F1285004B4F61 /* DevotionalSharingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalSharingManager.swift; sourceTree = "<group>"; };
+		B85B89B02F1F1285004B4F61 /* ModuleMediaStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleMediaStorage.swift; sourceTree = "<group>"; };
+		B85B89B42F1F2A20004B4F61 /* AudioBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBlockView.swift; sourceTree = "<group>"; };
+		B85B89B52F1F2A20004B4F61 /* AudioRecorderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderSheet.swift; sourceTree = "<group>"; };
+		B85B89B82F21D151004B4F61 /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
 		B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Lamp Bible.entitlements"; sourceTree = "<group>"; };
 		B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteStorage.swift; sourceTree = "<group>"; };
@@ -173,6 +202,11 @@
 		B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSettingsView.swift; sourceTree = "<group>"; };
 		B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentaryRenderer.swift; sourceTree = "<group>"; };
 		B89229942F12032700A58F81 /* NotesImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesImportExportManager.swift; sourceTree = "<group>"; };
+		B85B89BF2F21E000004B4F61 /* HighlightModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightModels.swift; sourceTree = "<group>"; };
+		B85B89C12F21E000004B4F61 /* HighlightManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightManager.swift; sourceTree = "<group>"; };
+		B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightImportExportManager.swift; sourceTree = "<group>"; };
+		B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightControlsView.swift; sourceTree = "<group>"; };
+		B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightSetPickerView.swift; sourceTree = "<group>"; };
 		B89229962F16A00000A58F81 /* NoteConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictView.swift; sourceTree = "<group>"; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
@@ -252,8 +286,14 @@
 				B8210A962B549ADD008341F0 /* ViewModel.swift */,
 				B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */,
 				B89229942F12032700A58F81 /* NotesImportExportManager.swift */,
+				B85B89BF2F21E000004B4F61 /* HighlightModels.swift */,
+				B85B89C12F21E000004B4F61 /* HighlightManager.swift */,
+				B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */,
 				B87B2ADA2F022F00006DC53D /* SearchResult.swift */,
 				B85B89972F1C73D7004B4F61 /* Sync */,
+				B85B89AE2F1F1285004B4F61 /* DevotionalMediaStorage.swift */,
+				B85B89AF2F1F1285004B4F61 /* DevotionalSharingManager.swift */,
+				B85B89B02F1F1285004B4F61 /* ModuleMediaStorage.swift */,
 			);
 			path = Data;
 			sourceTree = "<group>";
@@ -261,6 +301,8 @@
 		B8210A9D2B54A508008341F0 /* Utility */ = {
 			isa = PBXGroup;
 			children = (
+				B85B89AA2F1F1206004B4F61 /* AudioPlayer.swift */,
+				B85B89AB2F1F1206004B4F61 /* AudioRecorder.swift */,
 				B82DA2222B450B4100E8AC49 /* Extensions.swift */,
 				B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */,
 				B85B898F2F19F248004B4F61 /* MarkdownDevotionalConverter.swift */,
@@ -275,6 +317,12 @@
 		B8210A9E2B54A58D008341F0 /* View */ = {
 			isa = PBXGroup;
 			children = (
+				B85B89B42F1F2A20004B4F61 /* AudioBlockView.swift */,
+				B85B89B52F1F2A20004B4F61 /* AudioRecorderSheet.swift */,
+				B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */,
+				B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */,
+				B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */,
+				B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */,
 				B85B89812F19F216004B4F61 /* DevotionalBlockRenderer.swift */,
 				B85B89822F19F216004B4F61 /* DevotionalConflictView.swift */,
 				B85B89832F19F216004B4F61 /* DevotionalPickerView.swift */,
@@ -286,8 +334,11 @@
 				B885E4182ADB47E50066F0A0 /* ContentView.swift */,
 				B89229542F05FE1900A58F81 /* DevotionalView.swift */,
 				B89229562F05FE2100A58F81 /* ModuleManagerView.swift */,
+				B85B89A82F1F11E1004B4F61 /* WaveformView.swift */,
 				B89229962F16A00000A58F81 /* NoteConflictView.swift */,
 				B87B2AD02F008237006DC53D /* ToolPanelView.swift */,
+				B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */,
+				B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */,
 				B87B2AFC2F03881D006DC53D /* LexiconView.swift */,
 				B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */,
 				B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */,
@@ -347,7 +398,7 @@
 				B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
-				B85B899E2F1CB10F004B4F61 /* bundled_modules.db.zlib */,
+				B85B89B82F21D151004B4F61 /* bundled_modules.db.zlib */,
 				B885E41C2ADB47ED0066F0A0 /* Preview Content */,
 				B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */,
 				B8210A9C2B54A4D7008341F0 /* Data */,
@@ -492,7 +543,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B85B899F2F1CB10F004B4F61 /* bundled_modules.db.zlib in Resources */,
+				B85B89B92F21D151004B4F61 /* bundled_modules.db.zlib in Resources */,
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
@@ -646,6 +697,7 @@
 				B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */,
 				B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */,
 				B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */,
+				B85B89A92F1F11E1004B4F61 /* WaveformView.swift in Sources */,
 				B85B898C2F19F230004B4F61 /* DevotionalStorage.swift in Sources */,
 				B85B898D2F19F230004B4F61 /* DevotionalImportExportManager.swift in Sources */,
 				B85B898E2F19F230004B4F61 /* DevotionalModels.swift in Sources */,
@@ -668,6 +720,10 @@
 				B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */,
 				B82BBB862B4CF238002248CC /* ReaderBottomToolbarView.swift in Sources */,
 				B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */,
+				B85B89A42F1F11CC004B4F61 /* ImageBlockView.swift in Sources */,
+				B85B89A52F1F11CC004B4F61 /* ImagePickerSheet.swift in Sources */,
+				B85B89A62F1F11CC004B4F61 /* ModuleMediaView.swift in Sources */,
+				B85B89A72F1F11CC004B4F61 /* ImportPreviewSheet.swift in Sources */,
 				B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */,
 				B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */,
 				B84968D42AF72D5F00955089 /* PlanView.swift in Sources */,
@@ -675,17 +731,29 @@
 				B85B89862F19F216004B4F61 /* DevotionalBlockRenderer.swift in Sources */,
 				B85B89872F19F216004B4F61 /* DevotionalView.swift in Sources */,
 				B85B89882F19F216004B4F61 /* DevotionalConflictView.swift in Sources */,
+				B85B89B62F1F2A20004B4F61 /* AudioRecorderSheet.swift in Sources */,
+				B85B89B72F1F2A20004B4F61 /* AudioBlockView.swift in Sources */,
 				B89229552F05FE1900A58F81 /* DevotionalView.swift in Sources */,
 				B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */,
 				B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */,
+				B85B89C02F21E000004B4F61 /* HighlightModels.swift in Sources */,
+				B85B89C22F21E000004B4F61 /* HighlightManager.swift in Sources */,
+				B85B89C42F21E000004B4F61 /* HighlightImportExportManager.swift in Sources */,
+				B85B89C62F21E000004B4F61 /* HighlightControlsView.swift in Sources */,
+				B85B89C82F21E000004B4F61 /* HighlightSetPickerView.swift in Sources */,
 				B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */,
 				B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */,
 				B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */,
+				B85B89B12F1F1285004B4F61 /* DevotionalMediaStorage.swift in Sources */,
+				B85B89B22F1F1285004B4F61 /* DevotionalSharingManager.swift in Sources */,
+				B85B89B32F1F1285004B4F61 /* ModuleMediaStorage.swift in Sources */,
 				B85B896E2F17410C004B4F61 /* UserDatabase.swift in Sources */,
 				B85B89702F17411A004B4F61 /* UserModels.swift in Sources */,
 				B85B89982F1C73D7004B4F61 /* SyncProvider.swift in Sources */,
 				B85B89992F1C73D7004B4F61 /* SyncTypes.swift in Sources */,
 				B85B899A2F1C73D7004B4F61 /* WebDAVClient.swift in Sources */,
+				B85B89AC2F1F1206004B4F61 /* AudioRecorder.swift in Sources */,
+				B85B89AD2F1F1206004B4F61 /* AudioPlayer.swift in Sources */,
 				B85B899B2F1C73D7004B4F61 /* WebDAVModuleStorage.swift in Sources */,
 				B85B899C2F1C73D7004B4F61 /* SyncableEntry.swift in Sources */,
 				B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */,

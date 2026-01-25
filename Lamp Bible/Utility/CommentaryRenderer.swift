@@ -22,6 +22,7 @@ private enum CommentaryTapAction {
     case strongs(key: String)
     case footnote(id: String)
     case lexicon(id: String)
+    case media(id: String)
 }
 
 // MARK: - First Match Scroll Offset (for scroll-to-match in preview sheets)
@@ -52,6 +53,7 @@ struct CommentaryTappableItem: Equatable, Identifiable {
         case strongs(key: String, displayText: String)
         case footnote(id: String)
         case lexicon(id: String, displayText: String)
+        case media(id: String, displayText: String)
     }
 
     var displayText: String {
@@ -60,6 +62,7 @@ struct CommentaryTappableItem: Equatable, Identifiable {
         case .strongs(_, let text): return text
         case .footnote(let id): return id
         case .lexicon(_, let text): return text
+        case .media(_, let text): return text
         }
     }
 }
@@ -157,10 +160,18 @@ struct CommentaryRenderer {
             case .greek:
                 result[range].font = style.greekFont
                 result[range].foregroundColor = style.strongsColor.opacity(0.8)
+                // Add link if strongs data is present
+                if let key = annotation.data?.strongs {
+                    result[range].link = URL(string: "lampbible://strongs/\(key)")
+                }
 
             case .hebrew:
                 result[range].font = style.hebrewFont
                 result[range].foregroundColor = style.strongsColor.opacity(0.8)
+                // Add link if strongs data is present
+                if let key = annotation.data?.strongs {
+                    result[range].link = URL(string: "lampbible://strongs/\(key)")
+                }
 
             case .footnote:
                 result[range].foregroundColor = style.footnoteColor
@@ -202,6 +213,14 @@ struct CommentaryRenderer {
 
             case .italic:
                 result[range].font = style.bodyFont.italic()
+
+            case .media:
+                // Media annotations indicate inline media references
+                // Render as a placeholder icon - actual media display handled at view level
+                result[range].foregroundColor = style.scriptureColor
+                if let mediaId = annotation.data?.mediaId {
+                    result[range].link = URL(string: "lampbible://media/\(mediaId)")
+                }
             }
         }
 
@@ -276,9 +295,17 @@ struct CommentaryRenderer {
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
                     }
+                    // Add tap action if strongs data is present
+                    if let key = annotation.data?.strongs {
+                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.strongs(key: key), range: range)
+                    }
 
                 case .hebrew:
-                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
+                    result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
+                    // Add tap action if strongs data is present
+                    if let key = annotation.data?.strongs {
+                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.strongs(key: key), range: range)
+                    }
 
                 case .footnote:
                     result.addAttribute(.foregroundColor, value: UIColor(style.footnoteColor), range: range)
@@ -316,6 +343,14 @@ struct CommentaryRenderer {
                 case .italic:
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+
+                case .media:
+                    // Media annotations indicate inline media references
+                    // Render with accent color - actual media display handled at view level
+                    result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
+                    if let mediaId = annotation.data?.mediaId {
+                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.media(id: mediaId), range: range)
                     }
                 }
             }
@@ -451,9 +486,29 @@ struct CommentaryRenderer {
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
                     }
+                    // Add tappable item if strongs data is present
+                    if let key = annotation.data?.strongs {
+                        result.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: range)
+                        let displayText = getDisplayText(annotation.start, annotation.end)
+                        tappableItems.append(CommentaryTappableItem(
+                            index: itemIndex,
+                            type: .strongs(key: key, displayText: displayText)
+                        ))
+                        itemIndex += 1
+                    }
 
                 case .hebrew:
-                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
+                    result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
+                    // Add tappable item if strongs data is present
+                    if let key = annotation.data?.strongs {
+                        result.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: range)
+                        let displayText = getDisplayText(annotation.start, annotation.end)
+                        tappableItems.append(CommentaryTappableItem(
+                            index: itemIndex,
+                            type: .strongs(key: key, displayText: displayText)
+                        ))
+                        itemIndex += 1
+                    }
 
                 case .footnote:
                     result.addAttribute(.foregroundColor, value: UIColor(style.footnoteColor), range: range)
@@ -501,6 +556,19 @@ struct CommentaryRenderer {
                 case .italic:
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+
+                case .media:
+                    // Media annotations indicate inline media references
+                    result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
+                    if let mediaId = annotation.data?.mediaId {
+                        result.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: range)
+                        let displayText = getDisplayText(annotation.start, annotation.end)
+                        tappableItems.append(CommentaryTappableItem(
+                            index: itemIndex,
+                            type: .media(id: mediaId, displayText: displayText)
+                        ))
+                        itemIndex += 1
                     }
                 }
             }
@@ -598,6 +666,7 @@ struct AnnotatedTextView: View {
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String) -> Void)?
     let onLexiconTap: ((String) -> Void)?  // lexicon entry ID
+    let onMediaTap: ((String) -> Void)?  // media ID
 
     // Scroll-to-match support
     var shouldReportMatchOffset: Bool = false
@@ -612,6 +681,7 @@ struct AnnotatedTextView: View {
         onStrongsTap: ((String) -> Void)? = nil,
         onFootnoteTap: ((String) -> Void)? = nil,
         onLexiconTap: ((String) -> Void)? = nil,
+        onMediaTap: ((String) -> Void)? = nil,
         shouldReportMatchOffset: Bool = false,
         scrollCoordinateSpace: String = "commentaryScroll"
     ) {
@@ -621,6 +691,7 @@ struct AnnotatedTextView: View {
         self.onStrongsTap = onStrongsTap
         self.onFootnoteTap = onFootnoteTap
         self.onLexiconTap = onLexiconTap
+        self.onMediaTap = onMediaTap
         self.shouldReportMatchOffset = shouldReportMatchOffset
         self.scrollCoordinateSpace = scrollCoordinateSpace
     }
@@ -633,6 +704,7 @@ struct AnnotatedTextView: View {
             onStrongsTap: onStrongsTap,
             onFootnoteTap: onFootnoteTap,
             onLexiconTap: onLexiconTap,
+            onMediaTap: onMediaTap,
             shouldReportMatchOffset: shouldReportMatchOffset,
             onFirstMatchOffset: shouldReportMatchOffset ? { offset in
                 localMatchOffset = offset
@@ -665,6 +737,7 @@ private class TappableCommentaryTextView: UITextView {
     var onStrongsTap: ((String) -> Void)?
     var onFootnoteTap: ((String) -> Void)?
     var onLexiconTap: ((String) -> Void)?
+    var onMediaTap: ((String) -> Void)?
 
     // Use TextKit 1 for reliable character index calculation
     private let textKit1LayoutManager = NSLayoutManager()
@@ -730,6 +803,8 @@ private class TappableCommentaryTextView: UITextView {
                 onFootnoteTap?(id)
             case .lexicon(let id):
                 onLexiconTap?(id)
+            case .media(let id):
+                onMediaTap?(id)
             }
         }
     }
@@ -748,6 +823,7 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String) -> Void)?
     let onLexiconTap: ((String) -> Void)?
+    let onMediaTap: ((String) -> Void)?
 
     // Scroll-to-match support
     var shouldReportMatchOffset: Bool = false
@@ -780,6 +856,7 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
         textView.onStrongsTap = onStrongsTap
         textView.onFootnoteTap = onFootnoteTap
         textView.onLexiconTap = onLexiconTap
+        textView.onMediaTap = onMediaTap
 
         // Ensure dynamic colors update correctly
         textView.textColor = .label

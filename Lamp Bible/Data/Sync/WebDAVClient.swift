@@ -93,19 +93,33 @@ class WebDAVClient {
 
     // MARK: - Public API
 
-    /// Test connection to the server
+    /// Test connection to the server using PROPFIND (more universally supported than OPTIONS)
     func testConnection() async throws -> Bool {
         let url = baseURL
         var request = URLRequest(url: url)
-        request.httpMethod = "OPTIONS"
+        request.httpMethod = "PROPFIND"
+        request.setValue("0", forHTTPHeaderField: "Depth")  // Only check the target, not children
+        request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         addAuthHeader(to: &request)
+
+        // Minimal PROPFIND body
+        let propfindBody = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <d:propfind xmlns:d="DAV:">
+            <d:prop>
+                <d:resourcetype/>
+            </d:prop>
+        </d:propfind>
+        """
+        request.httpBody = propfindBody.data(using: .utf8)
 
         do {
             let (_, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw WebDAVError.invalidResponse
             }
-            return (200..<300).contains(httpResponse.statusCode)
+            // 207 Multi-Status is the expected success response for PROPFIND
+            return httpResponse.statusCode == 207 || (200..<300).contains(httpResponse.statusCode)
         } catch let error as WebDAVError {
             throw error
         } catch {
@@ -298,7 +312,8 @@ class WebDAVClient {
         }
 
         let statusCode = httpResponse.statusCode
-        let allowed = allowedCodes ?? Array(200..<300)
+        // Default allowed codes include 207 (Multi-Status) which is standard for WebDAV PROPFIND
+        let allowed = allowedCodes ?? (Array(200..<300) + [207])
 
         if allowed.contains(statusCode) {
             return
@@ -311,6 +326,8 @@ class WebDAVClient {
             throw WebDAVError.forbidden
         case 404:
             throw WebDAVError.notFound
+        case 405:
+            throw WebDAVError.httpError(statusCode, "Method not allowed - server may not support WebDAV or path is incorrect")
         case 409:
             throw WebDAVError.conflict
         case 507:

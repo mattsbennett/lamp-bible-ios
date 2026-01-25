@@ -318,4 +318,66 @@ class ICloudModuleStorage: ModuleStorage {
             return .notAvailable
         }
     }
+
+    // MARK: - Generic File Access
+
+    func readFile(path: String) async throws -> Data {
+        guard let docsURL = documentsURL else {
+            throw ModuleStorageError.notAvailable
+        }
+
+        let fileURL = docsURL.appendingPathComponent(path)
+
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            throw ModuleStorageError.fileNotFound(path)
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let coordinator = NSFileCoordinator()
+            var error: NSError?
+
+            coordinator.coordinate(readingItemAt: fileURL, options: [], error: &error) { url in
+                do {
+                    let data = try Data(contentsOf: url)
+                    continuation.resume(returning: data)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+
+            if let error = error {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    func writeFile(path: String, data: Data) async throws {
+        guard let docsURL = documentsURL else {
+            throw ModuleStorageError.notAvailable
+        }
+
+        let fileURL = docsURL.appendingPathComponent(path)
+
+        // Create parent directory if needed
+        let parentDir = fileURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let coordinator = NSFileCoordinator()
+            var error: NSError?
+
+            coordinator.coordinate(writingItemAt: fileURL, options: .forReplacing, error: &error) { url in
+                do {
+                    try data.write(to: url, options: .atomic)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+
+            if let error = error {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
 }

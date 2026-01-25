@@ -178,6 +178,66 @@ enum DevotionalBlockType: String, Codable {
     case list
     case blockquote
     case heading
+    case image
+    case audio
+}
+
+// MARK: - Media Types
+
+enum DevotionalMediaType: String, Codable {
+    case image
+    case audio
+}
+
+enum ImageAlignment: String, Codable {
+    case left
+    case center
+    case right
+    case full
+}
+
+/// Media reference for image/audio files embedded in devotionals
+struct DevotionalMediaReference: Codable, Identifiable, Equatable {
+    let id: String
+    var type: DevotionalMediaType
+    var filename: String
+    var mimeType: String
+    var size: Int?
+    var width: Int?                     // Images only
+    var height: Int?                    // Images only
+    var duration: Double?               // Audio only (seconds)
+    var waveform: [Float]?              // Audio only (0-1 normalized samples)
+    var transcription: String?          // Audio only (speech-to-text)
+    var alt: String?                    // Images only (accessibility)
+    var created: Int?
+
+    init(
+        id: String = UUID().uuidString,
+        type: DevotionalMediaType,
+        filename: String,
+        mimeType: String,
+        size: Int? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        duration: Double? = nil,
+        waveform: [Float]? = nil,
+        transcription: String? = nil,
+        alt: String? = nil,
+        created: Int? = nil
+    ) {
+        self.id = id
+        self.type = type
+        self.filename = filename
+        self.mimeType = mimeType
+        self.size = size
+        self.width = width
+        self.height = height
+        self.duration = duration
+        self.waveform = waveform
+        self.transcription = transcription
+        self.alt = alt
+        self.created = created ?? Int(Date().timeIntervalSince1970)
+    }
 }
 
 enum DevotionalListType: String, Codable {
@@ -195,16 +255,40 @@ struct DevotionalContentBlock: Codable, Equatable, Identifiable {
     var listType: DevotionalListType?       // For list blocks
     var items: [DevotionalListItem]?        // For list blocks
 
+    // Media block properties
+    var mediaId: String?                    // Reference to media in Devotional.media array
+    var caption: DevotionalAnnotatedText?   // Caption for image/audio
+    var alignment: ImageAlignment?          // Image alignment
+    var showWaveform: Bool?                 // Audio: show waveform visualization
+    var autoplay: Bool?                     // Audio: autoplay in present mode
+
     enum CodingKeys: String, CodingKey {
         case type, content, level, listType, items
+        case mediaId, caption, alignment, showWaveform, autoplay
     }
 
-    init(type: DevotionalBlockType, content: DevotionalAnnotatedText? = nil, level: Int? = nil, listType: DevotionalListType? = nil, items: [DevotionalListItem]? = nil) {
+    init(
+        type: DevotionalBlockType,
+        content: DevotionalAnnotatedText? = nil,
+        level: Int? = nil,
+        listType: DevotionalListType? = nil,
+        items: [DevotionalListItem]? = nil,
+        mediaId: String? = nil,
+        caption: DevotionalAnnotatedText? = nil,
+        alignment: ImageAlignment? = nil,
+        showWaveform: Bool? = nil,
+        autoplay: Bool? = nil
+    ) {
         self.type = type
         self.content = content
         self.level = level
         self.listType = listType
         self.items = items
+        self.mediaId = mediaId
+        self.caption = caption
+        self.alignment = alignment
+        self.showWaveform = showWaveform
+        self.autoplay = autoplay
     }
 
     // Convenience initializers
@@ -233,6 +317,25 @@ struct DevotionalContentBlock: Codable, Equatable, Identifiable {
             type: .list,
             listType: .numbered,
             items: items.map { DevotionalListItem(content: DevotionalAnnotatedText(text: $0)) }
+        )
+    }
+
+    static func image(mediaId: String, caption: String? = nil, alignment: ImageAlignment = .center) -> DevotionalContentBlock {
+        DevotionalContentBlock(
+            type: .image,
+            mediaId: mediaId,
+            caption: caption.map { DevotionalAnnotatedText(text: $0) },
+            alignment: alignment
+        )
+    }
+
+    static func audio(mediaId: String, caption: String? = nil, showWaveform: Bool = true, autoplay: Bool = false) -> DevotionalContentBlock {
+        DevotionalContentBlock(
+            type: .audio,
+            mediaId: mediaId,
+            caption: caption.map { DevotionalAnnotatedText(text: $0) },
+            showWaveform: showWaveform,
+            autoplay: autoplay
         )
     }
 }
@@ -391,6 +494,7 @@ struct Devotional: Codable, Identifiable, Equatable, Hashable {
     var content: DevotionalContent
     var footnotes: [DevotionalFootnote]?
     var relatedDevotionals: [String]?
+    var media: [DevotionalMediaReference]?  // Embedded media files
 
     // Identifiable conformance (not stored, derived from meta.id)
     var id: String { meta.id }
@@ -402,7 +506,7 @@ struct Devotional: Codable, Identifiable, Equatable, Hashable {
 
     // Exclude computed `id` from Codable
     enum CodingKeys: String, CodingKey {
-        case meta, summary, content, footnotes, relatedDevotionals
+        case meta, summary, content, footnotes, relatedDevotionals, media
     }
 
     init(
@@ -410,13 +514,15 @@ struct Devotional: Codable, Identifiable, Equatable, Hashable {
         summary: DevotionalTextField? = nil,
         content: DevotionalContent,
         footnotes: [DevotionalFootnote]? = nil,
-        relatedDevotionals: [String]? = nil
+        relatedDevotionals: [String]? = nil,
+        media: [DevotionalMediaReference]? = nil
     ) {
         self.meta = meta
         self.summary = summary
         self.content = content
         self.footnotes = footnotes
         self.relatedDevotionals = relatedDevotionals
+        self.media = media
     }
 
     /// Create a new empty devotional
@@ -522,11 +628,14 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
     var summaryJson: String?
     var contentJson: String
     var footnotesJson: String?
+    var mediaJson: String?          // JSON array of DevotionalMediaReference
     var relatedIds: String?         // Comma-separated UUIDs
     var created: Int
     var lastModified: Int?
     var searchText: String?
-    var recordChangeTag: String?  // CloudKit record change tag for sync
+    var recordChangeTag: String?    // CloudKit record change tag for sync
+    var subscriptionId: String?     // Subscription ID if from subscription (nil for local)
+    var isReadOnly: Int?            // 1 if read-only (from subscription), 0 or nil for editable
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -539,11 +648,19 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
         case summaryJson = "summary_json"
         case contentJson = "content_json"
         case footnotesJson = "footnotes_json"
+        case mediaJson = "media_json"
         case relatedIds = "related_ids"
         case created
         case lastModified = "last_modified"
         case searchText = "search_text"
         case recordChangeTag = "record_change_tag"
+        case subscriptionId = "subscription_id"
+        case isReadOnly = "is_read_only"
+    }
+
+    /// Whether this entry is read-only (from a subscription)
+    var isFromSubscription: Bool {
+        subscriptionId != nil && isReadOnly == 1
     }
 
     /// Convert from Devotional model
@@ -563,10 +680,20 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
         self.summaryJson = devotional.summary.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
         self.contentJson = (try? JSONEncoder().encode(devotional.content)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         self.footnotesJson = devotional.footnotes.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+        self.mediaJson = devotional.media.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
         self.relatedIds = devotional.relatedDevotionals?.joined(separator: ",")
         self.created = devotional.meta.created ?? Int(Date().timeIntervalSince1970)
         self.lastModified = devotional.meta.lastModified ?? Int(Date().timeIntervalSince1970)
         self.searchText = devotional.searchText
+
+        // Debug: Log media persistence
+        print("[DevotionalEntry] Saving devotional '\(devotional.meta.title)' with \(devotional.media?.count ?? 0) media items")
+        if let media = devotional.media {
+            for ref in media {
+                print("[DevotionalEntry]   - Media: \(ref.id) -> \(ref.filename)")
+            }
+        }
+        print("[DevotionalEntry] mediaJson: \(self.mediaJson?.prefix(100) ?? "nil")")
     }
 
     /// Simple init for backward compatibility (plain text content)
@@ -600,6 +727,7 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
         let block = DevotionalContentBlock(type: .paragraph, content: DevotionalAnnotatedText(text: content))
         self.contentJson = (try? JSONEncoder().encode(DevotionalContent.blocks([block]))).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         self.footnotesJson = nil
+        self.mediaJson = nil
         self.relatedIds = nil
         self.created = lastModified ?? Int(Date().timeIntervalSince1970)
         self.lastModified = lastModified ?? Int(Date().timeIntervalSince1970)
@@ -628,6 +756,29 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
             return try? JSONDecoder().decode([DevotionalFootnote].self, from: data)
         }
 
+        let media: [DevotionalMediaReference]? = mediaJson.flatMap { json in
+            guard let data = json.data(using: .utf8) else {
+                print("[DevotionalEntry] toDevotional: mediaJson present but failed to convert to data")
+                return nil
+            }
+            do {
+                let decoded = try JSONDecoder().decode([DevotionalMediaReference].self, from: data)
+                print("[DevotionalEntry] toDevotional: Loaded \(decoded.count) media items for '\(title)'")
+                for ref in decoded {
+                    print("[DevotionalEntry]   - Media: \(ref.id) -> \(ref.filename)")
+                }
+                return decoded
+            } catch {
+                print("[DevotionalEntry] toDevotional: Failed to decode mediaJson: \(error)")
+                return nil
+            }
+        }
+
+        // Debug: Log if mediaJson was nil
+        if mediaJson == nil {
+            print("[DevotionalEntry] toDevotional: mediaJson is nil for '\(title)'")
+        }
+
         let series: DevotionalSeriesInfo? = {
             guard seriesId != nil || seriesName != nil || seriesOrder != nil else { return nil }
             return DevotionalSeriesInfo(id: seriesId, name: seriesName, order: seriesOrder)
@@ -652,7 +803,8 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
             summary: summary,
             content: content,
             footnotes: footnotes,
-            relatedDevotionals: relatedIds?.split(separator: ",").map { String($0) }
+            relatedDevotionals: relatedIds?.split(separator: ",").map { String($0) },
+            media: media
         )
     }
 
@@ -800,3 +952,251 @@ struct DevotionalFilterOptions {
         tags.isEmpty && categories.isEmpty && dateRange == nil && searchQuery.isEmpty
     }
 }
+
+// MARK: - Publication Models
+
+/// Filter type for determining which devotionals to publish
+enum PublicationFilterType: String, Codable, CaseIterable {
+    case tag
+    case category
+    case all  // No filter - publish everything
+
+    var displayName: String {
+        switch self {
+        case .tag: return "By Tag"
+        case .category: return "By Category"
+        case .all: return "All Devotionals"
+        }
+    }
+}
+
+/// Represents a published feed of devotionals that others can subscribe to
+struct DevotionalPublication: Codable, Identifiable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "devotional_publications"
+
+    let id: String                      // UUID
+    var name: String                    // Display name for the publication
+    var description: String?
+    var filterType: PublicationFilterType
+    var filterValues: [String]          // Tag names or category values
+    var moduleId: String                // Source module to publish from
+    var lastPublished: Date?
+    var subscriberCount: Int?           // Optional analytics
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description
+        case filterType = "filter_type"
+        case filterValues = "filter_values"
+        case moduleId = "module_id"
+        case lastPublished = "last_published"
+        case subscriberCount = "subscriber_count"
+    }
+
+    // Custom encoding/decoding for filterValues (array to comma-separated string)
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        filterType = try container.decode(PublicationFilterType.self, forKey: .filterType)
+        moduleId = try container.decode(String.self, forKey: .moduleId)
+        subscriberCount = try container.decodeIfPresent(Int.self, forKey: .subscriberCount)
+
+        // Handle filter_values as comma-separated string from database
+        if let valuesString = try container.decodeIfPresent(String.self, forKey: .filterValues) {
+            filterValues = valuesString.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+        } else {
+            filterValues = []
+        }
+
+        // Handle last_published as Unix timestamp from database
+        if let timestamp = try container.decodeIfPresent(Int.self, forKey: .lastPublished) {
+            lastPublished = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        } else {
+            lastPublished = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(description, forKey: .description)
+        try container.encode(filterType, forKey: .filterType)
+        try container.encode(moduleId, forKey: .moduleId)
+        try container.encodeIfPresent(subscriberCount, forKey: .subscriberCount)
+
+        // Encode filter_values as comma-separated string
+        try container.encode(filterValues.joined(separator: ","), forKey: .filterValues)
+
+        // Encode last_published as Unix timestamp
+        if let date = lastPublished {
+            try container.encode(Int(date.timeIntervalSince1970), forKey: .lastPublished)
+        }
+    }
+
+    init(
+        id: String = UUID().uuidString,
+        name: String,
+        description: String? = nil,
+        filterType: PublicationFilterType = .all,
+        filterValues: [String] = [],
+        moduleId: String = "devotionals",
+        lastPublished: Date? = nil,
+        subscriberCount: Int? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.filterType = filterType
+        self.filterValues = filterValues
+        self.moduleId = moduleId
+        self.lastPublished = lastPublished
+        self.subscriberCount = subscriberCount
+    }
+}
+
+/// Manifest file stored at publication URL - lightweight metadata for subscribers
+struct PublicationManifest: Codable {
+    let publicationId: String
+    let name: String
+    let description: String?
+    let lastUpdated: Date
+    let entryCount: Int
+    let version: Int                    // Increments on each publish
+
+    init(
+        publicationId: String,
+        name: String,
+        description: String? = nil,
+        lastUpdated: Date = Date(),
+        entryCount: Int = 0,
+        version: Int = 1
+    ) {
+        self.publicationId = publicationId
+        self.name = name
+        self.description = description
+        self.lastUpdated = lastUpdated
+        self.entryCount = entryCount
+        self.version = version
+    }
+}
+
+/// Storage type for subscriptions
+enum SubscriptionStorageType: String, Codable, CaseIterable {
+    case icloud
+    case webdav
+
+    var displayName: String {
+        switch self {
+        case .icloud: return "iCloud"
+        case .webdav: return "WebDAV"
+        }
+    }
+}
+
+/// Subscription to someone else's publication
+struct DevotionalSubscription: Codable, Identifiable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "devotional_subscriptions"
+
+    let id: String                      // UUID
+    var publicationId: String           // ID from manifest
+    var name: String                    // From manifest, user can override
+    var url: String                     // Full URL to manifest
+    var storageType: SubscriptionStorageType
+    var lastSynced: Date?
+    var lastRemoteVersion: Int?         // Track version for change detection
+    var isEnabled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, url
+        case publicationId = "publication_id"
+        case storageType = "storage_type"
+        case lastSynced = "last_synced"
+        case lastRemoteVersion = "last_remote_version"
+        case isEnabled = "is_enabled"
+    }
+
+    // Custom decoding for database types
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        publicationId = try container.decode(String.self, forKey: .publicationId)
+        name = try container.decode(String.self, forKey: .name)
+        url = try container.decode(String.self, forKey: .url)
+        storageType = try container.decode(SubscriptionStorageType.self, forKey: .storageType)
+        lastRemoteVersion = try container.decodeIfPresent(Int.self, forKey: .lastRemoteVersion)
+
+        // Handle last_synced as Unix timestamp
+        if let timestamp = try container.decodeIfPresent(Int.self, forKey: .lastSynced) {
+            lastSynced = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        } else {
+            lastSynced = nil
+        }
+
+        // Handle is_enabled as Int (SQLite boolean)
+        let enabledInt = try container.decodeIfPresent(Int.self, forKey: .isEnabled) ?? 1
+        isEnabled = enabledInt != 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(publicationId, forKey: .publicationId)
+        try container.encode(name, forKey: .name)
+        try container.encode(url, forKey: .url)
+        try container.encode(storageType, forKey: .storageType)
+        try container.encodeIfPresent(lastRemoteVersion, forKey: .lastRemoteVersion)
+
+        // Encode last_synced as Unix timestamp
+        if let date = lastSynced {
+            try container.encode(Int(date.timeIntervalSince1970), forKey: .lastSynced)
+        }
+
+        // Encode is_enabled as Int
+        try container.encode(isEnabled ? 1 : 0, forKey: .isEnabled)
+    }
+
+    init(
+        id: String = UUID().uuidString,
+        publicationId: String,
+        name: String,
+        url: String,
+        storageType: SubscriptionStorageType,
+        lastSynced: Date? = nil,
+        lastRemoteVersion: Int? = nil,
+        isEnabled: Bool = true
+    ) {
+        self.id = id
+        self.publicationId = publicationId
+        self.name = name
+        self.url = url
+        self.storageType = storageType
+        self.lastSynced = lastSynced
+        self.lastRemoteVersion = lastRemoteVersion
+        self.isEnabled = isEnabled
+    }
+}
+
+/// Result of syncing a subscription
+struct SubscriptionSyncResult {
+    let subscriptionId: String
+    let added: Int
+    let updated: Int
+    let removed: Int
+    let error: Error?
+
+    var isSuccess: Bool { error == nil }
+
+    var summary: String {
+        if let error = error {
+            return "Error: \(error.localizedDescription)"
+        }
+        var parts: [String] = []
+        if added > 0 { parts.append("\(added) added") }
+        if updated > 0 { parts.append("\(updated) updated") }
+        if removed > 0 { parts.append("\(removed) removed") }
+        return parts.isEmpty ? "No changes" : parts.joined(separator: ", ")
+    }
+}
+

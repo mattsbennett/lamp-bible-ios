@@ -33,6 +33,8 @@ struct UserSettings: Codable, FetchableRecord, PersistableRecord, Identifiable {
     var hiddenGreekLexicons: String = ""
     var hiddenHebrewLexicons: String = ""
     var showStrongsHints: Bool = false
+    var customHighlightColors: String = ""  // Deprecated - use highlightColorOrder
+    var highlightColorOrder: String = ""    // Comma-separated hex values of ALL visible colors in order
     var updatedAt: Date = Date()
 
     // MARK: - CodingKeys for snake_case mapping
@@ -58,6 +60,8 @@ struct UserSettings: Codable, FetchableRecord, PersistableRecord, Identifiable {
         case hiddenGreekLexicons = "hidden_greek_lexicons"
         case hiddenHebrewLexicons = "hidden_hebrew_lexicons"
         case showStrongsHints = "show_strongs_hints"
+        case customHighlightColors = "custom_highlight_colors"
+        case highlightColorOrder = "highlight_color_order"
         case updatedAt = "updated_at"
     }
 

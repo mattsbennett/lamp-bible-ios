@@ -79,6 +79,17 @@ struct DevotionalView: View {
     @State private var showingScriptureQuoteSheet: Bool = false
     @State private var showingQuotePopover: Bool = false
 
+    // Media insertion state
+    @State private var showingImagePicker: Bool = false
+    @State private var showingAudioRecorder: Bool = false
+    @State private var showingAudioFilePicker: Bool = false
+    @State private var showingFullScreenImage: Bool = false
+    @State private var fullScreenImage: UIImage? = nil
+    @State private var fullScreenImageCaption: DevotionalAnnotatedText? = nil
+
+    // Footnote scroll state (for read mode)
+    @State private var scrollToFootnoteId: String? = nil
+
     enum DevotionalSaveState {
         case idle
         case saving
@@ -94,13 +105,20 @@ struct DevotionalView: View {
         self.initialMode = initialMode
         _devotional = State(initialValue: devotional)
         _mode = State(initialValue: initialMode)
-        _markdownContent = State(initialValue: MarkdownDevotionalConverter.blocksToMarkdown(
-            devotional.contentBlocks
-        ))
+        _markdownContent = State(initialValue: MarkdownDevotionalConverter.contentToMarkdown(devotional))
         // Load present mode font multiplier from settings
         let settings = UserDatabase.shared.getSettings()
         _presentFontMultiplier = State(initialValue: CGFloat(settings.devotionalPresentFontMultiplier))
+
+        // Debug: Log media when view opens
+        print("[DevotionalView] Opening devotional '\(devotional.meta.title)' with \(devotional.media?.count ?? 0) media items")
+        if let media = devotional.media {
+            for ref in media {
+                print("[DevotionalView]   - Media: \(ref.id) -> \(ref.filename)")
+            }
+        }
     }
+
 
     var body: some View {
         ZStack {
@@ -112,6 +130,7 @@ struct DevotionalView: View {
             case .edit:
                 editModeView
             }
+
         }
         .navigationTitle(mode == .present ? "" : devotional.meta.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -212,6 +231,34 @@ struct DevotionalView: View {
                 }
             )
         }
+        .sheet(isPresented: $showingImagePicker) {
+            ImagePickerSheet(isPresented: $showingImagePicker) { image in
+                print("[DevotionalView] Image picker callback received image: \(image.size)")
+                insertImageBlock(image)
+            }
+        }
+        .sheet(isPresented: $showingAudioRecorder) {
+            AudioRecorderSheet(isPresented: $showingAudioRecorder) { audioURL in
+                print("[DevotionalView] Audio recorder callback received URL: \(audioURL)")
+                insertAudioBlock(from: audioURL)
+            }
+        }
+        .fileImporter(
+            isPresented: $showingAudioFilePicker,
+            allowedContentTypes: [.audio, .mpeg4Audio, .mp3, .wav],
+            allowsMultipleSelection: false
+        ) { result in
+            handleAudioFileImport(result)
+        }
+        .fullScreenCover(isPresented: $showingFullScreenImage) {
+            if let image = fullScreenImage {
+                FullScreenImageView(
+                    image: image,
+                    caption: fullScreenImageCaption,
+                    isPresented: $showingFullScreenImage
+                )
+            }
+        }
         .onDisappear {
             saveTask?.cancel()
             syncPollingTask?.cancel()
@@ -281,7 +328,11 @@ struct DevotionalView: View {
                     // Content
                     DevotionalContentRenderer(
                         content: devotional.content,
-                        style: presentStyle
+                        style: presentStyle,
+                        mediaRefs: devotional.media,
+                        devotionalId: devotional.meta.id,
+                        moduleId: moduleId,
+                        onImageTap: handleImageTap
                     )
                 }
                 .padding(.horizontal, 32)
@@ -332,13 +383,14 @@ struct DevotionalView: View {
     // MARK: - Read Mode
 
     private var readModeView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // Header
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(devotional.meta.title)
-                        .font(.title)
-                        .fontWeight(.bold)
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Header
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(devotional.meta.title)
+                            .font(.title)
+                            .fontWeight(.bold)
 
                     if let subtitle = devotional.meta.subtitle {
                         Text(subtitle)
@@ -431,9 +483,21 @@ struct DevotionalView: View {
                     onStrongsTap: { key in
                         handleStrongsTap(key: key)
                     },
+                    onFootnoteTap: { id in
+                        // Scroll to the footnote in the footnotes section
+                        // Clean the ID in case it contains ^ from old data
+                        let cleanId = id.hasPrefix("^") ? String(id.dropFirst()) : id
+                        withAnimation {
+                            scrollProxy.scrollTo("footnote-\(cleanId)", anchor: .center)
+                        }
+                    },
                     onLinkTap: { url in
                         handleLinkTap(url: url)
-                    }
+                    },
+                    mediaRefs: devotional.media,
+                    devotionalId: devotional.meta.id,
+                    moduleId: moduleId,
+                    onImageTap: handleImageTap
                 )
 
                 // Footnotes
@@ -458,6 +522,7 @@ struct DevotionalView: View {
             }
             .padding()
         }
+        }
     }
 
     private var readStyle: DevotionalRendererStyle {
@@ -474,31 +539,12 @@ struct DevotionalView: View {
     // MARK: - Edit Mode
 
     private var editModeView: some View {
-        ZStack(alignment: .bottomTrailing) {
+        Group {
             if editMode == .visual {
                 visualEditView
             } else {
                 markdownEditView
             }
-
-            // FAB for toggling Visual/Markdown
-            Button(action: toggleEditMode) {
-                HStack(spacing: 6) {
-                    Image(systemName: editMode == .visual ? "chevron.left.forwardslash.chevron.right" : "eye")
-                        .font(.body)
-                    Text(editMode == .visual ? "MD" : "Visual")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.accentColor)
-                .clipShape(Capsule())
-                .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
-            }
-            .padding(.trailing, 16)
-            .padding(.bottom, 16)
         }
         // NOTE: Removed syncMarkdownFromBlocks() from onAppear
         // The init() already sets markdownContent from blocks.
@@ -524,6 +570,10 @@ struct DevotionalView: View {
                         linkEditorSelectionRange = range
                         showingLinkEditor = true
                     }
+                    // Set up callback for "Add Footnote" context menu item
+                    coordinator.onAddFootnoteRequested = { [self] in
+                        showingFootnoteEditor = true
+                    }
                 }
             )
             .id(visualEditorRefreshId)  // Force recreate when switching from markdown mode
@@ -532,28 +582,37 @@ struct DevotionalView: View {
                 scheduleAutoSave()
             }
         }
+        .ignoresSafeArea(.container, edges: .bottom)  // Ignore toolbar but not keyboard
     }
 
     private var markdownEditView: some View {
-        TextEditor(text: $markdownContent)
-            .font(.system(.body, design: .monospaced))
-            .padding(.horizontal)
-            .padding(.top, 8)
-            .onChange(of: markdownContent) { _, _ in
-                hasUnsavedChanges = true
-                scheduleAutoSave()
-            }
+        ScrollView {
+            TextEditor(text: $markdownContent)
+                .font(.system(.body, design: .monospaced))
+                .frame(minHeight: 500)
+                .scrollDisabled(true)  // Let outer ScrollView handle scrolling
+                .padding(.horizontal)
+                .padding(.bottom, 60)  // Space for bottom toolbar
+        }
+        .padding(.top, 8)
+        .scrollDismissesKeyboard(.interactively)
+        .onChange(of: markdownContent) { _, _ in
+            hasUnsavedChanges = true
+            scheduleAutoSave()
+        }
     }
 
     // MARK: - Content Sync
 
     private func syncMarkdownFromBlocks() {
-        markdownContent = MarkdownDevotionalConverter.blocksToMarkdown(devotional.contentBlocks)
+        markdownContent = MarkdownDevotionalConverter.contentToMarkdown(devotional)
     }
 
     private func syncBlocksFromMarkdown() {
         let blocks = MarkdownDevotionalConverter.markdownToBlocks(markdownContent)
         devotional.content = .blocks(blocks)
+        // Also parse footnotes from markdown
+        devotional.footnotes = MarkdownDevotionalConverter.parseFootnotes(from: markdownContent)
     }
 
     /// Sync markdown from visual editor using the coordinator's stored attributed string
@@ -641,6 +700,35 @@ struct DevotionalView: View {
                 // Footnote
                 Button(action: { openFootnoteEditor() }) {
                     formattingButton(icon: "note.text", label: nil)
+                }
+
+                Divider().frame(height: 24)
+
+                // Media insertion menu
+                Menu {
+                    Button(action: {
+                        // Resign first responder to exit editing mode before showing sheet
+                        richTextCoordinator?.resignFirstResponder()
+                        showingImagePicker = true
+                    }) {
+                        Label("Add Image", systemImage: "photo")
+                    }
+
+                    Button(action: {
+                        richTextCoordinator?.resignFirstResponder()
+                        showingAudioRecorder = true
+                    }) {
+                        Label("Record Audio", systemImage: "mic")
+                    }
+
+                    Button(action: {
+                        richTextCoordinator?.resignFirstResponder()
+                        showingAudioFilePicker = true
+                    }) {
+                        Label("Import Audio", systemImage: "waveform")
+                    }
+                } label: {
+                    formattingButton(icon: "photo.badge.plus", label: nil)
                 }
             }
             .padding(.horizontal)
@@ -747,6 +835,145 @@ struct DevotionalView: View {
         scheduleAutoSave()
     }
 
+    // MARK: - Media Insertion
+
+    private func insertImageBlock(_ image: UIImage) {
+        print("[DevotionalView] insertImageBlock called")
+        Task {
+            do {
+                let mediaId = UUID().uuidString
+                print("[DevotionalView] Saving image with mediaId: \(mediaId)")
+                let mediaRef = try DevotionalMediaStorage.shared.saveImage(
+                    image,
+                    id: mediaId,
+                    devotionalId: devotional.meta.id,
+                    moduleId: moduleId
+                )
+                print("[DevotionalView] Image saved: \(mediaRef.filename)")
+
+                // Add to media array
+                var updatedDevotional = devotional
+                if updatedDevotional.media == nil {
+                    updatedDevotional.media = []
+                }
+                updatedDevotional.media?.append(mediaRef)
+                print("[DevotionalView] Media array count: \(updatedDevotional.media?.count ?? 0)")
+
+                // Add image block at the end of content
+                var blocks = updatedDevotional.contentBlocks
+                let imageBlock = DevotionalContentBlock(
+                    type: .image,
+                    mediaId: mediaId,
+                    alignment: .center
+                )
+                blocks.append(imageBlock)
+                updatedDevotional.content = .blocks(blocks)
+                print("[DevotionalView] Block count after insert: \(blocks.count)")
+
+                // Update state on main thread
+                await MainActor.run {
+                    devotional = updatedDevotional
+
+                    // Sync markdown content with new blocks (includes footnotes)
+                    markdownContent = MarkdownDevotionalConverter.contentToMarkdown(devotional)
+                    print("[DevotionalView] Markdown updated, length: \(markdownContent.count)")
+                    print("[DevotionalView] Markdown content: \(markdownContent.suffix(200))")
+
+                    // Force visual editor refresh
+                    visualEditorRefreshId = UUID()
+
+                    hasUnsavedChanges = true
+                    scheduleAutoSave()
+                    print("[DevotionalView] Image block inserted successfully")
+                }
+            } catch {
+                print("[DevotionalView] Error saving image: \(error)")
+            }
+        }
+    }
+
+    private func insertAudioBlock(from audioURL: URL) {
+        print("[DevotionalView] insertAudioBlock called with URL: \(audioURL)")
+        Task {
+            do {
+                let mediaId = UUID().uuidString
+                print("[DevotionalView] Saving audio with mediaId: \(mediaId)")
+                let mediaRef = try await DevotionalMediaStorage.shared.saveAudio(
+                    from: audioURL,
+                    id: mediaId,
+                    devotionalId: devotional.meta.id,
+                    moduleId: moduleId,
+                    generateWaveform: true
+                )
+                print("[DevotionalView] Audio saved: \(mediaRef.filename)")
+
+                // Add to media array
+                var updatedDevotional = devotional
+                if updatedDevotional.media == nil {
+                    updatedDevotional.media = []
+                }
+                updatedDevotional.media?.append(mediaRef)
+                print("[DevotionalView] Media array count: \(updatedDevotional.media?.count ?? 0)")
+
+                // Add audio block at the end of content
+                var blocks = updatedDevotional.contentBlocks
+                let audioBlock = DevotionalContentBlock(
+                    type: .audio,
+                    mediaId: mediaId,
+                    showWaveform: true
+                )
+                blocks.append(audioBlock)
+                updatedDevotional.content = .blocks(blocks)
+                print("[DevotionalView] Block count after insert: \(blocks.count)")
+
+                // Update state on main thread
+                await MainActor.run {
+                    devotional = updatedDevotional
+
+                    // Sync markdown content with new blocks (includes footnotes)
+                    markdownContent = MarkdownDevotionalConverter.contentToMarkdown(devotional)
+                    print("[DevotionalView] Markdown updated, length: \(markdownContent.count)")
+
+                    // Force visual editor refresh
+                    visualEditorRefreshId = UUID()
+
+                    hasUnsavedChanges = true
+                    scheduleAutoSave()
+                    print("[DevotionalView] Audio block inserted successfully")
+                }
+            } catch {
+                print("[DevotionalView] Error saving audio: \(error)")
+            }
+        }
+    }
+
+    private func handleAudioFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+
+            // Need to access security-scoped resource
+            guard url.startAccessingSecurityScopedResource() else { return }
+
+            // Copy to temp directory so we can process it
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(url.pathExtension)
+
+            do {
+                try FileManager.default.copyItem(at: url, to: tempURL)
+                url.stopAccessingSecurityScopedResource()
+                insertAudioBlock(from: tempURL)
+            } catch {
+                print("[DevotionalView] Audio import error: \(error)")
+                url.stopAccessingSecurityScopedResource()
+            }
+
+        case .failure(let error):
+            print("[DevotionalView] Audio file picker error: \(error)")
+        }
+    }
+
     private func formattingButton(icon: String, label: String?) -> some View {
         HStack(spacing: 2) {
             Image(systemName: icon)
@@ -782,21 +1009,6 @@ struct DevotionalView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarTrailing) {
             HStack(spacing: 16) {
-                // Mode toggle
-                Menu {
-                    Button(action: { withAnimation { mode = .present } }) {
-                        Label("Present", systemImage: "rectangle.expand.vertical")
-                    }
-                    Button(action: { withAnimation { mode = .read } }) {
-                        Label("Read", systemImage: "book")
-                    }
-                    Button(action: { withAnimation { mode = .edit } }) {
-                        Label("Edit", systemImage: "pencil")
-                    }
-                } label: {
-                    Image(systemName: modeIcon)
-                }
-
                 // Font size (read mode only)
                 if mode == .read {
                     Menu {
@@ -811,13 +1023,8 @@ struct DevotionalView: View {
                     }
                 }
 
-                // Metadata (edit mode only)
+                // Sync status (edit mode only)
                 if mode == .edit {
-                    Button(action: { showingMetadataEditor = true }) {
-                        Image(systemName: "info.circle")
-                    }
-
-                    // Sync status (edit mode only)
                     Button {
                         showingSyncStatusPopover = true
                     } label: {
@@ -842,10 +1049,81 @@ struct DevotionalView: View {
                 }
 
                 // Share
-                ShareLink(item: MarkdownDevotionalConverter.devotionalToMarkdown(devotional)) {
+                Menu {
+                    Button(action: shareDevotional) {
+                        Label("Share Devotional File", systemImage: "doc")
+                    }
+                    ShareLink("Share as Markdown", item: MarkdownDevotionalConverter.contentToMarkdown(devotional))
+                } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
             }
+        }
+
+        // Bottom toolbar with single mode button (hidden in present mode)
+        if mode != .present {
+            ToolbarItem(placement: .bottomBar) {
+                Spacer()
+            }
+            ToolbarItem(placement: .bottomBar) {
+                Menu {
+                    Button(action: { withAnimation { mode = .present } }) {
+                        Label("Present", systemImage: "rectangle.expand.vertical")
+                    }
+                    Button(action: { withAnimation { mode = .read } }) {
+                        Label("Read", systemImage: "book")
+                    }
+                    Divider()
+                    Button(action: { switchToMarkdownEdit() }) {
+                        Label("Markdown Edit", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    Button(action: { switchToVisualEdit() }) {
+                        Label("Visual Edit", systemImage: "eye")
+                    }
+                    Divider()
+                    Button(action: { showingMetadataEditor = true }) {
+                        Label("Edit Metadata", systemImage: "info")
+                    }
+                } label: {
+                    Image(systemName: modeIcon)
+                        .font(.body.weight(.semibold))
+                }
+            }
+        }
+
+        // Keyboard dismiss button
+        if mode == .edit {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                } label: {
+                    Image(systemName: "keyboard.chevron.compact.down")
+                }
+            }
+        }
+    }
+
+    private func switchToVisualEdit() {
+        withAnimation {
+            if mode == .edit && editMode == .markdown {
+                // Coming from markdown edit: sync blocks from markdown and refresh visual editor
+                syncBlocksFromMarkdown()
+                visualEditorRefreshId = UUID()
+            }
+            mode = .edit
+            editMode = .visual
+        }
+    }
+
+    private func switchToMarkdownEdit() {
+        withAnimation {
+            if mode == .edit && editMode == .visual {
+                // Coming from visual edit: sync markdown from visual editor
+                syncMarkdownFromVisualEditor()
+            }
+            mode = .edit
+            editMode = .markdown
         }
     }
 
@@ -853,13 +1131,27 @@ struct DevotionalView: View {
         switch mode {
         case .present: return "rectangle.expand.vertical"
         case .read: return "book"
-        case .edit: return "pencil"
+        case .edit:
+            return editMode == .visual ? "eye" : "chevron.left.forwardslash.chevron.right"
+        }
+    }
+
+    private var modeLabel: String {
+        switch mode {
+        case .present: return "Present"
+        case .read: return "Read"
+        case .edit: return editMode == .visual ? "Visual" : "Markdown"
         }
     }
 
     // MARK: - Auto-save
 
     @State private var isSaving: Bool = false
+
+    /// Share the devotional as a .devotional file
+    private func shareDevotional() {
+        DevotionalSharingManager.shared.share(devotional, moduleId: moduleId)
+    }
 
     private func scheduleAutoSave() {
         hasUnsavedChanges = true
@@ -920,6 +1212,14 @@ struct DevotionalView: View {
         devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
 
         do {
+            // Debug: Log media array before save
+            print("[DevotionalView] Saving devotional '\(devotional.meta.title)' with \(devotional.media?.count ?? 0) media items")
+            if let media = devotional.media {
+                for ref in media {
+                    print("[DevotionalView]   - Media: \(ref.id) -> \(ref.filename)")
+                }
+            }
+
             // Use ModuleSyncManager to save and export to iCloud
             try await ModuleSyncManager.shared.saveDevotional(devotional, moduleId: moduleId)
             hasUnsavedChanges = false
@@ -1044,6 +1344,27 @@ struct DevotionalView: View {
         case .external(let externalUrl):
             UIApplication.shared.open(externalUrl)
         }
+    }
+
+    /// Handle image tap to show full screen viewer
+    private func handleImageTap(mediaRef: DevotionalMediaReference, imageURL: URL?) {
+        guard let url = imageURL,
+              let image = UIImage(contentsOfFile: url.path) else {
+            return
+        }
+
+        // Find the caption from the block that references this media
+        var caption: DevotionalAnnotatedText? = nil
+        for block in devotional.contentBlocks {
+            if block.type == .image, block.mediaId == mediaRef.id {
+                caption = block.caption
+                break
+            }
+        }
+
+        fullScreenImage = image
+        fullScreenImageCaption = caption
+        showingFullScreenImage = true
     }
 
     /// Format verse range for display text
@@ -2141,6 +2462,14 @@ struct RichTextEditor: UIViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.fontSize = fontSize
 
+        // Add keyboard dismiss button as input accessory view
+        let toolbar = UIToolbar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
+        toolbar.items = [
+            UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil),
+            UIBarButtonItem(image: UIImage(systemName: "keyboard.chevron.compact.down"), style: .plain, target: textView, action: #selector(UIResponder.resignFirstResponder))
+        ]
+        textView.inputAccessoryView = toolbar
+
         // Add custom edit menu interaction for "Add Link" context menu item
         let editMenuInteraction = UIEditMenuInteraction(delegate: context.coordinator)
         textView.addInteraction(editMenuInteraction)
@@ -2171,21 +2500,33 @@ struct RichTextEditor: UIViewRepresentable {
         // Without this, the coordinator's parent.text would be stale
         context.coordinator.parent = self
         context.coordinator.fontSize = fontSize
-        // Only update if text changed externally and we're not currently editing
-        if !context.coordinator.isEditing {
-            let currentPlain = textView.attributedText.string
-            let expectedPlain = markdownToPlainText(text)
-            if currentPlain != expectedPlain {
-                // Set flag to prevent textViewDidChange from overwriting
-                context.coordinator.isProgrammaticallyChanging = true
-                let attributed = markdownToAttributedString(text, fontSize: fontSize)
-                textView.attributedText = attributed
-                // Store the updated attributed string with custom attributes
-                context.coordinator.currentAttributedString = attributed
-                // Delay resetting the flag to ensure any async delegate calls are also blocked
-                DispatchQueue.main.async {
-                    context.coordinator.isProgrammaticallyChanging = false
-                }
+
+        // Ensure textContainerInset is preserved (can be reset during view updates)
+        let expectedInset = UIEdgeInsets(top: 16, left: 12, bottom: 60, right: 12)
+        if textView.textContainerInset != expectedInset {
+            textView.textContainerInset = expectedInset
+        }
+
+        let currentPlain = textView.attributedText.string
+        let expectedPlain = markdownToPlainText(text)
+
+        // Check if content has significantly changed (e.g., media insertion)
+        // This handles cases where text changed while editing (like media insertion via sheet)
+        let contentSignificantlyChanged = abs(currentPlain.count - expectedPlain.count) > 20
+
+        // Update if text changed externally AND either:
+        // 1. We're not currently editing, OR
+        // 2. The content has significantly changed (e.g., media was inserted while sheet was shown)
+        if currentPlain != expectedPlain && (!context.coordinator.isEditing || contentSignificantlyChanged) {
+            // Set flag to prevent textViewDidChange from overwriting
+            context.coordinator.isProgrammaticallyChanging = true
+            let attributed = markdownToAttributedString(text, fontSize: fontSize)
+            textView.attributedText = attributed
+            // Store the updated attributed string with custom attributes
+            context.coordinator.currentAttributedString = attributed
+            // Delay resetting the flag to ensure any async delegate calls are also blocked
+            DispatchQueue.main.async {
+                context.coordinator.isProgrammaticallyChanging = false
             }
         }
     }
@@ -2407,6 +2748,28 @@ struct RichTextEditor: UIViewRepresentable {
                 customAttributes[.paragraphStyle] = paragraphStyle
                 customAttributes[.horizontalRule] = true
             }
+            // Footnote definitions: [^id]: content - display as [id] content with secondary color
+            else if line.trimmingCharacters(in: .whitespaces).starts(with: "[^"),
+                    let colonRange = line.range(of: "]:") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                // Extract ID (between [^ and ])
+                if let startIdx = trimmed.firstIndex(of: "^"),
+                   let endIdx = trimmed.firstIndex(of: "]") {
+                    let idStartIdx = trimmed.index(after: startIdx)
+                    let footnoteId = String(trimmed[idStartIdx..<endIdx])
+                    let contentStartIdx = trimmed.index(colonRange.upperBound, offsetBy: 0, limitedBy: trimmed.endIndex) ?? colonRange.upperBound
+                    let content = String(trimmed[contentStartIdx...]).trimmingCharacters(in: .whitespaces)
+                    // Display as [id] content (without ^)
+                    processedLine = "[\(footnoteId)] \(content)"
+                    lineColor = UIColor.secondaryLabel
+                    currentBlockType = .paragraph
+                    let paragraphStyle = NSMutableParagraphStyle()
+                    paragraphStyle.paragraphSpacing = fontSize * 0.3
+                    paragraphStyle.lineSpacing = fontSize * 0.3
+                    customAttributes[.paragraphStyle] = paragraphStyle
+                    customAttributes[.footnoteDefinition] = footnoteId
+                }
+            }
 
             // Add default paragraph style for regular paragraphs if not already set
             // IMPORTANT: Explicitly set all indentation properties to 0 to prevent
@@ -2614,6 +2977,7 @@ struct RichTextEditor: UIViewRepresentable {
 
         // Callback for when "Add Link" is tapped in context menu
         var onAddLinkRequested: ((String, NSRange) -> Void)?
+        var onAddFootnoteRequested: (() -> Void)?
 
         // Helper to compare colors by resolving them to concrete values
         // Uses the blockquoteColor defined in Coordinator (line ~1940)
@@ -2659,23 +3023,84 @@ struct RichTextEditor: UIViewRepresentable {
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
             var actions = filterFormattingActions(suggestedActions)
 
-            // Add "Add Link" action if there's a selection
-            if range.length > 0 {
-                let addLinkAction = UIAction(title: "Add Link", image: UIImage(systemName: "link")) { [weak self] _ in
-                    guard let self = self,
-                          let textView = self.textView else { return }
+            // Build Format submenu with all formatting options
+            let formatMenu = buildFormatMenu(hasSelection: range.length > 0)
 
-                    let selectedRange = textView.selectedRange
-                    let attributedText = textView.attributedText ?? NSAttributedString()
-                    let selectedText = (attributedText.string as NSString).substring(with: selectedRange)
-
-                    // Call the callback to trigger the link editor
-                    self.onAddLinkRequested?(selectedText, selectedRange)
-                }
-                actions.append(addLinkAction)
-            }
+            // Insert at index 1 (after the first item, which is typically a Cut/Copy/Paste group)
+            let insertIndex = min(1, actions.count)
+            actions.insert(formatMenu, at: insertIndex)
 
             return UIMenu(children: actions)
+        }
+
+        private func buildFormatMenu(hasSelection: Bool) -> UIMenu {
+            // Text Style submenu
+            let textStyleMenu = UIMenu(title: "Text Style", image: UIImage(systemName: "textformat.size"), children: [
+                UIAction(title: "Paragraph", image: UIImage(systemName: "paragraph")) { [weak self] _ in
+                    self?.applyStyle(.paragraph)
+                },
+                UIAction(title: "Heading 1", image: UIImage(systemName: "textformat.size.larger")) { [weak self] _ in
+                    self?.applyStyle(.heading1)
+                },
+                UIAction(title: "Heading 2", image: UIImage(systemName: "textformat.size")) { [weak self] _ in
+                    self?.applyStyle(.heading2)
+                },
+                UIAction(title: "Heading 3", image: UIImage(systemName: "textformat.size.smaller")) { [weak self] _ in
+                    self?.applyStyle(.heading3)
+                }
+            ])
+
+            // Emphasis actions
+            let boldAction = UIAction(title: "Bold", image: UIImage(systemName: "bold")) { [weak self] _ in
+                self?.applyStyle(.bold)
+            }
+            let italicAction = UIAction(title: "Italic", image: UIImage(systemName: "italic")) { [weak self] _ in
+                self?.applyStyle(.italic)
+            }
+
+            // List submenu
+            let listMenu = UIMenu(title: "List", image: UIImage(systemName: "list.bullet"), children: [
+                UIAction(title: "Bullet List", image: UIImage(systemName: "list.bullet")) { [weak self] _ in
+                    self?.applyStyle(.bullet)
+                },
+                UIAction(title: "Numbered List", image: UIImage(systemName: "list.number")) { [weak self] _ in
+                    self?.applyStyle(.numberedList)
+                },
+                UIAction(title: "Decrease Indent", image: UIImage(systemName: "decrease.indent")) { [weak self] _ in
+                    self?.applyStyle(.outdent)
+                },
+                UIAction(title: "Increase Indent", image: UIImage(systemName: "increase.indent")) { [weak self] _ in
+                    self?.applyStyle(.indent)
+                }
+            ])
+
+            // Quote action
+            let quoteAction = UIAction(title: "Quote", image: UIImage(systemName: "text.quote")) { [weak self] _ in
+                self?.applyStyle(.quote)
+            }
+
+            // Link action (only with selection)
+            let linkAction = UIAction(title: "Add Link", image: UIImage(systemName: "link")) { [weak self] _ in
+                guard let self = self,
+                      let textView = self.textView else { return }
+                let selectedRange = textView.selectedRange
+                let attributedText = textView.attributedText ?? NSAttributedString()
+                let selectedText = (attributedText.string as NSString).substring(with: selectedRange)
+                self.onAddLinkRequested?(selectedText, selectedRange)
+            }
+
+            // Footnote action
+            let footnoteAction = UIAction(title: "Add Footnote", image: UIImage(systemName: "note.text")) { [weak self] _ in
+                self?.onAddFootnoteRequested?()
+            }
+
+            var children: [UIMenuElement] = [textStyleMenu, boldAction, italicAction, listMenu, quoteAction]
+            if hasSelection {
+                children.append(linkAction)
+            }
+            children.append(footnoteAction)
+
+            return UIMenu(title: "Format", image: UIImage(systemName: "textformat"), children: children)
         }
 
         /// Filter out built-in formatting actions that are incompatible with markdown editing
@@ -2738,6 +3163,12 @@ struct RichTextEditor: UIViewRepresentable {
             // Use currentAttributedString if available since textView.attributedText strips custom attributes
             let attrToConvert = currentAttributedString ?? textView.attributedText ?? NSAttributedString()
             parent.text = attributedStringToMarkdown(attrToConvert)
+        }
+
+        /// Explicitly resign first responder to end editing state
+        /// Call this before showing sheets that will insert content
+        func resignFirstResponder() {
+            textView?.resignFirstResponder()
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
@@ -3503,6 +3934,19 @@ struct RichTextEditor: UIViewRepresentable {
                             currentBlockType = .paragraph
                         }
                     }
+
+                    // Check for footnote definitions - convert [id] content back to [^id]: content
+                    if prefix.isEmpty && lineMarkdown.isEmpty {
+                        if let footnoteId = attrs[.footnoteDefinition] as? String {
+                            // Extract content after [id]
+                            var content = line
+                            if let bracketEnd = content.range(of: "] ") {
+                                content = String(content[bracketEnd.upperBound...])
+                            }
+                            lineMarkdown = "[^\(footnoteId)]: \(content)"
+                            currentBlockType = .paragraph
+                        }
+                    }
                 }
 
                 if lineMarkdown.isEmpty {
@@ -3644,6 +4088,8 @@ struct RichTextEditor: UIViewRepresentable {
             isProgrammaticallyChanging = true
             textView.attributedText = mutableAttr
             textView.selectedRange = selectedRange
+            // Preserve textContainerInset (setting attributedText can reset it)
+            textView.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 60, right: 12)
             isProgrammaticallyChanging = false
 
             // Convert using our stored version that has custom attributes
@@ -4234,6 +4680,7 @@ extension NSAttributedString.Key {
     static let isBold = NSAttributedString.Key("isBold")
     static let isItalic = NSAttributedString.Key("isItalic")
     static let footnoteRef = NSAttributedString.Key("footnoteRef")
+    static let footnoteDefinition = NSAttributedString.Key("footnoteDefinition")
     static let horizontalRule = NSAttributedString.Key("horizontalRule")
 }
 

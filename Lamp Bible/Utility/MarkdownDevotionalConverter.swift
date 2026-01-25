@@ -129,14 +129,43 @@ struct MarkdownDevotionalConverter {
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            // Skip frontmatter
+            // Skip frontmatter separator and footnote definitions
             if trimmed == "---" { continue }
+            if trimmed.starts(with: "[^") && trimmed.contains("]:") { continue }
 
             // Empty line - flush current block
             if trimmed.isEmpty {
                 flushParagraph()
                 flushList()
                 flushBlockquote()
+                continue
+            }
+
+            // Image block: ![caption](media/id)
+            if let (caption, mediaId) = parseImageBlock(trimmed) {
+                flushParagraph()
+                flushList()
+                flushBlockquote()
+                blocks.append(DevotionalContentBlock(
+                    type: .image,
+                    mediaId: mediaId,
+                    caption: caption.isEmpty ? nil : DevotionalAnnotatedText(text: caption),
+                    alignment: .center
+                ))
+                continue
+            }
+
+            // Audio block: [caption](media/id) - must be the only content on the line
+            if let (caption, mediaId) = parseAudioBlock(trimmed) {
+                flushParagraph()
+                flushList()
+                flushBlockquote()
+                blocks.append(DevotionalContentBlock(
+                    type: .audio,
+                    mediaId: mediaId,
+                    caption: caption.isEmpty ? nil : DevotionalAnnotatedText(text: caption),
+                    showWaveform: true
+                ))
                 continue
             }
 
@@ -338,6 +367,31 @@ struct MarkdownDevotionalConverter {
         blocksToMarkdownLines(blocks).joined(separator: "\n")
     }
 
+    /// Convert content blocks and footnotes to markdown string (for editor use)
+    static func contentToMarkdown(_ devotional: Devotional) -> String {
+        var lines: [String] = []
+
+        // Content blocks
+        lines.append(contentsOf: blocksToMarkdownLines(devotional.contentBlocks))
+
+        // Footnotes (with --- separator)
+        if let footnotes = devotional.footnotes, !footnotes.isEmpty {
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+            for footnote in footnotes {
+                switch footnote.content {
+                case .plain(let text):
+                    lines.append("[^\(footnote.id)]: \(text)")
+                case .annotated(let annotated):
+                    lines.append("[^\(footnote.id)]: \(annotatedTextToMarkdown(annotated))")
+                }
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     private static func blocksToMarkdownLines(_ blocks: [DevotionalContentBlock]) -> [String] {
         var lines: [String] = []
 
@@ -345,7 +399,12 @@ struct MarkdownDevotionalConverter {
             switch block.type {
             case .paragraph:
                 if let content = block.content {
-                    lines.append(annotatedTextToMarkdown(content))
+                    let text = annotatedTextToMarkdown(content)
+                    // Skip if this looks like a footnote definition or horizontal rule
+                    let trimmed = text.trimmingCharacters(in: .whitespaces)
+                    if trimmed.starts(with: "[^") && trimmed.contains("]:") { continue }
+                    if trimmed == "---" { continue }
+                    lines.append(text)
                     lines.append("")
                 }
 
@@ -390,6 +449,25 @@ struct MarkdownDevotionalConverter {
                             }
                         }
                     }
+                    lines.append("")
+                }
+
+            case .image:
+                // Export image with reference to media folder
+                // The actual file copying is handled by DevotionalImportExportManager
+                if let mediaId = block.mediaId {
+                    let caption = block.caption?.text ?? "Image"
+                    // Use mediaId as filename - actual extension will be added during export
+                    lines.append("![\(caption)](media/\(mediaId))")
+                    lines.append("")
+                }
+
+            case .audio:
+                // Export audio with link to media folder
+                if let mediaId = block.mediaId {
+                    let caption = block.caption?.text ?? "Audio"
+                    // Use markdown link syntax for audio files
+                    lines.append("[\(caption)](media/\(mediaId))")
                     lines.append("")
                 }
             }
@@ -438,7 +516,8 @@ struct MarkdownDevotionalConverter {
         // Parse links [text](url) - including scripture references
         annotations.append(contentsOf: parseLinks(text: &cleanText))
 
-        // Parse footnote references [^id] (not definitions [^id]:)
+        // Parse footnote references LAST so offsets are relative to the final clean text
+        // (after emphasis markers and link syntax have been removed)
         footnoteRefs.append(contentsOf: parseFootnoteReferences(text: &cleanText))
 
         // Parse inline scripture references (e.g., John 3:16, Rom 8:28-30)
@@ -565,27 +644,32 @@ struct MarkdownDevotionalConverter {
         let nsText = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
 
-        var offsetAdjustment = 0
+        guard !matches.isEmpty else { return footnoteRefs }
 
-        for match in matches.reversed() {
-            guard match.numberOfRanges >= 2,
-                  let fullRange = Range(match.range, in: text),
-                  let idRange = Range(match.range(at: 1), in: text) else { continue }
+        // Collect match info using NSRange (offset and length)
+        var matchInfo: [(id: String, offset: Int, length: Int)] = []
+        for match in matches {
+            guard match.numberOfRanges >= 2 else { continue }
+            let idRange = match.range(at: 1)
+            let footnoteId = nsText.substring(with: idRange)
+            matchInfo.append((id: footnoteId, offset: match.range.location, length: match.range.length))
+        }
 
-            let footnoteId = String(text[idRange])
-            // Display as [id] without the ^
-            let displayText = "[\(footnoteId)]"
-
-            let startOffset = text.distance(from: text.startIndex, to: fullRange.lowerBound) - offsetAdjustment
-
+        // Calculate adjusted offsets (accounting for previous removals)
+        var totalRemoved = 0
+        for info in matchInfo {
             footnoteRefs.append(DevotionalFootnoteRef(
-                id: footnoteId,
-                offset: startOffset
+                id: info.id,
+                offset: info.offset - totalRemoved
             ))
+            totalRemoved += info.length
+        }
 
-            // Replace [^id] with [id] in text
-            text.replaceSubrange(fullRange, with: displayText)
-            offsetAdjustment += (match.range.length - displayText.count)
+        // Remove all matches from text (in reverse order to keep indices valid)
+        for info in matchInfo.reversed() {
+            let startIdx = text.index(text.startIndex, offsetBy: info.offset)
+            let endIdx = text.index(startIdx, offsetBy: info.length)
+            text.removeSubrange(startIdx..<endIdx)
         }
 
         return footnoteRefs
@@ -617,6 +701,46 @@ struct MarkdownDevotionalConverter {
         guard !text.isEmpty else { return nil }
 
         return (level, text)
+    }
+
+    /// Parse image block: ![caption](media/id)
+    private static func parseImageBlock(_ line: String) -> (caption: String, mediaId: String)? {
+        // Pattern: ![caption](media/id)
+        let pattern = "^!\\[([^\\]]*)\\]\\(media/([^)]+)\\)$"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return nil
+        }
+
+        let nsLine = line as NSString
+        guard let match = regex.firstMatch(in: line, options: [], range: NSRange(location: 0, length: nsLine.length)),
+              match.numberOfRanges >= 3 else {
+            return nil
+        }
+
+        let caption = nsLine.substring(with: match.range(at: 1))
+        let mediaId = nsLine.substring(with: match.range(at: 2))
+        return (caption, mediaId)
+    }
+
+    /// Parse audio block: [caption](media/id) - standalone link to media folder
+    private static func parseAudioBlock(_ line: String) -> (caption: String, mediaId: String)? {
+        // Pattern: [caption](media/id) - but NOT ![caption] (image)
+        guard !line.hasPrefix("!") else { return nil }
+
+        let pattern = "^\\[([^\\]]*)\\]\\(media/([^)]+)\\)$"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return nil
+        }
+
+        let nsLine = line as NSString
+        guard let match = regex.firstMatch(in: line, options: [], range: NSRange(location: 0, length: nsLine.length)),
+              match.numberOfRanges >= 3 else {
+            return nil
+        }
+
+        let caption = nsLine.substring(with: match.range(at: 1))
+        let mediaId = nsLine.substring(with: match.range(at: 2))
+        return (caption, mediaId)
     }
 
     private static func parseFrontmatter(_ lines: [String]) -> DevotionalMeta {
@@ -759,7 +883,8 @@ struct MarkdownDevotionalConverter {
         )
     }
 
-    private static func parseFootnotes(from markdown: String) -> [DevotionalFootnote]? {
+    /// Parse footnote definitions from markdown
+    static func parseFootnotes(from markdown: String) -> [DevotionalFootnote]? {
         let pattern = "\\[\\^([^\\]]+)\\]:\\s*(.+)"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .anchorsMatchLines) else {
             return nil
@@ -797,12 +922,32 @@ struct MarkdownDevotionalConverter {
     private static func annotatedTextToMarkdown(_ annotated: DevotionalAnnotatedText) -> String {
         var text = annotated.text
 
-        guard let annotations = annotated.annotations else {
+        // Annotations are relative to text BEFORE footnotes were removed during parsing.
+        // Footnote offsets are relative to the FINAL clean text (after everything removed).
+        //
+        // Strategy: First apply annotations to clean text, then insert footnotes.
+        // But annotations may overlap with where footnotes should go, so we need to
+        // track how annotation insertions shift positions.
+
+        guard let annotations = annotated.annotations, !annotations.isEmpty else {
+            // No annotations - just insert footnote refs directly
+            if let footnoteRefs = annotated.footnoteRefs, !footnoteRefs.isEmpty {
+                let sortedRefs = footnoteRefs.sorted { $0.offset > $1.offset }
+                for ref in sortedRefs {
+                    guard ref.offset >= 0, ref.offset <= text.count else { continue }
+                    let insertIndex = text.index(text.startIndex, offsetBy: ref.offset)
+                    text.insert(contentsOf: "[^\(ref.id)]", at: insertIndex)
+                }
+            }
             return text
         }
 
-        // Sort annotations by start position (reverse order for safe manipulation)
+        // Process annotations first (sorted by start position, reverse order)
         let sorted = annotations.sorted { $0.start > $1.start }
+
+        // Track how much we've expanded the text at each position
+        // We'll use this to adjust footnote positions later
+        var expansions: [(originalPos: Int, expansion: Int)] = []
 
         for annotation in sorted {
             guard annotation.start >= 0, annotation.end <= text.count else { continue }
@@ -812,17 +957,16 @@ struct MarkdownDevotionalConverter {
             let range = startIndex..<endIndex
             let annotatedText = String(text[range])
 
+            var replacement: String? = nil
+
             switch annotation.type {
             case .emphasis:
                 switch annotation.data?.style {
                 case .bold:
-                    text.replaceSubrange(range, with: "**\(annotatedText)**")
+                    replacement = "**\(annotatedText)**"
                 case .italic:
-                    text.replaceSubrange(range, with: "*\(annotatedText)*")
-                case .underline:
-                    // Markdown doesn't have native underline, use HTML or just leave as is
-                    break
-                case .none:
+                    replacement = "*\(annotatedText)*"
+                case .underline, .none:
                     break
                 }
 
@@ -830,26 +974,46 @@ struct MarkdownDevotionalConverter {
                 if let sv = annotation.data?.sv {
                     let ev = annotation.data?.ev
                     let url = ev != nil ? "lampbible://verse/\(sv)/\(ev!)" : "lampbible://verse/\(sv)"
-                    text.replaceSubrange(range, with: "[\(annotatedText)](\(url))")
+                    replacement = "[\(annotatedText)](\(url))"
                 }
 
             case .strongs:
                 if let key = annotation.data?.strongs {
-                    text.replaceSubrange(range, with: "[\(annotatedText)](lampbible://strongs/\(key))")
+                    replacement = "[\(annotatedText)](lampbible://strongs/\(key))"
                 }
 
             case .link:
                 if let url = annotation.data?.url {
-                    text.replaceSubrange(range, with: "[\(annotatedText)](\(url))")
+                    replacement = "[\(annotatedText)](\(url))"
                 }
 
-            case .quote:
-                // Quotes are typically indicated by context, not markup
+            case .quote, .greek, .hebrew:
                 break
+            }
 
-            case .greek, .hebrew:
-                // These don't have standard markdown representation
-                break
+            if let replacement = replacement {
+                let expansion = replacement.count - annotatedText.count
+                text.replaceSubrange(range, with: replacement)
+                expansions.append((originalPos: annotation.start, expansion: expansion))
+            }
+        }
+
+        // Now insert footnote references, adjusting for annotation expansions
+        if let footnoteRefs = annotated.footnoteRefs, !footnoteRefs.isEmpty {
+            let sortedRefs = footnoteRefs.sorted { $0.offset > $1.offset }
+            for ref in sortedRefs {
+                // Calculate adjusted offset based on expansions from annotations
+                // that occurred BEFORE this position (lower position values)
+                var adjustedOffset = ref.offset
+                for (pos, exp) in expansions {
+                    if pos < ref.offset {
+                        adjustedOffset += exp
+                    }
+                }
+
+                guard adjustedOffset >= 0, adjustedOffset <= text.count else { continue }
+                let insertIndex = text.index(text.startIndex, offsetBy: adjustedOffset)
+                text.insert(contentsOf: "[^\(ref.id)]", at: insertIndex)
             }
         }
 

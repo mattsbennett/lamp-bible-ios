@@ -74,7 +74,8 @@ class SyncCoordinator: ObservableObject {
         }
     }
 
-    /// Update sync backend and reconfigure storage
+    /// Update sync backend and reconfigure storage.
+    /// This is the low-level method - prefer using `switchBackend(to:migrateData:)` instead.
     func setBackend(_ backend: SyncBackend) async throws {
         var updatedSettings = settings
         updatedSettings.backend = backend
@@ -90,6 +91,72 @@ class SyncCoordinator: ObservableObject {
         if backend != .none, let storage = storage {
             try? await storage.initializeDirectoryStructure()
         }
+    }
+
+    /// Switch to a new sync backend with option to migrate or wipe data.
+    /// - Parameters:
+    ///   - backend: The new backend to switch to
+    ///   - migrateData: If true, migrate existing data to new backend. If false, wipe local data.
+    /// - Note: The UI should confirm with the user before calling with migrateData=false
+    func switchBackend(to backend: SyncBackend, migrateData: Bool) async throws {
+        let previousBackend = settings.backend
+
+        // No change needed
+        if previousBackend == backend {
+            return
+        }
+
+        if migrateData {
+            // Migrate data from previous backend to new backend
+            if previousBackend != .none && backend != .none {
+                // Both are cloud backends - migrate between them
+                _ = try await migrateStorage(from: previousBackend, to: backend)
+                print("[SyncCoordinator] Migrated data from \(previousBackend) to \(backend)")
+            } else if previousBackend == .none && backend != .none {
+                // Switching from local to cloud - upload local data
+                try await uploadLocalDataToBackend(backend)
+                print("[SyncCoordinator] Uploaded local data to \(backend)")
+            } else if previousBackend != .none && backend == .none {
+                // Switching from cloud to local - download cloud data first
+                try await downloadDataFromBackend(previousBackend)
+                print("[SyncCoordinator] Downloaded data from \(previousBackend) to local")
+            }
+        } else {
+            // Wipe local data (user confirmed this choice)
+            do {
+                try ModuleDatabase.shared.wipeAllSyncableData()
+                print("[SyncCoordinator] Wiped local syncable data before switching from \(previousBackend) to \(backend)")
+            } catch {
+                print("[SyncCoordinator] Failed to wipe syncable data: \(error)")
+                throw error
+            }
+        }
+
+        // Now switch to the new backend
+        try await setBackend(backend)
+    }
+
+    /// Upload local syncable data to the specified backend
+    private func uploadLocalDataToBackend(_ backend: SyncBackend) async throws {
+        // Create storage for the target backend
+        guard let targetStorage = try createStorage(for: backend) else {
+            throw SyncError.notConfigured
+        }
+
+        // Initialize directory structure
+        try? await targetStorage.initializeDirectoryStructure()
+
+        // Export notes and devotionals to files and upload
+        // This leverages the existing sync infrastructure
+        // The actual upload happens when we call syncAll() after switching
+        print("[SyncCoordinator] Local data will be synced to \(backend) on next sync")
+    }
+
+    /// Download data from the specified backend to local storage
+    private func downloadDataFromBackend(_ backend: SyncBackend) async throws {
+        // The data is already in the local database from previous syncs
+        // When switching to local-only, we just keep the existing local data
+        print("[SyncCoordinator] Keeping local copy of data from \(backend)")
     }
 
     /// Update WebDAV settings

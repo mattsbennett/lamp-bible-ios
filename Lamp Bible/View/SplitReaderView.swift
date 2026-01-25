@@ -35,11 +35,22 @@ struct SplitReaderView: View {
     @State private var requestScrollToVerseId: Int? = nil
     @State private var requestScrollAnimated: Bool = true
     @SceneStorage("readerCurrentVerseId") private var currentVerseId: Int = 1001001
+    @SceneStorage("readerTranslationId") private var currentTranslationId: String = ""
     @AppStorage("toolPanelScrollLinked") private var isScrollLinked: Bool = true
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     @AppStorage("notesPanelOrientation") private var notesPanelOrientation: String = "bottom"
+    @AppStorage("toolPanelMode") private var toolPanelMode: ToolPanelMode = .commentary
+    @AppStorage("toolFontSize") private var toolFontSize: Int = 16
+    @AppStorage("selectedNotesModuleId") private var notesModuleId: String = "notes"
+    @AppStorage("selectedCommentarySeries") private var selectedCommentarySeries: String = ""
+    @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = "devotionals"
     @State private var hasUserScrolled: Bool = false
     @State private var toolbarsHidden: Bool = false
+
+    // Available modules for tool selection in horizontal split
+    @State private var notesModules: [Module] = []
+    @State private var commentarySeries: [String] = []
+    @State private var devotionalsModules: [Module] = []
 
     // Derived from currentVerseId - always in sync
     private var currentBook: Int {
@@ -75,6 +86,23 @@ struct SplitReaderView: View {
         return notesPanelOrientation
     }
 
+    /// True when tool panel is visible and in horizontal (right-side) split mode
+    private var isHorizontalSplit: Bool {
+        notesPanelVisible && effectiveOrientation == "right"
+    }
+
+    /// Display name for current tool panel mode
+    private var currentToolDisplayName: String {
+        switch toolPanelMode {
+        case .notes:
+            return "Notes"
+        case .commentary:
+            return selectedCommentarySeries.isEmpty ? "Commentary" : selectedCommentarySeries
+        case .devotionals:
+            return "Devotionals"
+        }
+    }
+
     // Minimum and maximum sizes for panels
     private let minPanelSize: CGFloat = 150
     private let maxPanelRatio: CGFloat = 0.7
@@ -97,7 +125,37 @@ struct SplitReaderView: View {
                 hasUserScrolled = true
             }
         }
+        .task {
+            // Load available modules for tool selection in horizontal split toolbar
+            await loadToolModules()
+        }
         // Note: Scroll sync is now handled entirely by UIKit via ReaderScrollSpy and ScrollSyncCoordinator
+    }
+
+    private func loadToolModules() async {
+        // Load notes modules
+        if let modules = try? ModuleDatabase.shared.getAllModules(type: .notes) {
+            notesModules = modules
+        }
+
+        // Load commentary series (bundled + user modules)
+        var allSeries: [String] = []
+        if let bundledSeries = try? BundledModuleDatabase.shared.getBundledCommentarySeriesNames() {
+            allSeries = bundledSeries
+        }
+        if let userSeries = try? ModuleDatabase.shared.getCommentarySeriesNames() {
+            for series in userSeries {
+                if !allSeries.contains(series) {
+                    allSeries.append(series)
+                }
+            }
+        }
+        commentarySeries = allSeries
+
+        // Load devotionals modules
+        if let modules = try? ModuleDatabase.shared.getAllModules(type: .devotional) {
+            devotionalsModules = modules
+        }
     }
 
     @ViewBuilder
@@ -106,20 +164,39 @@ struct SplitReaderView: View {
             ZStack(alignment: .topLeading) {
                 // Layer 1: Content
                 if effectiveOrientation == "right" {
-                    HStack(spacing: 0) {
+                    // Use ZStack overlay approach so tool panel can independently extend to top
+                    ZStack(alignment: .trailing) {
+                        // Reader takes available width minus tool panel
                         readerContent
-                            .frame(maxWidth: .infinity)
+                            .padding(.trailing, rightPanelWidth + 12)
 
-                        // Static Divider
-                        Rectangle()
-                            .fill(Color(UIColor.separator))
-                            .frame(width: 1)
-                            .padding(.horizontal, 5.5)
-                            .frame(width: 12)
-                            .contentShape(Rectangle())
+                        // Tool panel + divider overlaid on right
+                        HStack(spacing: 0) {
+                            // Divider with gradient fade at edges to match toolbar blur effect
+                            Rectangle()
+                                .fill(Color(UIColor.separator))
+                                .frame(width: 1)
+                                .mask(
+                                    LinearGradient(
+                                        stops: [
+                                            .init(color: .clear, location: 0),
+                                            .init(color: .black, location: 0.08),
+                                            .init(color: .black, location: 0.92),
+                                            .init(color: .clear, location: 1)
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .padding(.horizontal, 5.5)
+                                .frame(width: 12)
+                                .contentShape(Rectangle())
 
-                        toolPanelContent
-                            .frame(width: rightPanelWidth)
+                            toolPanelContent
+                                .frame(width: rightPanelWidth)
+                        }
+                        .frame(maxHeight: .infinity)
+                        .ignoresSafeArea(edges: .top)
                     }
                 } else {
                     VStack(spacing: 0) {
@@ -180,6 +257,46 @@ struct SplitReaderView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .top) {
+                // Full-width collapsed header for horizontal split mode
+                if toolbarsHidden && effectiveOrientation == "right" {
+                    horizontalSplitCollapsedHeader
+                }
+            }
+        }
+    }
+
+    /// Full-width collapsed header for horizontal split mode
+    @ViewBuilder
+    private var horizontalSplitCollapsedHeader: some View {
+        let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
+        let translation = try? TranslationDatabase.shared.getTranslation(id: currentTranslationId)
+        let abbreviation = translation?.abbreviation ?? ""
+
+        VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                Text("\(abbreviation) · \(book?.name ?? "") \(currentChapter)")
+                Text("· \(currentToolDisplayName)")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(Color(UIColor.systemBackground).ignoresSafeArea(edges: .top))
+
+            // Gradient fade below the text
+            LinearGradient(
+                colors: [Color(UIColor.systemBackground), Color(UIColor.systemBackground).opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 30)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                toolbarsHidden = false
+            }
         }
     }
 
@@ -200,7 +317,20 @@ struct SplitReaderView: View {
             requestScrollAnimated: $requestScrollAnimated,
             visibleVerseId: $currentVerseId,
             toolbarsHidden: $toolbarsHidden,
-            initialToolbarMode: initialToolbarMode
+            initialToolbarMode: initialToolbarMode,
+            // Horizontal split toolbar integration
+            isHorizontalSplit: isHorizontalSplit,
+            toolPanelMode: $toolPanelMode,
+            toolDisplayName: currentToolDisplayName,
+            isScrollLinked: $isScrollLinked,
+            toolFontSize: $toolFontSize,
+            onHideToolPanel: { notesPanelVisible = false },
+            onToggleSplitOrientation: {
+                notesPanelOrientation = notesPanelOrientation == "right" ? "bottom" : "right"
+            },
+            notesModules: notesModules,
+            commentarySeries: commentarySeries,
+            devotionalsModules: devotionalsModules
         )
         .onAppear {
             // Enable scroll linking after initial load completes
@@ -221,7 +351,8 @@ struct SplitReaderView: View {
                 requestScrollAnimated = false
                 requestScrollToVerseId = verseId
             },
-            toolbarsHidden: $toolbarsHidden
+            toolbarsHidden: $toolbarsHidden,
+            hideHeader: isHorizontalSplit
         )
     }
 

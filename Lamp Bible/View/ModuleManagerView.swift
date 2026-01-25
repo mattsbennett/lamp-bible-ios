@@ -80,6 +80,16 @@ struct DictionarySeriesGroup: Identifiable {
     }
 }
 
+// MARK: - Highlight Set Display
+
+struct HighlightSetDisplay: Identifiable {
+    let id: String
+    let set: HighlightSet
+    let module: Module
+    let translationName: String
+    let highlightCount: Int
+}
+
 // MARK: - Display Module (unified wrapper for bundled and user modules)
 
 struct DisplayModule: Identifiable {
@@ -147,34 +157,28 @@ struct ModuleManagerView: View {
     @State private var modules: [DisplayModule] = []
     @State private var commentarySeriesGroups: [CommentarySeriesGroup] = []
     @State private var dictionarySeriesGroups: [DictionarySeriesGroup] = []
+    @State private var highlightSets: [HighlightSetDisplay] = []
     @State private var bundledPlans: [Plan] = []
     @State private var userPlans: [Plan] = []
     @State private var selectedType: ModuleType? = nil
     @State private var selectedSource: ModuleSource = .all
     @State private var isLoading: Bool = true
     @State private var isSyncing: Bool = false
-    @State private var showingImportPicker: Bool = false
+    @State private var showingImportSheet: Bool = false
     @State private var alertMessage: String = ""
     @State private var showingAlert: Bool = false
     @State private var selectedCommentarySeries: CommentarySeriesGroup? = nil
     @State private var selectedDictionarySeries: DictionarySeriesGroup? = nil
 
-    // Markdown import/export
-    @State private var showingMarkdownImportPicker: Bool = false
+    // Markdown export
     @State private var showingMarkdownExportPicker: Bool = false
     @State private var markdownExportData: String = ""
     @State private var markdownExportFilename: String = ""
     @State private var moduleForMarkdownExport: Module? = nil
-    @State private var showingMarkdownImportModuleSelector: Bool = false
     @State private var pendingMarkdownContent: String = ""
-
-    // Bulk notes export
-    @State private var isExportingAllNotes: Bool = false
-    @State private var notesExportResult: String? = nil
 
     // Create new module
     @State private var showingCreateModule: Bool = false
-    @State private var showingExportOptions: Bool = false
 
     // Edit module metadata
     @State private var moduleToEdit: Module? = nil
@@ -252,7 +256,7 @@ struct ModuleManagerView: View {
                     Spacer()
                     ProgressView()
                     Spacer()
-                } else if filteredModules.isEmpty && filteredCommentarySeries.isEmpty && filteredDictionarySeries.isEmpty {
+                } else if filteredModules.isEmpty && filteredCommentarySeries.isEmpty && filteredDictionarySeries.isEmpty && filteredHighlights.isEmpty {
                     emptyStateView
                 } else {
                     modulesList
@@ -269,89 +273,44 @@ struct ModuleManagerView: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        syncAllModules()
+                    } label: {
+                        if isSyncing {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                    .disabled(isSyncing)
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Spacer()
+                }
+                ToolbarItem(placement: .bottomBar) {
                     Menu {
                         Button {
                             showingCreateModule = true
                         } label: {
-                            Label("Create New Module", systemImage: "plus.circle")
+                            Label("Create New Module", systemImage: "plus.square")
                         }
-
-                        Divider()
-
                         Button {
-                            showingImportPicker = true
+                            showingImportSheet = true
                         } label: {
-                            Label("Import Module (JSON)", systemImage: "square.and.arrow.down")
-                        }
-
-                        Button {
-                            showingMarkdownImportPicker = true
-                        } label: {
-                            Label("Import Markdown", systemImage: "doc.text")
-                        }
-
-                        Divider()
-
-                        Button {
-                            // Use async to ensure Menu dismisses before dialog appears
-                            DispatchQueue.main.async {
-                                showingExportOptions = true
-                            }
-                        } label: {
-                            Label("Export All Notes", systemImage: "square.and.arrow.up")
-                        }
-                        .disabled(isExportingAllNotes)
-
-                        Divider()
-
-                        Button {
-                            syncAllModules()
-                        } label: {
-                            Label("Sync All", systemImage: "arrow.triangle.2.circlepath")
+                            Label("Import Module", systemImage: "square.and.arrow.down")
                         }
                     } label: {
-                        if isSyncing || isExportingAllNotes {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "ellipsis")
-                        }
+                        Image(systemName: "plus")
                     }
                 }
             }
             .task {
                 await loadModules()
             }
-            .fileImporter(
-                isPresented: $showingImportPicker,
-                allowedContentTypes: [.json],
-                allowsMultipleSelection: false
-            ) { result in
-                handleImport(result)
-            }
             .alert("Module Manager", isPresented: $showingAlert) {
                 Button("OK") {}
             } message: {
                 Text(alertMessage)
-            }
-            // Notes export options
-            .confirmationDialog("Export Notes", isPresented: $showingExportOptions, titleVisibility: .visible) {
-                Button("One File Per Book") {
-                    exportAllNotes(singleFile: false)
-                }
-                Button("Single Combined File") {
-                    exportAllNotes(singleFile: true)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Choose export format. Files are saved to iCloud Drive → Lamp Bible → Export")
-            }
-            // Markdown import picker
-            .fileImporter(
-                isPresented: $showingMarkdownImportPicker,
-                allowedContentTypes: [.text, .plainText],
-                allowsMultipleSelection: false
-            ) { result in
-                handleMarkdownImport(result)
             }
             // Markdown export picker
             .fileExporter(
@@ -362,27 +321,39 @@ struct ModuleManagerView: View {
             ) { result in
                 handleMarkdownExportResult(result)
             }
-            // Module selector for markdown import (user modules only)
-            .sheet(isPresented: $showingMarkdownImportModuleSelector) {
-                MarkdownImportModuleSelectorView(
-                    markdownContent: pendingMarkdownContent,
+            // Import module sheet
+            .sheet(isPresented: $showingImportSheet) {
+                ImportModuleSheet(
                     modules: modules
                         .filter { !$0.isBundled && ($0.type == .notes || $0.type == .devotional) }
                         .compactMap { $0.userModule },
-                    onImport: { moduleId, moduleType in
+                    onImportMarkdown: { moduleId, moduleType, content in
+                        pendingMarkdownContent = content
                         Task {
                             await importMarkdownToModule(moduleId: moduleId, type: moduleType)
+                        }
+                    },
+                    onImportComplete: {
+                        Task {
+                            await loadModules()
                         }
                     }
                 )
             }
             // Create new module
             .sheet(isPresented: $showingCreateModule) {
-                CreateModuleView { newModule in
-                    Task {
-                        await createModule(newModule)
+                CreateModuleView(
+                    onCreate: { newModule in
+                        Task {
+                            await createModule(newModule)
+                        }
+                    },
+                    onCreateHighlightSet: { _ in
+                        Task {
+                            await loadModules()
+                        }
                     }
-                }
+                )
             }
         }
     }
@@ -397,11 +368,11 @@ struct ModuleManagerView: View {
             Text("No modules installed")
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            Text("Import modules from JSON files")
+            Text("Import modules from .lamp files or markdown")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Button {
-                showingImportPicker = true
+                showingImportSheet = true
             } label: {
                 Label("Import Module", systemImage: "square.and.arrow.down")
             }
@@ -467,7 +438,22 @@ struct ModuleManagerView: View {
     }
 
     private var filteredOtherModules: [DisplayModule] {
-        filteredModules.filter { $0.type != .dictionary && $0.type != .translation }
+        filteredModules.filter { $0.type != .dictionary && $0.type != .translation && $0.type != .highlights }
+    }
+
+    private var filteredHighlights: [HighlightSetDisplay] {
+        // Only show when type is nil (all) or highlights
+        guard selectedType == nil || selectedType == .highlights else {
+            return []
+        }
+
+        // Filter by source (highlights are always user-created)
+        switch selectedSource {
+        case .bundled:
+            return []
+        case .user, .all:
+            return highlightSets
+        }
     }
 
     private var filteredPlans: [(plan: Plan, isBundled: Bool)] {
@@ -527,6 +513,24 @@ struct ModuleManagerView: View {
                                 selectedCommentarySeries = series
                             }
                             .listRowSeparator(index == filteredCommentarySeries.count - 1 ? .hidden : .visible, edges: .bottom)
+                    }
+                }
+            }
+
+            // Highlights section
+            if !filteredHighlights.isEmpty {
+                Section(header: Text("Highlights")) {
+                    ForEach(Array(filteredHighlights.enumerated()), id: \.element.id) { index, highlightSet in
+                        HighlightSetModuleRow(
+                            highlightSet: highlightSet,
+                            onEdit: {
+                                moduleToEdit = highlightSet.module
+                            },
+                            onDelete: {
+                                Task { await deleteHighlightSet(highlightSet) }
+                            }
+                        )
+                        .listRowSeparator(index == filteredHighlights.count - 1 ? .hidden : .visible, edges: .bottom)
                     }
                 }
             }
@@ -720,6 +724,11 @@ struct ModuleManagerView: View {
                     continue
                 }
 
+                // Skip highlight modules - they're shown in their own section
+                if module.type == .highlights {
+                    continue
+                }
+
                 let displayModule = DisplayModule(from: module)
 
                 // Group user dictionaries by series if they have one
@@ -842,6 +851,38 @@ struct ModuleManagerView: View {
 
         commentarySeriesGroups = allCommentaryGroups.sorted { $0.displayName < $1.displayName }
 
+        // Load highlight sets with translation info
+        var allHighlightSets: [HighlightSetDisplay] = []
+        do {
+            let sets = try database.getAllHighlightSets()
+            for set in sets {
+                // Get the module for this highlight set
+                guard let module = try database.getModule(id: set.moduleId) else { continue }
+
+                // Get translation name
+                let translationName: String
+                if let translation = try? TranslationDatabase.shared.getTranslation(id: set.translationId) {
+                    translationName = translation.abbreviation
+                } else {
+                    translationName = set.translationId
+                }
+
+                // Get highlight count
+                let count = (try? database.getHighlightCount(setId: set.id)) ?? 0
+
+                allHighlightSets.append(HighlightSetDisplay(
+                    id: set.id,
+                    set: set,
+                    module: module,
+                    translationName: translationName,
+                    highlightCount: count
+                ))
+            }
+        } catch {
+            print("Failed to load highlight sets: \(error)")
+        }
+        highlightSets = allHighlightSets.sorted { $0.set.name < $1.set.name }
+
         modules = allModules
         isLoading = false
     }
@@ -852,35 +893,6 @@ struct ModuleManagerView: View {
             await syncManager.syncAll()
             await loadModules()
             isSyncing = false
-        }
-    }
-
-    private func exportAllNotes(singleFile: Bool) {
-        isExportingAllNotes = true
-        Task {
-            do {
-                if singleFile {
-                    // Export all notes to a single combined file
-                    let url = try await NotesImportExportManager.shared.exportAllToSingleFile()
-                    alertMessage = "Exported to iCloud Drive → Lamp Bible → Export → \(url.lastPathComponent)"
-                } else {
-                    // Export one file per book
-                    let exportedURLs = try await NotesImportExportManager.shared.exportAllToMarkdown()
-                    if exportedURLs.isEmpty {
-                        alertMessage = "No notes to export"
-                    } else {
-                        alertMessage = "Exported \(exportedURLs.count) book(s) to iCloud Drive → Lamp Bible → Export"
-                    }
-                }
-            } catch NotesImportExportManager.ExportError.noNotesFound {
-                alertMessage = "No notes to export"
-            } catch NotesImportExportManager.ExportError.directoryNotAvailable {
-                alertMessage = "Export directory not available. Check iCloud Drive is enabled."
-            } catch {
-                alertMessage = "Export failed: \(error.localizedDescription)"
-            }
-            isExportingAllNotes = false
-            showingAlert = true
         }
     }
 
@@ -974,6 +986,17 @@ struct ModuleManagerView: View {
             // Save module metadata to database
             try database.saveModule(module)
 
+            // If this is a highlights module, also update the highlight set name/description
+            if module.type == .highlights {
+                if let highlightSets = try? database.getHighlightSets(forModule: module.id) {
+                    for var set in highlightSets {
+                        set.name = module.name
+                        set.description = module.description
+                        try database.saveHighlightSet(set)
+                    }
+                }
+            }
+
             // Verify save
             if let savedModule = try database.getModule(id: module.id) {
                 print("[ModuleManager] Verified saved: name=\(savedModule.name), description=\(savedModule.description ?? "nil")")
@@ -1024,123 +1047,23 @@ struct ModuleManagerView: View {
         }
     }
 
-    private func handleImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
+    private func deleteHighlightSet(_ highlightSet: HighlightSetDisplay) async {
+        do {
+            // Delete the module (cascade will delete set and highlights)
+            try database.deleteModule(id: highlightSet.module.id)
 
-            // Start accessing security-scoped resource
-            guard url.startAccessingSecurityScopedResource() else {
-                alertMessage = "Cannot access file"
-                showingAlert = true
-                return
-            }
+            // Delete from iCloud
+            let fileName = "\(highlightSet.module.id).lamp"
+            try? await storage.deleteModuleFile(type: .highlights, fileName: fileName)
 
-            defer { url.stopAccessingSecurityScopedResource() }
-
-            do {
-                let data = try Data(contentsOf: url)
-
-                // Try to parse as a module file to detect type
-                let decoder = JSONDecoder()
-
-                // Try each module type
-                if let dictModule = try? decoder.decode(DictionaryModuleFile.self, from: data) {
-                    Task {
-                        try await importDictionaryModule(dictModule, data: data)
-                        await loadModules()
-                        alertMessage = "Imported dictionary: \(dictModule.name)"
-                        showingAlert = true
-                    }
-                } else if let commModule = try? decoder.decode(CommentaryModuleFile.self, from: data) {
-                    Task {
-                        try await importCommentaryModule(commModule, data: data)
-                        await loadModules()
-                        alertMessage = "Imported commentary: \(commModule.name)"
-                        showingAlert = true
-                    }
-                } else if let devModule = try? decoder.decode(DevotionalModuleFile.self, from: data) {
-                    Task {
-                        try await importDevotionalModule(devModule, data: data)
-                        await loadModules()
-                        alertMessage = "Imported devotional: \(devModule.name)"
-                        showingAlert = true
-                    }
-                } else if let noteModule = try? decoder.decode(NoteModuleFile.self, from: data) {
-                    Task {
-                        try await importNoteModule(noteModule, data: data)
-                        await loadModules()
-                        alertMessage = "Imported notes: \(noteModule.name)"
-                        showingAlert = true
-                    }
-                } else {
-                    alertMessage = "Unrecognized module format"
-                    showingAlert = true
-                }
-            } catch {
-                alertMessage = "Failed to read file: \(error.localizedDescription)"
-                showingAlert = true
-            }
-
-        case .failure(let error):
-            alertMessage = "Import failed: \(error.localizedDescription)"
+            await loadModules()
+        } catch {
+            alertMessage = "Failed to delete: \(error.localizedDescription)"
             showingAlert = true
         }
-    }
-
-    private func importDictionaryModule(_ file: DictionaryModuleFile, data: Data) async throws {
-        let fileName = "\(file.id).json"
-        try await storage.writeModuleFile(type: .dictionary, fileName: fileName, data: data)
-        try await syncManager.syncModule(id: file.id)
-    }
-
-    private func importCommentaryModule(_ file: CommentaryModuleFile, data: Data) async throws {
-        let fileName = "\(file.id).json"
-        try await storage.writeModuleFile(type: .commentary, fileName: fileName, data: data)
-        try await syncManager.syncModule(id: file.id)
-    }
-
-    private func importDevotionalModule(_ file: DevotionalModuleFile, data: Data) async throws {
-        let fileName = "\(file.id).json"
-        try await storage.writeModuleFile(type: .devotional, fileName: fileName, data: data)
-        try await syncManager.syncModule(id: file.id)
-    }
-
-    private func importNoteModule(_ file: NoteModuleFile, data: Data) async throws {
-        let fileName = "\(file.id).json"
-        try await storage.writeModuleFile(type: .notes, fileName: fileName, data: data)
-        try await syncManager.syncModule(id: file.id)
     }
 
     // MARK: - Markdown Import/Export
-
-    private func handleMarkdownImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
-
-            guard url.startAccessingSecurityScopedResource() else {
-                alertMessage = "Cannot access file"
-                showingAlert = true
-                return
-            }
-
-            defer { url.stopAccessingSecurityScopedResource() }
-
-            do {
-                let content = try String(contentsOf: url, encoding: .utf8)
-                pendingMarkdownContent = content
-                showingMarkdownImportModuleSelector = true
-            } catch {
-                alertMessage = "Failed to read markdown file: \(error.localizedDescription)"
-                showingAlert = true
-            }
-
-        case .failure(let error):
-            alertMessage = "Import failed: \(error.localizedDescription)"
-            showingAlert = true
-        }
-    }
 
     private func importMarkdownToModule(moduleId: String, type: ModuleType) async {
         do {
@@ -1391,6 +1314,110 @@ struct ModuleRow: View {
     }
 }
 
+// MARK: - Highlight Set Module Row
+
+struct HighlightSetModuleRow: View {
+    let highlightSet: HighlightSetDisplay
+    var onEdit: (() -> Void)?
+    var onDelete: (() -> Void)?
+
+    @State private var showingDeleteConfirmation: Bool = false
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(highlightSet.set.name)
+                    .font(.headline)
+
+                HStack(spacing: 6) {
+                    // Type badge
+                    Text("Highlights")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.2))
+                        .clipShape(Capsule())
+
+                    // Translation badge
+                    Text(highlightSet.translationName)
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange)
+                        .clipShape(Capsule())
+
+                    // Source badge
+                    Text("User")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green)
+                        .clipShape(Capsule())
+
+                    Text("\(highlightSet.highlightCount) highlights")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if let description = highlightSet.set.description, !description.isEmpty {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer()
+
+            if onEdit != nil || onDelete != nil {
+                Menu {
+                    if let onEdit = onEdit {
+                        Button {
+                            onEdit()
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                    }
+
+                    if let onDelete = onDelete {
+                        Button(role: .destructive) {
+                            showingDeleteConfirmation = true
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.title3)
+                        .foregroundColor(Color(uiColor: .label))
+                        .padding(8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+        .padding(.vertical, 4)
+        .confirmationDialog(
+            "Delete Highlight Set",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                onDelete?()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Delete \"\(highlightSet.set.name)\"?\n\nThis will permanently delete all highlights in this set. This cannot be undone.")
+        }
+    }
+}
+
 // MARK: - Plan Row
 
 struct PlanRow: View {
@@ -1486,6 +1513,7 @@ extension ModuleType {
         case .devotional: return "Devotional"
         case .notes: return "Notes"
         case .plan: return "Plan"
+        case .highlights: return "Highlights"
         }
     }
 }
@@ -2097,34 +2125,72 @@ struct DictionaryModuleRow: View {
 
 struct CreateModuleView: View {
     var onCreate: ((Module) -> Void)?
+    var onCreateHighlightSet: ((HighlightSet) -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var moduleName: String = ""
     @State private var moduleDescription: String = ""
     @State private var moduleType: ModuleType = .notes
+    @State private var selectedTranslationId: String = ""
+    @State private var translations: [TranslationModule] = []
 
     private var canCreate: Bool {
-        !moduleName.trimmingCharacters(in: .whitespaces).isEmpty
+        let hasName = !moduleName.trimmingCharacters(in: .whitespaces).isEmpty
+        if moduleType == .highlights {
+            return hasName && !selectedTranslationId.isEmpty
+        }
+        return hasName
+    }
+
+    private var selectedTranslationAbbrev: String {
+        translations.first { $0.id == selectedTranslationId }?.abbreviation.uppercased() ?? ""
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Module Details") {
-                    TextField("Name", text: $moduleName)
-
                     Picker("Type", selection: $moduleType) {
                         Text("Notes").tag(ModuleType.notes)
                         Text("Devotional").tag(ModuleType.devotional)
+                        Text("Highlights").tag(ModuleType.highlights)
                     }
+
+                    // Show translation picker for highlights
+                    if moduleType == .highlights {
+                        if translations.isEmpty {
+                            Text("Loading translations...")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Picker("Translation", selection: $selectedTranslationId) {
+                                Text("Select a translation").tag("")
+                                ForEach(translations, id: \.id) { translation in
+                                    Text("\(translation.abbreviation) - \(translation.name)")
+                                        .tag(translation.id)
+                                }
+                            }
+                        }
+                    }
+
+                    TextField("Name", text: $moduleName)
 
                     TextField("Description (optional)", text: $moduleDescription)
                 }
 
                 Section {
-                    Text("Create a new module to store your own notes or devotional content. You can have multiple modules and switch between them.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if moduleType == .highlights {
+                        Text("Create a new highlight set for the selected translation. You can have multiple highlight sets per translation.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if moduleType == .devotional {
+                        Text("Create a new module to store your own devotional content. You can have multiple modules and switch between them.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Create a new module to store your own verse-linked bible study notes. You can have multiple modules and switch between them.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle("Create Module")
@@ -2142,6 +2208,27 @@ struct CreateModuleView: View {
                     .disabled(!canCreate)
                 }
             }
+            .task {
+                await loadTranslations()
+            }
+            .onChange(of: moduleType) { _, newType in
+                // Auto-fill name with default format for highlights
+                if newType == .highlights && moduleName.isEmpty && !selectedTranslationId.isEmpty {
+                    moduleName = "My \(selectedTranslationAbbrev) Highlights"
+                }
+            }
+            .onChange(of: selectedTranslationId) { _, newValue in
+                // Auto-fill name with default format when translation changes
+                if moduleType == .highlights && moduleName.isEmpty && !newValue.isEmpty {
+                    moduleName = "My \(selectedTranslationAbbrev) Highlights"
+                }
+            }
+        }
+    }
+
+    private func loadTranslations() async {
+        if let allTranslations = try? TranslationDatabase.shared.getAllTranslations() {
+            translations = allTranslations.sorted { $0.abbreviation < $1.abbreviation }
         }
     }
 
@@ -2149,23 +2236,313 @@ struct CreateModuleView: View {
         let trimmedName = moduleName.trimmingCharacters(in: .whitespaces)
         let trimmedDescription = moduleDescription.trimmingCharacters(in: .whitespaces)
 
-        // Generate lowercase-hyphenated ID from name
-        let moduleId = trimmedName
-            .lowercased()
-            .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: "[^a-z0-9-]", with: "", options: .regularExpression)
+        if moduleType == .highlights {
+            // Use HighlightManager to create the highlight set
+            HighlightManager.shared.currentTranslationId = selectedTranslationId
 
-        let module = Module(
-            id: moduleId,
-            type: moduleType,
-            name: trimmedName,
-            description: trimmedDescription.isEmpty ? nil : trimmedDescription,
-            filePath: "\(moduleId).json",
-            isEditable: true
-        )
+            do {
+                let highlightSet = try HighlightManager.shared.createHighlightSet(
+                    name: trimmedName,
+                    description: trimmedDescription.isEmpty ? nil : trimmedDescription
+                )
+                onCreateHighlightSet?(highlightSet)
+                dismiss()
+            } catch {
+                print("[CreateModuleView] Failed to create highlight set: \(error)")
+            }
+        } else {
+            // Generate lowercase-hyphenated ID from name
+            let baseId = trimmedName
+                .lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+                .replacingOccurrences(of: "[^a-z0-9-]", with: "", options: .regularExpression)
 
-        onCreate?(module)
-        dismiss()
+            // Check if ID exists and increment if needed
+            var moduleId = baseId
+            var counter = 1
+            while (try? ModuleDatabase.shared.getModule(id: moduleId)) != nil {
+                counter += 1
+                moduleId = "\(baseId)-\(counter)"
+            }
+
+            let module = Module(
+                id: moduleId,
+                type: moduleType,
+                name: trimmedName,
+                description: trimmedDescription.isEmpty ? nil : trimmedDescription,
+                filePath: "\(moduleId).json",
+                isEditable: true
+            )
+
+            onCreate?(module)
+            dismiss()
+        }
+    }
+}
+
+// MARK: - Import Module Sheet
+
+struct ImportModuleSheet: View {
+    let modules: [Module]
+    var onImportMarkdown: ((String, ModuleType, String) -> Void)?
+    var onImportComplete: (() -> Void)?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var showingLampImporter: Bool = false
+    @State private var showingMarkdownImporter: Bool = false
+    @State private var importType: ModuleType = .notes
+    @State private var selectedModuleId: String = ""
+    @State private var showingModuleSelector: Bool = false
+    @State private var pendingMarkdownContent: String = ""
+
+    private var notesModules: [Module] {
+        modules.filter { $0.type == .notes }
+    }
+
+    private var devotionalModules: [Module] {
+        modules.filter { $0.type == .devotional }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // .lamp module import
+                Section {
+                    Button {
+                        showingLampImporter = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "doc.zipper")
+                                .foregroundStyle(.accent)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Import .lamp Module")
+                                    .foregroundStyle(.primary)
+                                Text("Import a Lamp Bible module package")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("Module Package")
+                }
+
+                // Markdown import
+                Section {
+                    Button {
+                        importType = .notes
+                        showingMarkdownImporter = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "note.text")
+                                .foregroundStyle(.accent)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Import Notes from Markdown")
+                                    .foregroundStyle(.primary)
+                                Text("Import verse-linked study notes")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        importType = .devotional
+                        showingMarkdownImporter = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "book.closed")
+                                .foregroundStyle(.accent)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Import Devotionals from Markdown")
+                                    .foregroundStyle(.primary)
+                                Text("Import devotional entries")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("Markdown")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Supported formats:")
+                            .font(.caption)
+                            .fontWeight(.medium)
+
+                        Text("• Single .md file with entries separated by ---")
+                            .font(.caption)
+
+                        Text("• Directory of .md files (one entry per file)")
+                            .font(.caption)
+
+                        Text("\nNotes should have verse references like [John 3:16]. Devotionals can include YAML frontmatter for metadata (title, date, tags).")
+                            .font(.caption)
+                    }
+                }
+            }
+            .navigationTitle("Import Module")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+            .fileImporter(
+                isPresented: $showingLampImporter,
+                allowedContentTypes: [.data],
+                allowsMultipleSelection: false
+            ) { result in
+                handleLampImport(result)
+            }
+            .fileImporter(
+                isPresented: $showingMarkdownImporter,
+                allowedContentTypes: [.text, .plainText, .folder],
+                allowsMultipleSelection: false
+            ) { result in
+                handleMarkdownImport(result)
+            }
+            .sheet(isPresented: $showingModuleSelector) {
+                MarkdownImportModuleSelectorView(
+                    markdownContent: pendingMarkdownContent,
+                    modules: importType == .notes ? notesModules : devotionalModules,
+                    onImport: { moduleId, moduleType in
+                        onImportMarkdown?(moduleId, moduleType, pendingMarkdownContent)
+                        dismiss()
+                    }
+                )
+            }
+        }
+    }
+
+    private func handleLampImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+
+            Task {
+                do {
+                    guard url.startAccessingSecurityScopedResource() else {
+                        print("[ImportModuleSheet] Could not access security scoped resource")
+                        return
+                    }
+                    defer { url.stopAccessingSecurityScopedResource() }
+
+                    // Detect module type from the .lamp file
+                    let moduleType = try detectModuleType(from: url)
+
+                    // Import using ModuleSyncManager (handles both local db and cloud storage)
+                    try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: moduleType)
+
+                    onImportComplete?()
+                    dismiss()
+                } catch {
+                    print("[ImportModuleSheet] Failed to import .lamp module: \(error)")
+                }
+            }
+
+        case .failure(let error):
+            print("[ImportModuleSheet] File picker error: \(error)")
+        }
+    }
+
+    /// Detect module type by examining SQLite tables in the .lamp file
+    private func detectModuleType(from url: URL) throws -> ModuleType {
+        let data = try Data(contentsOf: url)
+
+        // Decompress the data (zlib compressed)
+        guard let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data else {
+            throw NSError(domain: "ImportModuleSheet", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decompress .lamp file"])
+        }
+
+        // Write to temp file to open as SQLite
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
+        try decompressed.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        // Open as SQLite and check tables
+        let db = try DatabaseQueue(path: tempURL.path)
+        let tables = try db.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
+        }
+
+        // Determine type based on tables present
+        if tables.contains("note_entries") {
+            return .notes
+        } else if tables.contains("devotional_entries") {
+            return .devotional
+        } else if tables.contains("highlight_sets") || tables.contains("highlights") {
+            return .highlights
+        } else if tables.contains("commentary_entries") || tables.contains("commentary_units") {
+            return .commentary
+        } else if tables.contains("dictionary_entries") {
+            return .dictionary
+        } else {
+            throw NSError(domain: "ImportModuleSheet", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not determine module type"])
+        }
+    }
+
+    private func handleMarkdownImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+
+            guard url.startAccessingSecurityScopedResource() else {
+                print("[ImportModuleSheet] Could not access security scoped resource")
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+
+            do {
+                var isDirectory: ObjCBool = false
+                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+
+                let content: String
+                if isDirectory.boolValue {
+                    // Read all .md files in directory
+                    let files = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+                        .filter { $0.pathExtension.lowercased() == "md" }
+                        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+                    var combinedContent = ""
+                    for file in files {
+                        let fileContent = try String(contentsOf: file, encoding: .utf8)
+                        if !combinedContent.isEmpty {
+                            combinedContent += "\n\n---\n\n"
+                        }
+                        combinedContent += fileContent
+                    }
+                    content = combinedContent
+                } else {
+                    content = try String(contentsOf: url, encoding: .utf8)
+                }
+
+                pendingMarkdownContent = content
+
+                // Show module selector
+                let targetModules = importType == .notes ? notesModules : devotionalModules
+                if targetModules.isEmpty {
+                    // No modules exist, need to create one first
+                    print("[ImportModuleSheet] No \(importType.rawValue) modules exist")
+                } else {
+                    showingModuleSelector = true
+                }
+
+            } catch {
+                print("[ImportModuleSheet] Failed to read markdown: \(error)")
+            }
+
+        case .failure(let error):
+            print("[ImportModuleSheet] File picker error: \(error)")
+        }
     }
 }
 

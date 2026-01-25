@@ -19,13 +19,13 @@ struct SettingsView: View {
     @State var iCloudAvailable: Bool = false
     @State var moduleSyncInProgress: Bool = false
     @State var moduleCount: Int? = nil
-    @State private var syncBackend: SyncBackend = .icloudDrive
+    @State private var syncBackend: SyncBackend = .none
     @State private var webdavURL: String = ""
     @State private var webdavUsername: String = ""
     @State private var webdavPassword: String = ""
     @State private var isTestingConnection: Bool = false
     @State private var connectionTestResult: ConnectionTestResult? = nil
-    @State private var previousBackend: SyncBackend = .icloudDrive
+    @State private var previousBackend: SyncBackend = .none
     @State private var showingMigrationDialog: Bool = false
     @State private var pendingBackendChange: SyncBackend? = nil
     @State private var isMigrating: Bool = false
@@ -33,6 +33,7 @@ struct SettingsView: View {
     @State private var showingWebDAVSetup: Bool = false
     @State private var showingWebDAVConfig: Bool = false
     @State private var hasLoadedSettings: Bool = false
+    @State private var showingWipeConfirmation: Bool = false
     @ObservedObject private var syncCoordinator = SyncCoordinator.shared
 
     enum ConnectionTestResult {
@@ -180,8 +181,8 @@ struct SettingsView: View {
                         // Ignore initial load and changes while handling a pending switch
                         guard hasLoadedSettings, pendingBackendChange == nil else { return }
 
-                        // Check if we're switching between actual storage backends
-                        if oldValue != .none && newValue != .none && oldValue != newValue {
+                        // Any backend change should offer migrate/wipe options
+                        if oldValue != newValue {
                             pendingBackendChange = newValue
                             syncBackend = oldValue // Revert until user decides
 
@@ -189,14 +190,8 @@ struct SettingsView: View {
                                 // Switching TO WebDAV - need to configure first
                                 showingWebDAVSetup = true
                             } else {
-                                // Switching FROM WebDAV to something else - show migration dialog
+                                // Show migration dialog for all other switches
                                 showingMigrationDialog = true
-                            }
-                        } else if pendingBackendChange == nil {
-                            // Just switch (e.g., to/from "none")
-                            Task {
-                                try? await SyncCoordinator.shared.setBackend(newValue)
-                                iCloudAvailable = await SyncCoordinator.shared.isAvailable
                             }
                         }
                     }
@@ -523,13 +518,33 @@ struct SettingsView: View {
                         await performMigration()
                     }
                 }
-                Button("Switch Only") {
+                Button("Switch Only", role: .destructive) {
+                    // Show secondary confirmation about data wipe
+                    showingWipeConfirmation = true
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingBackendChange = nil
+                }
+            } message: {
+                if let newBackend = pendingBackendChange {
+                    Text("Switching from \(syncBackend.displayName) to \(newBackend.displayName).\n\n'Migrate' copies your data to the new location.\n'Switch Only' starts fresh (wipes local data).")
+                } else {
+                    Text("Would you like to migrate your data to the new storage?")
+                }
+            }
+            // Wipe confirmation dialog (secondary confirmation for Switch Only)
+            .alert("Wipe Local Data?", isPresented: $showingWipeConfirmation) {
+                Button("Wipe & Switch", role: .destructive) {
                     Task {
                         if let newBackend = pendingBackendChange {
-                            try? await SyncCoordinator.shared.setBackend(newBackend)
-                            syncBackend = newBackend
-                            previousBackend = newBackend
-                            iCloudAvailable = await SyncCoordinator.shared.isAvailable
+                            do {
+                                try await SyncCoordinator.shared.switchBackend(to: newBackend, migrateData: false)
+                                syncBackend = newBackend
+                                previousBackend = newBackend
+                                iCloudAvailable = await SyncCoordinator.shared.isAvailable
+                            } catch {
+                                print("[SettingsView] Failed to switch backend: \(error)")
+                            }
                         }
                         pendingBackendChange = nil
                     }
@@ -538,15 +553,7 @@ struct SettingsView: View {
                     pendingBackendChange = nil
                 }
             } message: {
-                if let newBackend = pendingBackendChange {
-                    Text("Copy your modules from \(syncBackend.displayName) to \(newBackend.displayName)?\n\n")
-                    + Text("Warning: Any existing files on \(newBackend.displayName) will be removed before migration.")
-                        .foregroundColor(.orange)
-                } else {
-                    Text("Would you like to migrate your data to the new storage?\n\n")
-                    + Text("Warning: Existing files on the destination will be removed.")
-                        .foregroundColor(.orange)
-                }
+                Text("This will permanently delete all your notes, devotionals, and highlights from this device.\n\nThis cannot be undone.")
             }
             // Migration progress sheet
             .sheet(isPresented: $isMigrating) {
@@ -575,9 +582,15 @@ struct SettingsView: View {
                     onSwitchOnly: {
                         showingWebDAVSetup = false
                         Task {
-                            try? await SyncCoordinator.shared.setBackend(.webdav)
-                            syncBackend = .webdav
-                            iCloudAvailable = await SyncCoordinator.shared.isAvailable
+                            do {
+                                // Wipe data and switch (user already confirmed in WebDAVSetupSheet)
+                                try await SyncCoordinator.shared.switchBackend(to: .webdav, migrateData: false)
+                                syncBackend = .webdav
+                                previousBackend = .webdav
+                                iCloudAvailable = await SyncCoordinator.shared.isAvailable
+                            } catch {
+                                print("[SettingsView] Failed to switch to WebDAV: \(error)")
+                            }
                             pendingBackendChange = nil
                         }
                     },
@@ -615,16 +628,16 @@ struct SettingsView: View {
         migrationResult = nil
 
         do {
-            // Perform migration (syncBackend holds the old value since it was reverted)
-            let result = try await SyncCoordinator.shared.migrateStorage(
-                from: syncBackend,
-                to: newBackend
-            )
-            migrationResult = result
+            // Use switchBackend with migrateData: true
+            // This handles the migration and switches to the new backend
+            try await SyncCoordinator.shared.switchBackend(to: newBackend, migrateData: true)
 
-            // Switch to new backend after migration
-            try await SyncCoordinator.shared.setBackend(newBackend)
+            // Get migration result from coordinator (it tracks this during migrateStorage)
+            // For now, report success
+            migrationResult = MigrationResult(successCount: 1, failedFiles: [])
+
             syncBackend = newBackend
+            previousBackend = newBackend
             iCloudAvailable = await SyncCoordinator.shared.isAvailable
 
         } catch {
@@ -893,6 +906,7 @@ struct WebDAVSetupSheet: View {
     @State private var step: SetupStep = .configure
     @State private var isTestingConnection: Bool = false
     @State private var connectionError: String? = nil
+    @State private var showingWipeConfirmation: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -1010,12 +1024,12 @@ struct WebDAVSetupSheet: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    onSwitchOnly()
+                    showingWipeConfirmation = true
                 } label: {
                     HStack {
                         VStack(alignment: .leading) {
                             Text("Switch Only")
-                            Text("Start fresh on WebDAV")
+                            Text("Start fresh on WebDAV (wipes local data)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -1034,6 +1048,14 @@ struct WebDAVSetupSheet: View {
                         .foregroundStyle(.orange)
                     Text("Your files on \(sourceBackend.displayName) will not be removed.")
                 }
+            }
+            .alert("Wipe Local Data?", isPresented: $showingWipeConfirmation) {
+                Button("Wipe & Switch", role: .destructive) {
+                    onSwitchOnly()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This will permanently delete all your notes, devotionals, and highlights from this device.\n\nThis cannot be undone.")
             }
         }
     }

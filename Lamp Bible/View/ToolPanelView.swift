@@ -219,6 +219,7 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
     private var lastProcessedOffset: CGFloat = 0
     private var isReady: Bool = false // Prevents sync during initial load
     private var isUserScrolling: Bool = false // Track if user is actively scrolling
+    private var isPullNavigationTriggered: Bool = false // Suppress progress after navigation triggers
 
     // Cached sorted positions for fast lookup during scrolling
     private var sortedVersePositions: [(verseId: Int, yPos: CGFloat)] = []
@@ -232,6 +233,17 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
 
     // Optional callback fired when user scroll completely stops (including deceleration)
     var onScrollFullyStopped: (() -> Void)?
+
+    // Pull-to-refresh callbacks (triggered when user releases while overscrolled)
+    var onPullToLoadPrevious: (() -> Void)?
+    var onPullToLoadNext: (() -> Void)?
+
+    // Pull progress callbacks (0.0 to 1.0+, for scaling arrows)
+    var onPullProgressTop: ((CGFloat) -> Void)?
+    var onPullProgressBottom: ((CGFloat) -> Void)?
+
+    // Threshold for triggering pull-to-refresh (in points)
+    private let pullToRefreshThreshold: CGFloat = 84
 
     // Verse position lookup - set by ReaderView
     var versePositions: [Int: CGFloat] = [:] {
@@ -281,6 +293,9 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         // Forward to original delegate
         originalDelegate?.scrollViewDidScroll?(scrollView)
 
+        // Report pull progress for arrow scaling
+        reportPullProgress(scrollView: scrollView)
+
         // Skip during initial load
         guard isReady else { return }
 
@@ -291,27 +306,77 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         let offset = scrollView.contentOffset.y + scrollView.safeAreaInsets.top
 
         if let verseId = findVerseIdAtOffset(offset) {
-            let verseNumber = verseId % 1000
-            let lastReportedVerseNumber = lastReportedVerseId % 1000
-
-            // Only sync if verse NUMBER changed (not full ID)
-            if verseNumber != lastReportedVerseNumber {
+            // Use full verse ID for multi-chapter support
+            if verseId != lastReportedVerseId {
                 lastReportedVerseId = verseId
                 lastProcessedOffset = offset
-                // Direct sync - no throttling
-                coordinator.readerDidScrollToVerse(verseNumber)
+                // Direct sync using full verse ID (handles chapter changes)
+                coordinator.readerDidScrollToVerse(verseId % 1000)
             }
+        }
+    }
+
+    /// Report pull progress for arrow scaling effect
+    private func reportPullProgress(scrollView: UIScrollView) {
+        let offset = scrollView.contentOffset.y
+        let contentHeight = scrollView.contentSize.height
+        let viewportHeight = scrollView.bounds.height
+
+        // Guard against invalid state (during layout or before content is sized)
+        guard viewportHeight > 0, contentHeight > 0 else {
+            onPullProgressTop?(0)
+            onPullProgressBottom?(0)
+            return
+        }
+
+        // Only report progress when user is actively scrolling (not programmatic)
+        // Also suppress if navigation was just triggered (waiting for new chapter to load)
+        guard !isPullNavigationTriggered,
+              isUserScrolling || scrollView.isTracking || scrollView.isDragging else {
+            onPullProgressTop?(0)
+            onPullProgressBottom?(0)
+            return
+        }
+
+        // Account for content insets (toolbars, safe areas)
+        let topInset = scrollView.adjustedContentInset.top
+        let bottomInset = scrollView.adjustedContentInset.bottom
+
+        // Pull down at top (negative offset = overscrolled past top)
+        // Top overscroll starts when offset goes below -topInset
+        if offset < -topInset {
+            let overscroll = -(offset + topInset)
+            let progress = min(2.0, overscroll / pullToRefreshThreshold)
+            onPullProgressTop?(progress)
+        } else {
+            onPullProgressTop?(0)
+        }
+
+        // Pull up at bottom (offset past content end)
+        // Account for bottom inset (toolbar height)
+        let maxOffset = contentHeight - viewportHeight + bottomInset
+        if maxOffset > 0 && offset > maxOffset {
+            let overscroll = offset - maxOffset
+            let progress = min(2.0, overscroll / pullToRefreshThreshold)
+            onPullProgressBottom?(progress)
+        } else {
+            onPullProgressBottom?(0)
         }
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         originalDelegate?.scrollViewWillBeginDragging?(scrollView)
         isUserScrolling = true
+        isPullNavigationTriggered = false  // Reset flag for new scroll gesture
         coordinator.readerBeganScrolling()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         originalDelegate?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
+
+        // Check for pull-to-refresh gestures
+        checkPullToRefresh(scrollView: scrollView)
+
         if !decelerate {
             // Scroll stopped immediately - sync tool panel now
             isUserScrolling = false
@@ -320,6 +385,42 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
             onUserScrollEndedAtVerseId?(lastReportedVerseId)
             onScrollFullyStopped?()
             onVerseIdChange?(lastReportedVerseId)
+        }
+    }
+
+    /// Check if user released while overscrolled past threshold and trigger pull-to-refresh
+    private func checkPullToRefresh(scrollView: UIScrollView) {
+        let offset = scrollView.contentOffset.y
+        let contentHeight = scrollView.contentSize.height
+        let viewportHeight = scrollView.bounds.height
+
+        // Account for content insets (toolbars, safe areas) - must match reportPullProgress
+        let topInset = scrollView.adjustedContentInset.top
+        let bottomInset = scrollView.adjustedContentInset.bottom
+
+        // Pull down at top - check if overscroll exceeds threshold
+        // Top overscroll starts when offset goes below -topInset
+        if offset < -topInset {
+            let overscroll = -(offset + topInset)
+            if overscroll >= pullToRefreshThreshold {
+                isPullNavigationTriggered = true
+                onPullProgressTop?(0)
+                onPullProgressBottom?(0)
+                onPullToLoadPrevious?()
+                return
+            }
+        }
+
+        // Pull up at bottom - check if overscroll exceeds threshold
+        let maxOffset = contentHeight - viewportHeight + bottomInset
+        if maxOffset > 0 && offset > maxOffset {
+            let overscroll = offset - maxOffset
+            if overscroll >= pullToRefreshThreshold {
+                isPullNavigationTriggered = true
+                onPullProgressTop?(0)
+                onPullProgressBottom?(0)
+                onPullToLoadNext?()
+            }
         }
     }
 
@@ -377,6 +478,10 @@ struct ReaderScrollSpy: UIViewRepresentable {
     var onVerseIdChange: ((Int) -> Void)? = nil
     var onUserScrollEndedAtVerseId: ((Int) -> Void)? = nil
     var onScrollFullyStopped: (() -> Void)? = nil
+    var onPullToLoadPrevious: (() -> Void)? = nil
+    var onPullToLoadNext: (() -> Void)? = nil
+    var onPullProgressTop: ((CGFloat) -> Void)? = nil
+    var onPullProgressBottom: ((CGFloat) -> Void)? = nil
 
     func makeUIView(context: Context) -> ReaderScrollSpyView {
         let view = ReaderScrollSpyView()
@@ -390,6 +495,10 @@ struct ReaderScrollSpy: UIViewRepresentable {
         uiView.onVerseIdChange = onVerseIdChange
         uiView.onUserScrollEndedAtVerseId = onUserScrollEndedAtVerseId
         uiView.onScrollFullyStopped = onScrollFullyStopped
+        uiView.onPullToLoadPrevious = onPullToLoadPrevious
+        uiView.onPullToLoadNext = onPullToLoadNext
+        uiView.onPullProgressTop = onPullProgressTop
+        uiView.onPullProgressBottom = onPullProgressBottom
     }
 }
 
@@ -406,6 +515,7 @@ struct UIKitVerseList<ItemData, CellContent: View>: UIViewControllerRepresentabl
     let items: [(verse: Int, data: ItemData)]
     let cellContent: (ItemData) -> CellContent
     let listId: String // Force recreation when this changes
+    var additionalTopOffset: CGFloat = 0  // Extra offset for collapsed header in horizontal split
 
     class Coordinator {
         var lastListId: String?
@@ -423,6 +533,7 @@ struct UIKitVerseList<ItemData, CellContent: View>: UIViewControllerRepresentabl
 
     func updateUIViewController(_ uiViewController: UIKitVerseListController<ItemData, CellContent>, context: Context) {
         uiViewController.cellContent = cellContent
+        uiViewController.additionalTopOffset = additionalTopOffset
 
         // Ensure this controller is registered for scroll sync (re-register on every update
         // in case SwiftUI recreated the view or another panel was active)
@@ -453,6 +564,9 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
     // Content configuration
     var cellContent: ((ItemData) -> CellContent)?
     private var rawData: [ItemData] = []
+
+    // Additional top offset for collapsed header in horizontal split
+    var additionalTopOffset: CGFloat = 0
 
     // Direct coordinator reference - no SwiftUI state
     private let scrollCoordinator = ScrollSyncCoordinator.shared
@@ -560,8 +674,8 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
 
         // Use contentOffset - position item at top of visible area
         if let layoutAttributes = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0)) {
-            // Account for safe area (notch)
-            let topInset = collectionView.safeAreaInsets.top
+            // Account for safe area (notch) plus any additional offset (collapsed header)
+            let topInset = collectionView.safeAreaInsets.top + additionalTopOffset
             let targetY = layoutAttributes.frame.minY - topInset
             collectionView.setContentOffset(CGPoint(x: 0, y: targetY), animated: animated)
         } else {
@@ -877,6 +991,7 @@ struct ToolPanelView: View {
     let currentVerse: Int
     var onNavigateToVerse: ((Int) -> Void)?
     @Binding var toolbarsHidden: Bool
+    var hideHeader: Bool = false  // Hide header when in horizontal split mode
 
     // User settings for translation ID
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
@@ -888,6 +1003,8 @@ struct ToolPanelView: View {
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     @AppStorage("toolPanelScrollLinked") private var isScrollLinked: Bool = true
     @AppStorage("bottomToolbarMode") private var bottomToolbarMode: BottomToolbarMode = .navigation
+    @AppStorage("notesPanelOrientation") private var notesPanelOrientation: String = "bottom"
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     /// Current scroll position ID for each content type (verse number or index)
     @State private var scrollPosition: Int? = nil
@@ -994,11 +1111,14 @@ struct ToolPanelView: View {
         ZStack(alignment: .top) {
             // Content layer
             VStack(spacing: 0) {
-                // Spacer for header height
-                if toolbarsHidden {
-                    Color.clear.frame(height: 24)
-                } else {
-                    Color.clear.frame(height: 44)
+                // Spacer for header height (only when showing our own header)
+                // In horizontal split (hideHeader), no spacer - content scrolls under the shared toolbar
+                if !hideHeader {
+                    if toolbarsHidden {
+                        Color.clear.frame(height: 24)
+                    } else {
+                        Color.clear.frame(height: 44)
+                    }
                 }
 
                 if panelMode == .notes {
@@ -1009,8 +1129,14 @@ struct ToolPanelView: View {
                     commentaryContent
                 }
             }
+            // In horizontal split, add content margins so content starts below toolbar but scrolls under it
+            .contentMargins(.top, hideHeader ? (toolbarsHidden ? 24 : 56) : 0, for: .scrollContent)
 
-            // Header overlay layer
+            // Transparent top area for horizontal split mode - content scrolls under with no overlay
+            // (The reader's navigation bar provides the visual treatment)
+
+            // Header overlay layer (hidden in horizontal split mode - controls are in main toolbar)
+            if !hideHeader {
             VStack(spacing: 0) {
                 if toolbarsHidden {
                     Text(currentPanelModeDisplayName)
@@ -1185,6 +1311,26 @@ struct ToolPanelView: View {
                         .background(Color(UIColor.secondarySystemGroupedBackground))
                         .cornerRadius(14)
 
+                        // Split direction toggle (iPad only)
+                        if horizontalSizeClass != .compact {
+                            Button {
+                                notesPanelOrientation = notesPanelOrientation == "right" ? "bottom" : "right"
+                                showingOptionsMenu = false
+                            } label: {
+                                Label(
+                                    notesPanelOrientation == "right" ? "Split Below" : "Split Right",
+                                    systemImage: notesPanelOrientation == "right" ? "rectangle.split.1x2" : "rectangle.split.2x1"
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .background(Color(UIColor.secondarySystemGroupedBackground))
+                            .cornerRadius(14)
+                        }
+
                         // Hide
                         Button {
                             showingOptionsMenu = false
@@ -1258,7 +1404,10 @@ struct ToolPanelView: View {
                 )
                 .frame(height: 15)
             }
+            } // end if !hideHeader
         }
+        // In horizontal split mode, extend to top of screen so content scrolls under the shared toolbar
+        .ignoresSafeArea(edges: hideHeader ? .top : [])
         .sheet(isPresented: $isMaximized) {
             maximizedNotesSheet
         }
@@ -1623,7 +1772,8 @@ struct ToolPanelView: View {
                                 }
                             )
                         },
-                        listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(isReadOnly)_\(sections.count)"
+                        listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(isReadOnly)_\(sections.count)",
+                        additionalTopOffset: hideHeader && toolbarsHidden ? 36 : 0
                     )
 
                     // Trailing gap button (after last verse section)
@@ -1801,7 +1951,8 @@ struct ToolPanelView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
             },
-            listId: "commentary_\(book)_\(chapter)_\(selectedCommentarySeries)_\(toolFontSize)"
+            listId: "commentary_\(book)_\(chapter)_\(selectedCommentarySeries)_\(toolFontSize)",
+            additionalTopOffset: hideHeader && toolbarsHidden ? 36 : 0
         )
     }
 
@@ -2419,7 +2570,7 @@ struct ToolPanelView: View {
             DevotionalPickerView(
                 isFullScreen: false,
                 showNewProminent: false,
-                moduleId: devotionalsModuleId,
+                initialModuleId: devotionalsModuleId,
                 onSelect: { devotional in
                     selectedDevotional = devotional
                     showingDevotionalPicker = false
@@ -2445,7 +2596,7 @@ struct ToolPanelView: View {
             DevotionalPickerView(
                 isFullScreen: false,
                 showNewProminent: false,
-                moduleId: devotionalsModuleId,
+                initialModuleId: devotionalsModuleId,
                 onSelect: { devotional in
                     selectedDevotional = devotional
                     showingDevotionalPicker = false
@@ -4062,6 +4213,38 @@ struct PreviewItem: Equatable, Identifiable {
         }
     }
 
+    /// Navigation title that formats short references (like "v1") into full references
+    var navigationTitle: String {
+        switch type {
+        case .verse(let verseId, let endVerseId, let text, _):
+            let trimmed = text.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+            // If display text is short and lacks uppercase letters (like "v1", "1-5"), format full reference
+            if trimmed.count < 10 && !trimmed.contains(where: { $0.isLetter && $0.isUppercase }) {
+                return PreviewItem.formatVerseRangeReference(verseId, endVerseId: endVerseId)
+            }
+            return trimmed
+        case .strongs(_, let text):
+            return text
+        }
+    }
+
+    /// Format verse range reference (e.g., "Matt 1:1-5" or "Matt 1:1")
+    private static func formatVerseRangeReference(_ verseId: Int, endVerseId: Int?) -> String {
+        let bookId = verseId / 1000000
+        let chapter = (verseId % 1000000) / 1000
+        let verse = verseId % 1000
+
+        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
+
+        if let ev = endVerseId {
+            let endVerse = ev % 1000
+            if endVerse != verse {
+                return "\(bookName) \(chapter):\(verse)-\(endVerse)"
+            }
+        }
+        return "\(bookName) \(chapter):\(verse)"
+    }
+
     var verseId: Int? {
         if case .verse(let id, _, _, _) = type { return id }
         return nil
@@ -4156,7 +4339,7 @@ struct PreviewSheet: View {
                     }
                 }
                 .id("\(item.index)")
-                .navigationTitle(item.displayText)
+                .navigationTitle(item.navigationTitle)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {

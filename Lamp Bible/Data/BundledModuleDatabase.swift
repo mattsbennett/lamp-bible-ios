@@ -243,6 +243,54 @@ class BundledModuleDatabase {
         }
     }
 
+    /// Get multiple consecutive chapters for continuous scrolling
+    /// - Parameters:
+    ///   - translationId: Translation ID
+    ///   - chapters: Array of (book, chapter) tuples to fetch
+    /// - Returns: Array of ChapterContent in the same order as requested
+    func getChapters(translationId: String, chapters: [(book: Int, chapter: Int)]) throws -> [ChapterContent] {
+        guard isAvailable else { return [] }
+        return try read { db in
+            var results: [ChapterContent] = []
+            for (book, chapter) in chapters {
+                let verses = try TranslationVerse
+                    .filter(Column("translation_id") == translationId)
+                    .filter(Column("book") == book)
+                    .filter(Column("chapter") == chapter)
+                    .order(Column("verse"))
+                    .fetchAll(db)
+
+                let headings = try TranslationHeading
+                    .filter(Column("translation_id") == translationId)
+                    .filter(Column("book") == book)
+                    .filter(Column("chapter") == chapter)
+                    .order(Column("before_verse"))
+                    .fetchAll(db)
+
+                results.append(ChapterContent(verses: verses, headings: headings))
+            }
+            return results
+        }
+    }
+
+    /// Get headings for a range of chapters (for multi-chapter view)
+    func getHeadingsForChapterRange(translationId: String, chapters: [(book: Int, chapter: Int)]) throws -> [TranslationHeading] {
+        guard isAvailable else { return [] }
+        return try read { db in
+            var allHeadings: [TranslationHeading] = []
+            for (book, chapter) in chapters {
+                let headings = try TranslationHeading
+                    .filter(Column("translation_id") == translationId)
+                    .filter(Column("book") == book)
+                    .filter(Column("chapter") == chapter)
+                    .order(Column("before_verse"))
+                    .fetchAll(db)
+                allHeadings.append(contentsOf: headings)
+            }
+            return allHeadings
+        }
+    }
+
     /// Get chapter count for a book
     func getChapterCount(translationId: String, book: Int) throws -> Int {
         guard isAvailable else { return 0 }
@@ -283,11 +331,11 @@ class BundledModuleDatabase {
         guard isAvailable else { return 0 }
         return try read { db in
             // Search for Strong's number in annotations_json
-            // Pattern: "strongs": "H1234" (with space after colon, as formatted by JSONEncoder)
+            // Pattern: "strongs":"H1234" or "strongs": "H1234" (handles both compact and spaced JSON)
             let count = try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM translation_verses
                 WHERE translation_id = ? AND annotations_json LIKE ?
-            """, arguments: [translationId, "%\"strongs\": \"\(strongsNum)\"%"])
+            """, arguments: [translationId, "%\"strongs\":%\"\(strongsNum)\"%"])
             return count ?? 0
         }
     }
@@ -302,7 +350,7 @@ class BundledModuleDatabase {
         guard isAvailable else { return [] }
         return try read { db in
             var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
-            var arguments: [DatabaseValueConvertible] = [translationId, "%\"strongs\": \"\(strongsNum)\"%"]
+            var arguments: [DatabaseValueConvertible] = [translationId, "%\"strongs\":%\"\(strongsNum)\"%"]
 
             if let range = bookRange {
                 conditions.append("v.book BETWEEN ? AND ?")
@@ -333,7 +381,13 @@ class BundledModuleDatabase {
             arguments.append(limit)
 
             return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                TranslationSearchResult(
+                let text: String = row["text"] ?? ""
+                let annotationsJson: String? = row["annotations_json"]
+
+                // Create snippet with <mark> tags around words matching the Strong's number
+                let snippet = Self.addStrongsMarks(to: text, annotationsJson: annotationsJson, strongsNum: strongsNum)
+
+                return TranslationSearchResult(
                     id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
                     translationId: row["translation_id"],
                     translationName: row["translation_name"],
@@ -342,12 +396,69 @@ class BundledModuleDatabase {
                     book: row["book"],
                     chapter: row["chapter"],
                     verse: row["verse"],
-                    snippet: row["text"] ?? "",
+                    snippet: snippet,
                     rank: 1.0,
-                    rawText: row["annotations_json"]
+                    rawText: annotationsJson
                 )
             }
         }
+    }
+
+    /// Add <mark> tags around words that match a Strong's number
+    private static func addStrongsMarks(to text: String, annotationsJson: String?, strongsNum: String) -> String {
+        guard let json = annotationsJson,
+              let data = json.data(using: .utf8) else {
+            return text
+        }
+
+        // Try parsing annotations - some translations use array, others might use wrapped object
+        var annotations: [VerseAnnotation]?
+
+        // Try direct array first
+        annotations = try? JSONDecoder().decode([VerseAnnotation].self, from: data)
+
+        // If that fails, try wrapped in object
+        if annotations == nil {
+            struct WrappedAnnotations: Codable {
+                var annotations: [VerseAnnotation]?
+            }
+            annotations = (try? JSONDecoder().decode(WrappedAnnotations.self, from: data))?.annotations
+        }
+
+        guard let annotations = annotations else { return text }
+
+        let textCount = text.count
+
+        // Find annotations with matching Strong's number, with validation
+        let matchingRanges = annotations
+            .filter { $0.data?.strongs?.uppercased() == strongsNum.uppercased() }
+            .map { (start: $0.start, end: $0.end) }
+            .filter { $0.start >= 0 && $0.end > $0.start && $0.end <= textCount }  // Validate ranges
+            .sorted { $0.start < $1.start }
+
+        guard !matchingRanges.isEmpty else { return text }
+
+        // Merge overlapping ranges to avoid nested marks
+        var mergedRanges: [(start: Int, end: Int)] = []
+        for range in matchingRanges {
+            if let last = mergedRanges.last, range.start <= last.end {
+                // Overlapping or adjacent - extend the previous range
+                mergedRanges[mergedRanges.count - 1] = (last.start, max(last.end, range.end))
+            } else {
+                mergedRanges.append(range)
+            }
+        }
+
+        // Insert marks from end to start to preserve offsets
+        var result = text
+        for range in mergedRanges.reversed() {
+            let startIndex = result.index(result.startIndex, offsetBy: range.start)
+            let endIndex = result.index(result.startIndex, offsetBy: range.end)
+            result.insert(contentsOf: "</mark>", at: endIndex)
+            result.insert(contentsOf: "<mark>", at: startIndex)
+        }
+
+        return result
     }
 
     /// Get the last verse ref in a chapter
@@ -1245,6 +1356,15 @@ class TranslationDatabase {
             return try bundledDb.getChapter(translationId: translationId, book: book, chapter: chapter)
         } else {
             return try userDb.getChapter(translationId: translationId, book: book, chapter: chapter)
+        }
+    }
+
+    /// Get multiple chapters from appropriate database (for continuous scrolling)
+    func getChapters(translationId: String, chapters: [(book: Int, chapter: Int)]) throws -> [ChapterContent] {
+        if try bundledDb.isTranslationBundled(id: translationId) {
+            return try bundledDb.getChapters(translationId: translationId, chapters: chapters)
+        } else {
+            return try userDb.getChapters(translationId: translationId, chapters: chapters)
         }
     }
 

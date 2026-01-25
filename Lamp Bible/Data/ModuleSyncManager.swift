@@ -70,6 +70,13 @@ class ModuleSyncManager: ObservableObject {
                 print("Failed to sync \(type.rawValue) modules: \(error)")
             }
         }
+
+        // Sync user settings database
+        do {
+            try await syncUserSettings()
+        } catch {
+            print("[Sync] Failed to sync user settings: \(error)")
+        }
     }
 
     /// Sync all modules of a specific type
@@ -115,14 +122,22 @@ class ModuleSyncManager: ObservableObject {
             }
         }
 
-        // Remove modules deleted from cloud (but preserve "notes" if only bible-notes exists in cloud)
+        // Remove modules that were previously synced but no longer exist in cloud
+        // (Only delete if the module has a lastSynced timestamp, meaning it was synced before)
         var cloudIds = Set(cloudFiles.map { $0.id })
         // If bible-notes exists in cloud, consider "notes" as present
         if cloudIds.contains("bible-notes") {
             cloudIds.insert("notes")
         }
         for module in registeredModules where !cloudIds.contains(module.id) {
+            // Only delete if this module was previously synced to cloud
+            // If lastSynced is nil, it was created locally but never synced - don't delete it
+            guard module.lastSynced != nil else {
+                print("[Sync] Preserving local-only module \(module.id) (never synced to cloud)")
+                continue
+            }
             do {
+                print("[Sync] Deleting module \(module.id) (was synced but no longer in cloud)")
                 try database.deleteAllEntriesForModule(moduleId: module.id)
                 try database.deleteModule(id: module.id)
             } catch {
@@ -353,21 +368,25 @@ class ModuleSyncManager: ObservableObject {
 
                         if devColNames.contains("content_json") {
                             // New schema with full devotional structure
-                            // Check if record_change_tag column exists
+                            // Check if optional columns exist
                             let hasRecordChangeTag = devColNames.contains("record_change_tag")
+                            let hasMediaJson = devColNames.contains("media_json")
+
                             let recordChangeTagInsert = hasRecordChangeTag ? ", record_change_tag" : ""
                             let recordChangeTagSelect = hasRecordChangeTag ? ", record_change_tag" : ""
+                            let mediaJsonInsert = hasMediaJson ? ", media_json" : ""
+                            let mediaJsonSelect = hasMediaJson ? ", media_json" : ""
 
                             try db.execute(sql: """
                                 INSERT INTO devotional_entries
                                 (id, module_id, title, subtitle, author, date, tags, category,
                                  series_id, series_name, series_order, key_scriptures_json,
                                  summary_json, content_json, footnotes_json, related_ids,
-                                 created, last_modified, search_text\(recordChangeTagInsert))
+                                 created, last_modified, search_text\(recordChangeTagInsert)\(mediaJsonInsert))
                                 SELECT id, module_id, title, subtitle, author, date, tags, category,
                                        series_id, series_name, series_order, key_scriptures_json,
                                        summary_json, content_json, footnotes_json, related_ids,
-                                       created, last_modified, search_text\(recordChangeTagSelect)
+                                       created, last_modified, search_text\(recordChangeTagSelect)\(mediaJsonSelect)
                                 FROM \(dbAlias).devotional_entries
                                 """)
                         } else {
@@ -462,6 +481,58 @@ class ModuleSyncManager: ObservableObject {
                             throw ModuleSyncError.importFailed("Unknown plan database schema")
                         }
 
+                    case .highlights:
+                        // Check if this is a highlight database with highlight_meta and highlights tables
+                        let tables = try Row.fetchAll(db, sql: "SELECT name FROM \(dbAlias).sqlite_master WHERE type='table'")
+                        let tableNames = tables.compactMap { $0["name"] as String? }
+
+                        if tableNames.contains("highlight_meta") && tableNames.contains("highlights") {
+                            let now = Int(Date().timeIntervalSince1970)
+                            let filePath = "\(fileInfo.id).lamp"
+
+                            // Get highlight set metadata
+                            guard let metaRow = try Row.fetchOne(db, sql: "SELECT * FROM \(dbAlias).highlight_meta LIMIT 1"),
+                                  let setId: String = metaRow["id"],
+                                  let setName: String = metaRow["name"],
+                                  let translationId: String = metaRow["translation_id"] else {
+                                throw ModuleSyncError.importFailed("Could not read highlight metadata")
+                            }
+
+                            // Create module if not exists
+                            try db.execute(sql: """
+                                INSERT OR REPLACE INTO modules (id, type, name, description, file_path, file_hash, last_synced, is_editable, created_at, updated_at)
+                                VALUES (?, 'highlights', ?, ?, ?, ?, ?, 1, ?, ?)
+                                """, arguments: [fileInfo.id, setName, metaRow["description"] as String?, filePath, fileInfo.fileHash, now, now, now])
+
+                            // Copy highlight set metadata
+                            try db.execute(sql: """
+                                INSERT OR REPLACE INTO highlight_sets (id, module_id, name, description, translation_id, created, last_modified)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """, arguments: [setId, fileInfo.id, setName, metaRow["description"] as String?, translationId,
+                                                 (metaRow["created"] as Int?) ?? now, (metaRow["last_modified"] as Int?) ?? now])
+
+                            // Copy highlights
+                            try db.execute(sql: """
+                                INSERT INTO highlights (set_id, ref, sc, ec, style, color)
+                                SELECT ?, ref, sc, ec, style, color
+                                FROM \(dbAlias).highlights
+                                """, arguments: [setId])
+                        } else if tableNames.contains("highlight_sets") && tableNames.contains("highlights") {
+                            // Full GRDB schema - copy directly
+                            try db.execute(sql: """
+                                INSERT OR REPLACE INTO highlight_sets (id, module_id, name, description, translation_id, created, last_modified)
+                                SELECT id, module_id, name, description, translation_id, created, last_modified
+                                FROM \(dbAlias).highlight_sets
+                                """)
+                            try db.execute(sql: """
+                                INSERT INTO highlights (set_id, ref, sc, ec, style, color)
+                                SELECT set_id, ref, sc, ec, style, color
+                                FROM \(dbAlias).highlights
+                                """)
+                        } else {
+                            throw ModuleSyncError.importFailed("Unknown highlights database schema")
+                        }
+
                     case .translation:
                         // Check which schema the source database uses
                         let tables = try Row.fetchAll(db, sql: "SELECT name FROM \(dbAlias).sqlite_master WHERE type='table'")
@@ -473,6 +544,8 @@ class ModuleSyncManager: ObservableObject {
 
                         if hasTranslationsTable {
                             // New GRDB schema - copy directly
+                            // Always set is_bundled=0 since synced translations are user-imported, not bundled
+                            let now = Int(Date().timeIntervalSince1970)
                             try db.execute(sql: """
                                 INSERT INTO translations (id, name, abbreviation, description, language, language_name,
                                     text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
@@ -481,9 +554,9 @@ class ModuleSyncManager: ObservableObject {
                                 SELECT id, name, abbreviation, description, language, language_name,
                                     text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
                                     license, source_texts_json, features_json, versification, file_path, file_hash,
-                                    last_synced, is_bundled, created_at, updated_at
+                                    ?, 0, ?, ?
                                 FROM \(dbAlias).translations
-                                """)
+                                """, arguments: [now, now, now])
 
                             // Copy translation books (if table exists)
                             if tableNames.contains("translation_books") {
@@ -607,6 +680,11 @@ class ModuleSyncManager: ObservableObject {
         try? FileManager.default.removeItem(at: tempURL)
 
         print("Imported \(type.rawValue) module \(fileInfo.id) from SQLite")
+
+        // Download media files for devotional modules
+        if type == .devotional {
+            try await downloadDevotionalMedia(moduleId: fileInfo.id)
+        }
     }
 
     private func createModuleMetadata(id: String, type: ModuleType, hash: String?, tempURL: URL) async throws {
@@ -841,6 +919,11 @@ class ModuleSyncManager: ObservableObject {
             // Plans store metadata in the plans table, not modules table
             // The metadata is copied directly via ATTACH DATABASE, so nothing to do here
             break
+
+        case .highlights:
+            // Highlights store metadata in the highlight_sets table
+            // The metadata is copied directly via ATTACH DATABASE, so nothing to do here
+            break
         }
     }
 
@@ -878,6 +961,10 @@ class ModuleSyncManager: ObservableObject {
             // Plans are imported via SQLite format only (.lamp)
             // JSON import could be added in the future if needed
             throw ModuleSyncError.importFailed("JSON import not supported for plans. Use .lamp format.")
+
+        case .highlights:
+            // Highlights are imported via SQLite format only (.lamp)
+            throw ModuleSyncError.importFailed("JSON import not supported for highlights. Use .lamp format.")
         }
     }
 
@@ -1700,6 +1787,153 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Export to Cloud (for editable modules)
 
+    /// Import a .lamp module from a local file URL
+    /// If cloud storage is available, also writes to cloud for sync
+    func importModuleFromFile(url: URL, moduleType: ModuleType) async throws {
+        // Read the compressed data
+        let compressedData = try Data(contentsOf: url)
+        let fileName = url.lastPathComponent
+        let moduleId = fileName.replacingOccurrences(of: ".lamp", with: "")
+
+        // Decompress to temp file for import
+        let decompressedData = try decompressZlib(compressedData)
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
+        try decompressedData.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        // Calculate hash from compressed data
+        let hash = compressedData.sha256Hash
+
+        // Create the file info
+        let fileInfo = ModuleFileInfo(
+            id: moduleId,
+            type: moduleType,
+            filePath: fileName,
+            fileHash: hash,
+            modificationDate: Date()
+        )
+
+        // Create module metadata first
+        if moduleType != .commentary {
+            try await createModuleMetadata(id: moduleId, type: moduleType, hash: hash, tempURL: tempURL)
+        }
+
+        // Delete existing entries
+        if moduleType == .translation {
+            try database.deleteAllTranslationContent(translationId: moduleId)
+            try database.deleteTranslation(id: moduleId)
+        } else if moduleType == .commentary {
+            if let existingModule = try database.getModule(id: moduleId), let seriesId = existingModule.seriesId {
+                let modulesWithSeries = try database.getModulesForSeries(seriesId: seriesId)
+                if modulesWithSeries.count <= 1 {
+                    try database.deleteCommentarySeries(id: seriesId)
+                }
+            }
+            try database.deleteAllEntriesForModule(moduleId: moduleId)
+            try database.deleteModule(id: moduleId)
+        } else {
+            try database.deleteAllEntriesForModule(moduleId: moduleId)
+        }
+
+        // Import using ATTACH DATABASE
+        try await importFromTempDatabase(tempURL: tempURL, fileInfo: fileInfo, type: moduleType)
+
+        // If cloud storage is available, also write there for sync
+        let storage = await MainActor.run { getStorage() }
+        if await storage.isAvailable() {
+            try await storage.writeModuleFile(type: moduleType, fileName: fileName, data: compressedData)
+        }
+
+        print("[ModuleSyncManager] Imported module from file: \(moduleId)")
+    }
+
+    /// Helper to import from a temp database file using ATTACH DATABASE
+    private func importFromTempDatabase(tempURL: URL, fileInfo: ModuleFileInfo, type: ModuleType) async throws {
+        let dbAlias = "import_\(UUID().uuidString.prefix(8).replacingOccurrences(of: "-", with: ""))"
+
+        try database.writeWithoutTransaction { db in
+            try db.execute(sql: "ATTACH DATABASE '\(tempURL.path)' AS \(dbAlias)")
+
+            do {
+                try db.execute(sql: "BEGIN IMMEDIATE TRANSACTION")
+
+                switch type {
+                case .dictionary:
+                    try db.execute(sql: """
+                        INSERT INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json)
+                        SELECT id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json
+                        FROM \(dbAlias).dictionary_entries
+                        """)
+
+                case .notes:
+                    try db.execute(sql: """
+                        INSERT INTO note_entries (id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified)
+                        SELECT id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified
+                        FROM \(dbAlias).note_entries
+                        """)
+
+                case .devotional:
+                    // Check source schema
+                    let devCols = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(devotional_entries)")
+                    let devColNames = Set(devCols.compactMap { $0["name"] as String? })
+
+                    if devColNames.contains("content_json") {
+                        // Check if media_json column exists in source
+                        let hasMediaJson = devColNames.contains("media_json")
+                        let mediaJsonInsert = hasMediaJson ? ", media_json" : ""
+                        let mediaJsonSelect = hasMediaJson ? ", media_json" : ""
+
+                        try db.execute(sql: """
+                            INSERT INTO devotional_entries
+                            (id, module_id, title, subtitle, author, date, tags, category,
+                             series_id, series_name, series_order, key_scriptures_json,
+                             summary_json, content_json, footnotes_json, related_ids,
+                             created, last_modified, search_text\(mediaJsonInsert))
+                            SELECT id, module_id, title, subtitle, author, date, tags, category,
+                                   series_id, series_name, series_order, key_scriptures_json,
+                                   summary_json, content_json, footnotes_json, related_ids,
+                                   created, last_modified, search_text\(mediaJsonSelect)
+                            FROM \(dbAlias).devotional_entries
+                            """)
+                    } else {
+                        // Legacy schema
+                        try db.execute(sql: """
+                            INSERT INTO devotional_entries
+                            (id, module_id, title, date, tags, content_json, last_modified, search_text)
+                            SELECT id, module_id, title, month_day, tags, content, last_modified, content
+                            FROM \(dbAlias).devotional_entries
+                            """)
+                    }
+
+                case .highlights:
+                    // Import highlight sets first
+                    try db.execute(sql: """
+                        INSERT INTO highlight_sets (id, module_id, name, description, translation_id, created, last_modified)
+                        SELECT id, module_id, name, description, translation_id, created, last_modified
+                        FROM \(dbAlias).highlight_sets
+                        """)
+                    // Import highlights
+                    try db.execute(sql: """
+                        INSERT INTO highlights (id, set_id, ref, sc, ec, style, color)
+                        SELECT id, set_id, ref, sc, ec, style, color
+                        FROM \(dbAlias).highlights
+                        """)
+
+                default:
+                    break
+                }
+
+                try db.execute(sql: "COMMIT")
+            } catch {
+                try? db.execute(sql: "ROLLBACK")
+                try db.execute(sql: "DETACH DATABASE \(dbAlias)")
+                throw error
+            }
+
+            try db.execute(sql: "DETACH DATABASE \(dbAlias)")
+        }
+    }
+
     /// Export an editable module to iCloud
     func exportModule(id: String) async throws {
         guard let module = try database.getModule(id: id) else {
@@ -1729,6 +1963,13 @@ class ModuleSyncManager: ObservableObject {
             }
             localEntryCount = entries.count
             data = try exportDevotionalModuleToSQLite(module)
+        case .highlights:
+            // For highlights, use the dedicated import/export manager
+            let sets = try database.getHighlightSets(forModule: module.id)
+            localEntryCount = sets.isEmpty ? 0 : try sets.reduce(0) { sum, set in
+                sum + (try database.getHighlightCount(setId: set.id))
+            }
+            data = try exportHighlightModuleToSQLite(module)
         case .translation, .dictionary, .commentary, .plan:
             throw ModuleSyncError.moduleNotEditable(id)
         }
@@ -1775,6 +2016,11 @@ class ModuleSyncManager: ObservableObject {
             updatedModule.fileHash = newHash
             updatedModule.lastSynced = Int(Date().timeIntervalSince1970)
             try database.saveModule(updatedModule)
+        }
+
+        // Sync media files for devotional modules
+        if module.type == .devotional {
+            try await uploadDevotionalMedia(moduleId: module.id)
         }
     }
 
@@ -1969,6 +2215,7 @@ class ModuleSyncManager: ObservableObject {
                     summary_json TEXT,
                     content_json TEXT NOT NULL,
                     footnotes_json TEXT,
+                    media_json TEXT,
                     related_ids TEXT,
                     created INTEGER NOT NULL,
                     last_modified INTEGER,
@@ -2001,8 +2248,8 @@ class ModuleSyncManager: ObservableObject {
                     sql: """
                         INSERT INTO devotional_entries
                         (id, module_id, title, subtitle, author, date, tags, category, series_id, series_name, series_order,
-                         key_scriptures_json, summary_json, content_json, footnotes_json, related_ids, created, last_modified, search_text, record_change_tag)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         key_scriptures_json, summary_json, content_json, footnotes_json, media_json, related_ids, created, last_modified, search_text, record_change_tag)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     arguments: [
                         entry.id,
@@ -2020,12 +2267,85 @@ class ModuleSyncManager: ObservableObject {
                         entry.summaryJson,
                         entry.contentJson,
                         entry.footnotesJson,
+                        entry.mediaJson,
                         entry.relatedIds,
                         entry.created,
                         entry.lastModified,
                         entry.searchText,
                         entry.recordChangeTag
                     ]
+                )
+            }
+        }
+
+        // Read the SQLite file and compress with zlib
+        let sqliteData = try Data(contentsOf: tempURL)
+        guard let compressedData = try? (sqliteData as NSData).compressed(using: .zlib) as Data else {
+            throw ModuleSyncError.exportFailed("Failed to compress SQLite data")
+        }
+
+        return compressedData
+    }
+
+    /// Export highlights module to SQLite+zlib format
+    private func exportHighlightModuleToSQLite(_ module: Module) throws -> Data {
+        // Get highlight sets for this module
+        let sets = try database.getHighlightSets(forModule: module.id)
+
+        guard let set = sets.first else {
+            throw ModuleSyncError.exportFailed("No highlight set found for module")
+        }
+
+        // Get all highlights for the set
+        let highlights = try database.getAllHighlights(setId: set.id)
+
+        // Create temporary database file
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("db")
+
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        // Create and populate the SQLite database
+        let exportQueue = try DatabaseQueue(path: tempURL.path)
+        try exportQueue.write { db in
+            // Create highlight_meta table (compact export format)
+            try db.execute(sql: """
+                CREATE TABLE highlight_meta (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    translation_id TEXT NOT NULL,
+                    created INTEGER,
+                    last_modified INTEGER
+                )
+            """)
+
+            // Create highlights table
+            try db.execute(sql: """
+                CREATE TABLE highlights (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ref INTEGER NOT NULL,
+                    sc INTEGER NOT NULL,
+                    ec INTEGER NOT NULL,
+                    style INTEGER DEFAULT 0,
+                    color TEXT
+                )
+            """)
+
+            // Insert highlight set metadata
+            try db.execute(
+                sql: "INSERT INTO highlight_meta (id, name, description, translation_id, created, last_modified) VALUES (?, ?, ?, ?, ?, ?)",
+                arguments: [set.id, set.name, set.description, set.translationId, set.created, set.lastModified]
+            )
+
+            // Insert all highlights
+            for highlight in highlights {
+                try db.execute(
+                    sql: "INSERT INTO highlights (ref, sc, ec, style, color) VALUES (?, ?, ?, ?, ?)",
+                    arguments: [highlight.ref, highlight.sc, highlight.ec, highlight.style, highlight.color]
                 )
             }
         }
@@ -2065,6 +2385,8 @@ class ModuleSyncManager: ObservableObject {
                 return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM note_entries") ?? 0
             case .devotional:
                 return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM devotional_entries") ?? 0
+            case .highlights:
+                return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM highlights") ?? 0
             default:
                 return 0
             }
@@ -2188,6 +2510,218 @@ class ModuleSyncManager: ObservableObject {
             throw ModuleSyncError.importFailed("Failed to decompress zlib data: \(error.localizedDescription)")
         }
     }
+
+    // MARK: - User Settings Sync
+
+    private let userSettingsFileName = "user-settings.db"
+
+    /// Sync user settings database with the selected sync provider
+    func syncUserSettings() async throws {
+        let storage = await getStorage()
+        guard await storage.isAvailable() else {
+            print("[UserSettings] Sync provider not available")
+            return
+        }
+
+        let localURL = UserDatabase.shared.databaseURL
+        let localModDate = (try? FileManager.default.attributesOfItem(atPath: localURL.path))?[.modificationDate] as? Date
+
+        // Check if remote file exists and get its hash/date
+        // We store user settings in the UserData directory
+        let remoteData = try? await storage.readFile(path: "UserData/\(userSettingsFileName)")
+
+        if let remoteData = remoteData {
+            // Remote exists - compare and decide direction
+            let tempRemoteURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("db")
+
+            defer { try? FileManager.default.removeItem(at: tempRemoteURL) }
+
+            try remoteData.write(to: tempRemoteURL)
+
+            // Get remote modification date from the database itself
+            let remoteModDate = getLastModifiedFromUserDb(at: tempRemoteURL)
+            let localModDateFromDb = getLastModifiedFromUserDb(at: localURL)
+
+            if let remoteDate = remoteModDate, let localDate = localModDateFromDb {
+                if remoteDate > localDate {
+                    // Remote is newer - import it
+                    print("[UserSettings] Remote is newer, importing...")
+                    try await importUserSettings(from: remoteData)
+                } else if localDate > remoteDate {
+                    // Local is newer - export it
+                    print("[UserSettings] Local is newer, exporting...")
+                    try await exportUserSettings()
+                } else {
+                    print("[UserSettings] Already in sync")
+                }
+            } else {
+                // Can't determine - export local to be safe
+                print("[UserSettings] Cannot determine versions, exporting local...")
+                try await exportUserSettings()
+            }
+        } else {
+            // No remote file - export local
+            print("[UserSettings] No remote file, exporting local settings...")
+            try await exportUserSettings()
+        }
+    }
+
+    /// Export user settings to the sync provider
+    func exportUserSettings() async throws {
+        let storage = await getStorage()
+        guard await storage.isAvailable() else { return }
+
+        let localURL = UserDatabase.shared.databaseURL
+        let data = try Data(contentsOf: localURL)
+
+        try await storage.writeFile(path: "UserData/\(userSettingsFileName)", data: data)
+        print("[UserSettings] Exported to sync provider")
+    }
+
+    /// Import user settings from sync provider
+    private func importUserSettings(from data: Data) async throws {
+        let localURL = UserDatabase.shared.databaseURL
+
+        // Backup current
+        let backupURL = localURL.deletingLastPathComponent().appendingPathComponent("user.db.backup")
+        try? FileManager.default.removeItem(at: backupURL)
+        try? FileManager.default.copyItem(at: localURL, to: backupURL)
+
+        // Write new data
+        try data.write(to: localURL)
+
+        // Notify observers
+        UserDatabase.shared.notifyExternalChange()
+        print("[UserSettings] Imported from sync provider")
+    }
+
+    /// Get the last modified date from user_settings table
+    private func getLastModifiedFromUserDb(at url: URL) -> Date? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+
+        do {
+            let queue = try DatabaseQueue(path: url.path)
+            return try queue.read { db in
+                if let timestamp = try Date.fetchOne(db, sql: "SELECT updated_at FROM user_settings WHERE id = 1") {
+                    return timestamp
+                }
+                return nil
+            }
+        } catch {
+            print("[UserSettings] Error reading db: \(error)")
+            return nil
+        }
+    }
+
+    // MARK: - Devotional Media Sync
+
+    /// Upload all media files for a devotional module to the sync provider
+    func uploadDevotionalMedia(moduleId: String) async throws {
+        let storage = await getStorage()
+        guard await storage.isAvailable() else {
+            print("[MediaSync] Sync provider not available")
+            return
+        }
+
+        // Get all devotional entries for this module that have media
+        let entries = try database.read { db in
+            try DevotionalEntry
+                .filter(Column("module_id") == moduleId)
+                .filter(Column("media_json") != nil)
+                .fetchAll(db)
+        }
+
+        print("[MediaSync] Found \(entries.count) entries with media for module \(moduleId)")
+
+        for entry in entries {
+            guard let mediaJson = entry.mediaJson,
+                  let data = mediaJson.data(using: .utf8),
+                  let mediaRefs = try? JSONDecoder().decode([DevotionalMediaReference].self, from: data) else {
+                continue
+            }
+
+            for mediaRef in mediaRefs {
+                // Get local file
+                guard let localURL = DevotionalMediaStorage.shared.getMediaURL(
+                    for: mediaRef,
+                    devotionalId: entry.id,
+                    moduleId: moduleId
+                ) else {
+                    print("[MediaSync] Local file not found: \(mediaRef.filename)")
+                    continue
+                }
+
+                // Upload to remote
+                let remotePath = "DevotionalMedia/\(moduleId)/\(entry.id)/\(mediaRef.filename)"
+                do {
+                    let fileData = try Data(contentsOf: localURL)
+                    try await storage.writeFile(path: remotePath, data: fileData)
+                    print("[MediaSync] Uploaded: \(remotePath)")
+                } catch {
+                    print("[MediaSync] Failed to upload \(remotePath): \(error)")
+                }
+            }
+        }
+    }
+
+    /// Download all media files for a devotional module from the sync provider
+    func downloadDevotionalMedia(moduleId: String) async throws {
+        let storage = await getStorage()
+        guard await storage.isAvailable() else {
+            print("[MediaSync] Sync provider not available")
+            return
+        }
+
+        // Get all devotional entries for this module that have media
+        let entries = try database.read { db in
+            try DevotionalEntry
+                .filter(Column("module_id") == moduleId)
+                .filter(Column("media_json") != nil)
+                .fetchAll(db)
+        }
+
+        print("[MediaSync] Found \(entries.count) entries with media for module \(moduleId)")
+
+        for entry in entries {
+            guard let mediaJson = entry.mediaJson,
+                  let data = mediaJson.data(using: .utf8),
+                  let mediaRefs = try? JSONDecoder().decode([DevotionalMediaReference].self, from: data) else {
+                continue
+            }
+
+            for mediaRef in mediaRefs {
+                // Ensure local directory exists
+                try DevotionalMediaStorage.shared.ensureMediaDirectory(
+                    devotionalId: entry.id,
+                    moduleId: moduleId
+                )
+
+                let localURL = DevotionalMediaStorage.shared.expectedMediaURL(
+                    for: mediaRef,
+                    devotionalId: entry.id,
+                    moduleId: moduleId
+                )
+
+                // Skip if already exists locally
+                if FileManager.default.fileExists(atPath: localURL.path) {
+                    print("[MediaSync] Already exists: \(mediaRef.filename)")
+                    continue
+                }
+
+                // Download from remote
+                let remotePath = "DevotionalMedia/\(moduleId)/\(entry.id)/\(mediaRef.filename)"
+                do {
+                    let fileData = try await storage.readFile(path: remotePath)
+                    try fileData.write(to: localURL)
+                    print("[MediaSync] Downloaded: \(remotePath)")
+                } catch {
+                    print("[MediaSync] Failed to download \(remotePath): \(error)")
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Sync Errors
@@ -2209,5 +2743,19 @@ enum ModuleSyncError: Error, LocalizedError {
         case .exportFailed(let reason):
             return "Export failed: \(reason)"
         }
+    }
+}
+
+// MARK: - Data SHA256 Extension
+
+import CommonCrypto
+
+fileprivate extension Data {
+    var sha256Hash: String {
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        self.withUnsafeBytes { buffer in
+            _ = CC_SHA256(buffer.baseAddress, CC_LONG(self.count), &hash)
+        }
+        return hash.map { String(format: "%02x", $0) }.joined()
     }
 }

@@ -205,7 +205,7 @@ struct MarkdownConverter {
         let database = ModuleDatabase.shared
         let entries = try database.read { db in
             try DevotionalEntry.filter(Column("module_id") == moduleId)
-                .order(Column("month_day"), Column("title"))
+                .order(Column("date"), Column("title"))
                 .fetchAll(db)
         }
 
@@ -248,7 +248,7 @@ struct MarkdownConverter {
         let database = ModuleDatabase.shared
         let entries = try database.read { db in
             try DevotionalEntry.filter(Column("module_id") == moduleId)
-                .order(Column("month_day"), Column("title"))
+                .order(Column("date"), Column("title"))
                 .fetchAll(db)
         }
 

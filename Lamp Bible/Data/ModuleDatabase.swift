@@ -48,6 +48,9 @@ class ModuleDatabase {
 
             // Run migrations
             try migrator.migrate(dbQueue)
+
+            // Post-migration: Ensure media_json column exists (belt and suspenders)
+            try ensureMediaJsonColumn()
         } catch {
             print("[ModuleDatabase] Failed to open database: \(error)")
             print("[ModuleDatabase] Attempting to delete and recreate database...")
@@ -67,6 +70,25 @@ class ModuleDatabase {
         try dbQueue.read { db in
             let result = try String.fetchOne(db, sql: "PRAGMA integrity_check")
             return result == "ok"
+        }
+    }
+
+    /// Ensure media_json column exists in devotional_entries table
+    /// This is a belt-and-suspenders check in case migrations didn't run properly
+    private func ensureMediaJsonColumn() throws {
+        try dbQueue.write { db in
+            let columns = try db.columns(in: "devotional_entries")
+            let columnNames = columns.map { $0.name }
+            print("[ModuleDatabase] devotional_entries columns: \(columnNames)")
+
+            let hasMediaJson = columns.contains { $0.name == "media_json" }
+            if !hasMediaJson {
+                print("[ModuleDatabase] media_json column missing! Adding it now...")
+                try db.execute(sql: "ALTER TABLE devotional_entries ADD COLUMN media_json TEXT")
+                print("[ModuleDatabase] media_json column added successfully")
+            } else {
+                print("[ModuleDatabase] media_json column exists ✓")
+            }
         }
     }
 
@@ -239,7 +261,7 @@ class ModuleDatabase {
             try db.create(table: "devotional_entries") { t in
                 t.column("id", .text).primaryKey()
                 t.column("module_id", .text).notNull().references("modules", onDelete: .cascade)
-                t.column("month_day", .text)
+                t.column("date", .text)
                 t.column("tags", .text)
                 t.column("title", .text).notNull()
                 t.column("content", .text).notNull()
@@ -247,7 +269,7 @@ class ModuleDatabase {
                 t.column("last_modified", .integer)
             }
             try db.create(index: "idx_dev_module", on: "devotional_entries", columns: ["module_id"])
-            try db.create(index: "idx_dev_date", on: "devotional_entries", columns: ["month_day"])
+            try db.create(index: "idx_dev_date", on: "devotional_entries", columns: ["date"])
 
             // Note entries
             try db.create(table: "note_entries") { t in
@@ -1019,6 +1041,183 @@ class ModuleDatabase {
             }
         }
 
+        // v16: Add publication and subscription tables for devotional sharing
+        migrator.registerMigration("v16") { db in
+            // Publications (owner side) - tracks feeds that user publishes
+            try db.create(table: "devotional_publications", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("description", .text)
+                t.column("filter_type", .text).notNull()  // 'tag', 'category', 'all'
+                t.column("filter_values", .text)          // Comma-separated
+                t.column("module_id", .text).notNull()
+                t.column("last_published", .integer)
+                t.column("subscriber_count", .integer)
+            }
+
+            // Subscriptions (subscriber side) - tracks feeds user subscribes to
+            try db.create(table: "devotional_subscriptions", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("publication_id", .text).notNull()
+                t.column("name", .text).notNull()
+                t.column("url", .text).notNull()
+                t.column("storage_type", .text).notNull()  // 'icloud', 'webdav'
+                t.column("last_synced", .integer)
+                t.column("last_remote_version", .integer)
+                t.column("is_enabled", .integer).notNull().defaults(to: 1)
+            }
+
+            // Add subscription_id and is_read_only columns to devotional_entries
+            let columns = try db.columns(in: "devotional_entries")
+            if !columns.contains(where: { $0.name == "subscription_id" }) {
+                try db.execute(sql: "ALTER TABLE devotional_entries ADD COLUMN subscription_id TEXT")
+            }
+            if !columns.contains(where: { $0.name == "is_read_only" }) {
+                try db.execute(sql: "ALTER TABLE devotional_entries ADD COLUMN is_read_only INTEGER DEFAULT 0")
+            }
+
+            // Index for subscription lookups
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_devotional_subscription
+                ON devotional_entries(subscription_id)
+            """)
+        }
+
+        // v17: Add devotional_media table for embedded images and audio
+        migrator.registerMigration("v17") { db in
+            try db.create(table: "devotional_media", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("devotional_id", .text).notNull()
+                t.column("module_id", .text).notNull()
+                t.column("type", .text).notNull()           // 'image' or 'audio'
+                t.column("filename", .text).notNull()
+                t.column("mime_type", .text).notNull()
+                t.column("size", .integer)
+                t.column("width", .integer)                 // Images only
+                t.column("height", .integer)                // Images only
+                t.column("duration", .double)               // Audio only (seconds)
+                t.column("waveform_json", .text)            // Audio only (JSON array of floats)
+                t.column("transcription", .text)            // Audio only
+                t.column("alt_text", .text)                 // Images only (accessibility)
+                t.column("created", .integer)
+
+                t.foreignKey(["devotional_id"], references: "devotional_entries", columns: ["id"], onDelete: .cascade)
+                t.foreignKey(["module_id"], references: "modules", columns: ["id"], onDelete: .cascade)
+            }
+
+            try db.create(index: "idx_devotional_media_devotional", on: "devotional_media", columns: ["devotional_id"])
+            try db.create(index: "idx_devotional_media_module", on: "devotional_media", columns: ["module_id"])
+
+            // Add media_json column to devotional_entries for inline media references
+            let columns = try db.columns(in: "devotional_entries")
+            if !columns.contains(where: { $0.name == "media_json" }) {
+                try db.execute(sql: "ALTER TABLE devotional_entries ADD COLUMN media_json TEXT")
+            }
+        }
+
+        // v18: Highlight sets and highlights tables
+        migrator.registerMigration("v18") { db in
+            // Create highlight_sets table for set metadata
+            try db.create(table: "highlight_sets", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("module_id", .text).notNull().references("modules", onDelete: .cascade)
+                t.column("name", .text).notNull()
+                t.column("description", .text)
+                t.column("translation_id", .text).notNull()  // The translation this set belongs to
+                t.column("created", .integer).notNull()
+                t.column("last_modified", .integer).notNull()
+            }
+            try db.create(index: "idx_highlight_sets_module", on: "highlight_sets", columns: ["module_id"])
+            try db.create(index: "idx_highlight_sets_translation", on: "highlight_sets", columns: ["translation_id"])
+
+            // Create highlights table for individual highlights
+            try db.create(table: "highlights", ifNotExists: true) { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("set_id", .text).notNull().references("highlight_sets", onDelete: .cascade)
+                t.column("ref", .integer).notNull()          // BBCCCVVV verse reference
+                t.column("sc", .integer).notNull()           // Start character offset
+                t.column("ec", .integer).notNull()           // End character offset
+                t.column("style", .integer).notNull().defaults(to: 0)  // 0=highlight, 1=underline solid, etc.
+                t.column("color", .text)                      // Hex color (nil = default yellow)
+            }
+            try db.create(index: "idx_highlights_set", on: "highlights", columns: ["set_id"])
+            try db.create(index: "idx_highlights_ref", on: "highlights", columns: ["ref"])
+            try db.create(index: "idx_highlights_set_ref", on: "highlights", columns: ["set_id", "ref"])
+        }
+
+        // v19: Rename month_day column to date in devotional_entries
+        migrator.registerMigration("v19") { db in
+            // Check if month_day column exists (only for existing databases)
+            let columns = try db.columns(in: "devotional_entries")
+            let hasMonthDay = columns.contains { $0.name == "month_day" }
+
+            guard hasMonthDay else {
+                // Column already named 'date' (new database), nothing to do
+                return
+            }
+
+            try db.rename(table: "devotional_entries", to: "devotional_entries_old")
+            try db.create(table: "devotional_entries") { t in
+                t.column("id", .text).primaryKey()
+                t.column("module_id", .text).notNull().references("modules", onDelete: .cascade)
+                t.column("title", .text).notNull()
+                t.column("subtitle", .text)
+                t.column("author", .text)
+                t.column("date", .text)
+                t.column("tags", .text)
+                t.column("category", .text)
+                t.column("series_id", .text)
+                t.column("series_name", .text)
+                t.column("series_order", .integer)
+                t.column("key_scriptures_json", .text)
+                t.column("summary_json", .text)
+                t.column("content_json", .text).notNull()
+                t.column("footnotes_json", .text)
+                t.column("related_ids", .text)
+                t.column("created", .integer).notNull()
+                t.column("last_modified", .integer)
+                t.column("search_text", .text)
+                t.column("record_change_tag", .text)
+                t.column("subscription_id", .text)
+                t.column("is_read_only", .integer)
+                t.column("media_json", .text)
+            }
+            // Copy data from old table, mapping month_day to date
+            // Note: media_json may not exist in old table, so we use NULL
+            try db.execute(sql: """
+                INSERT INTO devotional_entries (
+                    id, module_id, title, subtitle, author, date, tags, category,
+                    series_id, series_name, series_order, key_scriptures_json, summary_json,
+                    content_json, footnotes_json, related_ids, created, last_modified,
+                    search_text, record_change_tag, subscription_id, is_read_only, media_json
+                )
+                SELECT
+                    id, module_id, title, subtitle, author, month_day, tags, category,
+                    series_id, series_name, series_order, key_scriptures_json, summary_json,
+                    content_json, footnotes_json, related_ids, created, last_modified,
+                    search_text, record_change_tag, subscription_id, is_read_only, NULL
+                FROM devotional_entries_old
+            """)
+            try db.drop(table: "devotional_entries_old")
+            try db.create(index: "idx_dev_module", on: "devotional_entries", columns: ["module_id"], ifNotExists: true)
+            try db.create(index: "idx_dev_date", on: "devotional_entries", columns: ["date"], ifNotExists: true)
+        }
+
+        // v20: Add media_json column to devotional_entries (for databases that ran v19 before this column was added)
+        migrator.registerMigration("v20") { db in
+            let columns = try db.columns(in: "devotional_entries")
+            let hasMediaJson = columns.contains { $0.name == "media_json" }
+
+            guard !hasMediaJson else {
+                // Column already exists, nothing to do
+                return
+            }
+
+            try db.alter(table: "devotional_entries") { t in
+                t.add(column: "media_json", .text)
+            }
+        }
+
         return migrator
     }
 
@@ -1370,8 +1569,18 @@ class ModuleDatabase {
 
     func saveDevotionalEntry(_ entry: DevotionalEntry) throws {
         do {
+            // Debug: Log what we're about to save
+            print("[ModuleDatabase] Saving entry '\(entry.title)' with mediaJson: \(entry.mediaJson?.prefix(50) ?? "nil")")
+
             try write { db in
                 try entry.save(db)
+
+                // Debug: Immediately read back to verify
+                if let savedEntry = try DevotionalEntry.fetchOne(db, key: entry.id) {
+                    print("[ModuleDatabase] Verified save - mediaJson in DB: \(savedEntry.mediaJson?.prefix(50) ?? "nil")")
+                } else {
+                    print("[ModuleDatabase] WARNING: Could not read back saved entry!")
+                }
             }
         } catch {
             print("[ModuleDatabase] Error saving devotional entry: \(error)")
@@ -1407,6 +1616,112 @@ class ModuleDatabase {
                 .filter(Column("module_id") == moduleId)
                 .filter(Column("tags").like("%\(tag)%"))
                 .fetchAll(db)
+        }
+    }
+
+    /// Get devotionals by subscription ID
+    func getDevotionalsForSubscription(subscriptionId: String) throws -> [DevotionalEntry] {
+        try dbQueue.read { db in
+            try DevotionalEntry
+                .filter(Column("subscription_id") == subscriptionId)
+                .fetchAll(db)
+        }
+    }
+
+    /// Delete all devotionals for a subscription
+    func deleteDevotionalsForSubscription(subscriptionId: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM devotional_entries WHERE subscription_id = ?", arguments: [subscriptionId])
+        }
+    }
+
+    // MARK: - Publication CRUD
+
+    func savePublication(_ publication: DevotionalPublication) throws {
+        try dbQueue.write { db in
+            try publication.save(db)
+        }
+    }
+
+    func deletePublication(id: String) throws {
+        try dbQueue.write { db in
+            _ = try DevotionalPublication.deleteOne(db, key: id)
+        }
+    }
+
+    func getPublication(id: String) throws -> DevotionalPublication? {
+        try dbQueue.read { db in
+            try DevotionalPublication.fetchOne(db, key: id)
+        }
+    }
+
+    func getAllPublications() throws -> [DevotionalPublication] {
+        try dbQueue.read { db in
+            try DevotionalPublication.fetchAll(db)
+        }
+    }
+
+    func getPublicationsForModule(moduleId: String) throws -> [DevotionalPublication] {
+        try dbQueue.read { db in
+            try DevotionalPublication
+                .filter(Column("module_id") == moduleId)
+                .fetchAll(db)
+        }
+    }
+
+    // MARK: - Subscription CRUD
+
+    func saveSubscription(_ subscription: DevotionalSubscription) throws {
+        try dbQueue.write { db in
+            try subscription.save(db)
+        }
+    }
+
+    func deleteSubscription(id: String) throws {
+        try dbQueue.write { db in
+            _ = try DevotionalSubscription.deleteOne(db, key: id)
+        }
+    }
+
+    func getSubscription(id: String) throws -> DevotionalSubscription? {
+        try dbQueue.read { db in
+            try DevotionalSubscription.fetchOne(db, key: id)
+        }
+    }
+
+    func getAllSubscriptions() throws -> [DevotionalSubscription] {
+        try dbQueue.read { db in
+            try DevotionalSubscription.fetchAll(db)
+        }
+    }
+
+    func getEnabledSubscriptions() throws -> [DevotionalSubscription] {
+        try dbQueue.read { db in
+            try DevotionalSubscription
+                .filter(Column("is_enabled") == 1)
+                .fetchAll(db)
+        }
+    }
+
+    func updateSubscriptionLastSynced(id: String, lastSynced: Date, version: Int) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE devotional_subscriptions
+                    SET last_synced = ?, last_remote_version = ?
+                    WHERE id = ?
+                """,
+                arguments: [Int(lastSynced.timeIntervalSince1970), version, id]
+            )
+        }
+    }
+
+    func toggleSubscriptionEnabled(id: String, enabled: Bool) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE devotional_subscriptions SET is_enabled = ? WHERE id = ?",
+                arguments: [enabled ? 1 : 0, id]
+            )
         }
     }
 
@@ -1587,6 +1902,31 @@ class ModuleDatabase {
         }
     }
 
+    /// Get multiple consecutive chapters for continuous scrolling
+    func getChapters(translationId: String, chapters: [(book: Int, chapter: Int)]) throws -> [ChapterContent] {
+        try dbQueue.read { db in
+            var results: [ChapterContent] = []
+            for (book, chapter) in chapters {
+                let verses = try TranslationVerse
+                    .filter(Column("translation_id") == translationId)
+                    .filter(Column("book") == book)
+                    .filter(Column("chapter") == chapter)
+                    .order(Column("verse"))
+                    .fetchAll(db)
+
+                let headings = try TranslationHeading
+                    .filter(Column("translation_id") == translationId)
+                    .filter(Column("book") == book)
+                    .filter(Column("chapter") == chapter)
+                    .order(Column("before_verse"))
+                    .fetchAll(db)
+
+                results.append(ChapterContent(verses: verses, headings: headings))
+            }
+            return results
+        }
+    }
+
     func getVerseRange(translationId: String, startRef: Int, endRef: Int) throws -> [TranslationVerse] {
         try dbQueue.read { db in
             try TranslationVerse
@@ -1630,11 +1970,11 @@ class ModuleDatabase {
     func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
         try dbQueue.read { db in
             // Search for Strong's number in annotations_json
-            // Pattern: "strongs": "H1234" (with space after colon, as formatted by JSONEncoder)
+            // Pattern: "strongs":"H1234" or "strongs": "H1234" (handles both compact and spaced JSON)
             let count = try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM translation_verses
                 WHERE translation_id = ? AND annotations_json LIKE ?
-            """, arguments: [translationId, "%\"strongs\": \"\(strongsNum)\"%"])
+            """, arguments: [translationId, "%\"strongs\":%\"\(strongsNum)\"%"])
             return count ?? 0
         }
     }
@@ -1647,7 +1987,7 @@ class ModuleDatabase {
     ) throws -> [TranslationSearchResult] {
         try dbQueue.read { db in
             var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
-            var arguments: [DatabaseValueConvertible] = [translationId, "%\"strongs\": \"\(strongsNum)\"%"]
+            var arguments: [DatabaseValueConvertible] = [translationId, "%\"strongs\":%\"\(strongsNum)\"%"]
 
             if let range = bookRange {
                 conditions.append("v.book BETWEEN ? AND ?")
@@ -1661,8 +2001,8 @@ class ModuleDatabase {
                 SELECT
                     v.id,
                     v.translation_id,
-                    m.name as translation_name,
-                    m.abbreviation as translation_abbrev,
+                    t.name as translation_name,
+                    t.abbreviation as translation_abbrev,
                     v.ref,
                     v.book,
                     v.chapter,
@@ -1670,7 +2010,7 @@ class ModuleDatabase {
                     v.text,
                     v.annotations_json
                 FROM translation_verses v
-                JOIN modules m ON v.translation_id = m.id
+                JOIN translations t ON v.translation_id = t.id
                 WHERE \(whereClause)
                 ORDER BY v.ref
                 LIMIT ?
@@ -1678,7 +2018,13 @@ class ModuleDatabase {
             arguments.append(limit)
 
             return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                TranslationSearchResult(
+                let text: String = row["text"] ?? ""
+                let annotationsJson: String? = row["annotations_json"]
+
+                // Create snippet with <mark> tags around words matching the Strong's number
+                let snippet = Self.addStrongsMarks(to: text, annotationsJson: annotationsJson, strongsNum: strongsNum)
+
+                return TranslationSearchResult(
                     id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
                     translationId: row["translation_id"],
                     translationName: row["translation_name"] ?? "",
@@ -1687,12 +2033,69 @@ class ModuleDatabase {
                     book: row["book"],
                     chapter: row["chapter"],
                     verse: row["verse"],
-                    snippet: row["text"] ?? "",
+                    snippet: snippet,
                     rank: 1.0,
-                    rawText: row["annotations_json"]
+                    rawText: annotationsJson
                 )
             }
         }
+    }
+
+    /// Add <mark> tags around words that match a Strong's number
+    private static func addStrongsMarks(to text: String, annotationsJson: String?, strongsNum: String) -> String {
+        guard let json = annotationsJson,
+              let data = json.data(using: .utf8) else {
+            return text
+        }
+
+        // Try parsing annotations - some translations use array, others might use wrapped object
+        var annotations: [VerseAnnotation]?
+
+        // Try direct array first
+        annotations = try? JSONDecoder().decode([VerseAnnotation].self, from: data)
+
+        // If that fails, try wrapped in object
+        if annotations == nil {
+            struct WrappedAnnotations: Codable {
+                var annotations: [VerseAnnotation]?
+            }
+            annotations = (try? JSONDecoder().decode(WrappedAnnotations.self, from: data))?.annotations
+        }
+
+        guard let annotations = annotations else { return text }
+
+        let textCount = text.count
+
+        // Find annotations with matching Strong's number, with validation
+        let matchingRanges = annotations
+            .filter { $0.data?.strongs?.uppercased() == strongsNum.uppercased() }
+            .map { (start: $0.start, end: $0.end) }
+            .filter { $0.start >= 0 && $0.end > $0.start && $0.end <= textCount }  // Validate ranges
+            .sorted { $0.start < $1.start }
+
+        guard !matchingRanges.isEmpty else { return text }
+
+        // Merge overlapping ranges to avoid nested marks
+        var mergedRanges: [(start: Int, end: Int)] = []
+        for range in matchingRanges {
+            if let last = mergedRanges.last, range.start <= last.end {
+                // Overlapping or adjacent - extend the previous range
+                mergedRanges[mergedRanges.count - 1] = (last.start, max(last.end, range.end))
+            } else {
+                mergedRanges.append(range)
+            }
+        }
+
+        // Insert marks from end to start to preserve offsets
+        var result = text
+        for range in mergedRanges.reversed() {
+            let startIndex = result.index(result.startIndex, offsetBy: range.start)
+            let endIndex = result.index(result.startIndex, offsetBy: range.end)
+            result.insert(contentsOf: "</mark>", at: endIndex)
+            result.insert(contentsOf: "<mark>", at: startIndex)
+        }
+
+        return result
     }
 
     func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
@@ -1960,6 +2363,229 @@ class ModuleDatabase {
             for day in days {
                 try day.save(db)
             }
+        }
+    }
+
+    // MARK: - Highlight Set CRUD
+
+    /// Save a highlight set
+    func saveHighlightSet(_ set: HighlightSet) throws {
+        try dbQueue.write { db in
+            try set.save(db)
+        }
+    }
+
+    /// Delete a highlight set by ID
+    func deleteHighlightSet(id: String) throws {
+        try dbQueue.write { db in
+            _ = try HighlightSet.deleteOne(db, key: id)
+        }
+    }
+
+    /// Get a highlight set by ID
+    func getHighlightSet(id: String) throws -> HighlightSet? {
+        try dbQueue.read { db in
+            try HighlightSet.fetchOne(db, key: id)
+        }
+    }
+
+    /// Get all highlight sets for a translation
+    func getHighlightSets(forTranslation translationId: String) throws -> [HighlightSet] {
+        try dbQueue.read { db in
+            try HighlightSet
+                .filter(Column("translation_id") == translationId)
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get all highlight sets
+    func getAllHighlightSets() throws -> [HighlightSet] {
+        try dbQueue.read { db in
+            try HighlightSet
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get highlight sets for a module
+    func getHighlightSets(forModule moduleId: String) throws -> [HighlightSet] {
+        try dbQueue.read { db in
+            try HighlightSet
+                .filter(Column("module_id") == moduleId)
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    // MARK: - Highlight Entry CRUD
+
+    /// Save a highlight entry and return it with the assigned ID
+    @discardableResult
+    func saveHighlight(_ highlight: HighlightEntry) throws -> HighlightEntry {
+        try dbQueue.write { db in
+            var entry = highlight
+            try entry.insert(db)
+            return entry
+        }
+    }
+
+    /// Update a highlight entry's character offsets
+    func updateHighlight(id: Int64, sc: Int, ec: Int) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE highlights SET sc = ?, ec = ? WHERE id = ?",
+                arguments: [sc, ec, id]
+            )
+        }
+    }
+
+    /// Delete a highlight entry by ID
+    func deleteHighlight(id: Int64) throws {
+        try dbQueue.write { db in
+            _ = try HighlightEntry.deleteOne(db, key: id)
+        }
+    }
+
+    /// Get a highlight entry by ID
+    func getHighlight(id: Int64) throws -> HighlightEntry? {
+        try dbQueue.read { db in
+            try HighlightEntry.fetchOne(db, key: id)
+        }
+    }
+
+    /// Get all highlights for a set and chapter (all verses in the chapter)
+    func getHighlights(setId: String, book: Int, chapter: Int) throws -> [HighlightEntry] {
+        // Calculate ref range for the chapter: BBCCC001 to BBCCC999
+        let startRef = book * 1_000_000 + chapter * 1000 + 1
+        let endRef = book * 1_000_000 + chapter * 1000 + 999
+
+        return try dbQueue.read { db in
+            try HighlightEntry
+                .filter(Column("set_id") == setId)
+                .filter(Column("ref") >= startRef)
+                .filter(Column("ref") <= endRef)
+                .order(Column("ref"), Column("sc"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get all highlights for a set and specific verse
+    func getHighlights(setId: String, ref: Int) throws -> [HighlightEntry] {
+        try dbQueue.read { db in
+            try HighlightEntry
+                .filter(Column("set_id") == setId)
+                .filter(Column("ref") == ref)
+                .order(Column("sc"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get all highlights for a set
+    func getAllHighlights(setId: String) throws -> [HighlightEntry] {
+        try dbQueue.read { db in
+            try HighlightEntry
+                .filter(Column("set_id") == setId)
+                .order(Column("ref"), Column("sc"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Delete all highlights for a specific verse in a set
+    func deleteHighlights(setId: String, ref: Int) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM highlights WHERE set_id = ? AND ref = ?",
+                arguments: [setId, ref]
+            )
+        }
+    }
+
+    /// Delete a highlight that overlaps with given character range
+    func deleteHighlight(setId: String, ref: Int, sc: Int, ec: Int) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM highlights WHERE set_id = ? AND ref = ? AND sc = ? AND ec = ?",
+                arguments: [setId, ref, sc, ec]
+            )
+        }
+    }
+
+    /// Get highlight count for a set
+    func getHighlightCount(setId: String) throws -> Int {
+        try dbQueue.read { db in
+            try HighlightEntry
+                .filter(Column("set_id") == setId)
+                .fetchCount(db)
+        }
+    }
+
+    /// Import highlights for a set (bulk insert)
+    func importHighlights(_ highlights: [HighlightEntry]) throws {
+        try dbQueue.write { db in
+            for var highlight in highlights {
+                try highlight.insert(db)
+            }
+        }
+    }
+
+    /// Delete all highlights for a set
+    func deleteAllHighlights(setId: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM highlights WHERE set_id = ?",
+                arguments: [setId]
+            )
+        }
+    }
+
+    /// Update highlight set's last_modified timestamp
+    func updateHighlightSetModified(id: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE highlight_sets SET last_modified = ? WHERE id = ?",
+                arguments: [Int(Date().timeIntervalSince1970), id]
+            )
+        }
+    }
+
+    /// Get all unique highlight colors used across all highlight sets
+    func getUniqueHighlightColors() throws -> [String] {
+        try dbQueue.read { db in
+            let sql = "SELECT DISTINCT color FROM highlights WHERE color IS NOT NULL"
+            let rows = try Row.fetchAll(db, sql: sql)
+            var colors: [String] = []
+            for row in rows {
+                if let colorHex: String = row["color"] {
+                    colors.append(colorHex.uppercased())
+                }
+            }
+            // Add default yellow for highlights without explicit color
+            if !colors.contains("FFCC00") {
+                colors.append("FFCC00")
+            }
+            return colors
+        }
+    }
+
+    // MARK: - Wipe All Syncable Data
+
+    /// Wipe all user-syncable data from the local database.
+    /// This includes notes, devotionals, and highlights.
+    /// Used when switching sync backends to start fresh.
+    func wipeAllSyncableData() throws {
+        try dbQueue.write { db in
+            // Delete all notes
+            try db.execute(sql: "DELETE FROM note_entries")
+
+            // Delete all devotionals
+            try db.execute(sql: "DELETE FROM devotional_entries")
+
+            // Delete all highlights and highlight sets
+            try db.execute(sql: "DELETE FROM highlights")
+            try db.execute(sql: "DELETE FROM highlight_sets")
+
+            print("[ModuleDatabase] Wiped all syncable data (notes, devotionals, highlights)")
         }
     }
 }

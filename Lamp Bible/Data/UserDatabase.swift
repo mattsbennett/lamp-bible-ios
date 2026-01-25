@@ -8,58 +8,120 @@
 import Foundation
 import GRDB
 
-/// Manages user settings and completed readings with iCloud sync support
+/// Notification posted when UserDatabase detects remote changes (from any sync provider)
+extension Notification.Name {
+    static let userDatabaseDidChange = Notification.Name("userDatabaseDidChange")
+}
+
+/// Manages user settings and completed readings with sync support
 class UserDatabase {
     static let shared = UserDatabase()
 
     private var dbQueue: DatabaseQueue?
-    private let iCloudContainerURL: URL?
-    private let localFallbackURL: URL
+    private let localURL: URL
+    private var fileMonitorSource: DispatchSourceFileSystemObject?
+    private var fileDescriptor: Int32 = -1
+    private var debounceWorkItem: DispatchWorkItem?
 
     private init() {
-        // Check for iCloud availability
-        iCloudContainerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil)?
-            .appendingPathComponent("Documents/UserData")
-
-        // Local fallback in Documents directory
-        localFallbackURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        // Always use local storage - sync happens via ModuleSyncManager
+        localURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent("UserData")
 
         setupDatabase()
+        startFileMonitoring()
+    }
+
+    deinit {
+        stopFileMonitoring()
     }
 
     // MARK: - Database Setup
 
     private func setupDatabase() {
-        let dbURL = (iCloudContainerURL ?? localFallbackURL).appendingPathComponent("user.db")
+        let dbURL = localURL.appendingPathComponent("user.db")
 
         // Create directory if needed
         try? FileManager.default.createDirectory(
-            at: dbURL.deletingLastPathComponent(),
+            at: localURL,
             withIntermediateDirectories: true
         )
 
         // Configure GRDB
-        var config = Configuration()
-        #if DEBUG
-        config.prepareDatabase { db in
-            db.trace { print("UserDB SQL: \($0)") }
-        }
-        #endif
+        let config = Configuration()
 
         do {
             dbQueue = try DatabaseQueue(path: dbURL.path, configuration: config)
 
             // Run migrations
             try migrator.migrate(dbQueue!)
-
-            print("UserDatabase initialized at: \(dbURL.path)")
-            if iCloudContainerURL != nil {
-                print("iCloud sync enabled for user data")
-            }
+            print("[UserDB] Database initialized at: \(dbURL.path)")
         } catch {
-            print("Failed to initialize UserDatabase: \(error)")
+            print("[UserDB] Failed to initialize: \(error)")
         }
+    }
+
+    /// Get the database file URL (for sync export/import)
+    var databaseURL: URL {
+        localURL.appendingPathComponent("user.db")
+    }
+
+    // MARK: - File Change Monitoring
+
+    private func startFileMonitoring() {
+        let dbURL = databaseURL
+
+        fileDescriptor = open(dbURL.path, O_EVTONLY)
+        guard fileDescriptor >= 0 else {
+            print("[UserDB] Could not open file for monitoring: \(dbURL.path)")
+            return
+        }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fileDescriptor,
+            eventMask: [.write, .extend, .rename, .delete],
+            queue: .main
+        )
+
+        source.setEventHandler { [weak self] in
+            self?.handleFileChange()
+        }
+
+        source.setCancelHandler { [weak self] in
+            if let fd = self?.fileDescriptor, fd >= 0 {
+                close(fd)
+                self?.fileDescriptor = -1
+            }
+        }
+
+        source.resume()
+        fileMonitorSource = source
+        print("[UserDB] File monitoring active")
+    }
+
+    private func handleFileChange() {
+        // Debounce rapid changes
+        debounceWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.notifyDatabaseChange()
+        }
+        debounceWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+    }
+
+    private func notifyDatabaseChange() {
+        print("[UserDB] Database changed, notifying observers")
+        NotificationCenter.default.post(name: .userDatabaseDidChange, object: nil)
+    }
+
+    private func stopFileMonitoring() {
+        fileMonitorSource?.cancel()
+        fileMonitorSource = nil
+    }
+
+    /// Notify that database was updated from sync (call after importing)
+    func notifyExternalChange() {
+        notifyDatabaseChange()
     }
 
     // MARK: - Migrations
@@ -144,6 +206,18 @@ class UserDatabase {
             }
         }
 
+        migrator.registerMigration("v5_highlight_colors") { db in
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "custom_highlight_colors", .text).notNull().defaults(to: "")
+            }
+        }
+
+        migrator.registerMigration("v6_highlight_color_order") { db in
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "highlight_color_order", .text).notNull().defaults(to: "")
+            }
+        }
+
         return migrator
     }
 
@@ -160,7 +234,7 @@ class UserDatabase {
                 try UserSettings.fetchOne(db, key: 1) ?? UserSettings()
             }
         } catch {
-            print("Failed to fetch user settings: \(error)")
+            print("[UserDB] Failed to fetch settings: \(error)")
             return UserSettings()
         }
     }
@@ -199,7 +273,7 @@ class UserDatabase {
                 return try query.fetchAll(db)
             }
         } catch {
-            print("Failed to fetch completed readings: \(error)")
+            print("[UserDB] Failed to fetch completed readings: \(error)")
             return []
         }
     }
@@ -216,7 +290,7 @@ class UserDatabase {
                 return Set(ids)
             }
         } catch {
-            print("Failed to fetch completed reading IDs: \(error)")
+            print("[UserDB] Failed to fetch completed reading IDs: \(error)")
             return []
         }
     }
@@ -232,7 +306,7 @@ class UserDatabase {
                 try CompletedReading.fetchOne(db, key: id) != nil
             }
         } catch {
-            print("Failed to check completed reading: \(error)")
+            print("[UserDB] Failed to check completed reading: \(error)")
             return false
         }
     }
@@ -271,10 +345,10 @@ class UserDatabase {
         }
     }
 
-    // MARK: - iCloud Sync Support
+    // MARK: - Sync Support
 
     /// Force a WAL checkpoint to ensure all changes are written to the main database file
-    /// Call this before the app goes to background to ensure iCloud can sync
+    /// Call this before syncing to ensure all data is written
     func checkpointForSync() throws {
         guard let dbQueue = dbQueue else {
             throw DatabaseError(message: "Database not initialized")
@@ -283,16 +357,6 @@ class UserDatabase {
         try dbQueue.writeWithoutTransaction { db in
             try db.checkpoint(.truncate)
         }
-    }
-
-    /// Get the database URL for debugging
-    var databaseURL: URL? {
-        return (iCloudContainerURL ?? localFallbackURL).appendingPathComponent("user.db")
-    }
-
-    /// Check if iCloud is being used for storage
-    var isUsingiCloud: Bool {
-        return iCloudContainerURL != nil
     }
 
     // MARK: - Sync Settings
@@ -316,7 +380,7 @@ class UserDatabase {
                 return nil
             }
         } catch {
-            print("[UserDatabase] Failed to load sync settings: \(error)")
+            print("[UserDB] Failed to load sync settings: \(error)")
             return nil
         }
     }

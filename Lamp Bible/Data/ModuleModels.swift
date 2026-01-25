@@ -52,6 +52,13 @@ enum ModuleType: String, Codable, CaseIterable {
     case devotional
     case notes
     case plan
+    case highlights
+
+    /// Module types that are searchable in the module search UI
+    /// Excludes plan (has dedicated UI)
+    static var searchableTypes: [ModuleType] {
+        [.translation, .dictionary, .commentary, .devotional, .notes, .highlights]
+    }
 }
 
 // MARK: - Bible Metadata
@@ -578,6 +585,7 @@ struct DictionaryModuleFile: Codable {
     var seriesFull: String?   // Full series name (e.g., "Theological Dictionary of the NT")
     var seriesAbbrev: String? // Abbreviated series name (e.g., "TDNT")
     var entries: [DictionaryEntryFile]
+    var media: [MediaReference]?  // Embedded media files (v2.1)
 }
 
 /// A sense/definition in a JSON file (v2.0 supports FlexibleTextField for annotated definitions)
@@ -770,6 +778,7 @@ struct NoteModuleFile: Codable {
     var type: String
     var isEditable: Bool?
     var entries: [NoteEntryFile]
+    var media: [MediaReference]?  // Embedded media files (v1.1)
 }
 
 struct NoteEntryFile: Codable {
@@ -952,6 +961,7 @@ struct UserNotesBook: Codable {
     var book: String                    // Book abbreviation (e.g., "Matt", "Gen")
     var bookNumber: Int                 // Canonical book number 1-66
     var chapters: [UserNotesChapter]
+    var media: [MediaReference]?        // Embedded media files (v1.1)
 
     /// Get chapter notes by chapter number
     func chapter(_ chapterNum: Int) -> UserNotesChapter? {
@@ -967,6 +977,70 @@ struct UserNotesBook: Codable {
 struct VerseRef: Codable {
     var sv: Int      // Start verse
     var ev: Int?     // End verse (optional, for ranges)
+}
+
+// MARK: - Media Reference (Shared across module types)
+
+/// Type of media (image or audio)
+enum MediaType: String, Codable {
+    case image
+    case audio
+}
+
+/// Image alignment options for media display
+enum MediaAlignment: String, Codable {
+    case left
+    case center
+    case right
+    case full
+}
+
+/// Reference to a media file (image or audio) - shared across commentary, dictionary, notes
+/// Mirrors DevotionalMediaReference for consistency across module types
+struct MediaReference: Codable, Identifiable, Equatable {
+    var id: String
+    var type: MediaType
+    var filename: String
+    var mimeType: String
+    var size: Int?
+    var width: Int?              // Images only
+    var height: Int?             // Images only
+    var duration: Double?        // Audio only (seconds)
+    var waveform: [Float]?       // Audio only (normalized 0-1 samples)
+    var transcription: String?   // Audio only (speech-to-text)
+    var alt: String?             // Images only (accessibility)
+    var caption: String?         // Optional caption text
+    var created: Int?            // Unix timestamp
+
+    init(
+        id: String = UUID().uuidString,
+        type: MediaType,
+        filename: String,
+        mimeType: String,
+        size: Int? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        duration: Double? = nil,
+        waveform: [Float]? = nil,
+        transcription: String? = nil,
+        alt: String? = nil,
+        caption: String? = nil,
+        created: Int? = nil
+    ) {
+        self.id = id
+        self.type = type
+        self.filename = filename
+        self.mimeType = mimeType
+        self.size = size
+        self.width = width
+        self.height = height
+        self.duration = duration
+        self.waveform = waveform
+        self.transcription = transcription
+        self.alt = alt
+        self.caption = caption
+        self.created = created
+    }
 }
 
 // MARK: - BDB Sense (separate from DictionarySense for BDB-specific format)
@@ -994,6 +1068,7 @@ enum CommentaryAnnotationType: String, Codable {
     case lexiconRef = "lexicon-ref"  // Cross-reference to another lexicon entry
     case bold           // Bold text
     case italic         // Italic text
+    case media          // Embedded image or audio
 }
 
 /// Verse reference within a refs array (for discrete verse lists)
@@ -1012,6 +1087,11 @@ struct CommentaryAnnotationData: Codable {
     var expansion: String?          // Expanded form of abbreviation
     var pageNum: String?            // Page number
     var lexiconId: String?          // Lexicon entry ID for lexicon-ref annotations (e.g., "BDB123", "G1234")
+    // Media annotation fields (v2.1)
+    var mediaId: String?            // Reference to media item in top-level media array
+    var mediaType: String?          // "image" or "audio"
+    var caption: String?            // Optional caption for media
+    var alignment: String?          // Image alignment: "left", "center", "right", "full"
 }
 
 /// Inline annotation within commentary text
@@ -1587,7 +1667,7 @@ struct CommentaryBookFile: Codable {
     var frontMatter: FrontMatterFile?
     var chapters: [ChapterCommentaryFile]
     var indices: IndicesFile?
-
+    var media: [MediaReference]?    // Embedded media files (v2.1)
 }
 
 // MARK: - Translation GRDB Models
