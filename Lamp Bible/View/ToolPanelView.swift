@@ -21,12 +21,10 @@ class ScrollSyncCoordinator {
 
     // Direct reader scroll view reference for UIKit-based scrolling
     weak var readerScrollView: UIScrollView?
-    // Raw verseId -> yPosition (set by ReaderScrollSpyView)
+    // Full verseId (BBCCCVVV) -> yPosition (set by ReaderScrollSpyView)
     private var readerVersePositions: [Int: CGFloat] = [:]
-    // Cached verseNumber -> yPosition for fast lookup
-    private var readerVerseNumberPositions: [Int: CGFloat] = [:]
-    // Cached sorted verseNumbers for closest-preceding search
-    private var sortedReaderVerseNumbers: [Int] = []
+    // Sorted full verseIds for closest-preceding binary search
+    private var sortedReaderVerseIds: [Int] = []
 
     // Current state
     private(set) var currentVerse: Int = 1
@@ -59,23 +57,7 @@ class ScrollSyncCoordinator {
 
     func updateReaderVersePositions(_ positions: [Int: CGFloat]) {
         readerVersePositions = positions
-
-        // Build verse-number caches (chapter-local) once, not during scrolling.
-        var verseNumToY: [Int: CGFloat] = [:]
-        verseNumToY.reserveCapacity(positions.count)
-
-        for (verseId, y) in positions {
-            let v = verseId % 1000
-            // If duplicates exist (unlikely), keep the smallest y (earliest in scroll).
-            if let existing = verseNumToY[v] {
-                verseNumToY[v] = min(existing, y)
-            } else {
-                verseNumToY[v] = y
-            }
-        }
-
-        readerVerseNumberPositions = verseNumToY
-        sortedReaderVerseNumbers = verseNumToY.keys.sorted()
+        sortedReaderVerseIds = positions.keys.sorted()
     }
 
     func registerToolPanel(_ controller: any ToolPanelScrollable) {
@@ -116,16 +98,16 @@ class ScrollSyncCoordinator {
         }
         lastReaderScrollTime = now
 
-        // Find matching y or closest preceding verse number using cached lookup.
-        var targetY: CGFloat? = readerVerseNumberPositions[verse]
-        if targetY == nil, !sortedReaderVerseNumbers.isEmpty {
-            // Binary search for last verseNumber <= verse
+        // Find matching y or closest preceding verseId using cached lookup.
+        var targetY: CGFloat? = readerVersePositions[verse]
+        if targetY == nil, !sortedReaderVerseIds.isEmpty {
+            // Binary search for last verseId <= verse (BBCCCVVV sorts naturally)
             var low = 0
-            var high = sortedReaderVerseNumbers.count - 1
+            var high = sortedReaderVerseIds.count - 1
             var best: Int? = nil
             while low <= high {
                 let mid = (low + high) / 2
-                let v = sortedReaderVerseNumbers[mid]
+                let v = sortedReaderVerseIds[mid]
                 if v <= verse {
                     best = v
                     low = mid + 1
@@ -133,7 +115,7 @@ class ScrollSyncCoordinator {
                     high = mid - 1
                 }
             }
-            if let best, let y = readerVerseNumberPositions[best] {
+            if let best, let y = readerVersePositions[best] {
                 targetY = y
             }
         }
@@ -310,8 +292,8 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
             if verseId != lastReportedVerseId {
                 lastReportedVerseId = verseId
                 lastProcessedOffset = offset
-                // Direct sync using full verse ID (handles chapter changes)
-                coordinator.readerDidScrollToVerse(verseId % 1000)
+                // Direct sync using full verse ID (handles multi-chapter readings)
+                coordinator.readerDidScrollToVerse(verseId)
             }
         }
     }
@@ -381,7 +363,7 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
             // Scroll stopped immediately - sync tool panel now
             isUserScrolling = false
             coordinator.scrollEnded(from: .reader)
-            coordinator.readerDidScrollToVerse(lastReportedVerseId % 1000)
+            coordinator.readerDidScrollToVerse(lastReportedVerseId)
             onUserScrollEndedAtVerseId?(lastReportedVerseId)
             onScrollFullyStopped?()
             onVerseIdChange?(lastReportedVerseId)
@@ -429,7 +411,7 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         // Deceleration finished - sync tool panel now
         isUserScrolling = false
         coordinator.scrollEnded(from: .reader)
-        coordinator.readerDidScrollToVerse(lastReportedVerseId % 1000)
+        coordinator.readerDidScrollToVerse(lastReportedVerseId)
         onUserScrollEndedAtVerseId?(lastReportedVerseId)
         onScrollFullyStopped?()
         onVerseIdChange?(lastReportedVerseId)
@@ -815,7 +797,7 @@ struct NoteSectionCell: View {
                         }
                     }
                     .font(.subheadline)
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(.blue)
                 }
                 .padding(.vertical, 4)
             }
@@ -989,6 +971,8 @@ struct ToolPanelView: View {
     let book: Int
     let chapter: Int
     let currentVerse: Int
+    var startChapter: Int? = nil  // For multi-chapter plan readings (overrides chapter for commentary range)
+    var endChapter: Int? = nil    // For multi-chapter plan readings
     var onNavigateToVerse: ((Int) -> Void)?
     @Binding var toolbarsHidden: Bool
     var hideHeader: Bool = false  // Hide header when in horizontal split mode
@@ -1666,9 +1650,10 @@ struct ToolPanelView: View {
                     }
                 }
 
-                let verse = section.verseStart ?? 0
+                let verseNum = section.verseStart ?? 0
+                let verse = book * 1000000 + chapter * 1000 + verseNum
                 return (verse: verse, data: NoteSectionData(
-                    verse: verse,
+                    verse: verseNum,
                     section: section,
                     sectionIndex: index,
                     gapBefore: gapBefore
@@ -1688,7 +1673,7 @@ struct ToolPanelView: View {
                                 .fontWeight(.medium)
                             Spacer()
                             Text("Resolve")
-                                .foregroundColor(.accentColor)
+                                .foregroundColor(.blue)
                             Image(systemName: "chevron.right")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
@@ -1720,7 +1705,7 @@ struct ToolPanelView: View {
                                     Image(systemName: "plus.circle")
                                     Text("Add verse note")
                                 }
-                                .foregroundColor(.accentColor)
+                                .foregroundColor(.blue)
                             }
                             .padding(.top, 8)
                         }
@@ -1793,7 +1778,7 @@ struct ToolPanelView: View {
                                     }
                                 }
                                 .font(.subheadline)
-                                .foregroundColor(.accentColor)
+                                .foregroundColor(.blue)
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
@@ -1818,7 +1803,7 @@ struct ToolPanelView: View {
                 }
             }
             .font(.subheadline)
-            .foregroundColor(.accentColor)
+            .foregroundColor(.blue)
         }
         .padding(.vertical, 4)
     }
@@ -1865,12 +1850,14 @@ struct ToolPanelView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 commentaryScrollView(units: commentaryUnits, commentaryBook: commentaryBook)
-                    .id("commentaryScroll_\(book)_\(chapter)")
+                    .id("commentaryScroll_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)")
             }
         }
-        .id("commentary_\(book)_\(chapter)_\(selectedCommentarySeries)")
+        .id("commentary_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)_\(selectedCommentarySeries)")
         .task(id: book) { await loadCommentaryContent() }
         .task(id: chapter) { await loadCommentaryContent() }
+        .task(id: startChapter) { await loadCommentaryContent() }
+        .task(id: endChapter) { await loadCommentaryContent() }
         .task(id: selectedCommentarySeries) { await loadCommentaryContent() }
         .sheet(item: Binding(
             get: { commentaryStrongsKey.map { CommentaryStrongsSheetItem(key: $0) } },
@@ -1906,7 +1893,7 @@ struct ToolPanelView: View {
     private func commentaryScrollView(units: [CommentaryUnit], commentaryBook: CommentaryBook?) -> some View {
         // Build items for UIKit list
         let items: [(verse: Int, data: CommentaryUnitData)] = units.enumerated().map { index, unit in
-            (verse: unit.verse, data: CommentaryUnitData(
+            (verse: unit.sv, data: CommentaryUnitData(
                 index: index,
                 verse: unit.verse,
                 unit: unit,
@@ -1951,7 +1938,7 @@ struct ToolPanelView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
             },
-            listId: "commentary_\(book)_\(chapter)_\(selectedCommentarySeries)_\(toolFontSize)",
+            listId: "commentary_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)_\(selectedCommentarySeries)_\(toolFontSize)",
             additionalTopOffset: hideHeader && toolbarsHidden ? 36 : 0
         )
     }
@@ -1966,7 +1953,8 @@ struct ToolPanelView: View {
         // We capture values to avoid actor isolation issues if we were accessing self in detached task
         let series = selectedCommentarySeries
         let b = book
-        let c = chapter
+        let firstChapter = startChapter ?? chapter
+        let lastChapter = endChapter ?? chapter
         let userDatabase = moduleDatabase
         let bundledDb = BundledModuleDatabase.shared
 
@@ -1975,15 +1963,25 @@ struct ToolPanelView: View {
             let bundledCoverage = (try? bundledDb.bundledSeriesHasCoverageForBook(seriesFull: series, bookNumber: b)) ?? false
             if bundledCoverage {
                 let bookInfo = try? bundledDb.getBundledCommentaryBook(seriesFull: series, bookNumber: b)
-                let units = (try? bundledDb.getBundledCommentaryUnitsForChapter(seriesFull: series, book: b, chapter: c)) ?? []
-                return (true, bookInfo, units)
+                var allUnits: [CommentaryUnit] = []
+                for c in firstChapter...lastChapter {
+                    let chapterUnits = (try? bundledDb.getBundledCommentaryUnitsForChapter(seriesFull: series, book: b, chapter: c)) ?? []
+                    allUnits.append(contentsOf: chapterUnits)
+                }
+                return (true, bookInfo, allUnits)
             }
 
             // Fall back to user module database
             let userCoverage = (try? userDatabase.seriesHasCoverageForBook(seriesFull: series, bookNumber: b)) ?? false
             let bookInfo = userCoverage ? (try? userDatabase.getCommentaryBookForSeries(seriesFull: series, bookNumber: b)) : nil
-            let units = userCoverage ? ((try? userDatabase.getCommentaryUnitsForChapterBySeries(seriesFull: series, book: b, chapter: c)) ?? []) : []
-            return (userCoverage, bookInfo, units)
+            var allUnits: [CommentaryUnit] = []
+            if userCoverage {
+                for c in firstChapter...lastChapter {
+                    let chapterUnits = (try? userDatabase.getCommentaryUnitsForChapterBySeries(seriesFull: series, book: b, chapter: c)) ?? []
+                    allUnits.append(contentsOf: chapterUnits)
+                }
+            }
+            return (userCoverage, bookInfo, allUnits)
         }.value
 
         // Update state on Main Actor
@@ -3558,7 +3556,7 @@ private struct NoteContentRenderer {
             let verseAttr = NSMutableAttributedString(string: ref.displayText)
             let verseRange = NSRange(location: 0, length: verseAttr.length)
             verseAttr.addAttributes(baseAttributes, range: verseRange)
-            verseAttr.addAttribute(.foregroundColor, value: UIColor.tintColor, range: verseRange)
+            verseAttr.addAttribute(.foregroundColor, value: UIColor.systemBlue, range: verseRange)
             verseAttr.addAttribute(NoteTappableIndexKey, value: index, range: verseRange)
             result.append(verseAttr)
 
@@ -4064,7 +4062,7 @@ struct VerseSheetContent: View {
                 }
                 var highlight = AttributedString(String(text[range]))
                 highlight.font = .body.bold()
-                highlight.foregroundColor = .accentColor
+                highlight.foregroundColor = .blue
                 result.append(highlight)
                 currentIndex = range.upperBound
             } else {
@@ -4125,7 +4123,7 @@ struct VerseSheetContent: View {
                 let endIdx = text.index(text.startIndex, offsetBy: end)
                 var highlight = AttributedString(String(text[startIdx..<endIdx]))
                 highlight.font = .body.bold()
-                highlight.foregroundColor = .accentColor
+                highlight.foregroundColor = .purple
                 result.append(highlight)
             }
 

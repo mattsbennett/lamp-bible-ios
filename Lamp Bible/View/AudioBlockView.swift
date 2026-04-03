@@ -67,7 +67,7 @@ struct AudioBlockView: View {
             }
 
             if let caption = block.caption {
-                DevotionalAnnotatedTextView(caption)
+                Text(caption.text)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

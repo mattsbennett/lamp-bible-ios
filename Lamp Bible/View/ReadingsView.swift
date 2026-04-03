@@ -30,6 +30,7 @@ struct ReadingsView: View {
                                 try? UserDatabase.shared.addCompletedReading(readingId)
                                 completedReadingIds.insert(readingId)
                             }
+                            WidgetDataService.shared.refreshWidget()
                         } label: {
                             HStack {
                                 if completedReadingIds.contains(readingId) {
@@ -51,6 +52,7 @@ struct ReadingsView: View {
                                         if !completedReadingIds.contains(readingId) {
                                             try? UserDatabase.shared.addCompletedReading(readingId)
                                             completedReadingIds.insert(readingId)
+                                            WidgetDataService.shared.refreshWidget()
                                         }
                                     }
                                 }
@@ -110,6 +112,10 @@ struct ReadingsView: View {
             Spacer()
         }
         .onAppear {
+            userSettings = UserDatabase.shared.getSettings()
+            completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
             userSettings = UserDatabase.shared.getSettings()
             completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
         }

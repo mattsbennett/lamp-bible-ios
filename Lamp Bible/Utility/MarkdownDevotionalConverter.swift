@@ -86,6 +86,8 @@ struct MarkdownDevotionalConverter {
         var listType: DevotionalListType = .bullet
         var inBlockquote = false
         var blockquoteLines: [String] = []
+        var inTable = false
+        var tableLines: [String] = []
 
         func flushParagraph() {
             if !currentParagraph.isEmpty {
@@ -126,19 +128,73 @@ struct MarkdownDevotionalConverter {
             }
         }
 
-        for line in lines {
+        func flushTable() {
+            if !tableLines.isEmpty {
+                if let tableData = parseGFMTable(tableLines) {
+                    blocks.append(DevotionalContentBlock(type: .table, tableData: tableData))
+                }
+                tableLines = []
+                inTable = false
+            }
+        }
+
+        // Helper to check if a line is a list item
+        func isListItemLine(_ s: String) -> Bool {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            return t.firstMatch(of: /^(\d+)\.\s/) != nil || t.firstMatch(of: /^[-*+]\s/) != nil
+        }
+
+        for (lineIndex, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
             // Skip frontmatter separator and footnote definitions
             if trimmed == "---" { continue }
             if trimmed.starts(with: "[^") && trimmed.contains("]:") { continue }
 
-            // Empty line - flush current block
+            // Empty line - flush current block (but be smart about lists)
             if trimmed.isEmpty {
                 flushParagraph()
-                flushList()
                 flushBlockquote()
+                flushTable()
+
+                // Only flush list if the next non-empty line is NOT a list item
+                if inList {
+                    var nextIsListItem = false
+                    for j in (lineIndex + 1)..<lines.count {
+                        let nextTrimmed = lines[j].trimmingCharacters(in: .whitespaces)
+                        if !nextTrimmed.isEmpty {
+                            nextIsListItem = isListItemLine(lines[j])
+                            break
+                        }
+                    }
+                    if !nextIsListItem {
+                        flushList()
+                    }
+                    // If next is a list item, don't flush - continue the list
+                } else {
+                    flushList()
+                }
                 continue
+            }
+
+            // Table line detection: lines containing | are potential table rows
+            if trimmed.contains("|") {
+                let isTableRow = trimmed.hasPrefix("|") || trimmed.hasSuffix("|")
+                if isTableRow {
+                    if !inTable {
+                        flushParagraph()
+                        flushList()
+                        flushBlockquote()
+                        inTable = true
+                    }
+                    tableLines.append(trimmed)
+                    continue
+                }
+            }
+
+            // Non-table line ends a table
+            if inTable {
+                flushTable()
             }
 
             // Image block: ![caption](media/id)
@@ -193,6 +249,10 @@ struct MarkdownDevotionalConverter {
             }
 
             // Numbered list (allow empty items with .* instead of .+)
+            // Check indentation level for nesting
+            let leadingSpaces = line.prefix(while: { $0 == " " }).count
+            let indentLevel = leadingSpaces / 2  // 2+ spaces = one nesting level (also handles 3-space indent)
+
             if let match = trimmed.firstMatch(of: /^(\d+)\.\s*(.*)$/) {
                 flushParagraph()
                 flushBlockquote()
@@ -201,9 +261,10 @@ struct MarkdownDevotionalConverter {
                     listType = .numbered
                 }
                 inList = true
-                listItems.append(DevotionalListItem(
+                let newItem = DevotionalListItem(
                     content: parseAnnotatedText(String(match.2))
-                ))
+                )
+                appendListItem(newItem, atIndent: indentLevel, to: &listItems)
                 continue
             }
 
@@ -217,9 +278,10 @@ struct MarkdownDevotionalConverter {
                 }
                 inList = true
                 let itemText = String(trimmed.dropFirst(2))
-                listItems.append(DevotionalListItem(
+                let newItem = DevotionalListItem(
                     content: parseAnnotatedText(itemText)
-                ))
+                )
+                appendListItem(newItem, atIndent: indentLevel, to: &listItems)
                 continue
             }
 
@@ -230,13 +292,8 @@ struct MarkdownDevotionalConverter {
                 // Only continue list item if line is indented (starts with whitespace)
                 let isIndented = line.first?.isWhitespace == true
                 if isIndented && !listItems.isEmpty {
-                    // Continuation of list item (indented)
-                    let lastContent = listItems[listItems.count - 1].content
-                    listItems[listItems.count - 1] = DevotionalListItem(
-                        content: DevotionalAnnotatedText(
-                            text: lastContent.text + " " + trimmed
-                        )
-                    )
+                    // Continuation of list item (indented text, not a new bullet/number)
+                    appendTextToLastItem(trimmed, in: &listItems)
                 } else {
                     // Non-indented line ends the list and starts a paragraph
                     flushList()
@@ -251,8 +308,53 @@ struct MarkdownDevotionalConverter {
         flushParagraph()
         flushList()
         flushBlockquote()
+        flushTable()
 
         return blocks
+    }
+
+    /// Append a list item at the given indent level, nesting under the last item if needed.
+    private static func appendListItem(_ item: DevotionalListItem, atIndent indent: Int, to items: inout [DevotionalListItem]) {
+        if indent > 0 && !items.isEmpty {
+            // Nest under the last top-level item
+            var lastItem = items[items.count - 1]
+            if indent == 1 {
+                // Direct child of last item
+                if lastItem.children == nil {
+                    lastItem.children = []
+                }
+                lastItem.children!.append(item)
+            } else {
+                // Deeper nesting: recurse into last item's children
+                if lastItem.children == nil {
+                    lastItem.children = []
+                }
+                appendListItem(item, atIndent: indent - 1, to: &lastItem.children!)
+            }
+            items[items.count - 1] = lastItem
+        } else {
+            items.append(item)
+        }
+    }
+
+    /// Append continuation text to the deepest last item in the list.
+    private static func appendTextToLastItem(_ text: String, in items: inout [DevotionalListItem]) {
+        guard !items.isEmpty else { return }
+        var lastItem = items[items.count - 1]
+        if var children = lastItem.children, !children.isEmpty {
+            // Recurse into children
+            appendTextToLastItem(text, in: &children)
+            lastItem.children = children
+        } else {
+            // Append to this item's content
+            lastItem = DevotionalListItem(
+                content: DevotionalAnnotatedText(
+                    text: lastItem.content.text + " " + text
+                ),
+                children: lastItem.children
+            )
+        }
+        items[items.count - 1] = lastItem
     }
 
     // MARK: - Devotional to Markdown
@@ -419,36 +521,21 @@ struct MarkdownDevotionalConverter {
             case .blockquote:
                 if let content = block.content {
                     let quoteLines = content.text.components(separatedBy: .newlines)
-                    for quoteLine in quoteLines {
-                        lines.append("> \(quoteLine)")
+                    for (index, quoteLine) in quoteLines.enumerated() {
+                        if quoteLines.count > 1 && index < quoteLines.count - 1 {
+                            // Trailing two spaces = markdown hard line break (<br>)
+                            lines.append("> \(quoteLine)  ")
+                        } else {
+                            lines.append("> \(quoteLine)")
+                        }
                     }
                     lines.append("")
                 }
 
             case .list:
                 if let items = block.items {
-                    for (index, item) in items.enumerated() {
-                        let prefix: String
-                        if block.listType == .numbered {
-                            prefix = "\(index + 1). "
-                        } else {
-                            prefix = "- "
-                        }
-                        lines.append(prefix + annotatedTextToMarkdown(item.content))
-
-                        // Handle nested items
-                        if let children = item.children {
-                            for (childIndex, child) in children.enumerated() {
-                                let childPrefix: String
-                                if block.listType == .numbered {
-                                    childPrefix = "   \(childIndex + 1). "
-                                } else {
-                                    childPrefix = "   - "
-                                }
-                                lines.append(childPrefix + annotatedTextToMarkdown(child.content))
-                            }
-                        }
-                    }
+                    let isNumbered = block.listType == .numbered
+                    appendListItemsAsMarkdown(items, isNumbered: isNumbered, depth: 0, to: &lines)
                     lines.append("")
                 }
 
@@ -456,7 +543,7 @@ struct MarkdownDevotionalConverter {
                 // Export image with reference to media folder
                 // The actual file copying is handled by DevotionalImportExportManager
                 if let mediaId = block.mediaId {
-                    let caption = block.caption?.text ?? "Image"
+                    let caption = block.caption?.text ?? ""
                     // Use mediaId as filename - actual extension will be added during export
                     lines.append("![\(caption)](media/\(mediaId))")
                     lines.append("")
@@ -470,10 +557,35 @@ struct MarkdownDevotionalConverter {
                     lines.append("[\(caption)](media/\(mediaId))")
                     lines.append("")
                 }
+
+            case .table:
+                if let tableData = block.tableData {
+                    // Header row
+                    lines.append("| " + tableData.headers.joined(separator: " | ") + " |")
+                    // Separator row
+                    lines.append("| " + tableData.headers.map { _ in "---" }.joined(separator: " | ") + " |")
+                    // Data rows
+                    for row in tableData.rows {
+                        lines.append("| " + row.joined(separator: " | ") + " |")
+                    }
+                    lines.append("")
+                }
             }
         }
 
         return lines
+    }
+
+    /// Recursively export list items to markdown with proper indentation.
+    private static func appendListItemsAsMarkdown(_ items: [DevotionalListItem], isNumbered: Bool, depth: Int, to lines: inout [String]) {
+        let indent = String(repeating: "  ", count: depth)
+        for (index, item) in items.enumerated() {
+            let prefix = isNumbered ? "\(index + 1)." : "-"
+            lines.append("\(indent)\(prefix) \(annotatedTextToMarkdown(item.content))")
+            if let children = item.children {
+                appendListItemsAsMarkdown(children, isNumbered: isNumbered, depth: depth + 1, to: &lines)
+            }
+        }
     }
 
     private static func sectionToMarkdownLines(_ section: DevotionalSection) -> [String] {
@@ -682,6 +794,37 @@ struct MarkdownDevotionalConverter {
         // For now, return empty - scripture reference parsing would require book lookup
         // which is already handled by link parsing above
         return []
+    }
+
+    // MARK: - Table Parsing
+
+    /// Parse GFM table lines into DevotionalTableData
+    private static func parseGFMTable(_ lines: [String]) -> DevotionalTableData? {
+        // Need at least header row + separator + one data row
+        guard lines.count >= 3 else { return nil }
+
+        // Verify second line is separator (contains only |, -, :, and spaces)
+        let separator = lines[1].trimmingCharacters(in: .whitespaces)
+        let separatorChars = CharacterSet(charactersIn: "|-: ")
+        guard separator.unicodeScalars.allSatisfy({ separatorChars.contains($0) }) else { return nil }
+
+        func parseCells(_ line: String) -> [String] {
+            var trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("|") { trimmed = String(trimmed.dropFirst()) }
+            if trimmed.hasSuffix("|") { trimmed = String(trimmed.dropLast()) }
+            return trimmed.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+
+        let headers = parseCells(lines[0])
+        guard !headers.isEmpty else { return nil }
+
+        var rows: [[String]] = []
+        for i in 2..<lines.count {
+            let cells = parseCells(lines[i])
+            rows.append(cells)
+        }
+
+        return DevotionalTableData(headers: headers, rows: rows)
     }
 
     // MARK: - Helper Methods

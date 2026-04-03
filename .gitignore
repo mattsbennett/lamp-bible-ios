@@ -8,3 +8,5 @@ xcuserdata
 *.realm
 *.db.zlib
 prompts/**
+tiptap-editor/node_modules
+build/

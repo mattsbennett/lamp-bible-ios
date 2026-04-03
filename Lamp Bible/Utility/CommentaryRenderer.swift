@@ -78,8 +78,8 @@ struct CommentaryRenderer {
         var footnoteFont: Font = .footnote
         var greekFont: Font = .body.italic()
         var hebrewFont: Font = .body
-        var scriptureColor: Color = .accentColor
-        var strongsColor: Color = .accentColor
+        var scriptureColor: Color = .blue
+        var strongsColor: Color = .purple
         var footnoteColor: Color = .secondary
         var abbreviationColor: Color = .orange
         var searchTerms: [String] = []  // Search terms to highlight

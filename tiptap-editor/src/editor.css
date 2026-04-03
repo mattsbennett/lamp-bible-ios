@@ -1,0 +1,405 @@
+:root {
+  --present-bottom-padding: 0px;
+  --font-size: 18px;
+  --text-color: #000;
+  --bg-color: #fff;
+  --blockquote-bg: rgba(0, 0, 0, 0.04);
+  --blockquote-border: rgba(0, 0, 0, 0.15);
+  --hr-color: rgba(0, 0, 0, 0.15);
+  --placeholder-color: rgba(0, 0, 0, 0.3);
+  --code-bg: rgba(0, 0, 0, 0.06);
+  --image-caption-color: rgba(0, 0, 0, 0.5);
+  --audio-bg: rgba(0, 0, 0, 0.06);
+  --audio-border: rgba(0, 0, 0, 0.12);
+  --footnote-color: #007AFF;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text-color: #fff;
+    --bg-color: #000;
+    --blockquote-bg: rgba(255, 255, 255, 0.06);
+    --blockquote-border: rgba(255, 255, 255, 0.2);
+    --hr-color: rgba(255, 255, 255, 0.2);
+    --placeholder-color: rgba(255, 255, 255, 0.3);
+    --code-bg: rgba(255, 255, 255, 0.08);
+    --image-caption-color: rgba(255, 255, 255, 0.5);
+    --audio-bg: rgba(255, 255, 255, 0.08);
+    --audio-border: rgba(255, 255, 255, 0.15);
+  }
+}
+
+body.dark {
+  --text-color: #fff;
+  --bg-color: #000;
+  --blockquote-bg: rgba(255, 255, 255, 0.06);
+  --blockquote-border: rgba(255, 255, 255, 0.2);
+  --hr-color: rgba(255, 255, 255, 0.2);
+  --placeholder-color: rgba(255, 255, 255, 0.3);
+  --code-bg: rgba(255, 255, 255, 0.08);
+  --image-caption-color: rgba(255, 255, 255, 0.5);
+  --audio-bg: rgba(255, 255, 255, 0.08);
+  --audio-border: rgba(255, 255, 255, 0.15);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  font-size: var(--font-size);
+  color: var(--text-color);
+  background-color: var(--bg-color);
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* TipTap editor container */
+#tiptap-editor {
+  min-height: 100vh;
+  padding: 16px 16px 120px 16px;
+  /* Add safe area padding for scrolling behind nav bar */
+  padding-top: calc(16px + env(safe-area-inset-top));
+}
+
+.tiptap {
+  outline: none;
+  min-height: calc(100vh - 136px);
+}
+
+.tiptap:focus {
+  outline: none;
+}
+
+/* Typography */
+.tiptap p {
+  margin-bottom: 0.8em;
+  line-height: 1.6;
+}
+
+.tiptap h1 {
+  font-size: 1.8em;
+  font-weight: 700;
+  margin-top: 0.6em;
+  margin-bottom: 0.4em;
+  line-height: 1.3;
+}
+
+.tiptap h2 {
+  font-size: 1.4em;
+  font-weight: 600;
+  margin-top: 0.5em;
+  margin-bottom: 0.3em;
+  line-height: 1.35;
+}
+
+.tiptap h3 {
+  font-size: 1.15em;
+  font-weight: 600;
+  margin-top: 0.4em;
+  margin-bottom: 0.3em;
+  line-height: 1.4;
+}
+
+/* Blockquote */
+.tiptap blockquote {
+  border-left: 3px solid var(--blockquote-border);
+  background-color: var(--blockquote-bg);
+  padding: 8px 12px;
+  margin: 8px 0;
+  border-radius: 0 6px 6px 0;
+}
+
+.tiptap blockquote p {
+  margin-bottom: 0.3em;
+}
+
+/* Style italic text in blockquotes as citation (muted color) */
+.tiptap blockquote em {
+  color: var(--image-caption-color);
+}
+
+.tiptap blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* Lists */
+.tiptap ul,
+.tiptap ol {
+  padding-left: 1.5em;
+  margin-bottom: 0.8em;
+}
+
+.tiptap li {
+  margin-bottom: 0.2em;
+  line-height: 1.6;
+}
+
+.tiptap li p {
+  margin-bottom: 0;
+}
+
+/* Nested lists should have no extra margin */
+.tiptap li > ul,
+.tiptap li > ol {
+  margin-top: 0.2em;
+  margin-bottom: 0;
+}
+
+/* Horizontal rule */
+.tiptap hr {
+  border: none;
+  border-top: 1px solid var(--hr-color);
+  margin: 1.2em 0;
+}
+
+/* Links */
+.tiptap a {
+  color: var(--footnote-color);
+  text-decoration: underline;
+  text-decoration-color: rgba(0, 122, 255, 0.3);
+}
+
+/* Code */
+.tiptap code {
+  background: var(--code-bg);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 0.9em;
+}
+
+/* Bold & Italic */
+.tiptap strong {
+  font-weight: 600;
+}
+
+/* Placeholder */
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--placeholder-color);
+  pointer-events: none;
+  height: 0;
+}
+
+/* Images */
+.tiptap figure.image-block {
+  margin: 12px 0;
+  text-align: center;
+}
+
+.tiptap figure.image-block img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.tiptap figure.image-block figcaption {
+  font-size: 0.85em;
+  color: var(--image-caption-color);
+  margin-top: 4px;
+  font-style: italic;
+  outline: none;
+  text-align: left;
+}
+
+.tiptap figure.image-block figcaption:empty::before {
+  content: 'Add caption…';
+  color: var(--placeholder-color);
+}
+
+/* Audio block */
+.tiptap .audio-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  background: var(--audio-bg);
+  border: 1px solid var(--audio-border);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tiptap .audio-block .audio-icon {
+  font-size: 1.4em;
+  flex-shrink: 0;
+}
+
+.tiptap .audio-block .audio-caption {
+  flex: 1;
+  font-size: 0.95em;
+}
+
+/* Footnote reference */
+.tiptap .footnote-ref {
+  color: var(--footnote-color);
+  font-size: 0.75em;
+  vertical-align: super;
+  cursor: default;
+  font-weight: 600;
+}
+
+/* Footnote definition section */
+.tiptap .footnote-definition {
+  font-size: 0.88em;
+  color: var(--image-caption-color);
+  border-top: 1px solid var(--hr-color);
+  padding-top: 8px;
+  margin-top: 16px;
+}
+
+.tiptap .footnote-definition .footnote-label {
+  font-weight: 600;
+  color: var(--footnote-color);
+  margin-right: 4px;
+}
+
+/* Tables */
+.tiptap table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 100%;
+  margin: 12px 0;
+  overflow-x: auto;
+  display: table;
+}
+
+.tiptap table th,
+.tiptap table td {
+  border: 1px solid var(--blockquote-border);
+  padding: 8px 12px;
+  min-width: 80px;
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.tiptap table th {
+  background-color: var(--blockquote-bg);
+  font-weight: 600;
+  text-align: left;
+}
+
+.tiptap table tr:nth-child(even) td {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+body.dark .tiptap table tr:nth-child(even) td {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+@media (prefers-color-scheme: dark) {
+  .tiptap table tr:nth-child(even) td {
+    background-color: rgba(255, 255, 255, 0.02);
+  }
+}
+
+.tiptap table p {
+  margin-bottom: 0;
+}
+
+/* ---- View Mode Styles ---- */
+
+/* Present mode */
+body.mode-present #tiptap-editor {
+  padding: calc(48px + env(safe-area-inset-top)) 32px var(--present-bottom-padding) 32px;
+}
+
+body.mode-present .tiptap {
+  min-height: auto;
+}
+
+body.mode-present .tiptap a {
+  color: var(--text-color);
+  text-decoration: none;
+}
+
+body.mode-present .tiptap h1,
+body.mode-present .tiptap h2,
+body.mode-present .tiptap h3 {
+  font-size: 1em;
+}
+
+body.mode-present .tiptap sup.footnote-ref,
+body.mode-present .tiptap .footnote-definition {
+  display: none;
+}
+
+body.mode-present .tiptap blockquote {
+  border-left: none;
+  background-color: transparent;
+  padding-left: 0;
+}
+
+/* Keep citation styled in present mode */
+body.mode-present .tiptap blockquote em {
+  color: var(--image-caption-color);
+}
+
+/* Lists and tables: less aggressive font scaling in present mode */
+body.mode-present .tiptap ul,
+body.mode-present .tiptap ol {
+  font-size: 0.85em;
+}
+
+body.mode-present .tiptap table {
+  font-size: 0.75em;
+  table-layout: fixed;
+  width: 100%;
+  overflow: hidden;
+}
+
+body.mode-present .tiptap table th,
+body.mode-present .tiptap table td {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Prevent horizontal scroll in present mode */
+body.mode-present #tiptap-editor {
+  overflow-x: hidden;
+}
+
+body.mode-present .tiptap {
+  overflow-x: hidden;
+}
+
+/* Read mode - top space for native header */
+body.mode-read #tiptap-editor {
+  padding: var(--read-top-padding, 200px) 16px 60px 16px;
+}
+
+body.mode-read .tiptap {
+  min-height: auto;
+}
+
+/* Both non-edit modes: hide placeholder */
+body.mode-read .tiptap p.is-editor-empty:first-child::before,
+body.mode-present .tiptap p.is-editor-empty:first-child::before {
+  display: none;
+}
+
+/* Markdown textarea */
+#markdown-editor {
+  width: 100%;
+  min-height: 100vh;
+  padding: 16px;
+  padding-top: calc(16px + env(safe-area-inset-top));
+  padding-bottom: 120px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: var(--font-size);
+  color: var(--text-color);
+  background-color: var(--bg-color);
+  border: none;
+  outline: none;
+  resize: none;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}

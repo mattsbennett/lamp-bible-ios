@@ -3,11 +3,13 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		13350B121503A4344D2C14B5 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A0BB31BAAADBFFB0E149DF1 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework */; };
+		69953A461E33453590607608 /* Resources/TipTapEditor in Resources */ = {isa = PBXBuildFile; fileRef = 9CF26519566447318332A93B /* Resources/TipTapEditor */; };
+		8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */; };
 		B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A962B549ADD008341F0 /* ViewModel.swift */; };
 		B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9A2B549ED7008341F0 /* ChapterListView.swift */; };
 		B8210AA02B54A6CE008341F0 /* Utilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9F2B54A6CE008341F0 /* Utilities.swift */; };
@@ -41,6 +43,7 @@
 		B85B899B2F1C73D7004B4F61 /* WebDAVModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */; };
 		B85B899C2F1C73D7004B4F61 /* SyncableEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89912F1C73D7004B4F61 /* SyncableEntry.swift */; };
 		B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89922F1C73D7004B4F61 /* SyncCoordinator.swift */; };
+		B85B89CF2F1C73D7004B4F61 /* UserSettingsSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */; };
 		B85B89A42F1F11CC004B4F61 /* ImageBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */; };
 		B85B89A52F1F11CC004B4F61 /* ImagePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */; };
 		B85B89A62F1F11CC004B4F61 /* ModuleMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */; };
@@ -54,6 +57,11 @@
 		B85B89B62F1F2A20004B4F61 /* AudioRecorderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89B52F1F2A20004B4F61 /* AudioRecorderSheet.swift */; };
 		B85B89B72F1F2A20004B4F61 /* AudioBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89B42F1F2A20004B4F61 /* AudioBlockView.swift */; };
 		B85B89B92F21D151004B4F61 /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B85B89B82F21D151004B4F61 /* bundled_modules.db.zlib */; };
+		B85B89C02F21E000004B4F61 /* HighlightModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89BF2F21E000004B4F61 /* HighlightModels.swift */; };
+		B85B89C22F21E000004B4F61 /* HighlightManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C12F21E000004B4F61 /* HighlightManager.swift */; };
+		B85B89C42F21E000004B4F61 /* HighlightImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */; };
+		B85B89C62F21E000004B4F61 /* HighlightControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */; };
+		B85B89C82F21E000004B4F61 /* HighlightSetPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
 		B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */; };
 		B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD02F008237006DC53D /* ToolPanelView.swift */; };
@@ -63,6 +71,12 @@
 		B87B2ADB2F022F00006DC53D /* SearchResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ADA2F022F00006DC53D /* SearchResult.swift */; };
 		B87B2AF12F037B3A006DC53D /* StrongsParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AF02F037B3A006DC53D /* StrongsParser.swift */; };
 		B87B2AFD2F03881D006DC53D /* LexiconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AFC2F03881D006DC53D /* LexiconView.swift */; };
+		B884321B2F4A7F0F00A699B9 /* WidgetSharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B88432192F4A7F0F00A699B9 /* WidgetSharedModels.swift */; };
+		B88432222F4A7F9700A699B9 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B88432212F4A7F9700A699B9 /* WidgetKit.framework */; };
+		B88432242F4A7F9700A699B9 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B88432232F4A7F9700A699B9 /* SwiftUI.framework */; };
+		B88432352F4A7F9900A699B9 /* LampBibleWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B88432202F4A7F9700A699B9 /* LampBibleWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B88432402F4A7FA100A699B9 /* WidgetSharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B88432192F4A7F0F00A699B9 /* WidgetSharedModels.swift */; };
+		B88432422F4A814A00A699B9 /* WidgetDataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B88432412F4A814A00A699B9 /* WidgetDataService.swift */; };
 		B885E4172ADB47E50066F0A0 /* LampBibleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */; };
 		B885E4192ADB47E50066F0A0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4182ADB47E50066F0A0 /* ContentView.swift */; };
 		B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */; };
@@ -83,20 +97,23 @@
 		B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */; };
 		B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */; };
 		B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229942F12032700A58F81 /* NotesImportExportManager.swift */; };
-		B85B89C02F21E000004B4F61 /* HighlightModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89BF2F21E000004B4F61 /* HighlightModels.swift */; };
-		B85B89C22F21E000004B4F61 /* HighlightManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C12F21E000004B4F61 /* HighlightManager.swift */; };
-		B85B89C42F21E000004B4F61 /* HighlightImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */; };
-		B85B89C62F21E000004B4F61 /* HighlightControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */; };
-		B85B89C82F21E000004B4F61 /* HighlightSetPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */; };
 		B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229962F16A00000A58F81 /* NoteConflictView.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
 		B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33472B3F4AC7009C544D /* ReaderView.swift */; };
 		C54EA5AEDD610FC18EBD7C3E /* Pods_Lamp_Bible.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1611527E5F09925F4316396A /* Pods_Lamp_Bible.framework */; };
 		CBB1169420EE332202E07EC1 /* Pods_Lamp_BibleTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 382D5810AFA3A23BD83E6508 /* Pods_Lamp_BibleTests.framework */; };
+		CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95873C478D642C9B5444C02 /* TipTapEditorView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		B88432332F4A7F9900A699B9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B885E40B2ADB47E40066F0A0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B884321F2F4A7F9700A699B9;
+			remoteInfo = LampBibleWidgetExtension;
+		};
 		B885E4242ADB47ED0066F0A0 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = B885E40B2ADB47E40066F0A0 /* Project object */;
@@ -113,14 +130,31 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		B884323A2F4A7F9900A699B9 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B88432352F4A7F9900A699B9 /* LampBibleWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		091632FE262EE429EB5AC72D /* Pods-Lamp Bible-Lamp BibleUITests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible-Lamp BibleUITests.release.xcconfig"; path = "Target Support Files/Pods-Lamp Bible-Lamp BibleUITests/Pods-Lamp Bible-Lamp BibleUITests.release.xcconfig"; sourceTree = "<group>"; };
 		1611527E5F09925F4316396A /* Pods_Lamp_Bible.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Lamp_Bible.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		382D5810AFA3A23BD83E6508 /* Pods_Lamp_BibleTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Lamp_BibleTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorCoordinator.swift; sourceTree = "<group>"; };
 		5A0BB31BAAADBFFB0E149DF1 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Lamp_Bible_Lamp_BibleUITests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F141EED7DCA77F54DE41F1E /* Pods-Lamp Bible.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible.release.xcconfig"; path = "Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible.release.xcconfig"; sourceTree = "<group>"; };
 		6EE8E26A9CB57A497B453132 /* Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig"; path = "Target Support Files/Pods-Lamp Bible-Lamp BibleUITests/Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig"; sourceTree = "<group>"; };
 		92DDDDBA1FB50EC67ADF2767 /* Pods-Lamp BibleTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp BibleTests.debug.xcconfig"; path = "Target Support Files/Pods-Lamp BibleTests/Pods-Lamp BibleTests.debug.xcconfig"; sourceTree = "<group>"; };
+		9CF26519566447318332A93B /* Resources/TipTapEditor */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/TipTapEditor; sourceTree = "<group>"; };
+		A95873C478D642C9B5444C02 /* TipTapEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorView.swift; sourceTree = "<group>"; };
 		AA1177D0A8D0C66B61AF6D5A /* Pods-Lamp Bible.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible.debug.xcconfig"; path = "Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible.debug.xcconfig"; sourceTree = "<group>"; };
 		B8210A962B549ADD008341F0 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModel.swift; sourceTree = "<group>"; };
 		B8210A9A2B549ED7008341F0 /* ChapterListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterListView.swift; sourceTree = "<group>"; };
@@ -155,6 +189,7 @@
 		B85B89942F1C73D7004B4F61 /* SyncTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncTypes.swift; sourceTree = "<group>"; };
 		B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVClient.swift; sourceTree = "<group>"; };
 		B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVModuleStorage.swift; sourceTree = "<group>"; };
+		B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettingsSyncManager.swift; sourceTree = "<group>"; };
 		B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageBlockView.swift; sourceTree = "<group>"; };
 		B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePickerSheet.swift; sourceTree = "<group>"; };
 		B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportPreviewSheet.swift; sourceTree = "<group>"; };
@@ -168,6 +203,11 @@
 		B85B89B42F1F2A20004B4F61 /* AudioBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioBlockView.swift; sourceTree = "<group>"; };
 		B85B89B52F1F2A20004B4F61 /* AudioRecorderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderSheet.swift; sourceTree = "<group>"; };
 		B85B89B82F21D151004B4F61 /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
+		B85B89BF2F21E000004B4F61 /* HighlightModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightModels.swift; sourceTree = "<group>"; };
+		B85B89C12F21E000004B4F61 /* HighlightManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightManager.swift; sourceTree = "<group>"; };
+		B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightImportExportManager.swift; sourceTree = "<group>"; };
+		B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightControlsView.swift; sourceTree = "<group>"; };
+		B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightSetPickerView.swift; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
 		B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Lamp Bible.entitlements"; sourceTree = "<group>"; };
 		B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteStorage.swift; sourceTree = "<group>"; };
@@ -178,6 +218,12 @@
 		B87B2ADA2F022F00006DC53D /* SearchResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResult.swift; sourceTree = "<group>"; };
 		B87B2AF02F037B3A006DC53D /* StrongsParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrongsParser.swift; sourceTree = "<group>"; };
 		B87B2AFC2F03881D006DC53D /* LexiconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LexiconView.swift; sourceTree = "<group>"; };
+		B88432192F4A7F0F00A699B9 /* WidgetSharedModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSharedModels.swift; sourceTree = "<group>"; };
+		B88432202F4A7F9700A699B9 /* LampBibleWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LampBibleWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B88432212F4A7F9700A699B9 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		B88432232F4A7F9700A699B9 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		B88432412F4A814A00A699B9 /* WidgetDataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetDataService.swift; sourceTree = "<group>"; };
+		B88432432F4A839B00A699B9 /* LampBibleWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LampBibleWidgetExtension.entitlements; sourceTree = "<group>"; };
 		B885E4132ADB47E40066F0A0 /* Lamp Bible.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Lamp Bible.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B885E4162ADB47E50066F0A0 /* LampBibleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampBibleApp.swift; sourceTree = "<group>"; };
 		B885E4182ADB47E50066F0A0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -202,11 +248,6 @@
 		B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSettingsView.swift; sourceTree = "<group>"; };
 		B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentaryRenderer.swift; sourceTree = "<group>"; };
 		B89229942F12032700A58F81 /* NotesImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesImportExportManager.swift; sourceTree = "<group>"; };
-		B85B89BF2F21E000004B4F61 /* HighlightModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightModels.swift; sourceTree = "<group>"; };
-		B85B89C12F21E000004B4F61 /* HighlightManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightManager.swift; sourceTree = "<group>"; };
-		B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightImportExportManager.swift; sourceTree = "<group>"; };
-		B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightControlsView.swift; sourceTree = "<group>"; };
-		B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightSetPickerView.swift; sourceTree = "<group>"; };
 		B89229962F16A00000A58F81 /* NoteConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictView.swift; sourceTree = "<group>"; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
@@ -214,7 +255,30 @@
 		BC1111E4EE3F363F57311829 /* Pods-Lamp BibleTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp BibleTests.release.xcconfig"; path = "Target Support Files/Pods-Lamp BibleTests/Pods-Lamp BibleTests.release.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		B88432362F4A7F9900A699B9 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B884321F2F4A7F9700A699B9 /* LampBibleWidgetExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		B88432252F4A7F9700A699B9 /* LampBibleWidget */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (B88432362F4A7F9900A699B9 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = LampBibleWidget; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
 /* Begin PBXFrameworksBuildPhase section */
+		B884321D2F4A7F9700A699B9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B88432242F4A7F9700A699B9 /* SwiftUI.framework in Frameworks */,
+				B88432222F4A7F9700A699B9 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B885E4102ADB47E40066F0A0 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -261,6 +325,8 @@
 				1611527E5F09925F4316396A /* Pods_Lamp_Bible.framework */,
 				5A0BB31BAAADBFFB0E149DF1 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework */,
 				382D5810AFA3A23BD83E6508 /* Pods_Lamp_BibleTests.framework */,
+				B88432212F4A7F9700A699B9 /* WidgetKit.framework */,
+				B88432232F4A7F9700A699B9 /* SwiftUI.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -290,6 +356,7 @@
 				B85B89C12F21E000004B4F61 /* HighlightManager.swift */,
 				B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */,
 				B87B2ADA2F022F00006DC53D /* SearchResult.swift */,
+				B88432412F4A814A00A699B9 /* WidgetDataService.swift */,
 				B85B89972F1C73D7004B4F61 /* Sync */,
 				B85B89AE2F1F1285004B4F61 /* DevotionalMediaStorage.swift */,
 				B85B89AF2F1F1285004B4F61 /* DevotionalSharingManager.swift */,
@@ -352,6 +419,8 @@
 				B84968D92AF9FDEA00955089 /* SettingsView.swift */,
 				B87B2AD22F008243006DC53D /* SplitReaderView.swift */,
 				B851FFD42B7B221700C74C1D /* WrappingHStack.swift */,
+				54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */,
+				A95873C478D642C9B5444C02 /* TipTapEditorView.swift */,
 			);
 			path = View;
 			sourceTree = "<group>";
@@ -365,17 +434,29 @@
 				B85B89942F1C73D7004B4F61 /* SyncTypes.swift */,
 				B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */,
 				B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */,
+				B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */,
 			);
 			path = Sync;
+			sourceTree = "<group>";
+		};
+		B884321A2F4A7F0F00A699B9 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				B88432192F4A7F0F00A699B9 /* WidgetSharedModels.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 		B885E40A2ADB47E40066F0A0 = {
 			isa = PBXGroup;
 			children = (
+				B88432432F4A839B00A699B9 /* LampBibleWidgetExtension.entitlements */,
+				B884321A2F4A7F0F00A699B9 /* Shared */,
 				B8932D9D2AEE056E008B1444 /* Resource Files */,
 				B885E4152ADB47E40066F0A0 /* Lamp Bible */,
 				B885E4262ADB47ED0066F0A0 /* Lamp BibleTests */,
 				B885E4302ADB47ED0066F0A0 /* Lamp BibleUITests */,
+				B88432252F4A7F9700A699B9 /* LampBibleWidget */,
 				B885E4142ADB47E40066F0A0 /* Products */,
 				5439D19EDAAB55DC6CA9F001 /* Pods */,
 				86AF55560C987358262F5429 /* Frameworks */,
@@ -388,6 +469,7 @@
 				B885E4132ADB47E40066F0A0 /* Lamp Bible.app */,
 				B885E4232ADB47ED0066F0A0 /* Lamp BibleTests.xctest */,
 				B885E42D2ADB47ED0066F0A0 /* Lamp BibleUITests.xctest */,
+				B88432202F4A7F9700A699B9 /* LampBibleWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -404,6 +486,7 @@
 				B8210A9C2B54A4D7008341F0 /* Data */,
 				B8210A9D2B54A508008341F0 /* Utility */,
 				B8210A9E2B54A58D008341F0 /* View */,
+				9CF26519566447318332A93B /* Resources/TipTapEditor */,
 			);
 			path = "Lamp Bible";
 			sourceTree = "<group>";
@@ -437,6 +520,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		B884321F2F4A7F9700A699B9 /* LampBibleWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B88432372F4A7F9900A699B9 /* Build configuration list for PBXNativeTarget "LampBibleWidgetExtension" */;
+			buildPhases = (
+				B884321C2F4A7F9700A699B9 /* Sources */,
+				B884321D2F4A7F9700A699B9 /* Frameworks */,
+				B884321E2F4A7F9700A699B9 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B88432252F4A7F9700A699B9 /* LampBibleWidget */,
+			);
+			name = LampBibleWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = LampBibleWidgetExtension;
+			productReference = B88432202F4A7F9700A699B9 /* LampBibleWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		B885E4122ADB47E40066F0A0 /* Lamp Bible */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B885E4372ADB47ED0066F0A0 /* Build configuration list for PBXNativeTarget "Lamp Bible" */;
@@ -446,10 +551,12 @@
 				B885E4102ADB47E40066F0A0 /* Frameworks */,
 				B885E4112ADB47E40066F0A0 /* Resources */,
 				671F735C0DD8367DAB3BE26B /* [CP] Embed Pods Frameworks */,
+				B884323A2F4A7F9900A699B9 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				B88432342F4A7F9900A699B9 /* PBXTargetDependency */,
 			);
 			name = "Lamp Bible";
 			productName = "Lamp Bible";
@@ -502,9 +609,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1500;
+				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
+					B884321F2F4A7F9700A699B9 = {
+						CreatedOnToolsVersion = 26.2;
+					};
 					B885E4122ADB47E40066F0A0 = {
 						CreatedOnToolsVersion = 15.0;
 					};
@@ -534,11 +644,19 @@
 				B885E4122ADB47E40066F0A0 /* Lamp Bible */,
 				B885E4222ADB47ED0066F0A0 /* Lamp BibleTests */,
 				B885E42C2ADB47ED0066F0A0 /* Lamp BibleUITests */,
+				B884321F2F4A7F9700A699B9 /* LampBibleWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		B884321E2F4A7F9700A699B9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B885E4112ADB47E40066F0A0 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -547,6 +665,7 @@
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
+				69953A461E33453590607608 /* Resources/TipTapEditor in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -678,6 +797,14 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		B884321C2F4A7F9700A699B9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B88432402F4A7FA100A699B9 /* WidgetSharedModels.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B885E40F2ADB47E40066F0A0 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -731,7 +858,9 @@
 				B85B89862F19F216004B4F61 /* DevotionalBlockRenderer.swift in Sources */,
 				B85B89872F19F216004B4F61 /* DevotionalView.swift in Sources */,
 				B85B89882F19F216004B4F61 /* DevotionalConflictView.swift in Sources */,
+				B88432422F4A814A00A699B9 /* WidgetDataService.swift in Sources */,
 				B85B89B62F1F2A20004B4F61 /* AudioRecorderSheet.swift in Sources */,
+				B884321B2F4A7F0F00A699B9 /* WidgetSharedModels.swift in Sources */,
 				B85B89B72F1F2A20004B4F61 /* AudioBlockView.swift in Sources */,
 				B89229552F05FE1900A58F81 /* DevotionalView.swift in Sources */,
 				B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */,
@@ -757,7 +886,10 @@
 				B85B899B2F1C73D7004B4F61 /* WebDAVModuleStorage.swift in Sources */,
 				B85B899C2F1C73D7004B4F61 /* SyncableEntry.swift in Sources */,
 				B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */,
+				B85B89CF2F1C73D7004B4F61 /* UserSettingsSyncManager.swift in Sources */,
 				B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */,
+				8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */,
+				CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -782,6 +914,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		B88432342F4A7F9900A699B9 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B884321F2F4A7F9700A699B9 /* LampBibleWidgetExtension */;
+			targetProxy = B88432332F4A7F9900A699B9 /* PBXContainerItemProxy */;
+		};
 		B885E4252ADB47ED0066F0A0 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = B885E4122ADB47E40066F0A0 /* Lamp Bible */;
@@ -795,6 +932,74 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		B88432382F4A7F9900A699B9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = LampBibleWidgetExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = BM8474Q7J2;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LampBibleWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = LampBibleWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.neus.Lamp-Bible.LampBibleWidget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B88432392F4A7F9900A699B9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = LampBibleWidgetExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = BM8474Q7J2;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LampBibleWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = LampBibleWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.neus.Lamp-Bible.LampBibleWidget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		B885E4352ADB47ED0066F0A0 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1065,6 +1270,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		B88432372F4A7F9900A699B9 /* Build configuration list for PBXNativeTarget "LampBibleWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B88432382F4A7F9900A699B9 /* Debug */,
+				B88432392F4A7F9900A699B9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		B885E40E2ADB47E40066F0A0 /* Build configuration list for PBXProject "Lamp Bible" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

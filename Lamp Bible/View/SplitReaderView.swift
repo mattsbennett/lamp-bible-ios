@@ -63,6 +63,26 @@ struct SplitReaderView: View {
         currentVerseId % 1000
     }
 
+    /// Chapter range for multi-chapter plan readings (same book only).
+    /// Returns (startChapter, endChapter) when the current reading spans multiple chapters.
+    private var currentReadingChapterRange: (start: Int, end: Int)? {
+        guard let readings = readingMetaData else { return nil }
+        for reading in readings {
+            if currentVerseId >= reading.sv && currentVerseId <= reading.ev {
+                let startChapter = (reading.sv % 1000000) / 1000
+                let endChapter = (reading.ev % 1000000) / 1000
+                let startBook = reading.sv / 1000000
+                let endBook = reading.ev / 1000000
+                // Only for same-book, multi-chapter readings
+                if startBook == endBook && endChapter > startChapter {
+                    return (start: startChapter, end: endChapter)
+                }
+                return nil
+            }
+        }
+        return nil
+    }
+
     // Resizable panel state - persisted across sessions
     @SceneStorage("toolPanelBottomHeightV2") private var storedBottomPanelHeight: Double = 0
     @SceneStorage("toolPanelRightWidthV2") private var storedRightPanelWidth: Double = 0
@@ -346,6 +366,8 @@ struct SplitReaderView: View {
             book: currentBook,
             chapter: currentChapter,
             currentVerse: currentVerse,
+            startChapter: currentReadingChapterRange?.start,
+            endChapter: currentReadingChapterRange?.end,
             onNavigateToVerse: { verseId in
                 // Direct navigation - bypass coordinator, just scroll reader
                 requestScrollAnimated = false

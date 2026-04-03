@@ -52,19 +52,41 @@ class CompactBackgroundLayoutManager: NSLayoutManager {
 
 // MARK: - Custom Text View with Compact Selection
 
-/// Custom UITextView that adjusts selection highlight height to match text (excluding line spacing)
+/// Custom UITextView that adjusts selection highlight height to match text (excluding line spacing).
+/// The trim is computed dynamically per-rect from the paragraph style's lineSpacing so that
+/// body text (which has lineSpacing) gets trimmed while headings (which don't) keep full height.
 class CompactSelectionTextView: UITextView {
-
-    /// Amount to trim from selection rect heights
-    var selectionHeightTrim: CGFloat = 0
 
     override func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
         let originalRects = super.selectionRects(for: range)
+        let renderedRects = originalRects.map(\.rect).filter { !$0.isNull && !$0.isEmpty }
+        let spansMultipleLines = Set(renderedRects.map { Int($0.midY.rounded()) }).count > 1
 
-        guard selectionHeightTrim > 0 else { return originalRects }
+        // UIKit's full-height rects look more consistent for multi-line selections,
+        // especially when the first or last line is only partially selected.
+        guard !spansMultipleLines else { return originalRects }
 
         return originalRects.map { original in
-            CompactSelectionRect(original: original, heightTrim: selectionHeightTrim)
+            // Find character at this rect's position to read the paragraph style's lineSpacing
+            let adjustedPoint = CGPoint(
+                x: original.rect.midX - textContainerInset.left,
+                y: original.rect.midY - textContainerInset.top
+            )
+            var fraction: CGFloat = 0
+            let charIndex = layoutManager.characterIndex(
+                for: adjustedPoint,
+                in: textContainer,
+                fractionOfDistanceBetweenInsertionPoints: &fraction
+            )
+
+            var trim: CGFloat = 0
+            if charIndex < textStorage.length,
+               let style = textStorage.attribute(.paragraphStyle, at: charIndex, effectiveRange: nil) as? NSParagraphStyle {
+                trim = style.lineSpacing
+            }
+
+            guard trim > 0 else { return original }
+            return CompactSelectionRect(original: original, heightTrim: trim)
         }
     }
 }
@@ -282,7 +304,6 @@ struct ChapterTextView: UIViewRepresentable {
         layoutManager.addTextContainer(textContainer)
 
         let textView = CompactSelectionTextView(frame: .zero, textContainer: textContainer)
-        textView.selectionHeightTrim = lineSpacing
         textView.isEditable = false
         textView.isSelectable = !isSimplifiedText
         textView.isScrollEnabled = false
@@ -544,26 +565,17 @@ struct ChapterTextView: UIViewRepresentable {
                     result.append(headingText)
                 }
             }
-            // Handle poetry stanza break (adds extra vertical space)
-            if let poetry = verse.poetry, poetry.stanzaBreak == true {
-                let stanzaBreakStyle = NSMutableParagraphStyle()
-                stanzaBreakStyle.paragraphSpacingBefore = lineSpacing * 1.5
-                result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: stanzaBreakStyle]))
-            }
-            // Handle paragraph break (adds extra vertical space before verse)
-            else if verse.paragraph && index > 0 {
-                let paragraphBreakStyle = NSMutableParagraphStyle()
-                paragraphBreakStyle.paragraphSpacingBefore = lineSpacing
-                result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraphBreakStyle]))
-            }
-            // Always add spacing after headings to match mid-chapter heading appearance
-            else if hadHeadingsBeforeVerse {
-                let postHeadingStyle = NSMutableParagraphStyle()
-                postHeadingStyle.paragraphSpacingBefore = lineSpacing
-                result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: postHeadingStyle]))
-            }
 
             let verseStart = result.length
+
+            let verseParagraphStyle = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
+            if let poetry = verse.poetry, poetry.stanzaBreak == true {
+                verseParagraphStyle.paragraphSpacingBefore = lineSpacing * 1.5
+            } else if verse.paragraph && index > 0 {
+                verseParagraphStyle.paragraphSpacingBefore = lineSpacing
+            } else if hadHeadingsBeforeVerse {
+                verseParagraphStyle.paragraphSpacingBefore = lineSpacing
+            }
 
             // Poetry indentation
             let poetryIndent = verse.poetry?.indent ?? 0
@@ -574,18 +586,21 @@ struct ChapterTextView: UIViewRepresentable {
                 .font: UIFont.systemFont(ofSize: fontSize * 0.75),
                 .foregroundColor: UIColor.secondaryLabel,
                 .baselineOffset: fontSize * 0.3,
-                .paragraphStyle: paragraphStyle,
+                .paragraphStyle: verseParagraphStyle,
                 .verseId: verse.ref
             ]
 
             // Use muted styling for superscriptions (verse 0)
             let isSuperscription = verse.verse == 0
-            let verseTextAttributes = isSuperscription ? superscriptionAttributes : textAttributes
+            var verseTextAttributes = isSuperscription ? superscriptionAttributes : textAttributes
+            verseTextAttributes[.paragraphStyle] = verseParagraphStyle
 
             let verseNumberStart = result.length
             // Add poetry indentation before verse number (skip for superscriptions)
             if !indentString.isEmpty && !isSuperscription {
-                result.append(NSAttributedString(string: indentString, attributes: textAttributes))
+                var indentAttributes = textAttributes
+                indentAttributes[.paragraphStyle] = verseParagraphStyle
+                result.append(NSAttributedString(string: indentString, attributes: indentAttributes))
             }
             // Skip verse number for superscriptions (verse 0)
             if !isSuperscription {
@@ -820,8 +835,11 @@ struct ChapterTextView: UIViewRepresentable {
                 let isPoetry = verse.poetry != nil || nextVerse.poetry != nil
                 let nextIsParagraph = nextVerse.paragraph
                 let nextIsStanzaBreak = nextVerse.poetry?.stanzaBreak == true
+                let nextVerseRef = nextVerse.book * 1000000 + nextVerse.chapter * 1000 + nextVerse.verse
+                let nextHasHeading = headingsByRef[nextVerseRef] != nil
+                let nextHasChapterTitle = nextVerse.chapter != verse.chapter
 
-                if isPoetry || nextIsParagraph || nextIsStanzaBreak {
+                if isPoetry || nextIsParagraph || nextIsStanzaBreak || nextHasHeading || nextHasChapterTitle {
                     result.append(NSAttributedString(string: "\n", attributes: textAttributes))
                 } else {
                     result.append(NSAttributedString(string: " ", attributes: textAttributes))
@@ -1108,21 +1126,29 @@ struct ChapterTextView: UIViewRepresentable {
 
             var actions = suggestedActions
 
-            // Check if selection overlaps with existing highlights
-            let overlappingHighlights = findHighlightsInRange(range)
+            // Only show highlight actions when selection overlaps actual verse text
+            let selectionOverlapsVerseText = verseTextRanges.values.contains { verseRange in
+                range.location < verseRange.location + verseRange.length &&
+                range.location + range.length > verseRange.location
+            }
 
-            if !overlappingHighlights.isEmpty {
-                // Add Remove Highlight action
-                let removeAction = UIAction(title: "Remove Highlight", image: UIImage(systemName: "highlighter"), attributes: .destructive) { [weak self] _ in
-                    self?.removeHighlightsInRange(range)
+            if selectionOverlapsVerseText {
+                // Check if selection overlaps with existing highlights
+                let overlappingHighlights = findHighlightsInRange(range)
+
+                if !overlappingHighlights.isEmpty {
+                    // Add Remove Highlight action
+                    let removeAction = UIAction(title: "Remove Highlight", image: UIImage(systemName: "highlighter"), attributes: .destructive) { [weak self] _ in
+                        self?.removeHighlightsInRange(range)
+                    }
+                    actions.insert(removeAction, at: 0)
+                } else {
+                    // Add Highlight action
+                    let highlightAction = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
+                        self?.createHighlightForSelection(range)
+                    }
+                    actions.insert(highlightAction, at: 0)
                 }
-                actions.insert(removeAction, at: 0)
-            } else {
-                // Add Highlight action
-                let highlightAction = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
-                    self?.createHighlightForSelection(range)
-                }
-                actions.insert(highlightAction, at: 0)
             }
 
             // Add Search action
@@ -1500,6 +1526,7 @@ struct ReaderView: View {
     @State private var pendingScrollVerseId: Int? = nil  // Tracks verse to scroll to after positions update
     @State private var positionsVersion: Int = 0  // Incremented when positions are calculated
     @State private var scrollCleanupId: UUID = UUID() // To prevent race conditions in scroll cleanup
+    @State private var scrollContainerId: UUID = UUID() // Forces ScrollView recreation when needed
     @State private var isProgrammaticScroll: Bool = false  // Ignore scroll detection during programmatic scrolls
     @State private var isUserDragging: Bool = false // Track active user interaction
     @State private var isScrolling: Bool = false // True during drag AND deceleration
@@ -2012,8 +2039,6 @@ struct ReaderView: View {
                                     chapterLabel: nextChapterLabel,
                                     action: goToNextChapter
                                 )
-                                .padding(.top, 16)
-                                .opacity(bottomButtonAboveViewport || pullProgressBottom > 0 ? 0 : 1)
                                 .background(
                                     GeometryReader { buttonGeo in
                                         Color.clear.preference(
@@ -2022,6 +2047,8 @@ struct ReaderView: View {
                                         )
                                     }
                                 )
+                                .padding(.top, 16)
+                                .opacity(bottomButtonAboveViewport || pullProgressBottom > 0 ? 0 : 1)
                             }
 
                             // Overscroll padding: allows last line to scroll to top for scroll-sync
@@ -2039,7 +2066,25 @@ struct ReaderView: View {
                             }
                         }
                     }
+                    .task(id: scrollContainerId) {
+                        isProgrammaticScroll = true
+                        scrollDebouncer.cancel()
+                        proxy.scrollTo("top", anchor: .top)
+
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            proxy.scrollTo("top", anchor: .top)
+                            if let scrollView = ScrollSyncCoordinator.shared.readerScrollView {
+                                let topOffset = -scrollView.adjustedContentInset.top
+                                scrollView.setContentOffset(CGPoint(x: 0, y: topOffset), animated: false)
+                            }
+
+                            if pendingScrollVerseId == nil {
+                                isProgrammaticScroll = false
+                            }
+                        }
+                    }
                 }
+                .id(scrollContainerId)
                 .onPreferenceChange(BottomButtonMinYKey.self) { minY in
                     // Button is above viewport if its top is above the safe area + space for content
                     let threshold = geometry.safeAreaInsets.top + 44
@@ -2083,6 +2128,21 @@ struct ReaderView: View {
                         // The pending scroll will reposition after layout completes
                         proxy.scrollTo("top", anchor: .top)
                         isLoading = false
+
+                        // SwiftUI can preserve the previous relative offset while the new
+                        // content tree lays out. Force a second reset on the underlying
+                        // UIScrollView after layout settles.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            proxy.scrollTo("top", anchor: .top)
+                            if let scrollView = ScrollSyncCoordinator.shared.readerScrollView {
+                                let topOffset = -scrollView.adjustedContentInset.top
+                                scrollView.setContentOffset(CGPoint(x: 0, y: topOffset), animated: false)
+                            }
+
+                            if pendingScrollVerseId == nil {
+                                isProgrammaticScroll = false
+                            }
+                        }
 
                         // Fallback: use UIKit scroll after layout settles
                         if pendingScrollVerseId != nil {
@@ -2391,6 +2451,19 @@ struct ReaderView: View {
             // Handle initial verse navigation (from deep links)
             if let verseId = initialVerseId, !hasAppliedInitialVerseId {
                 hasAppliedInitialVerseId = true
+
+                // If in plan mode, find and load the matching reading
+                if toolbarMode == .plan, !plansWithReadings.isEmpty {
+                    for (planIdx, plan) in plansWithReadings.enumerated() {
+                        if let readingIdx = plan.readings.firstIndex(where: { $0.sv == verseId }) {
+                            selectedPlanIndex = planIdx
+                            currentReadingIndex = readingIdx
+                            loadPlanReading(at: readingIdx)
+                            return
+                        }
+                    }
+                }
+
                 currentVerseId = verseId
                 animateScroll = false
                 loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: verseId)
@@ -2548,6 +2621,13 @@ struct ReaderView: View {
         let reading = currentPlanReadings[index]
         planReadingIndex = index
 
+        // Plan navigation swaps the content in-place, so clear any stale
+        // positions and force the same scroll reset path used for chapter loads.
+        positionTracker.positions = [:]
+        scrollTargetY = nil
+        pendingScrollVerseId = nil
+        scrollContainerId = UUID()
+
         // Mark reading as completed
         if !UserDatabase.shared.isReadingCompleted(reading.id) {
             try? UserDatabase.shared.addCompletedReading(reading.id)
@@ -2590,7 +2670,7 @@ struct ReaderView: View {
             }
 
             headings = allHeadings
-            initialScrollItem = "top"
+            isLoading = true
         }
     }
 }
@@ -2610,4 +2690,3 @@ struct ReaderViewPreview: View {
 #Preview {
     ReaderViewPreview()
 }
-

@@ -14,5 +14,9 @@
 	<array>
 		<string>iCloud.com.neus.lamp-bible</string>
 	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.neus.lampbible</string>
+	</array>
 </dict>
 </plist>

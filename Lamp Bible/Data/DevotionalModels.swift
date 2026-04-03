@@ -180,6 +180,14 @@ enum DevotionalBlockType: String, Codable {
     case heading
     case image
     case audio
+    case table
+}
+
+// MARK: - Table Data
+
+struct DevotionalTableData: Codable, Equatable {
+    var headers: [String]
+    var rows: [[String]]
 }
 
 // MARK: - Media Types
@@ -262,9 +270,13 @@ struct DevotionalContentBlock: Codable, Equatable, Identifiable {
     var showWaveform: Bool?                 // Audio: show waveform visualization
     var autoplay: Bool?                     // Audio: autoplay in present mode
 
+    // Table block properties
+    var tableData: DevotionalTableData?     // For table blocks
+
     enum CodingKeys: String, CodingKey {
         case type, content, level, listType, items
         case mediaId, caption, alignment, showWaveform, autoplay
+        case tableData
     }
 
     init(
@@ -277,7 +289,8 @@ struct DevotionalContentBlock: Codable, Equatable, Identifiable {
         caption: DevotionalAnnotatedText? = nil,
         alignment: ImageAlignment? = nil,
         showWaveform: Bool? = nil,
-        autoplay: Bool? = nil
+        autoplay: Bool? = nil,
+        tableData: DevotionalTableData? = nil
     ) {
         self.type = type
         self.content = content
@@ -289,6 +302,7 @@ struct DevotionalContentBlock: Codable, Equatable, Identifiable {
         self.alignment = alignment
         self.showWaveform = showWaveform
         self.autoplay = autoplay
+        self.tableData = tableData
     }
 
     // Convenience initializers
@@ -336,6 +350,13 @@ struct DevotionalContentBlock: Codable, Equatable, Identifiable {
             caption: caption.map { DevotionalAnnotatedText(text: $0) },
             showWaveform: showWaveform,
             autoplay: autoplay
+        )
+    }
+
+    static func table(headers: [String], rows: [[String]]) -> DevotionalContentBlock {
+        DevotionalContentBlock(
+            type: .table,
+            tableData: DevotionalTableData(headers: headers, rows: rows)
         )
     }
 }
@@ -495,6 +516,7 @@ struct Devotional: Codable, Identifiable, Equatable, Hashable {
     var footnotes: [DevotionalFootnote]?
     var relatedDevotionals: [String]?
     var media: [DevotionalMediaReference]?  // Embedded media files
+    var markdownContent: String?  // Direct markdown storage (preferred over content)
 
     // Identifiable conformance (not stored, derived from meta.id)
     var id: String { meta.id }
@@ -506,16 +528,17 @@ struct Devotional: Codable, Identifiable, Equatable, Hashable {
 
     // Exclude computed `id` from Codable
     enum CodingKeys: String, CodingKey {
-        case meta, summary, content, footnotes, relatedDevotionals, media
+        case meta, summary, content, footnotes, relatedDevotionals, media, markdownContent
     }
 
     init(
         meta: DevotionalMeta,
         summary: DevotionalTextField? = nil,
-        content: DevotionalContent,
+        content: DevotionalContent = .blocks([]),
         footnotes: [DevotionalFootnote]? = nil,
         relatedDevotionals: [String]? = nil,
-        media: [DevotionalMediaReference]? = nil
+        media: [DevotionalMediaReference]? = nil,
+        markdownContent: String? = nil
     ) {
         self.meta = meta
         self.summary = summary
@@ -523,6 +546,7 @@ struct Devotional: Codable, Identifiable, Equatable, Hashable {
         self.footnotes = footnotes
         self.relatedDevotionals = relatedDevotionals
         self.media = media
+        self.markdownContent = markdownContent
     }
 
     /// Create a new empty devotional
@@ -678,7 +702,12 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
         self.seriesOrder = devotional.meta.series?.order
         self.keyScripturesJson = devotional.meta.keyScriptures.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
         self.summaryJson = devotional.summary.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
-        self.contentJson = (try? JSONEncoder().encode(devotional.content)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        // Store markdown directly if available, otherwise fall back to JSON-encoded blocks
+        if let markdown = devotional.markdownContent, !markdown.isEmpty {
+            self.contentJson = markdown
+        } else {
+            self.contentJson = (try? JSONEncoder().encode(devotional.content)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        }
         self.footnotesJson = devotional.footnotes.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
         self.mediaJson = devotional.media.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
         self.relatedIds = devotional.relatedDevotionals?.joined(separator: ",")
@@ -736,9 +765,24 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
 
     /// Convert to Devotional model
     func toDevotional() -> Devotional? {
-        guard let contentData = contentJson.data(using: .utf8),
-              let content = try? JSONDecoder().decode(DevotionalContent.self, from: contentData) else {
-            return nil
+        // Check if contentJson is markdown (doesn't start with '[' or '{') or JSON
+        let trimmed = contentJson.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isJson = trimmed.hasPrefix("[") || trimmed.hasPrefix("{")
+
+        let content: DevotionalContent
+        var markdownContent: String? = nil
+
+        if isJson {
+            // Legacy: JSON-encoded blocks
+            guard let contentData = contentJson.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode(DevotionalContent.self, from: contentData) else {
+                return nil
+            }
+            content = decoded
+        } else {
+            // New: Direct markdown storage
+            markdownContent = contentJson
+            content = .blocks([])  // Empty blocks, markdown is the source of truth
         }
 
         let keyScriptures: [DevotionalKeyScripture]? = keyScripturesJson.flatMap { json in
@@ -804,7 +848,8 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
             content: content,
             footnotes: footnotes,
             relatedDevotionals: relatedIds?.split(separator: ",").map { String($0) },
-            media: media
+            media: media,
+            markdownContent: markdownContent
         )
     }
 

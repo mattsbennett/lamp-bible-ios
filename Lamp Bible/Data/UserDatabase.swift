@@ -23,6 +23,17 @@ class UserDatabase {
     private var fileDescriptor: Int32 = -1
     private var debounceWorkItem: DispatchWorkItem?
 
+    private static let lastExportedAtKey = "UserDatabase.lastExportedAt"
+
+    /// True when local changes have been made that haven't been exported yet
+    var hasUnsyncedChanges: Bool {
+        guard let lastExported = UserDefaults.standard.object(forKey: Self.lastExportedAtKey) as? Date else {
+            // Never exported — check if there's any data worth exporting
+            return getSettings().updatedAt > Date.distantPast
+        }
+        return getSettings().updatedAt > lastExported
+    }
+
     private init() {
         // Always use local storage - sync happens via ModuleSyncManager
         localURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -111,7 +122,9 @@ class UserDatabase {
 
     private func notifyDatabaseChange() {
         print("[UserDB] Database changed, notifying observers")
-        NotificationCenter.default.post(name: .userDatabaseDidChange, object: nil)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .userDatabaseDidChange, object: nil)
+        }
     }
 
     private func stopFileMonitoring() {
@@ -121,7 +134,30 @@ class UserDatabase {
 
     /// Notify that database was updated from sync (call after importing)
     func notifyExternalChange() {
+        // Imported data doesn't need re-exporting — mark as synced
+        UserDefaults.standard.set(Date(), forKey: Self.lastExportedAtKey)
         notifyDatabaseChange()
+    }
+
+    /// Mark that local changes have been exported
+    func clearUnsyncedChanges() {
+        UserDefaults.standard.set(Date(), forKey: Self.lastExportedAtKey)
+    }
+
+    /// Close the database connection and stop file monitoring.
+    /// Call before replacing the database file on disk.
+    func closeDatabase() {
+        stopFileMonitoring()
+        dbQueue = nil
+    }
+
+    /// Close and reopen the database from the file on disk.
+    /// Call after replacing the database file to pick up new data.
+    func reopenDatabase() {
+        stopFileMonitoring()
+        dbQueue = nil
+        setupDatabase()
+        startFileMonitoring()
     }
 
     // MARK: - Migrations
@@ -251,6 +287,9 @@ class UserDatabase {
             settings.updatedAt = Date()
             try settings.save(db)
         }
+
+        // Post directly — the file monitor may miss WAL-mode writes
+        notifyDatabaseChange()
     }
 
     // MARK: - Completed Readings Access
@@ -320,7 +359,11 @@ class UserDatabase {
         try dbQueue.write { db in
             let reading = CompletedReading(id: id)
             try reading.insert(db)
+            // Bump updated_at so sync detects the change
+            try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
         }
+
+        notifyDatabaseChange()
     }
 
     /// Remove a completed reading
@@ -331,7 +374,11 @@ class UserDatabase {
 
         try dbQueue.write { db in
             _ = try CompletedReading.deleteOne(db, key: id)
+            // Bump updated_at so sync detects the change
+            try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
         }
+
+        notifyDatabaseChange()
     }
 
     /// Remove all completed readings for a plan
@@ -342,7 +389,11 @@ class UserDatabase {
 
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM completed_readings WHERE plan_id = ?", arguments: [planId])
+            // Bump updated_at so sync detects the change
+            try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
         }
+
+        notifyDatabaseChange()
     }
 
     // MARK: - Sync Support
@@ -356,6 +407,126 @@ class UserDatabase {
 
         try dbQueue.writeWithoutTransaction { db in
             try db.checkpoint(.truncate)
+        }
+    }
+
+    // MARK: - Merge Support
+
+    /// Sync completed readings with remote: adds remote-only rows, removes local-only rows.
+    /// Callers must export local changes first so deletions reach remote before this runs.
+    /// Returns true if anything changed.
+    @discardableResult
+    func syncCompletedReadings(with remoteReadings: [CompletedReading]) -> Bool {
+        guard let dbQueue = dbQueue else { return false }
+
+        do {
+            return try dbQueue.write { db in
+                let localIds = Set(try String.fetchAll(db, sql: "SELECT id FROM completed_readings"))
+                let remoteIds = Set(remoteReadings.map(\.id))
+
+                // Nothing to do if sets are identical
+                guard localIds != remoteIds else { return false }
+
+                // Add readings present in remote but not local
+                let toAdd = remoteReadings.filter { !localIds.contains($0.id) }
+                for reading in toAdd {
+                    try db.execute(sql: """
+                        INSERT OR IGNORE INTO completed_readings (id, plan_id, year, completed_at)
+                        VALUES (?, ?, ?, ?)
+                        """, arguments: [reading.id, reading.planId, reading.year, reading.completedAt])
+                }
+
+                // Remove readings present locally but not in remote (propagate deletions)
+                let toRemove = localIds.subtracting(remoteIds)
+                if !toRemove.isEmpty {
+                    let placeholders = Array(repeating: "?", count: toRemove.count).joined(separator: ",")
+                    try db.execute(
+                        sql: "DELETE FROM completed_readings WHERE id IN (\(placeholders))",
+                        arguments: StatementArguments(Array(toRemove))
+                    )
+                }
+
+                // Bump updated_at so observers know data changed
+                try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
+                return true
+            }
+        } catch {
+            print("[UserDB] Failed to sync completed readings: \(error)")
+            return false
+        }
+    }
+
+    /// Merge settings from a remote UserSettings using last-writer-wins by updatedAt.
+    /// Preserves local sync_settings_json so device credentials are not overwritten.
+    /// Returns true if local settings were updated.
+    @discardableResult
+    func mergeSettings(from remote: UserSettings) -> Bool {
+        guard let dbQueue = dbQueue else { return false }
+
+        do {
+            return try dbQueue.write { db in
+                guard let local = try UserSettings.fetchOne(db, key: 1) else { return false }
+                guard remote.updatedAt > local.updatedAt else {
+                    print("[UserDB] mergeSettings skipped: remote \(remote.updatedAt) not newer than local \(local.updatedAt)")
+                    return false
+                }
+                print("[UserDB] mergeSettings applying: remote \(remote.updatedAt) > local \(local.updatedAt)")
+
+                // Overwrite all fields except sync_settings_json and id
+                try db.execute(sql: """
+                    UPDATE user_settings SET
+                        selected_plan_ids = ?,
+                        plan_in_app_bible = ?,
+                        plan_external_bible = ?,
+                        plan_wpm = ?,
+                        plan_notification = ?,
+                        plan_notification_hour = ?,
+                        plan_notification_minute = ?,
+                        reader_translation_id = ?,
+                        reader_cross_reference_sort = ?,
+                        reader_font_size = ?,
+                        devotional_font_size = ?,
+                        devotional_present_font_multiplier = ?,
+                        devotional_line_spacing_bonus = ?,
+                        hidden_translations = ?,
+                        greek_lexicon_order = ?,
+                        hebrew_lexicon_order = ?,
+                        hidden_greek_lexicons = ?,
+                        hidden_hebrew_lexicons = ?,
+                        show_strongs_hints = ?,
+                        custom_highlight_colors = ?,
+                        highlight_color_order = ?,
+                        updated_at = ?
+                    WHERE id = 1
+                    """, arguments: [
+                        remote.selectedPlanIds,
+                        remote.planInAppBible,
+                        remote.planExternalBible,
+                        remote.planWpm,
+                        remote.planNotification,
+                        remote.planNotificationHour,
+                        remote.planNotificationMinute,
+                        remote.readerTranslationId,
+                        remote.readerCrossReferenceSort,
+                        remote.readerFontSize,
+                        remote.devotionalFontSize,
+                        remote.devotionalPresentFontMultiplier,
+                        remote.devotionalLineSpacingBonus,
+                        remote.hiddenTranslations,
+                        remote.greekLexiconOrder,
+                        remote.hebrewLexiconOrder,
+                        remote.hiddenGreekLexicons,
+                        remote.hiddenHebrewLexicons,
+                        remote.showStrongsHints,
+                        remote.customHighlightColors,
+                        remote.highlightColorOrder,
+                        remote.updatedAt
+                    ])
+                return true
+            }
+        } catch {
+            print("[UserDB] Failed to merge settings: \(error)")
+            return false
         }
     }
 

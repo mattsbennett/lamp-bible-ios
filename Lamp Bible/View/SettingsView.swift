@@ -6,11 +6,13 @@
 //
 
 import SwiftUI
+import Combine
 import GRDB
 
 struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
+    private let settingsChanged = NotificationCenter.default.publisher(for: .userDatabaseDidChange)
     @Binding var planViewRefreshID: UUID
     @State var planWpm: Double
     @State var notificationTime: Date = Date.now
@@ -601,6 +603,10 @@ struct SettingsView: View {
                         }
                     }
                 )
+            }
+            // Refresh settings when remote sync merges new data
+            .onReceive(settingsChanged) { _ in
+                userSettings = UserDatabase.shared.getSettings()
             }
             // WebDAV configuration sheet (for editing existing config)
             .sheet(isPresented: $showingWebDAVConfig) {

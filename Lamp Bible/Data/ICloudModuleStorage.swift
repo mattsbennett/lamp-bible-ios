@@ -319,6 +319,23 @@ class ICloudModuleStorage: ModuleStorage {
         }
     }
 
+    // MARK: - Change Token
+
+    func getChangeToken(path: String) async -> String? {
+        guard let docsURL = documentsURL else { return nil }
+        let fileURL = docsURL.appendingPathComponent(path)
+        guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
+
+        var url = fileURL
+        try? url.removeAllCachedResourceValues()
+
+        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+              let modDate = values.contentModificationDate else {
+            return nil
+        }
+        return String(modDate.timeIntervalSince1970)
+    }
+
     // MARK: - Generic File Access
 
     func readFile(path: String) async throws -> Data {
@@ -328,8 +345,30 @@ class ICloudModuleStorage: ModuleStorage {
 
         let fileURL = docsURL.appendingPathComponent(path)
 
-        guard fileManager.fileExists(atPath: fileURL.path) else {
-            throw ModuleStorageError.fileNotFound(path)
+        // Check if file exists - for iCloud, also check for placeholder (.icloud) files
+        var isPlaceholder = false
+        if !fileManager.fileExists(atPath: fileURL.path) {
+            // Check for iCloud placeholder file (.filename.icloud)
+            let placeholderName = ".\(fileURL.lastPathComponent).icloud"
+            let placeholderURL = fileURL.deletingLastPathComponent().appendingPathComponent(placeholderName)
+            if fileManager.fileExists(atPath: placeholderURL.path) {
+                isPlaceholder = true
+            } else {
+                throw ModuleStorageError.fileNotFound(path)
+            }
+        }
+
+        // Trigger download if file is a placeholder (not yet downloaded from iCloud)
+        if isPlaceholder {
+            try fileManager.startDownloadingUbiquitousItem(at: fileURL)
+            // Wait for download to complete
+            for _ in 0..<60 {
+                try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+                if fileManager.fileExists(atPath: fileURL.path) { break }
+            }
+            guard fileManager.fileExists(atPath: fileURL.path) else {
+                throw ModuleStorageError.fileNotFound(path)
+            }
         }
 
         return try await withCheckedThrowingContinuation { continuation in

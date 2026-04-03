@@ -99,6 +99,16 @@ protocol ModuleStorage {
 
     /// Write file at arbitrary path (relative to base storage)
     func writeFile(path: String, data: Data) async throws
+
+    /// Lightweight change token for a file (ETag for WebDAV, mod-date string for iCloud).
+    /// Returns nil if the file doesn't exist or the storage doesn't support it.
+    func getChangeToken(path: String) async -> String?
+}
+
+// MARK: - Default Implementations
+
+extension ModuleStorage {
+    func getChangeToken(path: String) async -> String? { nil }
 }
 
 // MARK: - Module Storage Extensions

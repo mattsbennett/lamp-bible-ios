@@ -24,11 +24,11 @@ struct ImageBlockView: View {
             imageContent
                 .frame(maxWidth: maxWidth, alignment: frameAlignment)
 
-            if let caption = block.caption {
-                DevotionalAnnotatedTextView(caption)
-                    .font(.caption)
+            if let caption = block.caption, !caption.text.isEmpty {
+                Text(caption.text)
+                    .font(.subheadline.italic())
                     .foregroundColor(.secondary)
-                    .frame(maxWidth: maxWidth, alignment: frameAlignment)
+                    .frame(maxWidth: maxWidth, alignment: .leading)
             }
         }
         .frame(maxWidth: .infinity, alignment: frameAlignment)
@@ -126,93 +126,175 @@ struct ImageBlockView: View {
     }
 }
 
-/// Full-screen image viewer
+/// Full-screen image viewer with zoom using UIKit ScrollView for reliable behavior
 struct FullScreenImageView: View {
     let image: UIImage
     let caption: DevotionalAnnotatedText?
     @Binding var isPresented: Bool
-
-    @State private var scale: CGFloat = 1.0
-    @State private var lastScale: CGFloat = 1.0
-    @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            VStack {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .scaleEffect(scale)
-                    .offset(offset)
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { value in
-                                scale = lastScale * value
-                            }
-                            .onEnded { _ in
-                                lastScale = scale
-                                if scale < 1.0 {
-                                    withAnimation {
-                                        scale = 1.0
-                                        lastScale = 1.0
-                                    }
-                                }
-                            }
-                    )
-                    .simultaneousGesture(
-                        DragGesture()
-                            .onChanged { value in
-                                offset = CGSize(
-                                    width: lastOffset.width + value.translation.width,
-                                    height: lastOffset.height + value.translation.height
-                                )
-                            }
-                            .onEnded { _ in
-                                lastOffset = offset
-                            }
-                    )
-                    .onTapGesture(count: 2) {
-                        withAnimation {
-                            if scale > 1.0 {
-                                scale = 1.0
-                                lastScale = 1.0
-                                offset = .zero
-                                lastOffset = .zero
-                            } else {
-                                scale = 2.0
-                                lastScale = 2.0
-                            }
-                        }
-                    }
+                // Zoomable image using UIKit
+                ZoomableImageScrollView(image: image)
+                    .ignoresSafeArea()
 
-                if let caption = caption {
-                    DevotionalAnnotatedTextView(caption)
-                        .font(.caption)
-                        .foregroundColor(.white)
-                        .padding()
-                }
-            }
-
-            // Close button
-            VStack {
-                HStack {
-                    Spacer()
-                    Button {
-                        isPresented = false
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title)
+                // Caption at bottom
+                if let caption = caption, !caption.text.isEmpty {
+                    VStack {
+                        Spacer()
+                        Text(caption.text)
+                            .font(.subheadline.italic())
                             .foregroundColor(.white)
                             .padding()
+                            .frame(maxWidth: .infinity)
+                            .background(.ultraThinMaterial.opacity(0.8))
                     }
                 }
-                Spacer()
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
             }
         }
-        .statusBar(hidden: true)
+    }
+}
+
+/// A zoomable scroll view for images using UIKit UIScrollView
+struct ZoomableImageScrollView: UIViewRepresentable {
+    let image: UIImage
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView()
+        scrollView.delegate = context.coordinator
+        scrollView.maximumZoomScale = 5.0
+        scrollView.minimumZoomScale = 1.0
+        scrollView.bouncesZoom = true
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.backgroundColor = .clear
+        scrollView.contentInsetAdjustmentBehavior = .never
+
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFit
+        imageView.backgroundColor = .clear
+        scrollView.addSubview(imageView)
+
+        context.coordinator.imageView = imageView
+        context.coordinator.scrollView = scrollView
+
+        // Add double-tap gesture for zoom toggle
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        scrollView.addGestureRecognizer(doubleTap)
+
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        // Layout the image view to fit
+        DispatchQueue.main.async {
+            context.coordinator.layoutImageView()
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(image: image)
+    }
+
+    class Coordinator: NSObject, UIScrollViewDelegate {
+        let image: UIImage
+        weak var imageView: UIImageView?
+        weak var scrollView: UIScrollView?
+
+        init(image: UIImage) {
+            self.image = image
+        }
+
+        func layoutImageView() {
+            guard let scrollView = scrollView, let imageView = imageView else { return }
+
+            let scrollViewSize = scrollView.bounds.size
+            guard scrollViewSize.width > 0 && scrollViewSize.height > 0 else { return }
+
+            let imageSize = image.size
+            guard imageSize.width > 0 && imageSize.height > 0 else { return }
+
+            // Calculate the scale to fit image in scroll view
+            let widthScale = scrollViewSize.width / imageSize.width
+            let heightScale = scrollViewSize.height / imageSize.height
+            let minScale = min(widthScale, heightScale)
+
+            let scaledWidth = imageSize.width * minScale
+            let scaledHeight = imageSize.height * minScale
+
+            // Set image view frame centered in scroll view
+            imageView.frame = CGRect(
+                x: 0,
+                y: 0,
+                width: scaledWidth,
+                height: scaledHeight
+            )
+
+            scrollView.contentSize = CGSize(width: scaledWidth, height: scaledHeight)
+
+            // Center the image
+            centerImageView()
+        }
+
+        func centerImageView() {
+            guard let scrollView = scrollView, let imageView = imageView else { return }
+
+            let scrollViewSize = scrollView.bounds.size
+            let imageViewSize = imageView.frame.size
+
+            let horizontalPadding = max(0, (scrollViewSize.width - imageViewSize.width) / 2)
+            let verticalPadding = max(0, (scrollViewSize.height - imageViewSize.height) / 2)
+
+            scrollView.contentInset = UIEdgeInsets(
+                top: verticalPadding,
+                left: horizontalPadding,
+                bottom: verticalPadding,
+                right: horizontalPadding
+            )
+        }
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+            return imageView
+        }
+
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            centerImageView()
+        }
+
+        @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+            guard let scrollView = scrollView else { return }
+
+            if scrollView.zoomScale > scrollView.minimumZoomScale {
+                scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
+            } else {
+                // Zoom to 2.5x at the tapped point
+                let location = gesture.location(in: imageView)
+                let zoomScale: CGFloat = 2.5
+                let width = scrollView.bounds.width / zoomScale
+                let height = scrollView.bounds.height / zoomScale
+                let zoomRect = CGRect(
+                    x: location.x - width / 2,
+                    y: location.y - height / 2,
+                    width: width,
+                    height: height
+                )
+                scrollView.zoom(to: zoomRect, animated: true)
+            }
+        }
     }
 }
 

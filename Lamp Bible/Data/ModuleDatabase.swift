@@ -27,24 +27,26 @@ class ModuleDatabase {
     }
 
     private func setupDatabase() throws {
+        // Ensure the Documents directory exists (should always exist, but be safe)
+        let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
+
         var config = Configuration()
-        config.prepareDatabase { db in
-            // Enable WAL mode for better crash resilience
-            try db.execute(sql: "PRAGMA journal_mode = WAL")
-            // Enable synchronous mode for durability
-            try db.execute(sql: "PRAGMA synchronous = NORMAL")
-        }
+        // Don't set PRAGMAs in prepareDatabase - can cause issues on fresh install
+        // We'll set them after opening instead
 
         // Try to open the database
         do {
             dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
 
-            // Check database integrity
-            let isValid = try checkDatabaseIntegrity()
-            if !isValid {
-                print("[ModuleDatabase] Database integrity check failed, attempting recovery...")
-                try recoverCorruptedDatabase()
+            // Set PRAGMAs after database is open (must be outside transaction)
+            try dbQueue.writeWithoutTransaction { db in
+                try db.execute(sql: "PRAGMA journal_mode = WAL")
+                try db.execute(sql: "PRAGMA synchronous = NORMAL")
             }
+
+            // Skip integrity_check on startup — it reads every page of the DB.
+            // GRDB already validates the header; full checks run via ensureDatabaseHealthy() on error.
 
             // Run migrations
             try migrator.migrate(dbQueue)
@@ -62,6 +64,13 @@ class ModuleDatabase {
 
             // Create fresh database
             dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
+
+            // Set PRAGMAs on fresh database too (must be outside transaction)
+            try dbQueue.writeWithoutTransaction { db in
+                try db.execute(sql: "PRAGMA journal_mode = WAL")
+                try db.execute(sql: "PRAGMA synchronous = NORMAL")
+            }
+
             try migrator.migrate(dbQueue)
         }
     }
@@ -79,15 +88,9 @@ class ModuleDatabase {
         try dbQueue.write { db in
             let columns = try db.columns(in: "devotional_entries")
             let columnNames = columns.map { $0.name }
-            print("[ModuleDatabase] devotional_entries columns: \(columnNames)")
-
             let hasMediaJson = columns.contains { $0.name == "media_json" }
             if !hasMediaJson {
-                print("[ModuleDatabase] media_json column missing! Adding it now...")
                 try db.execute(sql: "ALTER TABLE devotional_entries ADD COLUMN media_json TEXT")
-                print("[ModuleDatabase] media_json column added successfully")
-            } else {
-                print("[ModuleDatabase] media_json column exists ✓")
             }
         }
     }
@@ -893,6 +896,12 @@ class ModuleDatabase {
             // Drop old FTS table
             try db.execute(sql: "DROP TABLE IF EXISTS devotional_fts")
 
+            // Check if old table has month_day column (legacy) or date column (current)
+            let columns = try db.columns(in: "devotional_entries")
+            let columnNames = Set(columns.map { $0.name })
+            let hasMonthDay = columnNames.contains("month_day")
+            let hasContentJson = columnNames.contains("content_json")
+
             // Create new devotional_entries table with full schema
             try db.execute(sql: """
                 CREATE TABLE devotional_entries_new (
@@ -918,12 +927,29 @@ class ModuleDatabase {
                 )
             """)
 
-            // Migrate existing data from old table
-            try db.execute(sql: """
-                INSERT INTO devotional_entries_new (id, module_id, title, date, tags, content_json, last_modified, search_text)
-                SELECT id, module_id, title, month_day, tags, content, last_modified, content
-                FROM devotional_entries
-            """)
+            // Migrate existing data from old table based on schema
+            if hasMonthDay {
+                // Legacy schema: month_day -> date, content -> content_json
+                try db.execute(sql: """
+                    INSERT INTO devotional_entries_new (id, module_id, title, date, tags, content_json, last_modified, search_text)
+                    SELECT id, module_id, title, month_day, tags, content, last_modified, content
+                    FROM devotional_entries
+                """)
+            } else if hasContentJson {
+                // Already has new schema, copy as-is
+                try db.execute(sql: """
+                    INSERT INTO devotional_entries_new (id, module_id, title, date, tags, content_json, last_modified, search_text)
+                    SELECT id, module_id, title, date, tags, content_json, last_modified, search_text
+                    FROM devotional_entries
+                """)
+            } else {
+                // Current schema: date exists, content -> content_json
+                try db.execute(sql: """
+                    INSERT INTO devotional_entries_new (id, module_id, title, date, tags, content_json, last_modified, search_text)
+                    SELECT id, module_id, title, date, tags, content, last_modified, content
+                    FROM devotional_entries
+                """)
+            }
 
             // Drop old table and rename new one
             try db.execute(sql: "DROP TABLE devotional_entries")

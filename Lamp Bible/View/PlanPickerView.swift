@@ -39,6 +39,7 @@ struct PlanPickerView: View {
                             userSettings.removePlan(plans[index].id)
                         }
                         try? UserDatabase.shared.updateSettings { $0 = userSettings }
+                        WidgetDataService.shared.refreshWidget()
                     }
                 }
             }

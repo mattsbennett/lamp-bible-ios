@@ -69,26 +69,30 @@ class BundledModuleDatabase {
 
         let decompressedURL = appSupport.appendingPathComponent("bundled_modules.db")
         let decompressedPath = decompressedURL.path
+        let versionMarkerURL = appSupport.appendingPathComponent("bundled_modules.version")
+
+        // Use app bundle version as a stable marker instead of modification dates,
+        // which are unreliable because iOS changes the bundle path on every install/update
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
 
         // Check if already decompressed and up-to-date
-        if fileManager.fileExists(atPath: decompressedPath) {
-            // Compare modification dates to see if we need to re-decompress
-            if let bundledDate = try? fileManager.attributesOfItem(atPath: compressedPath)[.modificationDate] as? Date,
-               let decompressedDate = try? fileManager.attributesOfItem(atPath: decompressedPath)[.modificationDate] as? Date,
-               decompressedDate >= bundledDate {
-                print("BundledModuleDatabase: Using existing decompressed database")
-                return decompressedPath
-            }
-            // Remove outdated decompressed file
-            try? fileManager.removeItem(atPath: decompressedPath)
+        if fileManager.fileExists(atPath: decompressedPath),
+           let markerVersion = try? String(contentsOf: versionMarkerURL, encoding: .utf8),
+           markerVersion == currentVersion {
+            print("BundledModuleDatabase: Using existing decompressed database (build \(currentVersion))")
+            return decompressedPath
         }
 
+        // Remove outdated decompressed file
+        try? fileManager.removeItem(atPath: decompressedPath)
+
         // Decompress
-        print("BundledModuleDatabase: Decompressing bundled database...")
+        print("BundledModuleDatabase: Decompressing bundled database (build \(currentVersion))...")
         do {
             let compressedData = try Data(contentsOf: URL(fileURLWithPath: compressedPath))
             let decompressedData = try (compressedData as NSData).decompressed(using: .zlib) as Data
             try decompressedData.write(to: decompressedURL)
+            try currentVersion.write(to: versionMarkerURL, atomically: true, encoding: .utf8)
             print("BundledModuleDatabase: Decompressed \(compressedData.count) -> \(decompressedData.count) bytes")
             return decompressedPath
         } catch {

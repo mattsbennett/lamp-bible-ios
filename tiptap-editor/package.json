@@ -1,0 +1,26 @@
+{
+  "name": "tiptap-editor",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.0.0",
+    "@tiptap/extension-image": "^3.0.0",
+    "@tiptap/extension-link": "^3.0.0",
+    "@tiptap/extension-placeholder": "^3.0.0",
+    "@tiptap/pm": "^3.0.0",
+    "@tiptap/extension-table": "^3.0.0",
+    "@tiptap/extension-table-row": "^3.0.0",
+    "@tiptap/extension-table-cell": "^3.0.0",
+    "@tiptap/extension-table-header": "^3.0.0",
+    "@tiptap/starter-kit": "^3.0.0",
+    "tiptap-markdown": "^0.9.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.0.0"
+  }
+}

@@ -195,6 +195,22 @@ class WebDAVModuleStorage: ModuleStorage {
         }
     }
 
+    // MARK: - Change Token
+
+    func getChangeToken(path: String) async -> String? {
+        guard let etag = try? await client.getETag(path) else { return nil }
+        // Normalize: strip weak-validator prefix and surrounding quotes
+        // so W/"abc" and "abc" compare as equal.
+        var normalized = etag
+        if normalized.hasPrefix("W/") {
+            normalized = String(normalized.dropFirst(2))
+        }
+        if normalized.hasPrefix("\"") && normalized.hasSuffix("\"") {
+            normalized = String(normalized.dropFirst().dropLast())
+        }
+        return normalized
+    }
+
     // MARK: - Generic File Access
 
     func readFile(path: String) async throws -> Data {

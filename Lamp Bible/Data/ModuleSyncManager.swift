@@ -47,12 +47,25 @@ class ModuleSyncManager: ObservableObject {
     // MARK: - Full Sync
 
     /// Sync all module types on app launch
+    /// Priority order: user settings first (so UI reflects latest state),
+    /// then translations (most likely to be needed immediately),
+    /// then everything else.
     func syncAll() async {
         guard !isSyncing else { return }
         isSyncing = true
         defer { isSyncing = false }
 
-        // Process markdown note imports from iCloud/Import/ directory
+        // 1. User settings first — completed readings, lexicon order, etc.
+        await UserSettingsSyncManager.shared.performFullSync()
+
+        // 2. Translations — the user's default translation is needed immediately
+        do {
+            try await syncModuleType(.translation)
+        } catch {
+            print("Failed to sync translation modules: \(error)")
+        }
+
+        // 3. Process markdown note imports from iCloud/Import/ directory
         do {
             let importResults = try await NotesImportExportManager.shared.processImports()
             if !importResults.isEmpty {
@@ -63,19 +76,13 @@ class ModuleSyncManager: ObservableObject {
             print("[Sync] Note import error: \(error)")
         }
 
-        for type in ModuleType.allCases {
+        // 4. Remaining module types
+        for type in ModuleType.allCases where type != .translation {
             do {
                 try await syncModuleType(type)
             } catch {
                 print("Failed to sync \(type.rawValue) modules: \(error)")
             }
-        }
-
-        // Sync user settings database
-        do {
-            try await syncUserSettings()
-        } catch {
-            print("[Sync] Failed to sync user settings: \(error)")
         }
     }
 
@@ -1392,7 +1399,16 @@ class ModuleSyncManager: ObservableObject {
                 if local.contentJson == cloud.contentJson && local.title == cloud.title {
                     // Same content - keep whichever has newer timestamp
                     result.entriesToSave.append(localModified >= cloudModified ? local : cloud)
-                } else if localModified == cloudModified {
+                } else if cloudModified > localModified {
+                    // Cloud is newer - use cloud (THIS OVERWRITES LOCAL CHANGES)
+                    print("[DevotionalSync] WARNING: Cloud overwrote local for '\(local.title)' (cloud:\(cloudModified) > local:\(localModified))")
+                    result.entriesToSave.append(cloud)
+                    result.cloudMergeCount += 1
+                } else if localModified > cloudModified {
+                    // Local is newer - keep local
+                    result.entriesToSave.append(local)
+                    result.localKeptCount += 1
+                } else {
                     // Same timestamp but different content - true conflict
                     if let localDev = local.toDevotional(), let cloudDev = cloud.toDevotional() {
                         result.conflicts.append(DevotionalConflict(
@@ -1403,14 +1419,6 @@ class ModuleSyncManager: ObservableObject {
                     }
                     // Temporarily keep local until user resolves
                     result.entriesToSave.append(local)
-                } else if cloudModified > localModified {
-                    // Cloud is newer - use cloud
-                    result.entriesToSave.append(cloud)
-                    result.cloudMergeCount += 1
-                } else {
-                    // Local is newer - keep local
-                    result.entriesToSave.append(local)
-                    result.localKeptCount += 1
                 }
 
             case (nil, nil):
@@ -2447,8 +2455,19 @@ class ModuleSyncManager: ObservableObject {
         var mutableDevotional = devotional
         mutableDevotional.meta.lastModified = Int(Date().timeIntervalSince1970)
         let entry = DevotionalEntry(from: mutableDevotional, moduleId: moduleId)
+
+        // Local save first - this must complete
         try database.saveDevotionalEntry(entry)
-        try await exportModule(id: moduleId)
+
+        // Cloud export in detached task so it continues even if caller is cancelled
+        let modId = moduleId
+        Task.detached {
+            do {
+                try await self.exportModule(id: modId)
+            } catch {
+                print("[ModuleSyncManager] Background export failed: \(error)")
+            }
+        }
     }
 
     /// Save a devotional entry directly and export to iCloud
@@ -2465,12 +2484,19 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Create Default Devotionals Module
 
+    /// Track if we've already synced devotionals this session
+    private static var hasInitialDevotionalSync = false
+
     /// Create the default "devotionals" module if it doesn't exist
     func ensureDefaultDevotionalsModule() async throws {
-        // First sync devotionals from iCloud to get any existing devotionals
-        try await syncModuleType(.devotional)
+        // Only sync from cloud once per session to avoid overwriting local changes
+        // that haven't been uploaded yet
+        if !Self.hasInitialDevotionalSync {
+            Self.hasInitialDevotionalSync = true
+            try await syncModuleType(.devotional)
+        }
 
-        // Now check if we have any devotional modules after sync
+        // Now check if we have any devotional modules
         let devotionalModules = try database.getAllModules(type: .devotional)
 
         // Check if user-editable devotionals module exists
@@ -2508,110 +2534,6 @@ class ModuleSyncManager: ObservableObject {
         } catch {
             print("Decompression error: \(error)")
             throw ModuleSyncError.importFailed("Failed to decompress zlib data: \(error.localizedDescription)")
-        }
-    }
-
-    // MARK: - User Settings Sync
-
-    private let userSettingsFileName = "user-settings.db"
-
-    /// Sync user settings database with the selected sync provider
-    func syncUserSettings() async throws {
-        let storage = await getStorage()
-        guard await storage.isAvailable() else {
-            print("[UserSettings] Sync provider not available")
-            return
-        }
-
-        let localURL = UserDatabase.shared.databaseURL
-        let localModDate = (try? FileManager.default.attributesOfItem(atPath: localURL.path))?[.modificationDate] as? Date
-
-        // Check if remote file exists and get its hash/date
-        // We store user settings in the UserData directory
-        let remoteData = try? await storage.readFile(path: "UserData/\(userSettingsFileName)")
-
-        if let remoteData = remoteData {
-            // Remote exists - compare and decide direction
-            let tempRemoteURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension("db")
-
-            defer { try? FileManager.default.removeItem(at: tempRemoteURL) }
-
-            try remoteData.write(to: tempRemoteURL)
-
-            // Get remote modification date from the database itself
-            let remoteModDate = getLastModifiedFromUserDb(at: tempRemoteURL)
-            let localModDateFromDb = getLastModifiedFromUserDb(at: localURL)
-
-            if let remoteDate = remoteModDate, let localDate = localModDateFromDb {
-                if remoteDate > localDate {
-                    // Remote is newer - import it
-                    print("[UserSettings] Remote is newer, importing...")
-                    try await importUserSettings(from: remoteData)
-                } else if localDate > remoteDate {
-                    // Local is newer - export it
-                    print("[UserSettings] Local is newer, exporting...")
-                    try await exportUserSettings()
-                } else {
-                    print("[UserSettings] Already in sync")
-                }
-            } else {
-                // Can't determine - export local to be safe
-                print("[UserSettings] Cannot determine versions, exporting local...")
-                try await exportUserSettings()
-            }
-        } else {
-            // No remote file - export local
-            print("[UserSettings] No remote file, exporting local settings...")
-            try await exportUserSettings()
-        }
-    }
-
-    /// Export user settings to the sync provider
-    func exportUserSettings() async throws {
-        let storage = await getStorage()
-        guard await storage.isAvailable() else { return }
-
-        let localURL = UserDatabase.shared.databaseURL
-        let data = try Data(contentsOf: localURL)
-
-        try await storage.writeFile(path: "UserData/\(userSettingsFileName)", data: data)
-        print("[UserSettings] Exported to sync provider")
-    }
-
-    /// Import user settings from sync provider
-    private func importUserSettings(from data: Data) async throws {
-        let localURL = UserDatabase.shared.databaseURL
-
-        // Backup current
-        let backupURL = localURL.deletingLastPathComponent().appendingPathComponent("user.db.backup")
-        try? FileManager.default.removeItem(at: backupURL)
-        try? FileManager.default.copyItem(at: localURL, to: backupURL)
-
-        // Write new data
-        try data.write(to: localURL)
-
-        // Notify observers
-        UserDatabase.shared.notifyExternalChange()
-        print("[UserSettings] Imported from sync provider")
-    }
-
-    /// Get the last modified date from user_settings table
-    private func getLastModifiedFromUserDb(at url: URL) -> Date? {
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-
-        do {
-            let queue = try DatabaseQueue(path: url.path)
-            return try queue.read { db in
-                if let timestamp = try Date.fetchOne(db, sql: "SELECT updated_at FROM user_settings WHERE id = 1") {
-                    return timestamp
-                }
-                return nil
-            }
-        } catch {
-            print("[UserSettings] Error reading db: \(error)")
-            return nil
         }
     }
 

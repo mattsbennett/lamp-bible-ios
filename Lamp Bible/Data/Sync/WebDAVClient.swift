@@ -84,10 +84,12 @@ class WebDAVClient {
             self.credential = nil
         }
 
-        // Configure session with default timeout
+        // Configure session with no caching (sync must always read fresh data from server)
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 300
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.urlCache = nil
         self.session = URLSession(configuration: config)
     }
 

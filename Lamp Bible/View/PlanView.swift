@@ -7,13 +7,14 @@
 import SwiftUI
 
 struct PlanView: View {
-    @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
+    @State private var userSettings: UserSettings = UserSettings()
     @State private var planViewRefreshId = UUID()
     @State private var showingDatePicker = false
     @State private var showingInfoModal = false
     @State private var date = Date.now
-    @State private var plansMetaData: PlansMetaData
+    @State private var plansMetaData: PlansMetaData = PlansMetaData(plans: [], date: Date.now)
     @State private var plans: [Plan] = []
+    @State private var isLoaded = false
     @Environment(\.colorScheme) var colorScheme
 
     // Deep link navigation
@@ -21,6 +22,7 @@ struct PlanView: View {
     @State private var showDeepLinkReader: Bool = false
     @State private var deepLinkVerseId: Int? = nil
     @State private var deepLinkTranslationId: String? = nil
+    @State private var deepLinkPlanMode: Bool = false
 
     private var iOS26OrLater: Bool {
         if #available(iOS 26, *) {
@@ -30,24 +32,26 @@ struct PlanView: View {
         }
     }
 
-    init(date: Date = Date.now) {
-        let settings = UserDatabase.shared.getSettings()
-        _userSettings = State(initialValue: settings)
-        let allPlans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
-        _plans = State(initialValue: allPlans)
-        _plansMetaData = State(initialValue: PlansMetaData(plans: allPlans, date: date))
-    }
-
     var body: some View {
         GeometryReader { geometry in
             NavigationStack {
                 mainContent(geometry: geometry)
-                    .onAppear {
-                        userSettings = UserDatabase.shared.getSettings()
+                    .task {
+                        guard !isLoaded else { return }
+                        isLoaded = true
+                        let settings = UserDatabase.shared.getSettings()
+                        let allPlans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+                        userSettings = settings
+                        plans = allPlans
+                        plansMetaData = PlansMetaData(plans: allPlans, date: date)
                     }
                     .onChange(of: planViewRefreshId) {
                         userSettings = UserDatabase.shared.getSettings()
                         plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+                        plansMetaData = PlansMetaData(plans: plans, date: date)
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
+                        userSettings = UserDatabase.shared.getSettings()
                         plansMetaData = PlansMetaData(plans: plans, date: date)
                     }
                     .onChange(of: date) {
@@ -134,20 +138,29 @@ struct PlanView: View {
                     }
                     .onChange(of: deepLinkManager.pendingVerseId) { _, newVerseId in
                         if let verseId = newVerseId {
+                            // Dismiss any existing reader first
+                            showDeepLinkReader = false
+
                             // Capture values and clear pending
                             deepLinkVerseId = verseId
                             deepLinkTranslationId = deepLinkManager.pendingTranslationId
+                            deepLinkPlanMode = deepLinkManager.pendingPlanMode
                             deepLinkManager.clearPending()
 
-                            // Trigger navigation
-                            showDeepLinkReader = true
+                            print("[DeepLink] verseId=\(verseId), planMode=\(deepLinkPlanMode)")
+
+                            // Trigger navigation on next run loop to allow dismiss
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                showDeepLinkReader = true
+                            }
                         }
                     }
                     .navigationDestination(isPresented: $showDeepLinkReader) {
                         SplitReaderView(
                             date: $date,
                             initialVerseId: deepLinkVerseId,
-                            initialTranslationId: deepLinkTranslationId
+                            initialTranslationId: deepLinkTranslationId,
+                            initialToolbarMode: deepLinkPlanMode ? .plan : nil
                         )
                     }
             }
