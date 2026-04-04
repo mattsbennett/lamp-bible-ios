@@ -48,6 +48,11 @@ class BundledModuleDatabase {
             dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
             isAvailable = true
             print("BundledModuleDatabase: Successfully opened bundled_modules.db")
+            // List all tables for debugging
+            let tables = try dbQueue!.read { db in
+                try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            }
+            print("BundledModuleDatabase: Tables: \(tables.joined(separator: ", "))")
         } catch {
             print("BundledModuleDatabase: Failed to open database: \(error)")
         }
@@ -1098,6 +1103,138 @@ class BundledModuleDatabase {
         guard isAvailable else { return 0 }
         return try read { db in
             try Plan.fetchCount(db)
+        }
+    }
+
+    // MARK: - Quiz Queries
+
+    /// Check if the bundled database has the quiz_modules table
+    func hasQuizModulesTable() -> Bool {
+        guard isAvailable else { return false }
+        do {
+            return try read { db in
+                let count = try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM sqlite_master
+                    WHERE type='table' AND name='quiz_modules'
+                """) ?? 0
+                print("[BundledModuleDatabase] hasQuizModulesTable: \(count > 0)")
+                return count > 0
+            }
+        } catch {
+            print("[BundledModuleDatabase] hasQuizModulesTable error: \(error)")
+            return false
+        }
+    }
+
+    /// Get all bundled quiz modules
+    func getAllQuizModules() throws -> [QuizModule] {
+        guard isAvailable, hasQuizModulesTable() else {
+            print("[BundledModuleDatabase] getAllQuizModules: not available or no table")
+            return []
+        }
+        return try read { db in
+            let modules = try QuizModule.order(Column("name")).fetchAll(db)
+            print("[BundledModuleDatabase] getAllQuizModules: fetched \(modules.count) modules")
+            return modules
+        }
+    }
+
+    /// Get a quiz module by ID
+    func getQuizModule(id: String) throws -> QuizModule? {
+        guard isAvailable, hasQuizModulesTable() else { return nil }
+        return try read { db in
+            try QuizModule.fetchOne(db, key: id)
+        }
+    }
+
+    /// Get quiz modules for a specific plan
+    func getQuizModulesForPlan(planId: String) throws -> [QuizModule] {
+        guard isAvailable, hasQuizModulesTable() else { return [] }
+        return try read { db in
+            try QuizModule
+                .filter(Column("plan_id") == planId)
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get quiz questions for a specific day and age group
+    func getQuizQuestions(moduleId: String, day: Int, ageGroup: String) throws -> [QuizQuestion] {
+        guard isAvailable, hasQuizModulesTable() else { return [] }
+        return try read { db in
+            try QuizQuestion
+                .filter(Column("quiz_module_id") == moduleId)
+                .filter(Column("day") == day)
+                .filter(Column("age_group") == ageGroup)
+                .order(Column("question_index"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get quiz questions for a specific reading (sv/ev) and age group
+    func getQuizQuestionsForReading(moduleId: String, day: Int, sv: Int, ev: Int, ageGroup: String) throws -> [QuizQuestion] {
+        guard isAvailable, hasQuizModulesTable() else { return [] }
+        return try read { db in
+            try QuizQuestion
+                .filter(Column("quiz_module_id") == moduleId)
+                .filter(Column("day") == day)
+                .filter(Column("sv") == sv)
+                .filter(Column("ev") == ev)
+                .filter(Column("age_group") == ageGroup)
+                .order(Column("question_index"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get all quiz questions for a day (all readings, all age groups)
+    func getQuizQuestionsForDay(moduleId: String, day: Int) throws -> [QuizQuestion] {
+        guard isAvailable, hasQuizModulesTable() else { return [] }
+        return try read { db in
+            try QuizQuestion
+                .filter(Column("quiz_module_id") == moduleId)
+                .filter(Column("day") == day)
+                .order(Column("sv"), Column("age_group"), Column("question_index"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get all available age groups for a quiz module
+    func getQuizAgeGroups(moduleId: String) throws -> [QuizAgeGroup] {
+        guard let module = try getQuizModule(id: moduleId) else { return [] }
+        return module.ageGroups
+    }
+
+    /// Get distinct age groups used in quiz questions for a module
+    func getQuizQuestionAgeGroups(moduleId: String) throws -> [String] {
+        guard isAvailable, hasQuizModulesTable() else { return [] }
+        return try read { db in
+            try String.fetchAll(db, sql: """
+                SELECT DISTINCT age_group FROM quiz_questions
+                WHERE quiz_module_id = ?
+                ORDER BY age_group
+            """, arguments: [moduleId])
+        }
+    }
+
+    /// Get question count for a module
+    func getQuizQuestionCount(moduleId: String) throws -> Int {
+        guard isAvailable, hasQuizModulesTable() else { return 0 }
+        return try read { db in
+            try QuizQuestion
+                .filter(Column("quiz_module_id") == moduleId)
+                .fetchCount(db)
+        }
+    }
+
+    /// Get distinct days that have quiz questions for a module
+    func getQuizDays(moduleId: String) throws -> [Int] {
+        guard isAvailable, hasQuizModulesTable() else { return [] }
+        return try read { db in
+            try Int.fetchAll(db, sql: """
+                SELECT DISTINCT day FROM quiz_questions
+                WHERE quiz_module_id = ?
+                ORDER BY day
+            """, arguments: [moduleId])
         }
     }
 

@@ -1267,6 +1267,8 @@ struct SearchView: View {
             break  // Plans have dedicated UI
         case .highlights:
             selectedHighlight = result
+        case .quiz:
+            break  // Quizzes have dedicated UI
         }
     }
 
@@ -1998,6 +2000,7 @@ struct ModuleSearchResultRow: View {
         case .dictionary: return .purple
         case .plan: return .teal
         case .highlights: return .yellow
+        case .quiz: return .indigo
         }
     }
 

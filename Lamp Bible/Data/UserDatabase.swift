@@ -254,6 +254,12 @@ class UserDatabase {
             }
         }
 
+        migrator.registerMigration("v7_quiz_age_group") { db in
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "default_quiz_age_group", .text).notNull().defaults(to: "adult")
+            }
+        }
+
         return migrator
     }
 
@@ -496,6 +502,7 @@ class UserDatabase {
                         show_strongs_hints = ?,
                         custom_highlight_colors = ?,
                         highlight_color_order = ?,
+                        default_quiz_age_group = ?,
                         updated_at = ?
                     WHERE id = 1
                     """, arguments: [
@@ -520,6 +527,7 @@ class UserDatabase {
                         remote.showStrongsHints,
                         remote.customHighlightColors,
                         remote.highlightColorOrder,
+                        remote.defaultQuizAgeGroup,
                         remote.updatedAt
                     ])
                 return true

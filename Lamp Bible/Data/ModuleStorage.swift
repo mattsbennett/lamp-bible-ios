@@ -154,6 +154,8 @@ extension ModuleStorage {
             return "Plans"
         case .highlights:
             return "Highlights"
+        case .quiz:
+            return "Quizzes"
         }
     }
 

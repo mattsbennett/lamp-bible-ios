@@ -53,9 +53,10 @@ enum ModuleType: String, Codable, CaseIterable {
     case notes
     case plan
     case highlights
+    case quiz
 
     /// Module types that are searchable in the module search UI
-    /// Excludes plan (has dedicated UI)
+    /// Excludes plan and quiz (have dedicated UI)
     static var searchableTypes: [ModuleType] {
         [.translation, .dictionary, .commentary, .devotional, .notes, .highlights]
     }
@@ -2403,5 +2404,102 @@ struct PlanReading: Codable {
 
         // Different books
         return "\(startBookName) \(startChapter):\(startVerse) - \(endBookName) \(endChapter):\(endVerse)"
+    }
+}
+
+// MARK: - Quiz Module
+
+struct QuizAgeGroup: Codable, Identifiable, Sendable {
+    var id: String
+    var label: String
+    var ageRange: String
+}
+
+struct QuizModule: Codable, FetchableRecord, TableRecord, MutablePersistableRecord, Identifiable, Sendable {
+    static let databaseTableName = "quiz_modules"
+
+    var id: String
+    var planId: String
+    var name: String
+    var description: String?
+    var questionsPerReading: Int
+    var ageGroupsJson: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case planId = "plan_id"
+        case name
+        case description
+        case questionsPerReading = "questions_per_reading"
+        case ageGroupsJson = "age_groups_json"
+    }
+
+    var ageGroups: [QuizAgeGroup] {
+        guard let data = ageGroupsJson.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([QuizAgeGroup].self, from: data)) ?? []
+    }
+}
+
+enum QuizTheme: String, Codable, Sendable {
+    case narrative, character, doctrine, prophecy, typology
+    case salvation, commandment, geography, history, wisdom
+}
+
+struct QuizQuestion: Codable, FetchableRecord, TableRecord, MutablePersistableRecord, Identifiable, Sendable {
+    static let databaseTableName = "quiz_questions"
+
+    var id: Int64
+    var quizModuleId: String
+    var day: Int
+    var sv: Int
+    var ev: Int
+    var ageGroup: String
+    var questionIndex: Int
+    var questionJson: String
+    var answerJson: String
+    var theme: String
+    var christFocused: Bool
+    var referencesJson: String?
+    var crossReferencesJson: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case quizModuleId = "quiz_module_id"
+        case day, sv, ev, ageGroup
+        case questionIndex = "question_index"
+        case questionJson = "question_json"
+        case answerJson = "answer_json"
+        case theme
+        case christFocused = "christ_focused"
+        case referencesJson = "references_json"
+        case crossReferencesJson = "cross_references_json"
+    }
+
+    init(row: Row) throws {
+        id = row["id"]
+        quizModuleId = row["quiz_module_id"]
+        day = row["day"]
+        sv = row["sv"]
+        ev = row["ev"]
+        ageGroup = row["age_group"]
+        questionIndex = row["question_index"]
+        questionJson = row["question_json"]
+        answerJson = row["answer_json"]
+        theme = row["theme"]
+        christFocused = (row["christ_focused"] as Int) == 1
+        referencesJson = row["references_json"]
+        crossReferencesJson = row["cross_references_json"]
+    }
+
+    var themeEnum: QuizTheme? { QuizTheme(rawValue: theme) }
+
+    var references: [Int]? {
+        guard let json = referencesJson, let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([Int].self, from: data)
+    }
+
+    var crossReferences: [Int]? {
+        guard let json = crossReferencesJson, let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([Int].self, from: data)
     }
 }

@@ -1540,6 +1540,11 @@ struct ReaderView: View {
     @State private var requestedToolbarMode: BottomToolbarMode? = nil  // Mode to switch to on appear
     @State private var hasAppliedInitialMode: Bool = false
 
+    // Quiz state for plan mode
+    @State private var quizModule: QuizModule? = nil
+    @State private var quizQuestions: [QuizQuestion] = []
+    @State private var showingQuizSheet: Bool = false
+
     let LOADING_NEXT_CHAPTER = "next_chapter"
     let LOADING_PREV_CHAPTER = "prev_chapter"
     let LOADING_NEXT_BOOK = "next_book"
@@ -2030,6 +2035,16 @@ struct ReaderView: View {
                             )
                             .id("chapter_\(chapterNumber)_\(translationId)")
 
+                            // Quiz card - shown in plan mode when quiz questions exist for this reading
+                            if toolbarMode == .plan, quizModule != nil, !quizQuestions.isEmpty {
+                                QuizCardView(
+                                    questionCount: quizQuestions.count,
+                                    onStart: { showingQuizSheet = true }
+                                )
+                                .padding(.horizontal)
+                                .padding(.top, 24)
+                            }
+
                             // Next chapter button (inline, hidden when sticky overlay shows)
                             if readingMetaData == nil, let firstVerse = verses.first,
                                hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
@@ -2395,6 +2410,26 @@ struct ReaderView: View {
                 )
                 .presentationDetents([.medium, .large])
             }
+            .sheet(isPresented: $showingQuizSheet) {
+                if let module = quizModule,
+                   selectedPlanIndex >= 0,
+                   selectedPlanIndex < plansWithReadings.count,
+                   planReadingIndex >= 0,
+                   planReadingIndex < plansWithReadings[selectedPlanIndex].readings.count {
+                    let reading = plansWithReadings[selectedPlanIndex].readings[planReadingIndex]
+                    let parts = reading.id.split(separator: "_")
+                    let dayNum = parts.count >= 4 ? Int(parts[parts.count - 3]) ?? 0 : 0
+                    QuizSheetView(
+                        quizModule: module,
+                        questions: quizQuestions,
+                        day: dayNum,
+                        sv: reading.sv,
+                        ev: reading.ev,
+                        readingDescription: reading.description
+                    )
+                    .presentationDetents([.medium, .large])
+                }
+            }
             .toolbar(toolbarsHidden ? .hidden : .visible, for: .navigationBar, .bottomBar)
             .statusBarHidden(toolbarsHidden)
             .safeAreaInset(edge: .top) {
@@ -2672,6 +2707,411 @@ struct ReaderView: View {
             headings = allHeadings
             isLoading = true
         }
+
+        loadQuizForCurrentReading()
+    }
+
+    /// Loads quiz questions for the current plan reading if a quiz module exists
+    private func loadQuizForCurrentReading() {
+        guard toolbarMode == .plan,
+              selectedPlanIndex >= 0,
+              selectedPlanIndex < plansWithReadings.count else {
+            quizModule = nil
+            quizQuestions = []
+            return
+        }
+
+        let plan = plansWithReadings[selectedPlanIndex]
+        let readings = plan.readings
+        guard planReadingIndex >= 0, planReadingIndex < readings.count else {
+            quizModule = nil
+            quizQuestions = []
+            return
+        }
+        let reading = readings[planReadingIndex]
+
+        // Extract dayNum from reading.id format: "{planId}_{dayNum}_{readingIndex}_{year}"
+        let parts = reading.id.split(separator: "_")
+        guard parts.count >= 4, let dayNum = Int(parts[parts.count - 3]) else {
+            quizModule = nil
+            quizQuestions = []
+            return
+        }
+
+        // Find quiz module for this plan (bundled first, then user)
+        let module = (try? BundledModuleDatabase.shared.getQuizModulesForPlan(planId: plan.id))?.first
+            ?? (try? ModuleDatabase.shared.getQuizModulesForPlan(planId: plan.id))?.first
+
+        guard let module else {
+            quizModule = nil
+            quizQuestions = []
+            return
+        }
+
+        quizModule = module
+        let ageGroup = userSettings.defaultQuizAgeGroup
+        quizQuestions = (try? BundledModuleDatabase.shared.getQuizQuestionsForReading(
+            moduleId: module.id, day: dayNum, sv: reading.sv, ev: reading.ev, ageGroup: ageGroup
+        )) ?? []
+    }
+}
+
+// MARK: - Quiz Card View (inline after verses)
+
+struct QuizCardView: View {
+    let questionCount: Int
+    let onStart: () -> Void
+
+    var body: some View {
+        Button(action: onStart) {
+            HStack(spacing: 12) {
+                Image(systemName: "questionmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.accent)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Quiz Available")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                    Text("\(questionCount) question\(questionCount == 1 ? "" : "s") about this reading")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.accentColor.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Quiz Sheet View
+
+struct QuizSheetView: View {
+    let quizModule: QuizModule
+    let day: Int
+    let sv: Int
+    let ev: Int
+    let readingDescription: String
+    @State var questions: [QuizQuestion]
+    @Environment(\.dismiss) private var dismiss
+    @State private var currentIndex: Int = 0
+    @State private var showAnswer: Bool = false
+    @State private var selectedAgeGroup: String
+    @State private var previewState: PreviewSheetState? = nil
+
+    init(quizModule: QuizModule, questions: [QuizQuestion], day: Int, sv: Int, ev: Int, readingDescription: String) {
+        self.quizModule = quizModule
+        self.day = day
+        self.sv = sv
+        self.ev = ev
+        self.readingDescription = readingDescription
+        self._questions = State(initialValue: questions)
+        let settings = UserDatabase.shared.getSettings()
+        self._selectedAgeGroup = State(initialValue: settings.defaultQuizAgeGroup)
+    }
+
+    private var currentQuestion: QuizQuestion? {
+        guard currentIndex >= 0, currentIndex < questions.count else { return nil }
+        return questions[currentIndex]
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Age group picker
+                if quizModule.ageGroups.count > 1 {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(quizModule.ageGroups) { group in
+                                Button {
+                                    selectedAgeGroup = group.id
+                                    saveAgeGroupPreference(group.id)
+                                    reloadQuestions()
+                                } label: {
+                                    Text(group.label)
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(selectedAgeGroup == group.id ? Color.accentColor : Color.secondary.opacity(0.15))
+                                        .foregroundStyle(selectedAgeGroup == group.id ? .white : .primary)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .padding(.vertical, 10)
+
+                    Divider()
+                }
+
+                if questions.isEmpty {
+                    Spacer()
+                    VStack(spacing: 8) {
+                        Image(systemName: "questionmark.circle")
+                            .font(.largeTitle)
+                            .foregroundStyle(.tertiary)
+                        Text("No questions available")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Text("Try selecting a different age group")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                } else if let question = currentQuestion {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            // Progress
+                            HStack {
+                                Text("Question \(currentIndex + 1) of \(questions.count)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                Spacer()
+
+                                // Theme badge
+                                if let theme = question.themeEnum {
+                                    Text(theme.rawValue.capitalized)
+                                        .font(.caption2)
+                                        .fontWeight(.medium)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.secondary.opacity(0.15))
+                                        .clipShape(Capsule())
+                                }
+
+
+                            }
+
+                            // Question text with tappable references
+                            quizAnnotatedText(for: question.questionJson)
+
+                            // Answer
+                            if showAnswer {
+                                Divider()
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Answer")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.secondary)
+                                    quizAnnotatedText(for: question.answerJson)
+                                }
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            } else {
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.2)) {
+                                        showAnswer = true
+                                    }
+                                } label: {
+                                    Text("Show Answer")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                        .background(Color.accentColor.opacity(0.12))
+                                        .foregroundStyle(.accent)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                            }
+                        }
+                        .padding()
+                    }
+
+                    // Navigation
+                    Divider()
+                    HStack {
+                        Image(systemName: "chevron.left")
+                            .foregroundStyle(currentIndex == 0 ? .tertiary : .primary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if currentIndex > 0 { goToQuestion(currentIndex - 1) }
+                            }
+
+                        Spacer()
+
+                        // Progress dots
+                        HStack(spacing: 6) {
+                            ForEach(0..<questions.count, id: \.self) { i in
+                                Circle()
+                                    .fill(i == currentIndex ? Color.accentColor : Color.secondary.opacity(0.3))
+                                    .frame(width: 7, height: 7)
+                            }
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(currentIndex == questions.count - 1 ? .tertiary : .primary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if currentIndex < questions.count - 1 { goToQuestion(currentIndex + 1) }
+                            }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("Quiz: \(readingDescription)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                }
+            }
+            .sheet(item: $previewState) { _ in
+                PreviewSheet(
+                    state: $previewState,
+                    translationId: UserDatabase.shared.getSettings().readerTranslationId
+                )
+            }
+        }
+    }
+
+    // MARK: - Annotated Text Rendering
+
+    @ViewBuilder
+    private func quizAnnotatedText(for json: String) -> some View {
+        let parsed = parseQuizAnnotatedText(json)
+        let attrString = buildQuizAttributedString(from: parsed)
+        Text(attrString)
+            .font(.body)
+            .environment(\.openURL, OpenURLAction { url in
+                handleQuizURL(url, annotatedText: parsed)
+                return .handled
+            })
+    }
+
+    /// Build a SwiftUI AttributedString with tappable links for scripture annotations
+    private func buildQuizAttributedString(from annotatedText: AnnotatedText) -> AttributedString {
+        var result = AttributedString(annotatedText.text)
+        guard let annotations = annotatedText.annotations else { return result }
+
+        let text = annotatedText.text
+        for annotation in annotations {
+            guard annotation.start >= 0, annotation.end <= text.count, annotation.start < annotation.end else { continue }
+
+            let startIdx = text.index(text.startIndex, offsetBy: annotation.start)
+            let endIdx = text.index(text.startIndex, offsetBy: annotation.end)
+            let attrStart = AttributedString.Index(startIdx, within: result)
+            let attrEnd = AttributedString.Index(endIdx, within: result)
+            guard let attrStart, let attrEnd else { continue }
+            let range = attrStart..<attrEnd
+
+            if annotation.type == .scripture || annotation.type == .crossref,
+               let sv = annotation.data?.sv {
+                let ev = annotation.data?.ev ?? sv
+                result[range].link = URL(string: "lampbible://quiz-ref/\(sv)/\(ev)")
+                result[range].foregroundColor = .blue
+            }
+        }
+
+        return result
+    }
+
+    /// Handle tapped scripture reference URL from quiz text
+    private func handleQuizURL(_ url: URL, annotatedText: AnnotatedText) {
+        guard url.scheme == "lampbible", url.host == "quiz-ref" else { return }
+        let parts = url.pathComponents.compactMap { Int($0) }
+        guard parts.count >= 2 else { return }
+        let tappedSv = parts[0]
+        let tappedEv = parts[1]
+
+        // Build all verse PreviewItems from this annotated text for prev/next navigation
+        let annotations = annotatedText.annotations ?? []
+        var previewItems: [PreviewItem] = []
+        var tappedItem: PreviewItem? = nil
+        let text = annotatedText.text
+
+        for (i, annotation) in annotations.enumerated() {
+            if (annotation.type == .scripture || annotation.type == .crossref),
+               let sv = annotation.data?.sv {
+                let ev = annotation.data?.ev ?? sv
+                let displayText: String
+                if annotation.start >= 0, annotation.end <= text.count, annotation.start < annotation.end {
+                    let s = text.index(text.startIndex, offsetBy: annotation.start)
+                    let e = text.index(text.startIndex, offsetBy: annotation.end)
+                    displayText = String(text[s..<e])
+                } else {
+                    displayText = ""
+                }
+                let item = PreviewItem.verse(index: i, verseId: sv, endVerseId: ev != sv ? ev : nil, displayText: displayText)
+                previewItems.append(item)
+                if sv == tappedSv && ev == tappedEv {
+                    tappedItem = item
+                }
+            }
+        }
+
+        if let tappedItem {
+            previewState = PreviewSheetState(currentItem: tappedItem, allItems: previewItems)
+        }
+    }
+
+    // MARK: - Navigation & Data
+
+    private func goToQuestion(_ index: Int) {
+        guard index >= 0, index < questions.count else { return }
+        showAnswer = false
+        currentIndex = index
+    }
+
+    private func saveAgeGroupPreference(_ ageGroup: String) {
+        try? UserDatabase.shared.updateSettings { settings in
+            settings.defaultQuizAgeGroup = ageGroup
+        }
+    }
+
+    private func reloadQuestions() {
+        questions = (try? BundledModuleDatabase.shared.getQuizQuestionsForReading(
+            moduleId: quizModule.id, day: day, sv: sv, ev: ev, ageGroup: selectedAgeGroup
+        )) ?? []
+        currentIndex = 0
+        showAnswer = false
+    }
+
+    /// Parse quiz text JSON into AnnotatedText — handles plain strings and annotated text objects.
+    /// Normalizes crossref annotations to scripture so the renderer makes them tappable.
+    private func parseQuizAnnotatedText(_ json: String) -> AnnotatedText {
+        guard let data = json.data(using: .utf8) else {
+            return AnnotatedText(text: json)
+        }
+
+        // Try as AnnotatedText (object with "text" and "annotations" keys)
+        if var annotated = try? JSONDecoder().decode(AnnotatedText.self, from: data) {
+            // Normalize crossref → scripture so the renderer treats them as tappable verse refs
+            annotated.annotations = annotated.annotations?.map { annotation in
+                if annotation.type == .crossref, annotation.data?.sv != nil {
+                    var normalized = annotation
+                    normalized.type = .scripture
+                    return normalized
+                }
+                return annotation
+            }
+            return annotated
+        }
+
+        // Try as plain JSON string
+        if let plainString = try? JSONDecoder().decode(String.self, from: data) {
+            return AnnotatedText(text: plainString)
+        }
+
+        // Fallback: raw string
+        return AnnotatedText(text: json)
     }
 }
 

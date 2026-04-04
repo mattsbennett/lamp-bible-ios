@@ -497,7 +497,7 @@ class ModuleSyncManager: ObservableObject {
                             let now = Int(Date().timeIntervalSince1970)
                             let filePath = "\(fileInfo.id).lamp"
 
-                            // Get highlight set metadata
+                            // Gethighlight set metadata
                             guard let metaRow = try Row.fetchOne(db, sql: "SELECT * FROM \(dbAlias).highlight_meta LIMIT 1"),
                                   let setId: String = metaRow["id"],
                                   let setName: String = metaRow["name"],
@@ -539,6 +539,21 @@ class ModuleSyncManager: ObservableObject {
                         } else {
                             throw ModuleSyncError.importFailed("Unknown highlights database schema")
                         }
+
+                    case .quiz:
+                        // Copy quiz module metadata
+                        try db.execute(sql: """
+                            INSERT OR REPLACE INTO quiz_modules (id, plan_id, name, description, questions_per_reading, age_groups_json)
+                            SELECT id, plan_id, name, description, questions_per_reading, age_groups_json
+                            FROM \(dbAlias).quiz_modules
+                            """)
+
+                        // Copy quiz questions
+                        try db.execute(sql: """
+                            INSERT INTO quiz_questions (quiz_module_id, day, sv, ev, age_group, question_index, question_json, answer_json, theme, christ_focused, references_json, cross_references_json)
+                            SELECT quiz_module_id, day, sv, ev, age_group, question_index, question_json, answer_json, theme, christ_focused, references_json, cross_references_json
+                            FROM \(dbAlias).quiz_questions
+                            """)
 
                     case .translation:
                         // Check which schema the source database uses
@@ -931,6 +946,11 @@ class ModuleSyncManager: ObservableObject {
             // Highlights store metadata in the highlight_sets table
             // The metadata is copied directly via ATTACH DATABASE, so nothing to do here
             break
+
+        case .quiz:
+            // Quizzes store metadata in the quiz_modules table
+            // The metadata is copied directly via ATTACH DATABASE, so nothing to do here
+            break
         }
     }
 
@@ -972,6 +992,10 @@ class ModuleSyncManager: ObservableObject {
         case .highlights:
             // Highlights are imported via SQLite format only (.lamp)
             throw ModuleSyncError.importFailed("JSON import not supported for highlights. Use .lamp format.")
+
+        case .quiz:
+            // Quizzes are imported via SQLite format only (.lamp)
+            throw ModuleSyncError.importFailed("JSON import not supported for quizzes. Use .lamp format.")
         }
     }
 
@@ -1978,7 +2002,7 @@ class ModuleSyncManager: ObservableObject {
                 sum + (try database.getHighlightCount(setId: set.id))
             }
             data = try exportHighlightModuleToSQLite(module)
-        case .translation, .dictionary, .commentary, .plan:
+        case .translation, .dictionary, .commentary, .plan, .quiz:
             throw ModuleSyncError.moduleNotEditable(id)
         }
 

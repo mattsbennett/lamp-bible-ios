@@ -160,6 +160,8 @@ struct ModuleManagerView: View {
     @State private var highlightSets: [HighlightSetDisplay] = []
     @State private var bundledPlans: [Plan] = []
     @State private var userPlans: [Plan] = []
+    @State private var bundledQuizzes: [QuizModule] = []
+    @State private var userQuizzes: [QuizModule] = []
     @State private var selectedType: ModuleType? = nil
     @State private var selectedSource: ModuleSource = .all
     @State private var isLoading: Bool = true
@@ -169,6 +171,7 @@ struct ModuleManagerView: View {
     @State private var showingAlert: Bool = false
     @State private var selectedCommentarySeries: CommentarySeriesGroup? = nil
     @State private var selectedDictionarySeries: DictionarySeriesGroup? = nil
+    @State private var selectedQuiz: QuizModule? = nil
 
     // Markdown export
     @State private var showingMarkdownExportPicker: Bool = false
@@ -256,7 +259,7 @@ struct ModuleManagerView: View {
                     Spacer()
                     ProgressView()
                     Spacer()
-                } else if filteredModules.isEmpty && filteredCommentarySeries.isEmpty && filteredDictionarySeries.isEmpty && filteredHighlights.isEmpty {
+                } else if filteredModules.isEmpty && filteredCommentarySeries.isEmpty && filteredDictionarySeries.isEmpty && filteredHighlights.isEmpty && filteredPlans.isEmpty && filteredQuizzes.isEmpty {
                     emptyStateView
                 } else {
                     modulesList
@@ -467,6 +470,22 @@ struct ModuleManagerView: View {
         }
     }
 
+    private var filteredQuizzes: [(quiz: QuizModule, isBundled: Bool)] {
+        // Only show when type is nil (all) or quiz
+        guard selectedType == nil || selectedType == .quiz else {
+            return []
+        }
+
+        switch selectedSource {
+        case .bundled:
+            return bundledQuizzes.map { ($0, true) }
+        case .user:
+            return userQuizzes.map { ($0, false) }
+        case .all:
+            return bundledQuizzes.map { ($0, true) } + userQuizzes.map { ($0, false) }
+        }
+    }
+
     @ViewBuilder
     private var modulesList: some View {
         List {
@@ -556,6 +575,20 @@ struct ModuleManagerView: View {
                     }
                 }
             }
+
+            // Quizzes section
+            if !filteredQuizzes.isEmpty {
+                Section(header: Text("Quizzes")) {
+                    ForEach(Array(filteredQuizzes.enumerated()), id: \.element.quiz.id) { index, item in
+                        QuizRow(quiz: item.quiz, isBundled: item.isBundled)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedQuiz = item.quiz
+                            }
+                            .listRowSeparator(index == filteredQuizzes.count - 1 ? .hidden : .visible, edges: .bottom)
+                    }
+                }
+            }
         }
         .listStyle(.plain)
         .refreshable {
@@ -570,6 +603,9 @@ struct ModuleManagerView: View {
             DictionarySeriesDetailView(series: series, onDelete: { module in
                 Task { await deleteDictionaryModule(module) }
             })
+        }
+        .sheet(item: $selectedQuiz) { quiz in
+            QuizDetailView(quiz: quiz)
         }
         .sheet(item: $moduleToEdit) { module in
             ModuleEditSheet(module: module) { updatedModule in
@@ -611,6 +647,7 @@ struct ModuleManagerView: View {
     }
 
     private func loadModules() async {
+        print("[ModuleManager] loadModules() called")
         isLoading = true
 
         var allModules: [DisplayModule] = []
@@ -756,6 +793,26 @@ struct ModuleManagerView: View {
 
         // Load user plans from user database
         userPlans = (try? database.getAllPlans()) ?? []
+
+        // Load quizzes from bundled database
+        do {
+            let quizzes = try bundledDb.getAllQuizModules()
+            print("[ModuleManager] Loaded \(quizzes.count) bundled quizzes")
+            bundledQuizzes = quizzes
+        } catch {
+            print("[ModuleManager] Failed to load bundled quizzes: \(error)")
+            bundledQuizzes = []
+        }
+
+        // Load user quizzes from user database
+        do {
+            let userQuizzes = try database.getAllQuizModules()
+            print("[ModuleManager] Loaded \(userQuizzes.count) user quizzes")
+            self.userQuizzes = userQuizzes
+        } catch {
+            print("[ModuleManager] Failed to load user quizzes: \(error)")
+            self.userQuizzes = []
+        }
 
         // Load commentary series groups (bundled + user)
         var allCommentaryGroups: [CommentarySeriesGroup] = []
@@ -1502,6 +1559,115 @@ struct PlanRow: View {
     }
 }
 
+struct QuizRow: View {
+    let quiz: QuizModule
+    var isBundled: Bool = true
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(quiz.name)
+                    .font(.headline)
+
+                HStack(spacing: 6) {
+                    // Type badge
+                    Text("Quiz")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.2))
+                        .clipShape(Capsule())
+
+                    // Source badge
+                    Text(isBundled ? "Bundled" : "User")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(isBundled ? Color.purple : Color.green)
+                        .clipShape(Capsule())
+
+                    let ageGroupCount = quiz.ageGroups.count
+                    if ageGroupCount > 0 {
+                        Text("\(ageGroupCount) age group\(ageGroupCount == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                if let description = quiz.description, !description.isEmpty {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct QuizDetailView: View {
+    let quiz: QuizModule
+    @Environment(\.dismiss) var dismiss
+
+    private let bundledDb = BundledModuleDatabase.shared
+
+    @State private var ageGroupLabels: [String] = []
+    @State private var questionCount: Int = 0
+    @State private var availableDays: [Int] = []
+
+    private func formatAgeGroup(_ key: String) -> String {
+        if let group = quiz.ageGroups.first(where: { $0.id == key }) {
+            return group.label
+        }
+        return key.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Overview") {
+                    LabeledContent("Name", value: quiz.name)
+                    if let description = quiz.description, !description.isEmpty {
+                        LabeledContent("Description", value: description)
+                    }
+                    LabeledContent("Questions per Reading", value: "\(quiz.questionsPerReading)")
+                    LabeledContent("Total Questions", value: "\(questionCount)")
+                    LabeledContent("Days Available", value: "\(availableDays.count)")
+                }
+
+                Section("Age Groups") {
+                    ForEach(ageGroupLabels, id: \.self) { label in
+                        Text(label)
+                    }
+                }
+            }
+            .navigationTitle(quiz.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                let groups = (try? bundledDb.getQuizQuestionAgeGroups(moduleId: quiz.id)) ?? []
+                ageGroupLabels = groups.map { formatAgeGroup($0) }
+                questionCount = (try? bundledDb.getQuizQuestionCount(moduleId: quiz.id)) ?? 0
+                availableDays = (try? bundledDb.getQuizDays(moduleId: quiz.id)) ?? []
+            }
+        }
+    }
+}
+
 // MARK: - Module Type Extension
 
 extension ModuleType {
@@ -1514,6 +1680,7 @@ extension ModuleType {
         case .notes: return "Notes"
         case .plan: return "Plan"
         case .highlights: return "Highlights"
+        case .quiz: return "Quiz"
         }
     }
 }
@@ -2485,6 +2652,8 @@ struct ImportModuleSheet: View {
             return .commentary
         } else if tables.contains("dictionary_entries") {
             return .dictionary
+        } else if tables.contains("quiz_modules") && tables.contains("quiz_questions") {
+            return .quiz
         } else {
             throw NSError(domain: "ImportModuleSheet", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not determine module type"])
         }

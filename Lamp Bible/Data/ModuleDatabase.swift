@@ -1244,6 +1244,37 @@ class ModuleDatabase {
             }
         }
 
+        // v21: Quiz modules tables
+        migrator.registerMigration("v21") { db in
+            try db.create(table: "quiz_modules", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("plan_id", .text).notNull()
+                t.column("name", .text).notNull()
+                t.column("description", .text)
+                t.column("questions_per_reading", .integer).notNull().defaults(to: 0)
+                t.column("age_groups_json", .text)
+            }
+
+            try db.create(table: "quiz_questions", ifNotExists: true) { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("quiz_module_id", .text).notNull().references("quiz_modules", onDelete: .cascade)
+                t.column("day", .integer).notNull()
+                t.column("sv", .integer).notNull()
+                t.column("ev", .integer).notNull()
+                t.column("age_group", .text).notNull()
+                t.column("question_index", .integer).notNull()
+                t.column("question_json", .text).notNull()
+                t.column("answer_json", .text).notNull()
+                t.column("theme", .text).notNull()
+                t.column("christ_focused", .boolean).notNull().defaults(to: false)
+                t.column("references_json", .text)
+                t.column("cross_references_json", .text)
+            }
+
+            try db.create(index: "idx_quiz_questions_module_day", on: "quiz_questions", columns: ["quiz_module_id", "day"])
+            try db.create(index: "idx_quiz_questions_module_age", on: "quiz_questions", columns: ["quiz_module_id", "age_group"])
+        }
+
         return migrator
     }
 
@@ -2389,6 +2420,123 @@ class ModuleDatabase {
             for day in days {
                 try day.save(db)
             }
+        }
+    }
+
+    // MARK: - Quiz Module CRUD
+
+    /// Get all user quiz modules
+    func getAllQuizModules() throws -> [QuizModule] {
+        try dbQueue.read { db in
+            try QuizModule.order(Column("name")).fetchAll(db)
+        }
+    }
+
+    /// Get a quiz module by ID
+    func getQuizModule(id: String) throws -> QuizModule? {
+        try dbQueue.read { db in
+            try QuizModule.fetchOne(db, key: id)
+        }
+    }
+
+    /// Get quiz modules for a specific plan
+    func getQuizModulesForPlan(planId: String) throws -> [QuizModule] {
+        try dbQueue.read { db in
+            try QuizModule
+                .filter(Column("plan_id") == planId)
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Save a quiz module
+    func saveQuizModule(_ module: QuizModule) throws {
+        try dbQueue.write { db in
+            var module = module
+            try module.save(db)
+        }
+    }
+
+    /// Delete a quiz module by ID
+    func deleteQuizModule(id: String) throws {
+        try dbQueue.write { db in
+            _ = try QuizModule.deleteOne(db, key: id)
+        }
+    }
+
+    /// Get quiz questions for a specific day and age group
+    func getQuizQuestions(moduleId: String, day: Int, ageGroup: String) throws -> [QuizQuestion] {
+        try dbQueue.read { db in
+            try QuizQuestion
+                .filter(Column("quiz_module_id") == moduleId)
+                .filter(Column("day") == day)
+                .filter(Column("age_group") == ageGroup)
+                .order(Column("question_index"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get quiz questions for a specific reading
+    func getQuizQuestionsForReading(moduleId: String, day: Int, sv: Int, ev: Int, ageGroup: String) throws -> [QuizQuestion] {
+        try dbQueue.read { db in
+            try QuizQuestion
+                .filter(Column("quiz_module_id") == moduleId)
+                .filter(Column("day") == day)
+                .filter(Column("sv") == sv)
+                .filter(Column("ev") == ev)
+                .filter(Column("age_group") == ageGroup)
+                .order(Column("question_index"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get all quiz questions for a day
+    func getQuizQuestionsForDay(moduleId: String, day: Int) throws -> [QuizQuestion] {
+        try dbQueue.read { db in
+            try QuizQuestion
+                .filter(Column("quiz_module_id") == moduleId)
+                .filter(Column("day") == day)
+                .order(Column("sv"), Column("age_group"), Column("question_index"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get distinct days that have quiz questions for a module
+    func getQuizDays(moduleId: String) throws -> [Int] {
+        try dbQueue.read { db in
+            try Int.fetchAll(db, sql: """
+                SELECT DISTINCT day FROM quiz_questions
+                WHERE quiz_module_id = ?
+                ORDER BY day
+            """, arguments: [moduleId])
+        }
+    }
+
+    /// Get question count for a module
+    func getQuizQuestionCount(moduleId: String) throws -> Int {
+        try dbQueue.read { db in
+            try QuizQuestion
+                .filter(Column("quiz_module_id") == moduleId)
+                .fetchCount(db)
+        }
+    }
+
+    /// Import quiz questions (bulk insert)
+    func importQuizQuestions(_ questions: [QuizQuestion]) throws {
+        try dbQueue.write { db in
+            for var question in questions {
+                try question.insert(db)
+            }
+        }
+    }
+
+    /// Delete all quiz questions for a module
+    func deleteAllQuizQuestions(moduleId: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM quiz_questions WHERE quiz_module_id = ?",
+                arguments: [moduleId]
+            )
         }
     }
 

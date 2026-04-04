@@ -35,6 +35,7 @@ struct UserSettings: Codable, FetchableRecord, PersistableRecord, Identifiable {
     var showStrongsHints: Bool = false
     var customHighlightColors: String = ""  // Deprecated - use highlightColorOrder
     var highlightColorOrder: String = ""    // Comma-separated hex values of ALL visible colors in order
+    var defaultQuizAgeGroup: String = "adult"
     var updatedAt: Date = Date()
 
     // MARK: - CodingKeys for snake_case mapping
@@ -62,6 +63,7 @@ struct UserSettings: Codable, FetchableRecord, PersistableRecord, Identifiable {
         case showStrongsHints = "show_strongs_hints"
         case customHighlightColors = "custom_highlight_colors"
         case highlightColorOrder = "highlight_color_order"
+        case defaultQuizAgeGroup = "default_quiz_age_group"
         case updatedAt = "updated_at"
     }
 
