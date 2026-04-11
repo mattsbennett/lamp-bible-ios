@@ -385,7 +385,8 @@ struct DevotionalPickerView: View {
                 Button(action: { showingNewDevotional = true }) {
                     Label("New Devotional", systemImage: "plus")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
+                .tint(.primary)
                 .padding(.top, 8)
             }
         }

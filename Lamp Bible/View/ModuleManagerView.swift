@@ -167,8 +167,14 @@ struct ModuleManagerView: View {
     @State private var isLoading: Bool = true
     @State private var isSyncing: Bool = false
     @State private var showingImportSheet: Bool = false
+    @State private var showingLampImporter: Bool = false
+    @State private var pendingLampImport: Bool = false
     @State private var alertMessage: String = ""
     @State private var showingAlert: Bool = false
+    @State private var showingDuplicateAlert: Bool = false
+    @State private var pendingImportURL: URL? = nil
+    @State private var pendingImportType: ModuleType? = nil
+    @State private var duplicateModuleName: String = ""
     @State private var selectedCommentarySeries: CommentarySeriesGroup? = nil
     @State private var selectedDictionarySeries: DictionarySeriesGroup? = nil
     @State private var selectedQuiz: QuizModule? = nil
@@ -315,6 +321,20 @@ struct ModuleManagerView: View {
             } message: {
                 Text(alertMessage)
             }
+            .alert("Module Already Exists", isPresented: $showingDuplicateAlert) {
+                Button("Overwrite") {
+                    if let url = pendingImportURL, let type = pendingImportType {
+                        performImport(url: url, moduleType: type)
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingImportURL?.stopAccessingSecurityScopedResource()
+                    pendingImportURL = nil
+                    pendingImportType = nil
+                }
+            } message: {
+                Text("\"\(duplicateModuleName)\" is already installed. Overwrite it?")
+            }
             // Markdown export picker
             .fileExporter(
                 isPresented: $showingMarkdownExportPicker,
@@ -325,11 +345,22 @@ struct ModuleManagerView: View {
                 handleMarkdownExportResult(result)
             }
             // Import module sheet
-            .sheet(isPresented: $showingImportSheet) {
+            .sheet(isPresented: $showingImportSheet, onDismiss: {
+                if pendingLampImport {
+                    pendingLampImport = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        showingLampImporter = true
+                    }
+                }
+            }) {
                 ImportModuleSheet(
                     modules: modules
                         .filter { !$0.isBundled && ($0.type == .notes || $0.type == .devotional) }
                         .compactMap { $0.userModule },
+                    onRequestLampImport: {
+                        pendingLampImport = true
+                        showingImportSheet = false
+                    },
                     onImportMarkdown: { moduleId, moduleType, content in
                         pendingMarkdownContent = content
                         Task {
@@ -342,6 +373,14 @@ struct ModuleManagerView: View {
                         }
                     }
                 )
+            }
+            // .lamp file importer (presented after import sheet dismisses)
+            .fileImporter(
+                isPresented: $showingLampImporter,
+                allowedContentTypes: [.data],
+                allowsMultipleSelection: false
+            ) { result in
+                handleLampImport(result)
             }
             // Create new module
             .sheet(isPresented: $showingCreateModule) {
@@ -358,6 +397,99 @@ struct ModuleManagerView: View {
                     }
                 )
             }
+        }
+    }
+
+    private func handleLampImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+
+            Task {
+                do {
+                    guard url.startAccessingSecurityScopedResource() else {
+                        print("[ModuleManagerView] Could not access security scoped resource")
+                        return
+                    }
+
+                    let moduleType = try detectModuleType(from: url)
+
+                    // Check for duplicate
+                    if let existingName = ModuleSyncManager.shared.existingModuleName(for: url) {
+                        pendingImportURL = url
+                        pendingImportType = moduleType
+                        duplicateModuleName = existingName
+                        showingDuplicateAlert = true
+                        // Don't stop accessing — performImport will handle it
+                        return
+                    }
+
+                    try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: moduleType)
+                    url.stopAccessingSecurityScopedResource()
+                    await loadModules()
+                } catch {
+                    url.stopAccessingSecurityScopedResource()
+                    print("[ModuleManagerView] Failed to import .lamp module: \(error)")
+                    alertMessage = "Failed to import module: \(error.localizedDescription)"
+                    showingAlert = true
+                }
+            }
+
+        case .failure(let error):
+            print("[ModuleManagerView] File picker error: \(error)")
+        }
+    }
+
+    private func performImport(url: URL, moduleType: ModuleType) {
+        Task {
+            let accessing = url.startAccessingSecurityScopedResource()
+            do {
+                try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: moduleType)
+                await loadModules()
+            } catch {
+                alertMessage = "Failed to import module: \(error.localizedDescription)"
+                showingAlert = true
+            }
+            if accessing { url.stopAccessingSecurityScopedResource() }
+            pendingImportURL = nil
+            pendingImportType = nil
+        }
+    }
+
+    private func detectModuleType(from url: URL) throws -> ModuleType {
+        let data = try Data(contentsOf: url)
+
+        guard let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data else {
+            throw NSError(domain: "ModuleManagerView", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decompress .lamp file"])
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
+        try decompressed.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let db = try DatabaseQueue(path: tempURL.path)
+        let tables = try db.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
+        }
+
+        if tables.contains("translation_verses") || tables.contains("translations") || tables.contains("translation_meta") {
+            return .translation
+        } else if tables.contains("note_entries") {
+            return .notes
+        } else if tables.contains("devotional_entries") {
+            return .devotional
+        } else if tables.contains("highlight_sets") || tables.contains("highlights") {
+            return .highlights
+        } else if tables.contains("commentary_entries") || tables.contains("commentary_units") {
+            return .commentary
+        } else if tables.contains("dictionary_entries") {
+            return .dictionary
+        } else if tables.contains("quiz_modules") && tables.contains("quiz_questions") {
+            return .quiz
+        } else if tables.contains("plans") || tables.contains("plan_days") {
+            return .plan
+        } else {
+            throw NSError(domain: "ModuleManagerView", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not determine module type"])
         }
     }
 
@@ -2451,11 +2583,11 @@ struct CreateModuleView: View {
 
 struct ImportModuleSheet: View {
     let modules: [Module]
+    var onRequestLampImport: (() -> Void)?
     var onImportMarkdown: ((String, ModuleType, String) -> Void)?
     var onImportComplete: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
-    @State private var showingLampImporter: Bool = false
     @State private var showingMarkdownImporter: Bool = false
     @State private var importType: ModuleType = .notes
     @State private var selectedModuleId: String = ""
@@ -2476,7 +2608,7 @@ struct ImportModuleSheet: View {
                 // .lamp module import
                 Section {
                     Button {
-                        showingLampImporter = true
+                        onRequestLampImport?()
                     } label: {
                         HStack {
                             Image(systemName: "doc.zipper")
@@ -2564,13 +2696,6 @@ struct ImportModuleSheet: View {
                 }
             }
             .fileImporter(
-                isPresented: $showingLampImporter,
-                allowedContentTypes: [.data],
-                allowsMultipleSelection: false
-            ) { result in
-                handleLampImport(result)
-            }
-            .fileImporter(
                 isPresented: $showingMarkdownImporter,
                 allowedContentTypes: [.text, .plainText, .folder],
                 allowsMultipleSelection: false
@@ -2587,75 +2712,6 @@ struct ImportModuleSheet: View {
                     }
                 )
             }
-        }
-    }
-
-    private func handleLampImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
-
-            Task {
-                do {
-                    guard url.startAccessingSecurityScopedResource() else {
-                        print("[ImportModuleSheet] Could not access security scoped resource")
-                        return
-                    }
-                    defer { url.stopAccessingSecurityScopedResource() }
-
-                    // Detect module type from the .lamp file
-                    let moduleType = try detectModuleType(from: url)
-
-                    // Import using ModuleSyncManager (handles both local db and cloud storage)
-                    try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: moduleType)
-
-                    onImportComplete?()
-                    dismiss()
-                } catch {
-                    print("[ImportModuleSheet] Failed to import .lamp module: \(error)")
-                }
-            }
-
-        case .failure(let error):
-            print("[ImportModuleSheet] File picker error: \(error)")
-        }
-    }
-
-    /// Detect module type by examining SQLite tables in the .lamp file
-    private func detectModuleType(from url: URL) throws -> ModuleType {
-        let data = try Data(contentsOf: url)
-
-        // Decompress the data (zlib compressed)
-        guard let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data else {
-            throw NSError(domain: "ImportModuleSheet", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decompress .lamp file"])
-        }
-
-        // Write to temp file to open as SQLite
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
-        try decompressed.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        // Open as SQLite and check tables
-        let db = try DatabaseQueue(path: tempURL.path)
-        let tables = try db.read { db in
-            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
-        }
-
-        // Determine type based on tables present
-        if tables.contains("note_entries") {
-            return .notes
-        } else if tables.contains("devotional_entries") {
-            return .devotional
-        } else if tables.contains("highlight_sets") || tables.contains("highlights") {
-            return .highlights
-        } else if tables.contains("commentary_entries") || tables.contains("commentary_units") {
-            return .commentary
-        } else if tables.contains("dictionary_entries") {
-            return .dictionary
-        } else if tables.contains("quiz_modules") && tables.contains("quiz_questions") {
-            return .quiz
-        } else {
-            throw NSError(domain: "ImportModuleSheet", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not determine module type"])
         }
     }
 

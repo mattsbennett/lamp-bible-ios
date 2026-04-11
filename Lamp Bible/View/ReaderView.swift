@@ -2808,6 +2808,7 @@ struct QuizSheetView: View {
     @State private var showAnswer: Bool = false
     @State private var selectedAgeGroup: String
     @State private var previewState: PreviewSheetState? = nil
+    @AppStorage("quizContextAmount") private var contextAmount: SearchContextAmount = .oneVerse
 
     init(quizModule: QuizModule, questions: [QuizQuestion], day: Int, sv: Int, ev: Int, readingDescription: String) {
         self.quizModule = quizModule
@@ -2972,11 +2973,27 @@ struct QuizSheetView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Menu {
+                            Picker("Context", selection: $contextAmount) {
+                                ForEach(SearchContextAmount.allCases, id: \.self) { amount in
+                                    Text(amount.label).tag(amount)
+                                }
+                            }
+                        } label: {
+                            Label("Preview Context", systemImage: "rectangle.expand.vertical")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                }
             }
             .sheet(item: $previewState) { _ in
                 PreviewSheet(
                     state: $previewState,
-                    translationId: UserDatabase.shared.getSettings().readerTranslationId
+                    translationId: UserDatabase.shared.getSettings().readerTranslationId,
+                    contextAmount: contextAmount
                 )
             }
         }

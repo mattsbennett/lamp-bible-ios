@@ -27,10 +27,17 @@ class DeepLinkManager: ObservableObject {
     @Published var pendingVerseId: Int? = nil
     @Published var pendingTranslationId: String? = nil
     @Published var pendingPlanMode: Bool = false
+    @Published var pendingFileImportURL: URL? = nil
 
     private init() {}
 
     func handleURL(_ url: URL) {
+        // Handle .lamp file imports from external sources
+        if url.isFileURL && url.pathExtension.lowercased() == "lamp" {
+            pendingFileImportURL = url
+            return
+        }
+
         guard let parsed = LampbibleURL.parse(url) else {
             print("DeepLinkManager: Failed to parse URL: \(url)")
             return

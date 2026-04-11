@@ -260,6 +260,12 @@ class UserDatabase {
             }
         }
 
+        migrator.registerMigration("v8_plan_reader_count") { db in
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "plan_reader_count", .integer).notNull().defaults(to: 1)
+            }
+        }
+
         return migrator
     }
 
@@ -503,6 +509,7 @@ class UserDatabase {
                         custom_highlight_colors = ?,
                         highlight_color_order = ?,
                         default_quiz_age_group = ?,
+                        plan_reader_count = ?,
                         updated_at = ?
                     WHERE id = 1
                     """, arguments: [
@@ -528,6 +535,7 @@ class UserDatabase {
                         remote.customHighlightColors,
                         remote.highlightColorOrder,
                         remote.defaultQuizAgeGroup,
+                        remote.planReaderCount,
                         remote.updatedAt
                     ])
                 return true

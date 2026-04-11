@@ -1819,6 +1819,18 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Export to Cloud (for editable modules)
 
+    /// Check if a module already exists for a given .lamp file URL
+    func existingModuleName(for url: URL) -> String? {
+        let moduleId = url.lastPathComponent.replacingOccurrences(of: ".lamp", with: "")
+        if let existing = try? database.getModule(id: moduleId) {
+            return existing.name ?? moduleId
+        }
+        if let existing = try? database.getTranslation(id: moduleId) {
+            return existing.name
+        }
+        return nil
+    }
+
     /// Import a .lamp module from a local file URL
     /// If cloud storage is available, also writes to cloud for sync
     func importModuleFromFile(url: URL, moduleType: ModuleType) async throws {

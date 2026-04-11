@@ -10,6 +10,7 @@ import SwiftUI
 struct ReadingsView: View {
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
     @State private var completedReadingIds: Set<String> = UserDatabase.shared.getCompletedReadingIds()
+    @State private var readerCount: Int = UserDatabase.shared.getSettings().planReaderCount
     let planMetaData: PlanMetaData
     let stackHorizontally: Bool
 
@@ -73,25 +74,15 @@ struct ReadingsView: View {
                     .padding(.bottom, 10)
                     Spacer()
                     HStack {
-                        Label {
-                            Text("Portion")
-                        } icon: {
-                            HStack {
-                                ForEach(0..<index + 1, id: \.self) { _ in
-                                    Image("lampflame.fill")
-                                        .font(.system(size: 16))
-                                        .padding(.trailing, -11)
-                                        .padding(.leading, -3)
-                                }
-                            }
-                        }.labelStyle(TrailingIconLabelStyle())
-                        Spacer()
                         Label("\(readingMetaData.genre)", systemImage: "bookmark.fill")
+                        Spacer()
+                        ReaderSplitControl(
+                            chapterVerseCounts: readingMetaData.chapterVerseCounts,
+                            readerCount: $readerCount
+                        )
                         Spacer()
                         Label("\(readingMetaData.readingTime)", systemImage: "clock").labelStyle(TrailingIconLabelStyle())
                     }
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary)
                     .font(.caption)
                     .foregroundStyle(Color.secondary)
                 }
@@ -118,6 +109,105 @@ struct ReadingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
             userSettings = UserDatabase.shared.getSettings()
             completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
+        }
+        .onChange(of: readerCount) { _, newValue in
+            try? UserDatabase.shared.updateSettings { $0.planReaderCount = newValue }
+        }
+    }
+}
+
+// MARK: - Reader Split Control
+
+struct ReaderSplitControl: View {
+    let chapterVerseCounts: [Int]
+    @Binding var readerCount: Int
+
+    private var totalVerses: Int { chapterVerseCounts.reduce(0, +) }
+
+    private var labelContent: Text {
+        if readerCount <= 1 {
+            return Text("\(totalVerses)v")
+        }
+        let counts = chapterVerseCounts.map { count -> Int in
+            let floor = count / readerCount
+            let ceil = floor + (count % readerCount == 0 ? 0 : 1)
+            let floorRemainder = count - floor * readerCount
+            let ceilRemainder = ceil * readerCount - count
+            return ceilRemainder <= floorRemainder ? ceil : floor
+        }
+        var result = Text("\(counts[0])")
+        for count in counts.dropFirst() {
+            result = result + Text(" · ") + Text("\(count)")
+        }
+        return result + Text(" ea.")
+    }
+
+    private var personIcon: String {
+        switch readerCount {
+        case 2: return "person.2.fill"
+        case 3...: return "person.3.fill"
+        default: return "person.fill"
+        }
+    }
+
+    @State private var showingPopover = false
+
+    var body: some View {
+        Button {
+            showingPopover = true
+        } label: {
+            HStack(spacing: 4) {
+                ZStack(alignment: .topLeading) {
+                    Image(systemName: personIcon)
+                    if readerCount > 3 {
+                        Text("\(readerCount)")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 1)
+                            .background(
+                                Capsule()
+                                    .fill(Color(.systemBackground))
+                            )
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.secondary, lineWidth: 0.5)
+                            )
+                            .offset(x: -4, y: -4)
+                    }
+                }
+                labelContent
+            }
+        }
+        .popover(isPresented: $showingPopover) {
+            VStack(spacing: 8) {
+                Text("Readers")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    Button {
+                        if readerCount > 1 { readerCount -= 1 }
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.title2)
+                    }
+                    .disabled(readerCount <= 1)
+
+                    Text("\(readerCount)")
+                        .font(.headline)
+                        .monospacedDigit()
+                        .frame(minWidth: 24)
+
+                    Button {
+                        if readerCount < 20 { readerCount += 1 }
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                    }
+                    .disabled(readerCount >= 20)
+                }
+            }
+            .padding()
+            .presentationCompactAdaptation(.popover)
         }
     }
 }

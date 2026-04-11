@@ -538,11 +538,9 @@ struct PlanToolbarContent: View {
                 }
                 .disabled(currentReadingIndex == 0)
 
-                // Center content - tap to show plan picker if multiple plans
+                // Center content - tap to show plan info popover
                 Button {
-                    if hasMultiplePlans {
-                        showingPlanPicker = true
-                    }
+                    showingPlanPicker = true
                 } label: {
                     VStack(spacing: 2) {
                         HStack(spacing: 4) {
@@ -565,9 +563,9 @@ struct PlanToolbarContent: View {
                     }
                     .frame(maxWidth: centerContentMaxWidth)
                 }
-                .disabled(!hasMultiplePlans)
                 .popover(isPresented: $showingPlanPicker) {
-                    PlanPickerPopover(
+                    PlanInfoPopover(
+                        reading: currentReadings[currentReadingIndex],
                         plansWithReadings: plansWithReadings,
                         selectedPlanIndex: selectedPlanIndex,
                         onSelectPlan: { index in
@@ -599,23 +597,75 @@ struct PlanToolbarContent: View {
     }
 }
 
-// MARK: - Plan Picker Popover
+// MARK: - Plan Info Popover
 
-struct PlanPickerPopover: View {
+struct PlanInfoPopover: View {
+    let reading: ReadingMetaData
     let plansWithReadings: [PlanWithReadings]
     let selectedPlanIndex: Int
     let onSelectPlan: (Int) -> Void
 
+    private var readerCount: Int {
+        UserDatabase.shared.getSettings().planReaderCount
+    }
+
+    private var versesEachLabel: Text? {
+        guard readerCount > 1 else { return nil }
+        let counts = reading.chapterVerseCounts.map { count -> Int in
+            let floor = count / readerCount
+            let ceil = floor + (count % readerCount == 0 ? 0 : 1)
+            let floorRemainder = count - floor * readerCount
+            let ceilRemainder = ceil * readerCount - count
+            return ceilRemainder <= floorRemainder ? ceil : floor
+        }
+        var result = Text("\(counts[0])")
+        for count in counts.dropFirst() {
+            result = result + Text(" · ") + Text("\(count)")
+        }
+        return result + Text(" ea.")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Plans")
-                .font(.headline)
-                .padding()
+            // Reading info section
+            VStack(alignment: .leading, spacing: 6) {
+                Text(reading.description)
+                    .font(.headline)
 
-            Divider()
+                HStack(spacing: 8) {
+                    Text("\(reading.verseCount) verses")
+                    Text("·")
+                    Text("~\(reading.readingTime) min")
+                    Text("·")
+                    Text(reading.genre)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                if let label = versesEachLabel {
+                    HStack(spacing: 4) {
+                        Image(systemName: readerCount <= 2 ? "person.2.fill" : "person.3.fill")
+                            .font(.caption2)
+                        label
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding()
+
+            // Plan switcher section (when multiple plans)
+            if plansWithReadings.count > 1 {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Plans")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal)
+                        .padding(.top, 10)
+                        .padding(.bottom, 6)
+
                     ForEach(Array(plansWithReadings.enumerated()), id: \.element.id) { index, plan in
                         Button {
                             onSelectPlan(index)
@@ -635,7 +685,7 @@ struct PlanPickerPopover: View {
                                 }
                             }
                             .padding(.horizontal)
-                            .padding(.vertical, 10)
+                            .padding(.vertical, 8)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -648,8 +698,8 @@ struct PlanPickerPopover: View {
                 }
             }
         }
-        .frame(minWidth: 200, maxWidth: 280)
-        .frame(maxHeight: 300)
+        .frame(minWidth: 220, maxWidth: 300)
+        .frame(maxHeight: 400)
         .presentationCompactAdaptation(.popover)
     }
 }

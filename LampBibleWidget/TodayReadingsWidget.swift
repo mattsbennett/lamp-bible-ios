@@ -131,7 +131,9 @@ struct TodayReadingsWidget: Widget {
             provider: TodayReadingsProvider()
         ) { entry in
             TodayReadingsEntryView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(for: .widget) {
+                    Color(.systemBackground)
+                }
         }
         .configurationDisplayName("Today's Readings")
         .description("View your daily Bible reading plan assignments.")

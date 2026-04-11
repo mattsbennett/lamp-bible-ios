@@ -741,6 +741,6 @@ struct LampFilePreview {
 
 extension UTType {
     static var lampFile: UTType {
-        UTType(exportedAs: "com.neus.lamp-bible.lamp", conformingTo: .json)
+        UTType(exportedAs: "com.neus.lamp-bible.lamp", conformingTo: .data)
     }
 }

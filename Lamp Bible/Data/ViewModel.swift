@@ -54,6 +54,11 @@ class PlanMetaData {
             let readingTimeReading = Int(ceil(Double(readingWordCount) / userSettings.planWpm))
             let book = try? BundledModuleDatabase.shared.getBook(id: verses.first?.book ?? 1)
             let genre = (try? BundledModuleDatabase.shared.getGenre(id: book?.genre ?? 1))?.name ?? "General"
+            // Compute per-chapter verse counts (ordered by chapter)
+            var chapterCounts: [Int: Int] = [:]
+            for v in verses { chapterCounts[v.chapter, default: 0] += 1 }
+            let chapterVerseCounts = chapterCounts.sorted { $0.key < $1.key }.map { $0.value }
+
             let year = Calendar.iso8601.component(.year, from: date)
             let readingId = "\(id)_\(dayNum)_\(index)_\(year)"
             readingTimeAcc += readingTimeReading
@@ -65,7 +70,8 @@ class PlanMetaData {
                     description: readingDescription,
                     genre: genre,
                     sv: sv,
-                    ev: ev
+                    ev: ev,
+                    chapterVerseCounts: chapterVerseCounts
                 )
             )
         }
@@ -86,8 +92,11 @@ class ReadingMetaData {
     let genre: String
     let sv: Int
     let ev: Int
-    
-    init(id: String, index: Int, readingTime: Int, description: String, genre: String, sv: Int, ev: Int) {
+    let chapterVerseCounts: [Int]
+
+    var verseCount: Int { chapterVerseCounts.reduce(0, +) }
+
+    init(id: String, index: Int, readingTime: Int, description: String, genre: String, sv: Int, ev: Int, chapterVerseCounts: [Int]) {
         self.id = id
         self.index = index
         self.readingTime = readingTime
@@ -95,6 +104,7 @@ class ReadingMetaData {
         self.genre = genre
         self.sv = sv
         self.ev = ev
+        self.chapterVerseCounts = chapterVerseCounts
     }
 }
 

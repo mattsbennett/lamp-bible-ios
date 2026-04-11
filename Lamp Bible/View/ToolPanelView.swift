@@ -4021,11 +4021,11 @@ struct VerseSheetContent: View {
             // Apply muted style to context verses
             if isContext {
                 var mutedNum = verseNum
-                mutedNum.foregroundColor = .secondary.opacity(0.5)
+                mutedNum.foregroundColor = .secondary.opacity(0.7)
                 result.append(mutedNum)
 
                 var mutedText = verseTextContent
-                mutedText.foregroundColor = .secondary.opacity(0.6)
+                mutedText.foregroundColor = .secondary.opacity(0.8)
                 result.append(mutedText)
             } else {
                 result.append(verseNum)
