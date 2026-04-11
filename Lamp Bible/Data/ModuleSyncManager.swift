@@ -268,7 +268,7 @@ class ModuleSyncManager: ObservableObject {
                     case .dictionary:
                         // Copy dictionary entries
                         try db.execute(sql: """
-                            INSERT INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json)
+                            INSERT OR REPLACE INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json)
                             SELECT id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json
                             FROM \(dbAlias).dictionary_entries
                             """)
@@ -324,7 +324,7 @@ class ModuleSyncManager: ObservableObject {
 
                                 // Copy commentary units (standalone format - no module_id column)
                                 try db.execute(sql: """
-                                    INSERT INTO commentary_units
+                                    INSERT OR REPLACE INTO commentary_units
                                     (id, module_id, book, chapter, sv, ev, unit_type, level, parent_id,
                                      title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index)
                                     SELECT ? || ':' || id, ?, book, chapter, sv, ev, unit_type, level, parent_id,
@@ -359,7 +359,7 @@ class ModuleSyncManager: ObservableObject {
 
                             // Copy commentary units
                             try db.execute(sql: """
-                                INSERT INTO commentary_units
+                                INSERT OR REPLACE INTO commentary_units
                                 (id, module_id, book, chapter, sv, ev, unit_type, level, parent_id,
                                  title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index)
                                 SELECT id, module_id, book, chapter, sv, ev, unit_type, level, parent_id,
@@ -385,7 +385,7 @@ class ModuleSyncManager: ObservableObject {
                             let mediaJsonSelect = hasMediaJson ? ", media_json" : ""
 
                             try db.execute(sql: """
-                                INSERT INTO devotional_entries
+                                INSERT OR REPLACE INTO devotional_entries
                                 (id, module_id, title, subtitle, author, date, tags, category,
                                  series_id, series_name, series_order, key_scriptures_json,
                                  summary_json, content_json, footnotes_json, related_ids,
@@ -399,7 +399,7 @@ class ModuleSyncManager: ObservableObject {
                         } else {
                             // Legacy schema - copy with mapping
                             try db.execute(sql: """
-                                INSERT INTO devotional_entries
+                                INSERT OR REPLACE INTO devotional_entries
                                 (id, module_id, title, date, tags, content_json, last_modified, search_text)
                                 SELECT id, module_id, title, month_day, tags, content, last_modified, content
                                 FROM \(dbAlias).devotional_entries
@@ -433,7 +433,7 @@ class ModuleSyncManager: ObservableObject {
                         }
 
                         try db.execute(sql: """
-                            INSERT INTO note_entries
+                            INSERT OR REPLACE INTO note_entries
                             (\(insertCols.joined(separator: ", ")))
                             SELECT \(selectCols.joined(separator: ", "))
                             FROM \(dbAlias).note_entries
@@ -520,7 +520,7 @@ class ModuleSyncManager: ObservableObject {
 
                             // Copy highlights
                             try db.execute(sql: """
-                                INSERT INTO highlights (set_id, ref, sc, ec, style, color)
+                                INSERT OR REPLACE INTO highlights (set_id, ref, sc, ec, style, color)
                                 SELECT ?, ref, sc, ec, style, color
                                 FROM \(dbAlias).highlights
                                 """, arguments: [setId])
@@ -532,8 +532,8 @@ class ModuleSyncManager: ObservableObject {
                                 FROM \(dbAlias).highlight_sets
                                 """)
                             try db.execute(sql: """
-                                INSERT INTO highlights (set_id, ref, sc, ec, style, color)
-                                SELECT set_id, ref, sc, ec, style, color
+                                INSERT OR REPLACE INTO highlights (id, set_id, ref, sc, ec, style, color)
+                                SELECT id, set_id, ref, sc, ec, style, color
                                 FROM \(dbAlias).highlights
                                 """)
                         } else {
@@ -550,7 +550,7 @@ class ModuleSyncManager: ObservableObject {
 
                         // Copy quiz questions
                         try db.execute(sql: """
-                            INSERT INTO quiz_questions (quiz_module_id, day, sv, ev, age_group, question_index, question_json, answer_json, theme, christ_focused, references_json, cross_references_json)
+                            INSERT OR REPLACE INTO quiz_questions (quiz_module_id, day, sv, ev, age_group, question_index, question_json, answer_json, theme, christ_focused, references_json, cross_references_json)
                             SELECT quiz_module_id, day, sv, ev, age_group, question_index, question_json, answer_json, theme, christ_focused, references_json, cross_references_json
                             FROM \(dbAlias).quiz_questions
                             """)
@@ -569,7 +569,7 @@ class ModuleSyncManager: ObservableObject {
                             // Always set is_bundled=0 since synced translations are user-imported, not bundled
                             let now = Int(Date().timeIntervalSince1970)
                             try db.execute(sql: """
-                                INSERT INTO translations (id, name, abbreviation, description, language, language_name,
+                                INSERT OR REPLACE INTO translations (id, name, abbreviation, description, language, language_name,
                                     text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
                                     license, source_texts_json, features_json, versification, file_path, file_hash,
                                     last_synced, is_bundled, created_at, updated_at)
@@ -583,7 +583,7 @@ class ModuleSyncManager: ObservableObject {
                             // Copy translation books (if table exists)
                             if tableNames.contains("translation_books") {
                                 try db.execute(sql: """
-                                    INSERT INTO translation_books (id, translation_id, book_number, book_id, name, testament, chapter_count)
+                                    INSERT OR REPLACE INTO translation_books (id, translation_id, book_number, book_id, name, testament, chapter_count)
                                     SELECT id, translation_id, book_number, book_id, name, testament, chapter_count
                                     FROM \(dbAlias).translation_books
                                     """)
@@ -592,7 +592,7 @@ class ModuleSyncManager: ObservableObject {
                             // Copy translation verses
                             if tableNames.contains("translation_verses") {
                                 try db.execute(sql: """
-                                    INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text,
+                                    INSERT OR REPLACE INTO translation_verses (translation_id, ref, book, chapter, verse, text,
                                         annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json)
                                     SELECT translation_id, ref, book, chapter, verse, text,
                                         annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json
@@ -603,7 +603,7 @@ class ModuleSyncManager: ObservableObject {
                             // Copy translation headings (if table exists)
                             if tableNames.contains("translation_headings") {
                                 try db.execute(sql: """
-                                    INSERT INTO translation_headings (translation_id, book, chapter, before_verse, level, text)
+                                    INSERT OR REPLACE INTO translation_headings (translation_id, book, chapter, before_verse, level, text)
                                     SELECT translation_id, book, chapter, before_verse, level, text
                                     FROM \(dbAlias).translation_headings
                                     """)
@@ -625,7 +625,7 @@ class ModuleSyncManager: ObservableObject {
                             // Copy translation metadata from translation_meta
                             // Source table has content columns; we add app-specific columns ourselves
                             try db.execute(sql: """
-                                INSERT INTO translations (id, name, abbreviation, description, language, language_name,
+                                INSERT OR REPLACE INTO translations (id, name, abbreviation, description, language, language_name,
                                     text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
                                     license, source_texts_json, features_json, versification, file_path, file_hash,
                                     last_synced, is_bundled, created_at, updated_at)
@@ -639,7 +639,7 @@ class ModuleSyncManager: ObservableObject {
                             // Copy books - compact schema: id=book_number, book_id=book_id string
                             if tableNames.contains("books") {
                                 try db.execute(sql: """
-                                    INSERT INTO translation_books (id, translation_id, book_number, book_id, name, testament, chapter_count)
+                                    INSERT OR REPLACE INTO translation_books (id, translation_id, book_number, book_id, name, testament, chapter_count)
                                     SELECT ? || ':' || id, ?, id, book_id, name, testament, chapter_count
                                     FROM \(dbAlias).books
                                     """, arguments: [translationId, translationId])
@@ -654,7 +654,7 @@ class ModuleSyncManager: ObservableObject {
                             let hasPoetry = versesColNames.contains("poetry_json")
 
                             try db.execute(sql: """
-                                INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text,
+                                INSERT OR REPLACE INTO translation_verses (translation_id, ref, book, chapter, verse, text,
                                     annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json)
                                 SELECT ?, ref, book, chapter, verse, text,
                                     annotations_json, footnotes_json,
@@ -667,7 +667,7 @@ class ModuleSyncManager: ObservableObject {
                             // Copy headings - compact schema doesn't have translation_id column
                             if tableNames.contains("headings") {
                                 try db.execute(sql: """
-                                    INSERT INTO translation_headings (translation_id, book, chapter, before_verse, level, text)
+                                    INSERT OR REPLACE INTO translation_headings (translation_id, book, chapter, before_verse, level, text)
                                     SELECT ?, book, chapter, before_verse, level, text
                                     FROM \(dbAlias).headings
                                     """, arguments: [translationId])
@@ -1904,14 +1904,14 @@ class ModuleSyncManager: ObservableObject {
                 switch type {
                 case .dictionary:
                     try db.execute(sql: """
-                        INSERT INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json)
+                        INSERT OR REPLACE INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json)
                         SELECT id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json
                         FROM \(dbAlias).dictionary_entries
                         """)
 
                 case .notes:
                     try db.execute(sql: """
-                        INSERT INTO note_entries (id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified)
+                        INSERT OR REPLACE INTO note_entries (id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified)
                         SELECT id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified
                         FROM \(dbAlias).note_entries
                         """)
@@ -1928,7 +1928,7 @@ class ModuleSyncManager: ObservableObject {
                         let mediaJsonSelect = hasMediaJson ? ", media_json" : ""
 
                         try db.execute(sql: """
-                            INSERT INTO devotional_entries
+                            INSERT OR REPLACE INTO devotional_entries
                             (id, module_id, title, subtitle, author, date, tags, category,
                              series_id, series_name, series_order, key_scriptures_json,
                              summary_json, content_json, footnotes_json, related_ids,
@@ -1942,7 +1942,7 @@ class ModuleSyncManager: ObservableObject {
                     } else {
                         // Legacy schema
                         try db.execute(sql: """
-                            INSERT INTO devotional_entries
+                            INSERT OR REPLACE INTO devotional_entries
                             (id, module_id, title, date, tags, content_json, last_modified, search_text)
                             SELECT id, module_id, title, month_day, tags, content, last_modified, content
                             FROM \(dbAlias).devotional_entries
@@ -1952,16 +1952,66 @@ class ModuleSyncManager: ObservableObject {
                 case .highlights:
                     // Import highlight sets first
                     try db.execute(sql: """
-                        INSERT INTO highlight_sets (id, module_id, name, description, translation_id, created, last_modified)
+                        INSERT OR REPLACE INTO highlight_sets (id, module_id, name, description, translation_id, created, last_modified)
                         SELECT id, module_id, name, description, translation_id, created, last_modified
                         FROM \(dbAlias).highlight_sets
                         """)
                     // Import highlights
                     try db.execute(sql: """
-                        INSERT INTO highlights (id, set_id, ref, sc, ec, style, color)
+                        INSERT OR REPLACE INTO highlights (id, set_id, ref, sc, ec, style, color)
                         SELECT id, set_id, ref, sc, ec, style, color
                         FROM \(dbAlias).highlights
                         """)
+
+                case .translation:
+                    // Check which tables exist in the source
+                    let tables = try Row.fetchAll(db, sql: "SELECT name FROM \(dbAlias).sqlite_master WHERE type='table'")
+                    let tableNames = Set(tables.compactMap { $0["name"] as String? })
+
+                    // Import translations metadata
+                    if tableNames.contains("translations") {
+                        let now = Int(Date().timeIntervalSince1970)
+                        try db.execute(sql: """
+                            INSERT OR REPLACE INTO translations (id, name, abbreviation, description, language, language_name,
+                                text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
+                                license, source_texts_json, features_json, versification, file_path, file_hash,
+                                last_synced, is_bundled, created_at, updated_at)
+                            SELECT id, name, abbreviation, description, language, language_name,
+                                text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
+                                license, source_texts_json, features_json, versification, file_path, file_hash,
+                                ?, 0, ?, ?
+                            FROM \(dbAlias).translations
+                            """, arguments: [now, now, now])
+                    }
+
+                    // Import translation books
+                    if tableNames.contains("translation_books") {
+                        try db.execute(sql: """
+                            INSERT OR REPLACE INTO translation_books (id, translation_id, book_number, book_id, name, testament, chapter_count)
+                            SELECT id, translation_id, book_number, book_id, name, testament, chapter_count
+                            FROM \(dbAlias).translation_books
+                            """)
+                    }
+
+                    // Import translation verses
+                    if tableNames.contains("translation_verses") {
+                        try db.execute(sql: """
+                            INSERT OR REPLACE INTO translation_verses (translation_id, ref, book, chapter, verse, text,
+                                annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json)
+                            SELECT translation_id, ref, book, chapter, verse, text,
+                                annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json
+                            FROM \(dbAlias).translation_verses
+                            """)
+                    }
+
+                    // Import translation headings
+                    if tableNames.contains("translation_headings") {
+                        try db.execute(sql: """
+                            INSERT OR REPLACE INTO translation_headings (translation_id, book, chapter, before_verse, level, text)
+                            SELECT translation_id, book, chapter, before_verse, level, text
+                            FROM \(dbAlias).translation_headings
+                            """)
+                    }
 
                 default:
                     break

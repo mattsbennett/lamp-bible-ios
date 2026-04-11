@@ -1101,9 +1101,11 @@ struct ModuleManagerView: View {
             try database.deleteCommentaryBook(moduleId: book.moduleId)
             // Also delete the module record
             try database.deleteModule(id: book.moduleId)
-            // Delete from iCloud
-            let fileName = "\(book.moduleId).json"
-            try await storage.deleteModuleFile(type: .commentary, fileName: fileName)
+            // Delete from iCloud - try both extensions
+            let jsonFileName = "\(book.moduleId).json"
+            let lampFileName = "\(book.moduleId).lamp"
+            try? await storage.deleteModuleFile(type: .commentary, fileName: jsonFileName)
+            try? await storage.deleteModuleFile(type: .commentary, fileName: lampFileName)
             await loadModules()
             selectedCommentarySeries = nil
         } catch {
@@ -1140,9 +1142,11 @@ struct ModuleManagerView: View {
             try database.deleteAllEntriesForModule(moduleId: module.id)
             try database.deleteModule(id: module.id)
 
-            // Delete from iCloud
-            let fileName = "\(module.id).json"
-            try await storage.deleteModuleFile(type: module.type, fileName: fileName)
+            // Delete from iCloud - try both extensions since modules can be stored as .json or .lamp
+            let jsonFileName = "\(module.id).json"
+            let lampFileName = "\(module.id).lamp"
+            try? await storage.deleteModuleFile(type: module.type, fileName: jsonFileName)
+            try? await storage.deleteModuleFile(type: module.type, fileName: lampFileName)
 
             await loadModules()
         } catch {

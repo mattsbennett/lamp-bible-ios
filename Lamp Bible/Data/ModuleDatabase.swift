@@ -1791,6 +1791,12 @@ class ModuleDatabase {
             try db.execute(sql: "DELETE FROM commentary_books WHERE module_id = ?", arguments: [moduleId])
             try db.execute(sql: "DELETE FROM devotional_entries WHERE module_id = ?", arguments: [moduleId])
             try db.execute(sql: "DELETE FROM note_entries WHERE module_id = ?", arguments: [moduleId])
+            // Delete highlights (must delete highlights before highlight_sets due to FK)
+            try db.execute(sql: "DELETE FROM highlights WHERE set_id IN (SELECT id FROM highlight_sets WHERE module_id = ?)", arguments: [moduleId])
+            try db.execute(sql: "DELETE FROM highlight_sets WHERE module_id = ?", arguments: [moduleId])
+            // Delete quiz data
+            try db.execute(sql: "DELETE FROM quiz_questions WHERE quiz_module_id = ?", arguments: [moduleId])
+            try db.execute(sql: "DELETE FROM quiz_modules WHERE id = ?", arguments: [moduleId])
         }
     }
 

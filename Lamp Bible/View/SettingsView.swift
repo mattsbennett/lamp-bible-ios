@@ -522,6 +522,8 @@ struct SettingsView: View {
                 }
                 Button("Switch Only", role: .destructive) {
                     // Show secondary confirmation about data wipe
+                    // Dismiss migration dialog first to prevent it from re-appearing
+                    showingMigrationDialog = false
                     showingWipeConfirmation = true
                 }
                 Button("Cancel", role: .cancel) {
