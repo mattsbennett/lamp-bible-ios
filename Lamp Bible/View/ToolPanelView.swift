@@ -1233,20 +1233,8 @@ struct ToolPanelView: View {
                 if panelMode == .notes {
                     notesStatusIndicator
 
-                    // Add note button (visible when not read-only)
-                    if !isReadOnly {
-                        Button {
-                            newVerseStart = currentVerse
-                            newVerseEnd = nil
-                            showingAddVerseSheet = true
-                        } label: {
-                            Image(systemName: "plus")
-                                .frame(width: 22, height: 22)
-                                .contentShape(Circle())
-                        }
-                        .buttonBorderShape(.circle)
-                        .modifier(ConditionalGlassButtonStyle())
-                    }
+                    // Add/Edit note button (always visible)
+                    notesHeaderButton
                 }
 
                 // Options menu
@@ -1261,26 +1249,10 @@ struct ToolPanelView: View {
                 .modifier(ConditionalGlassButtonStyle())
                 .popover(isPresented: $showingOptionsMenu) {
                     VStack(alignment: .leading, spacing: 8) {
-                        // Notes mode options
-                        if panelMode == .notes {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Button {
-                                    isReadOnly.toggle()
-                                    showingOptionsMenu = false
-                                } label: {
-                                    Label(
-                                        isReadOnly ? "Edit" : "Read-Only",
-                                        systemImage: isReadOnly ? "square.and.pencil" : "book"
-                                    )
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-
-                                Divider()
-
+                        // Panel options (combined container)
+                        VStack(alignment: .leading, spacing: 0) {
+                            // Maximize (notes mode only)
+                            if panelMode == .notes {
                                 Button {
                                     showingOptionsMenu = false
                                     isMaximized = true
@@ -1292,38 +1264,18 @@ struct ToolPanelView: View {
                                 .buttonStyle(.plain)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 12)
+
+                                Divider()
                             }
-                            .background(Color(UIColor.secondarySystemGroupedBackground))
-                            .cornerRadius(14)
-                        }
 
-                        // Scroll link toggle
-                        Button {
-                            isScrollLinked.toggle()
-                            showingOptionsMenu = false
-                        } label: {
-                            Label(
-                                isScrollLinked ? "Unlink Scroll" : "Link Scroll",
-                                systemImage: isScrollLinked ? "link.circle.fill" : "link.circle"
-                            )
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(Color(UIColor.secondarySystemGroupedBackground))
-                        .cornerRadius(14)
-
-                        // Split direction toggle (iPad only)
-                        if horizontalSizeClass != .compact {
+                            // Scroll link toggle
                             Button {
-                                notesPanelOrientation = notesPanelOrientation == "right" ? "bottom" : "right"
+                                isScrollLinked.toggle()
                                 showingOptionsMenu = false
                             } label: {
                                 Label(
-                                    notesPanelOrientation == "right" ? "Split Below" : "Split Right",
-                                    systemImage: notesPanelOrientation == "right" ? "rectangle.split.1x2" : "rectangle.split.2x1"
+                                    isScrollLinked ? "Unlink Scroll" : "Link Scroll",
+                                    systemImage: isScrollLinked ? "link.circle.fill" : "link.circle"
                                 )
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -1331,25 +1283,45 @@ struct ToolPanelView: View {
                             .buttonStyle(.plain)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 12)
-                            .background(Color(UIColor.secondarySystemGroupedBackground))
-                            .cornerRadius(14)
-                        }
 
-                        // Hide
-                        Button {
-                            showingOptionsMenu = false
-                            if panelMode == .notes {
-                                isReadOnly = true
+                            // Split direction toggle (iPad only)
+                            if horizontalSizeClass != .compact {
+                                Divider()
+
+                                Button {
+                                    notesPanelOrientation = notesPanelOrientation == "right" ? "bottom" : "right"
+                                    showingOptionsMenu = false
+                                } label: {
+                                    Label(
+                                        notesPanelOrientation == "right" ? "Split Below" : "Split Right",
+                                        systemImage: notesPanelOrientation == "right" ? "rectangle.split.1x2" : "rectangle.split.2x1"
+                                    )
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
                             }
-                            notesPanelVisible = false
-                        } label: {
-                            Label("Hide Tools", systemImage: "rectangle.portrait")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
+
+                            Divider()
+
+                            // Hide Tools
+                            Button {
+                                showingOptionsMenu = false
+                                if panelMode == .notes {
+                                    isReadOnly = true
+                                }
+                                notesPanelVisible = false
+                            } label: {
+                                Label("Hide Tools", systemImage: "rectangle.portrait")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
                         }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
                         .background(Color(UIColor.secondarySystemGroupedBackground))
                         .cornerRadius(14)
 
@@ -1570,6 +1542,58 @@ struct ToolPanelView: View {
     }
 
     @ViewBuilder
+    private var notesHeaderButton: some View {
+        let hasGeneralNote = sections.contains { $0.isGeneral && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let hasVerseGaps = !verseGaps().isEmpty
+
+        Menu {
+            // Edit/Read-only toggle
+            Button {
+                isReadOnly.toggle()
+            } label: {
+                Label(
+                    isReadOnly ? "Edit Notes" : "Read-Only",
+                    systemImage: isReadOnly ? "square.and.pencil" : "book"
+                )
+            }
+
+            // Add options (only when something can be added)
+            if !hasGeneralNote || hasVerseGaps {
+                Divider()
+
+                if !hasGeneralNote {
+                    Button {
+                        // Add empty general note and switch to edit mode
+                        if !sections.contains(where: { $0.isGeneral }) {
+                            sections.insert(.general(content: ""), at: 0)
+                        }
+                        isReadOnly = false
+                    } label: {
+                        Label("Add General Note", systemImage: "doc.text")
+                    }
+                }
+
+                if hasVerseGaps {
+                    Button {
+                        newVerseStart = currentVerse
+                        newVerseEnd = nil
+                        isReadOnly = false
+                        showingAddVerseSheet = true
+                    } label: {
+                        Label("Add Verse Note", systemImage: "text.badge.plus")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: isReadOnly ? "square.and.pencil" : "book")
+                .frame(width: 22, height: 22)
+                .contentShape(Circle())
+        }
+        .buttonBorderShape(.circle)
+        .modifier(ConditionalGlassButtonStyle())
+    }
+
+    @ViewBuilder
     private var statusPopoverContent: some View {
         HStack {
             let backendName = SyncCoordinator.shared.settings.backend.displayName
@@ -1718,7 +1742,14 @@ struct ToolPanelView: View {
                 }
 
                 // Main content
-                if sections.isEmpty || (isReadOnly && !sections.contains(where: { !$0.isGeneral })) {
+                // Check if there's any content to show (including general notes with content)
+                let hasContent = sections.contains { section in
+                    if section.isGeneral {
+                        return !section.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    }
+                    return true
+                }
+                if sections.isEmpty || (isReadOnly && !hasContent) {
                     // Empty state - offset up to account for bottom toolbar
                     VStack(spacing: 12) {
                         Image(systemName: "note.text")
