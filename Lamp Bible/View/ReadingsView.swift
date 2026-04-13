@@ -159,6 +159,7 @@ struct ReaderSplitControl: View {
             HStack(spacing: 4) {
                 ZStack(alignment: .topLeading) {
                     Image(systemName: personIcon)
+                        .font(.caption)
                     if readerCount > 3 {
                         Text("\(readerCount)")
                             .font(.system(size: 9, weight: .semibold))
@@ -176,9 +177,11 @@ struct ReaderSplitControl: View {
                     }
                 }
                 labelContent
+                    .font(.caption)
             }
             .foregroundStyle(.secondary)
         }
+        .buttonStyle(.plain)
         .popover(isPresented: $showingPopover) {
             VStack(spacing: 8) {
                 Text("Readers")
