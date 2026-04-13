@@ -2168,7 +2168,7 @@ struct ToolPanelView: View {
         return "\(bookName) \(chapter):\(verse)"
     }
 
-    /// Format verse range reference (e.g., "Matt 1:1-5" or "Matt 1:1")
+    /// Format verse range reference (e.g., "Matt 1:1-5" or "Matt 1:1" or "Matt 1" for whole chapter)
     private func formatVerseRangeReference(_ verseId: Int, endVerseId: Int?) -> String {
         let bookId = verseId / 1000000
         let chapter = (verseId % 1000000) / 1000
@@ -2177,7 +2177,28 @@ struct ToolPanelView: View {
         let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
 
         if let ev = endVerseId {
+            let endChapter = (ev % 1000000) / 1000
             let endVerse = ev % 1000
+
+            // Handle cross-chapter ranges
+            if endChapter != chapter {
+                // Cross-chapter: show "Book ch1:v1-ch2:v2" or "Book ch1-ch2" for whole chapters
+                if verse == 1 && endVerse >= 900 {
+                    return "\(bookName) \(chapter)-\(endChapter)"
+                }
+                return "\(bookName) \(chapter):\(verse)-\(endChapter):\(endVerse)"
+            }
+
+            // Same chapter
+            if endVerse >= 900 {
+                // Whole chapter sentinel (999) - show "Book chapter" without verse
+                if verse == 1 {
+                    return "\(bookName) \(chapter)"
+                }
+                // Partial chapter from verse N to end - just show start
+                return "\(bookName) \(chapter):\(verse)+"
+            }
+
             if endVerse != verse {
                 return "\(bookName) \(chapter):\(verse)-\(endVerse)"
             }
@@ -3992,17 +4013,29 @@ struct VerseSheetContent: View {
             return primaryVerses.map { ($0, false) }
         }
 
-        let (_, chapter, book) = splitVerseId(verseId)
-        let chapterContent = (try? TranslationDatabase.shared.getChapter(translationId: translationId, book: book, chapter: chapter)) ?? ChapterContent(verses: [], headings: [])
-        let chapterVerses = chapterContent.verses
+        let (_, startChapter, book) = splitVerseId(verseId)
+        let endId = endVerseId ?? verseId
+        let (_, endChapter, _) = splitVerseId(endId)
 
-        guard let index = chapterVerses.firstIndex(where: { $0.ref == verseId }) else {
+        // Helper to check if a verse ref is within the primary range
+        let isPrimary: (Int) -> Bool = { ref in ref >= verseId && ref <= endId }
+
+        // For cross-chapter ranges or whole-chapter context, just return primary verses without context
+        // (adding context to multi-chapter ranges gets complicated)
+        if endChapter != startChapter || contextAmount == .chapter {
             return primaryVerses.map { ($0, false) }
         }
 
-        // Helper to check if a verse ref is within the primary range
-        let endId = endVerseId ?? verseId
-        let isPrimary: (Int) -> Bool = { ref in ref >= verseId && ref <= endId }
+        // Single chapter with verse-level context
+        let chapterContent = (try? TranslationDatabase.shared.getChapter(translationId: translationId, book: book, chapter: startChapter)) ?? ChapterContent(verses: [], headings: [])
+        let chapterVerses = chapterContent.verses
+
+        guard let startIdx = chapterVerses.firstIndex(where: { $0.ref == verseId }) else {
+            return primaryVerses.map { ($0, false) }
+        }
+
+        // Find the end index of the primary range
+        let endIdx = chapterVerses.lastIndex(where: { isPrimary($0.ref) }) ?? startIdx
 
         let contextCount: Int
         switch contextAmount {
@@ -4014,9 +4047,10 @@ struct VerseSheetContent: View {
             return chapterVerses.map { ($0, !isPrimary($0.ref)) }
         }
 
-        let startIndex = max(0, index - contextCount)
-        let endIndex = min(chapterVerses.count - 1, index + contextCount)
-        return Array(chapterVerses[startIndex...endIndex]).map { ($0, !isPrimary($0.ref)) }
+        // Context window spans from before the start to after the end of the range
+        let windowStart = max(0, startIdx - contextCount)
+        let windowEnd = min(chapterVerses.count - 1, endIdx + contextCount)
+        return Array(chapterVerses[windowStart...windowEnd]).map { ($0, !isPrimary($0.ref)) }
     }
 
     private var versesText: AttributedString {
@@ -4028,9 +4062,29 @@ struct VerseSheetContent: View {
         }
 
         var result = AttributedString()
+        var currentChapter: Int? = nil
+
         for (index, item) in allVerses.enumerated() {
             let verse = item.verse
             let isContext = item.isContext
+
+            // Add chapter heading when chapter changes (for multi-chapter ranges)
+            if verse.chapter != currentChapter {
+                if currentChapter != nil {
+                    // Add line break before new chapter (not before first)
+                    result.append(AttributedString("\n\n"))
+                }
+                currentChapter = verse.chapter
+
+                // Only show chapter heading if there are multiple chapters
+                let hasMultipleChapters = allVerses.contains { $0.verse.chapter != allVerses.first?.verse.chapter }
+                if hasMultipleChapters {
+                    var chapterHeading = AttributedString("Chapter \(verse.chapter)\n")
+                    chapterHeading.font = .headline
+                    chapterHeading.foregroundColor = .primary
+                    result.append(chapterHeading)
+                }
+            }
 
             // Add verse number as superscript
             var verseNum = AttributedString("\(verse.verse)")
@@ -4260,7 +4314,7 @@ struct PreviewItem: Equatable, Identifiable {
         }
     }
 
-    /// Format verse range reference (e.g., "Matt 1:1-5" or "Matt 1:1")
+    /// Format verse range reference (e.g., "Matt 1:1-5" or "Matt 1:1" or "Matt 1" for whole chapter)
     private static func formatVerseRangeReference(_ verseId: Int, endVerseId: Int?) -> String {
         let bookId = verseId / 1000000
         let chapter = (verseId % 1000000) / 1000
@@ -4269,7 +4323,25 @@ struct PreviewItem: Equatable, Identifiable {
         let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
 
         if let ev = endVerseId {
+            let endChapter = (ev % 1000000) / 1000
             let endVerse = ev % 1000
+
+            // Handle cross-chapter ranges
+            if endChapter != chapter {
+                if verse == 1 && endVerse >= 900 {
+                    return "\(bookName) \(chapter)-\(endChapter)"
+                }
+                return "\(bookName) \(chapter):\(verse)-\(endChapter):\(endVerse)"
+            }
+
+            // Same chapter - handle 999 sentinel for whole chapter
+            if endVerse >= 900 {
+                if verse == 1 {
+                    return "\(bookName) \(chapter)"
+                }
+                return "\(bookName) \(chapter):\(verse)+"
+            }
+
             if endVerse != verse {
                 return "\(bookName) \(chapter):\(verse)-\(endVerse)"
             }

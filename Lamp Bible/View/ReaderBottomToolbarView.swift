@@ -474,6 +474,7 @@ struct PlanModeToolbarItems: ToolbarContent {
     let plansWithReadings: [PlanWithReadings]
     let onReadingChanged: (Int) -> Void
     let onPlanChanged: (Int) -> Void
+    var onQuiz: (() -> Void)? = nil
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .bottomBar) {
@@ -483,7 +484,8 @@ struct PlanModeToolbarItems: ToolbarContent {
                 selectedPlanIndex: $selectedPlanIndex,
                 plansWithReadings: plansWithReadings,
                 onReadingChanged: onReadingChanged,
-                onPlanChanged: onPlanChanged
+                onPlanChanged: onPlanChanged,
+                onQuiz: onQuiz
             )
             .frame(maxWidth: .infinity)
         }
@@ -499,6 +501,7 @@ struct PlanToolbarContent: View {
     let plansWithReadings: [PlanWithReadings]
     let onReadingChanged: (Int) -> Void
     let onPlanChanged: (Int) -> Void
+    var onQuiz: (() -> Void)? = nil
     @State private var showingPlanPicker: Bool = false
 
     private var hasMultiplePlans: Bool {
@@ -573,7 +576,11 @@ struct PlanToolbarContent: View {
                             selectedPlanIndex = index
                             currentReadingIndex = 0
                             onPlanChanged(index)
-                        }
+                        },
+                        onQuiz: onQuiz != nil ? {
+                            showingPlanPicker = false
+                            onQuiz?()
+                        } : nil
                     )
                 }
 
@@ -604,6 +611,7 @@ struct PlanInfoPopover: View {
     let plansWithReadings: [PlanWithReadings]
     let selectedPlanIndex: Int
     let onSelectPlan: (Int) -> Void
+    var onQuiz: (() -> Void)? = nil
     @State private var readerCount: Int = UserDatabase.shared.getSettings().planReaderCount
 
     var body: some View {
@@ -631,6 +639,27 @@ struct PlanInfoPopover: View {
             .padding()
             .onChange(of: readerCount) { _, newValue in
                 try? UserDatabase.shared.updateSettings { $0.planReaderCount = newValue }
+            }
+
+            // Quiz button
+            if let onQuiz = onQuiz {
+                Divider()
+
+                Button {
+                    onQuiz()
+                } label: {
+                    HStack {
+                        Label("Quiz", systemImage: "questionmark.circle")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
 
             // Plan switcher section (when multiple plans)
@@ -704,6 +733,7 @@ struct ReaderBottomToolbarView: ToolbarContent {
     let navigateToVerseId: (Int) -> Void
     let onPlanReadingChanged: (Int) -> Void
     let onPlanChanged: (Int) -> Void
+    var onQuiz: (() -> Void)? = nil
 
     private var hasPlanReadings: Bool {
         !plansWithReadings.isEmpty
@@ -772,7 +802,8 @@ struct ReaderBottomToolbarView: ToolbarContent {
                 selectedPlanIndex: $selectedPlanIndex,
                 plansWithReadings: plansWithReadings,
                 onReadingChanged: onPlanReadingChanged,
-                onPlanChanged: onPlanChanged
+                onPlanChanged: onPlanChanged,
+                onQuiz: onQuiz
             )
         }
     }

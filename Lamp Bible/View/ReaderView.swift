@@ -2368,7 +2368,10 @@ struct ReaderView: View {
                         selectedPlanIndex = planIndex
                         planReadingIndex = 0
                         loadPlanReading(at: 0)
-                    }
+                    },
+                    onQuiz: quizModule != nil ? {
+                        showingQuizSheet = true
+                    } : nil
                 )
             }
             .toolbar {
