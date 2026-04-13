@@ -503,6 +503,7 @@ struct PlanToolbarContent: View {
     let onPlanChanged: (Int) -> Void
     var onQuiz: (() -> Void)? = nil
     @State private var showingPlanPicker: Bool = false
+    @State private var pendingQuizAction: Bool = false
 
     private var hasMultiplePlans: Bool {
         plansWithReadings.count > 1
@@ -578,13 +579,16 @@ struct PlanToolbarContent: View {
                             onPlanChanged(index)
                         },
                         onQuiz: onQuiz != nil ? {
+                            pendingQuizAction = true
                             showingPlanPicker = false
-                            // Delay to let popover dismiss before presenting sheet
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                onQuiz?()
-                            }
                         } : nil
                     )
+                }
+                .onChange(of: showingPlanPicker) { _, isShowing in
+                    if !isShowing && pendingQuizAction {
+                        pendingQuizAction = false
+                        onQuiz?()
+                    }
                 }
 
                 Button {
