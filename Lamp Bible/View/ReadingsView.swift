@@ -195,6 +195,7 @@ struct ReaderSplitControl: View {
                             .font(.body)
                             .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(.plain)
                     .disabled(readerCount <= 1)
 
                     Text("\(readerCount)")
@@ -209,6 +210,7 @@ struct ReaderSplitControl: View {
                             .font(.body)
                             .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(.plain)
                     .disabled(readerCount >= 20)
                 }
             }
