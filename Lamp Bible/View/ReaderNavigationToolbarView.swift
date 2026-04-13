@@ -39,6 +39,9 @@ struct ReaderNavigationToolbarView: ToolbarContent {
     var commentarySeries: [String] = []
     var devotionalsModules: [Module] = []
 
+    // Theme editing callback (to present sheet from parent view)
+    var onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil
+
     init(
         userSettings: Binding<UserSettings>,
         readingMetaData: Binding<[ReadingMetaData]?>,
@@ -58,7 +61,8 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         onToggleSplitOrientation: (() -> Void)? = nil,
         notesModules: [Module] = [],
         commentarySeries: [String] = [],
-        devotionalsModules: [Module] = []
+        devotionalsModules: [Module] = [],
+        onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil
     ) {
         _userSettings = userSettings
         _readingMetaData = readingMetaData
@@ -79,6 +83,7 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         self.notesModules = notesModules
         self.commentarySeries = commentarySeries
         self.devotionalsModules = devotionalsModules
+        self.onEditTheme = onEditTheme
     }
 
     var body: some ToolbarContent {
@@ -400,7 +405,13 @@ struct ReaderNavigationToolbarView: ToolbarContent {
     private var highlightsSectionContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Style and color picker
-            InlineHighlightPicker()
+            InlineHighlightPicker(onEditTheme: onEditTheme != nil ? { color, style, existingTheme in
+                showingOptionsMenu = false
+                // Small delay to let popover dismiss before showing sheet
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    onEditTheme?(color, style, existingTheme)
+                }
+            } : nil)
 
             Divider()
                 .padding(.horizontal, 8)

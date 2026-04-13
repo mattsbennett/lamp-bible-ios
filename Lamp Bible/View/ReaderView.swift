@@ -1549,6 +1549,12 @@ struct ReaderView: View {
     @State private var quizQuestions: [QuizQuestion] = []
     @State private var showingQuizSheet: Bool = false
 
+    // Theme editing state
+    @State private var themeEditColor: HighlightColor?
+    @State private var themeEditStyle: HighlightStyle = .highlight
+    @State private var themeEditExisting: HighlightTheme?
+    @State private var showingThemeEditor: Bool = false
+
     let LOADING_NEXT_CHAPTER = "next_chapter"
     let LOADING_PREV_CHAPTER = "prev_chapter"
     let LOADING_NEXT_BOOK = "next_book"
@@ -2390,7 +2396,13 @@ struct ReaderView: View {
                     onToggleSplitOrientation: onToggleSplitOrientation,
                     notesModules: notesModules,
                     commentarySeries: commentarySeries,
-                    devotionalsModules: devotionalsModules
+                    devotionalsModules: devotionalsModules,
+                    onEditTheme: { color, style, existing in
+                        themeEditColor = color
+                        themeEditStyle = style
+                        themeEditExisting = existing
+                        showingThemeEditor = true
+                    }
                 )
             }
             .sheet(isPresented: $showingBookPicker) {
@@ -2432,6 +2444,24 @@ struct ReaderView: View {
                         readingDescription: reading.description
                     )
                     .presentationDetents([.medium, .large])
+                }
+            }
+            .sheet(isPresented: $showingThemeEditor) {
+                if let color = themeEditColor, let setId = HighlightManager.shared.activeSetId {
+                    HighlightThemeEditorSheet(
+                        setId: setId,
+                        color: color,
+                        style: themeEditStyle,
+                        existingTheme: themeEditExisting
+                    ) { theme in
+                        try? ModuleDatabase.shared.saveHighlightTheme(theme)
+                        // Trigger sync
+                        if let set = try? ModuleDatabase.shared.getHighlightSet(id: setId) {
+                            Task {
+                                try? await ModuleSyncManager.shared.exportModule(id: set.moduleId)
+                            }
+                        }
+                    }
                 }
             }
             .toolbar(toolbarsHidden ? .hidden : .visible, for: .navigationBar, .bottomBar)

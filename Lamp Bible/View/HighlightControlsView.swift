@@ -420,8 +420,9 @@ struct InlineHighlightPicker: View {
     @State private var colors: [HighlightColor] = []
     @State private var showingFullPicker = false
     @State private var themes: [String: HighlightTheme] = [:] // key: "colorHex_style"
-    @State private var colorForThemeEdit: HighlightColor?
-    @State private var showingThemeEditor = false
+
+    /// Callback when user wants to edit a theme (color, style, existing theme if any)
+    var onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil
 
     /// Maximum colors to show inline before showing +N button
     private let maxInlineColors = 6
@@ -506,21 +507,6 @@ struct InlineHighlightPicker: View {
             loadColors()
             loadThemes()
         }
-        .sheet(isPresented: $showingThemeEditor) {
-            if let color = colorForThemeEdit, let setId = highlightManager.activeSetId {
-                let existingTheme = themeFor(color: color)
-                HighlightThemeEditorSheet(
-                    setId: setId,
-                    color: color,
-                    style: highlightManager.selectedStyle,
-                    existingTheme: existingTheme
-                ) { theme in
-                    try? ModuleDatabase.shared.saveHighlightTheme(theme)
-                    loadThemes()
-                    scheduleSyncForActiveSet()
-                }
-            }
-        }
     }
 
     @ViewBuilder
@@ -550,10 +536,9 @@ struct InlineHighlightPicker: View {
             }
         }
         .contextMenu {
-            if highlightManager.activeSetId != nil {
+            if let editTheme = onEditTheme, highlightManager.activeSetId != nil {
                 Button {
-                    colorForThemeEdit = color
-                    showingThemeEditor = true
+                    editTheme(color, highlightManager.selectedStyle, themeFor(color: color))
                 } label: {
                     Label(themeNameFor(color: color) != nil ? "Edit Theme" : "Add Theme", systemImage: "tag")
                 }
@@ -595,14 +580,6 @@ struct InlineHighlightPicker: View {
 
     private func themeNameFor(color: HighlightColor) -> String? {
         themeFor(color: color)?.name
-    }
-
-    private func scheduleSyncForActiveSet() {
-        guard let setId = highlightManager.activeSetId,
-              let set = try? ModuleDatabase.shared.getHighlightSet(id: setId) else { return }
-        Task {
-            try? await ModuleSyncManager.shared.exportModule(id: set.moduleId)
-        }
     }
 }
 

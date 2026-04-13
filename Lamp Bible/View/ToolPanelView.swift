@@ -4000,6 +4000,10 @@ struct VerseSheetContent: View {
             return primaryVerses.map { ($0, false) }
         }
 
+        // Helper to check if a verse ref is within the primary range
+        let endId = endVerseId ?? verseId
+        let isPrimary: (Int) -> Bool = { ref in ref >= verseId && ref <= endId }
+
         let contextCount: Int
         switch contextAmount {
         case .oneVerse:
@@ -4007,12 +4011,12 @@ struct VerseSheetContent: View {
         case .threeVerses:
             contextCount = 3
         case .chapter:
-            return chapterVerses.map { ($0, $0.ref != verseId) }
+            return chapterVerses.map { ($0, !isPrimary($0.ref)) }
         }
 
         let startIndex = max(0, index - contextCount)
         let endIndex = min(chapterVerses.count - 1, index + contextCount)
-        return Array(chapterVerses[startIndex...endIndex]).map { ($0, $0.ref != verseId) }
+        return Array(chapterVerses[startIndex...endIndex]).map { ($0, !isPrimary($0.ref)) }
     }
 
     private var versesText: AttributedString {
