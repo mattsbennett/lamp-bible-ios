@@ -160,9 +160,11 @@ struct ReaderSplitControl: View {
                 ZStack(alignment: .topLeading) {
                     Image(systemName: personIcon)
                         .font(.caption)
+                        .foregroundStyle(.tint)
                     if readerCount > 3 {
                         Text("\(readerCount)")
                             .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tint)
                             .padding(.horizontal, 3)
                             .padding(.vertical, 1)
                             .background(
@@ -171,15 +173,15 @@ struct ReaderSplitControl: View {
                             )
                             .overlay(
                                 Capsule()
-                                    .stroke(Color.secondary, lineWidth: 0.5)
+                                    .stroke(Color.accentColor, lineWidth: 0.5)
                             )
                             .offset(x: -4, y: -4)
                     }
                 }
                 labelContent
                     .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showingPopover) {
