@@ -63,6 +63,7 @@
 		B85B89CF2F1C73D7004B4F61 /* UserSettingsSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
 		B8653F2C2F8C732600B6FBDE /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B8653F2B2F8C732600B6FBDE /* bundled_modules.db.zlib */; };
+		B8653F462F8C79EF00B6FBDE /* HighlightThemeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8653F452F8C79EF00B6FBDE /* HighlightThemeViews.swift */; };
 		B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */; };
 		B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD02F008237006DC53D /* ToolPanelView.swift */; };
 		B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD22F008243006DC53D /* SplitReaderView.swift */; };
@@ -209,6 +210,7 @@
 		B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettingsSyncManager.swift; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
 		B8653F2B2F8C732600B6FBDE /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
+		B8653F452F8C79EF00B6FBDE /* HighlightThemeViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightThemeViews.swift; sourceTree = "<group>"; };
 		B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Lamp Bible.entitlements"; sourceTree = "<group>"; };
 		B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteStorage.swift; sourceTree = "<group>"; };
 		B87B2AD02F008237006DC53D /* ToolPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolPanelView.swift; sourceTree = "<group>"; };
@@ -421,6 +423,7 @@
 				B851FFD42B7B221700C74C1D /* WrappingHStack.swift */,
 				54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */,
 				A95873C478D642C9B5444C02 /* TipTapEditorView.swift */,
+				B8653F452F8C79EF00B6FBDE /* HighlightThemeViews.swift */,
 			);
 			path = View;
 			sourceTree = "<group>";
@@ -890,6 +893,7 @@
 				B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */,
 				8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */,
 				CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */,
+				B8653F462F8C79EF00B6FBDE /* HighlightThemeViews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
