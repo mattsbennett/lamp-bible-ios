@@ -62,8 +62,8 @@
 		B85B89C82F21E000004B4F61 /* HighlightSetPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */; };
 		B85B89CF2F1C73D7004B4F61 /* UserSettingsSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */; };
 		B861BF022B43655D001CA38E /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B861BF012B43655D001CA38E /* BookListView.swift */; };
-		B8653F2C2F8C732600B6FBDE /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B8653F2B2F8C732600B6FBDE /* bundled_modules.db.zlib */; };
 		B8653F462F8C79EF00B6FBDE /* HighlightThemeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8653F452F8C79EF00B6FBDE /* HighlightThemeViews.swift */; };
+		B8653F5E2F8C7FC600B6FBDE /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B8653F5D2F8C7FC600B6FBDE /* bundled_modules.db.zlib */; };
 		B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */; };
 		B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD02F008237006DC53D /* ToolPanelView.swift */; };
 		B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD22F008243006DC53D /* SplitReaderView.swift */; };
@@ -209,8 +209,8 @@
 		B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightSetPickerView.swift; sourceTree = "<group>"; };
 		B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettingsSyncManager.swift; sourceTree = "<group>"; };
 		B861BF012B43655D001CA38E /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
-		B8653F2B2F8C732600B6FBDE /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
 		B8653F452F8C79EF00B6FBDE /* HighlightThemeViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightThemeViews.swift; sourceTree = "<group>"; };
+		B8653F5D2F8C7FC600B6FBDE /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
 		B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Lamp Bible.entitlements"; sourceTree = "<group>"; };
 		B87B2ACE2F0081C5006DC53D /* NoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteStorage.swift; sourceTree = "<group>"; };
 		B87B2AD02F008237006DC53D /* ToolPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolPanelView.swift; sourceTree = "<group>"; };
@@ -480,7 +480,7 @@
 		B885E4152ADB47E40066F0A0 /* Lamp Bible */ = {
 			isa = PBXGroup;
 			children = (
-				B8653F2B2F8C732600B6FBDE /* bundled_modules.db.zlib */,
+				B8653F5D2F8C7FC600B6FBDE /* bundled_modules.db.zlib */,
 				B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
@@ -666,7 +666,7 @@
 			files = (
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
-				B8653F2C2F8C732600B6FBDE /* bundled_modules.db.zlib in Resources */,
+				B8653F5E2F8C7FC600B6FBDE /* bundled_modules.db.zlib in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
 				69953A461E33453590607608 /* Resources/TipTapEditor in Resources */,
 			);
@@ -944,7 +944,7 @@
 				CODE_SIGN_ENTITLEMENTS = LampBibleWidgetExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = BM8474Q7J2;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -978,7 +978,7 @@
 				CODE_SIGN_ENTITLEMENTS = LampBibleWidgetExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = BM8474Q7J2;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1132,7 +1132,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Lamp Bible/Lamp Bible.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_ASSET_PATHS = "\"Lamp Bible/Preview Content\"";
 				DEVELOPMENT_TEAM = BM8474Q7J2;
 				ENABLE_PREVIEWS = YES;
@@ -1166,7 +1166,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Lamp Bible/Lamp Bible.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_ASSET_PATHS = "\"Lamp Bible/Preview Content\"";
 				DEVELOPMENT_TEAM = BM8474Q7J2;
 				ENABLE_PREVIEWS = YES;
@@ -1198,7 +1198,7 @@
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = 5N53GLND6F;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -1219,7 +1219,7 @@
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = 5N53GLND6F;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -1239,7 +1239,7 @@
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = 5N53GLND6F;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0.0;
@@ -1258,7 +1258,7 @@
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = 5N53GLND6F;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0.0;
