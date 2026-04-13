@@ -75,10 +75,12 @@ struct HighlightSetPickerView: View {
     }
 
     private func deleteSet(_ set: HighlightSet) {
-        do {
-            try highlightManager.deleteHighlightSet(id: set.id)
-        } catch {
-            print("[HighlightSetPicker] Error deleting set: \(error)")
+        Task {
+            do {
+                try await highlightManager.deleteHighlightSet(id: set.id)
+            } catch {
+                print("[HighlightSetPicker] Error deleting set: \(error)")
+            }
         }
     }
 }

@@ -37,6 +37,7 @@ struct DevotionalPickerView: View {
     @State private var pendingImportURL: URL? = nil
     @State private var devotionalModules: [Module] = []
     @State private var selectedImportModuleId: String = ""
+    @State private var lastLoadedModuleId: String = ""
 
     /// The currently selected module
     private var selectedModule: Module? {
@@ -241,7 +242,11 @@ struct DevotionalPickerView: View {
             }
         }
         .task {
-            loadDevotionals()
+            // Only load if we haven't loaded yet or module changed
+            let targetModuleId = selectedModuleId.isEmpty ? initialModuleId : selectedModuleId
+            if lastLoadedModuleId != targetModuleId || devotionals.isEmpty {
+                loadDevotionals()
+            }
         }
     }
 
@@ -463,6 +468,9 @@ struct DevotionalPickerView: View {
                 // Load available tags and categories for filtering
                 availableTags = try DevotionalStorage.shared.getAllTags(moduleId: selectedModuleId)
                 availableCategories = try DevotionalStorage.shared.getUsedCategories(moduleId: selectedModuleId)
+
+                // Track which module we loaded
+                lastLoadedModuleId = selectedModuleId
             } catch {
                 print("Failed to load devotionals: \(error)")
             }
@@ -472,14 +480,19 @@ struct DevotionalPickerView: View {
 
     private func deleteDevotionals(at offsets: IndexSet) {
         let toDelete = offsets.map { filteredDevotionals[$0] }
-        for devotional in toDelete {
-            do {
-                try DevotionalStorage.shared.deleteDevotional(id: devotional.meta.id)
-            } catch {
-                print("Failed to delete devotional: \(error)")
+        let moduleId = selectedModuleId
+        Task {
+            for devotional in toDelete {
+                do {
+                    try await ModuleSyncManager.shared.deleteDevotional(id: devotional.meta.id, moduleId: moduleId)
+                } catch {
+                    print("Failed to delete devotional: \(error)")
+                }
+            }
+            await MainActor.run {
+                loadDevotionals()
             }
         }
-        loadDevotionals()
     }
 
     private func exportAll() {

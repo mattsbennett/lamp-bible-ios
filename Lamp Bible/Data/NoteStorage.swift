@@ -55,6 +55,7 @@ struct NoteSection: Identifiable {
 /// Actions available when selecting a verse
 enum VerseAction {
     case addNote
+    case highlight
 }
 
 // MARK: - Save State

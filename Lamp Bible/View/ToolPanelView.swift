@@ -34,6 +34,9 @@ class ScrollSyncCoordinator {
     /// Temporarily pause scroll sync (e.g., during keyboard display)
     var isPaused: Bool = false
 
+    /// Whether toolbars are hidden (affects scroll offset calculation)
+    var toolbarsHidden: Bool = false
+
     // Throttle reader scrolling driven by tool panel (avoids hammering setContentOffset)
     private var lastReaderScrollTime: CFTimeInterval = 0
     private let minReaderScrollInterval: CFTimeInterval = 1.0 / 60.0 // ~60 Hz
@@ -121,8 +124,9 @@ class ScrollSyncCoordinator {
         }
 
         if let y = targetY {
-            // Account for safe area (notch) plus SwiftUI navigation toolbar (~44pt)
-            let topOffset = scrollView.safeAreaInsets.top + 44
+            // Account for safe area (notch) plus SwiftUI navigation toolbar when visible
+            let toolbarHeight: CGFloat = toolbarsHidden ? 0 : 44
+            let topOffset = scrollView.safeAreaInsets.top + toolbarHeight
             let adjustedY = y - topOffset
 
             let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
@@ -976,6 +980,7 @@ struct ToolPanelView: View {
     var onNavigateToVerse: ((Int) -> Void)?
     @Binding var toolbarsHidden: Bool
     var hideHeader: Bool = false  // Hide header when in horizontal split mode
+    @Binding var requestAddNoteForVerse: Int?  // External trigger to add note for a specific verse
 
     // User settings for translation ID
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
@@ -1227,6 +1232,21 @@ struct ToolPanelView: View {
 
                 if panelMode == .notes {
                     notesStatusIndicator
+
+                    // Add note button (visible when not read-only)
+                    if !isReadOnly {
+                        Button {
+                            newVerseStart = currentVerse
+                            newVerseEnd = nil
+                            showingAddVerseSheet = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .frame(width: 22, height: 22)
+                                .contentShape(Circle())
+                        }
+                        .buttonBorderShape(.circle)
+                        .modifier(ConditionalGlassButtonStyle())
+                    }
                 }
 
                 // Options menu
@@ -1459,6 +1479,16 @@ struct ToolPanelView: View {
             // Auto-show conflict sheet when new conflicts are detected
             if oldCount == 0 && newCount > 0 && panelMode == .notes {
                 showingConflictSheet = true
+            }
+        }
+        .onChange(of: requestAddNoteForVerse) { _, newValue in
+            // External trigger to add note for a specific verse
+            if let verse = newValue {
+                panelMode = .notes
+                newVerseStart = verse
+                newVerseEnd = nil
+                showingAddVerseSheet = true
+                requestAddNoteForVerse = nil  // Reset the trigger
             }
         }
         .toolbar {
@@ -4676,6 +4706,7 @@ class NoteTextView: UITextView {
         book: 43,
         chapter: 3,
         currentVerse: 16,
-        toolbarsHidden: .constant(false)
+        toolbarsHidden: .constant(false),
+        requestAddNoteForVerse: .constant(nil)
     )
 }

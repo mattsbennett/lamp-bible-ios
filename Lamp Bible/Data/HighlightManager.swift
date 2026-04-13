@@ -204,13 +204,20 @@ class HighlightManager: ObservableObject {
     }
 
     /// Delete a highlight set
-    func deleteHighlightSet(id: String) throws {
+    func deleteHighlightSet(id: String) async throws {
         guard let set = try ModuleDatabase.shared.getHighlightSet(id: id) else {
             return
         }
 
+        let moduleId = set.moduleId
+
         // Delete the module (cascade will delete set and highlights)
-        try ModuleDatabase.shared.deleteModule(id: set.moduleId)
+        try ModuleDatabase.shared.deleteModule(id: moduleId)
+
+        // Delete from cloud storage
+        let storage = await ModuleSyncManager.shared.getStorage()
+        let fileName = "\(moduleId).lamp"
+        try? await storage.deleteModuleFile(type: ModuleType.highlights, fileName: fileName)
 
         // Refresh available sets
         if let translationId = currentTranslationId {
@@ -299,6 +306,39 @@ class HighlightManager: ObservableObject {
 
         // Schedule sync
         scheduleSyncForActiveSet()
+    }
+
+    /// Highlight an entire verse (used by verse number menu action)
+    func highlightEntireVerse(_ ref: Int) {
+        guard let translationId = currentTranslationId else {
+            print("[HighlightManager] No translation selected for highlighting verse")
+            return
+        }
+
+        // Get the verse text to determine its length
+        guard let verse = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref) else {
+            print("[HighlightManager] Could not find verse \(ref)")
+            return
+        }
+
+        let textLength = verse.text.count
+        guard textLength > 0 else { return }
+
+        do {
+            // Check for existing highlights on this verse
+            let existing = highlightsByVerse[ref] ?? []
+            if existing.contains(where: { $0.sc == 0 && $0.ec >= textLength - 1 }) {
+                // Already fully highlighted - remove it (toggle behavior)
+                for highlight in existing.filter({ $0.sc == 0 && $0.ec >= textLength - 1 }) {
+                    try removeHighlight(highlight)
+                }
+            } else {
+                // Add highlight for entire verse
+                try addHighlight(ref: ref, startChar: 0, endChar: textLength)
+            }
+        } catch {
+            print("[HighlightManager] Error highlighting verse: \(error)")
+        }
     }
 
     /// Remove a highlight

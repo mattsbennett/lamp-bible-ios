@@ -29,6 +29,9 @@ class HighlightImportExportManager {
         // Get all highlights for the set
         let highlights = try ModuleDatabase.shared.getAllHighlights(setId: setId)
 
+        // Get all themes for the set
+        let themes = try ModuleDatabase.shared.getHighlightThemes(setId: setId)
+
         // Create temporary SQLite database
         let tempDbUrl = fileManager.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
 
@@ -37,7 +40,7 @@ class HighlightImportExportManager {
         }
 
         // Create and populate SQLite database
-        try createExportDatabase(at: tempDbUrl, set: highlightSet, highlights: highlights)
+        try createExportDatabase(at: tempDbUrl, set: highlightSet, highlights: highlights, themes: themes)
 
         // Read database file and compress
         let dbData = try Data(contentsOf: tempDbUrl)
@@ -63,7 +66,7 @@ class HighlightImportExportManager {
         return exportUrl
     }
 
-    private func createExportDatabase(at url: URL, set: HighlightSet, highlights: [HighlightEntry]) throws {
+    private func createExportDatabase(at url: URL, set: HighlightSet, highlights: [HighlightEntry], themes: [HighlightTheme]) throws {
         // Remove if exists
         try? fileManager.removeItem(at: url)
 
@@ -95,6 +98,17 @@ class HighlightImportExportManager {
                 )
             """)
 
+            // Create highlight_themes table
+            try db.execute(sql: """
+                CREATE TABLE highlight_themes (
+                    color TEXT NOT NULL,
+                    style INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    PRIMARY KEY (color, style)
+                )
+            """)
+
             // Insert metadata
             try db.execute(
                 sql: """
@@ -109,6 +123,14 @@ class HighlightImportExportManager {
                 try db.execute(
                     sql: "INSERT INTO highlights (ref, sc, ec, style, color) VALUES (?, ?, ?, ?, ?)",
                     arguments: [highlight.ref, highlight.sc, highlight.ec, highlight.style, highlight.color]
+                )
+            }
+
+            // Insert themes
+            for theme in themes {
+                try db.execute(
+                    sql: "INSERT INTO highlight_themes (color, style, name, description) VALUES (?, ?, ?, ?)",
+                    arguments: [theme.color, theme.style, theme.name, theme.themeDescription]
                 )
             }
         }
@@ -136,7 +158,7 @@ class HighlightImportExportManager {
         config.readonly = true
         let dbQueue = try DatabaseQueue(path: tempDbUrl.path, configuration: config)
 
-        let (setData, highlightData) = try dbQueue.read { db -> (HighlightSetData, [HighlightEntryData]) in
+        let (setData, highlightData, themeData) = try dbQueue.read { db -> (HighlightSetData, [HighlightEntryData], [HighlightThemeData]) in
             // Read metadata
             guard let row = try Row.fetchOne(db, sql: "SELECT * FROM highlight_meta LIMIT 1") else {
                 throw HighlightImportError.invalidFormat
@@ -163,7 +185,22 @@ class HighlightImportExportManager {
                 )
             }
 
-            return (setData, highlights)
+            // Read themes (table may not exist in older exports)
+            var themes: [HighlightThemeData] = []
+            let tableExists = try Row.fetchOne(db, sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='highlight_themes'") != nil
+            if tableExists {
+                let themeRows = try Row.fetchAll(db, sql: "SELECT * FROM highlight_themes")
+                themes = themeRows.map { row -> HighlightThemeData in
+                    HighlightThemeData(
+                        color: row["color"],
+                        style: row["style"],
+                        name: row["name"],
+                        description: row["description"]
+                    )
+                }
+            }
+
+            return (setData, highlights, themes)
         }
 
         // Check if set already exists
@@ -224,6 +261,20 @@ class HighlightImportExportManager {
         }
 
         try ModuleDatabase.shared.importHighlights(entries)
+
+        // Import themes
+        if !themeData.isEmpty {
+            let themes = themeData.map { data -> HighlightTheme in
+                HighlightTheme(
+                    setId: highlightSet.id,
+                    color: data.color,
+                    style: data.style,
+                    name: data.name,
+                    description: data.description
+                )
+            }
+            try ModuleDatabase.shared.importHighlightThemes(themes)
+        }
 
         // Copy file to module directory
         if let destDir = moduleStorage.directoryURL(for: ModuleType.highlights) {
@@ -329,6 +380,13 @@ private struct HighlightEntryData {
     let ec: Int
     let style: Int?
     let color: String?
+}
+
+private struct HighlightThemeData {
+    let color: String
+    let style: Int
+    let name: String
+    let description: String?
 }
 
 // MARK: - Errors

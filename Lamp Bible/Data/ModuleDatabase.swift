@@ -1275,6 +1275,20 @@ class ModuleDatabase {
             try db.create(index: "idx_quiz_questions_module_age", on: "quiz_questions", columns: ["quiz_module_id", "age_group"])
         }
 
+        // v22: Highlight themes table for color+style meaning associations
+        migrator.registerMigration("v22") { db in
+            try db.create(table: "highlight_themes", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()  // Composite: {setId}_{color}_{style}
+                t.column("set_id", .text).notNull().references("highlight_sets", onDelete: .cascade)
+                t.column("color", .text).notNull()  // Hex color code
+                t.column("style", .integer).notNull()  // 0=highlight, 1=underlineSolid, etc.
+                t.column("name", .text).notNull()  // Short theme name
+                t.column("description", .text)  // Optional longer description
+            }
+            try db.create(index: "idx_highlight_themes_set", on: "highlight_themes", columns: ["set_id"])
+            try db.create(index: "idx_highlight_themes_color_style", on: "highlight_themes", columns: ["color", "style"])
+        }
+
         return migrator
     }
 
@@ -2748,6 +2762,65 @@ class ModuleDatabase {
         }
     }
 
+    // MARK: - Highlight Theme CRUD
+
+    /// Save a highlight theme
+    func saveHighlightTheme(_ theme: HighlightTheme) throws {
+        try dbQueue.write { db in
+            try theme.save(db)
+        }
+    }
+
+    /// Delete a highlight theme by ID
+    func deleteHighlightTheme(id: String) throws {
+        try dbQueue.write { db in
+            _ = try HighlightTheme.deleteOne(db, key: id)
+        }
+    }
+
+    /// Get a highlight theme by ID
+    func getHighlightTheme(id: String) throws -> HighlightTheme? {
+        try dbQueue.read { db in
+            try HighlightTheme.fetchOne(db, key: id)
+        }
+    }
+
+    /// Get all themes for a highlight set
+    func getHighlightThemes(setId: String) throws -> [HighlightTheme] {
+        try dbQueue.read { db in
+            try HighlightTheme
+                .filter(Column("set_id") == setId)
+                .order(Column("style"), Column("color"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Get theme for a specific color+style combination in a set
+    func getHighlightTheme(setId: String, color: String, style: Int) throws -> HighlightTheme? {
+        let normalizedColor = color.uppercased().replacingOccurrences(of: "#", with: "")
+        let id = "\(setId)_\(normalizedColor)_\(style)"
+        return try getHighlightTheme(id: id)
+    }
+
+    /// Import themes for a set (bulk insert/update)
+    func importHighlightThemes(_ themes: [HighlightTheme]) throws {
+        try dbQueue.write { db in
+            for theme in themes {
+                try theme.save(db)
+            }
+        }
+    }
+
+    /// Delete all themes for a set
+    func deleteAllHighlightThemes(setId: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM highlight_themes WHERE set_id = ?",
+                arguments: [setId]
+            )
+        }
+    }
+
     // MARK: - Wipe All Syncable Data
 
     /// Wipe all user-syncable data from the local database.
@@ -2761,11 +2834,12 @@ class ModuleDatabase {
             // Delete all devotionals
             try db.execute(sql: "DELETE FROM devotional_entries")
 
-            // Delete all highlights and highlight sets
+            // Delete all highlights, themes, and highlight sets
             try db.execute(sql: "DELETE FROM highlights")
+            try db.execute(sql: "DELETE FROM highlight_themes")
             try db.execute(sql: "DELETE FROM highlight_sets")
 
-            print("[ModuleDatabase] Wiped all syncable data (notes, devotionals, highlights)")
+            print("[ModuleDatabase] Wiped all syncable data (notes, devotionals, highlights, themes)")
         }
     }
 }

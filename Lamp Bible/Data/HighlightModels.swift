@@ -347,6 +347,84 @@ extension UIColor {
     }
 }
 
+// MARK: - Highlight Theme
+
+/// Theme/meaning associated with a color+style combination (stored per highlight set)
+struct HighlightTheme: Codable, FetchableRecord, PersistableRecord, Equatable, Hashable, Identifiable {
+    static let databaseTableName = "highlight_themes"
+
+    var id: String          // Composite key: "{setId}_{color}_{style}"
+    var setId: String       // Reference to highlight_sets
+    var color: String       // Hex color code
+    var style: Int          // HighlightStyle raw value
+    var name: String        // Short theme name (e.g., "Promises")
+    var themeDescription: String? // Optional longer description
+
+    // Map Swift property names to database column names (snake_case)
+    enum CodingKeys: String, CodingKey {
+        case id
+        case setId = "set_id"
+        case color
+        case style
+        case name
+        case themeDescription = "description"
+    }
+
+    var highlightColor: HighlightColor {
+        HighlightColor(hex: color)
+    }
+
+    var highlightStyle: HighlightStyle {
+        HighlightStyle(rawValue: style) ?? .highlight
+    }
+
+    init(setId: String, color: HighlightColor, style: HighlightStyle, name: String, description: String? = nil) {
+        let normalizedColor = color.hex.uppercased()
+        self.id = "\(setId)_\(normalizedColor)_\(style.rawValue)"
+        self.setId = setId
+        self.color = normalizedColor
+        self.style = style.rawValue
+        self.name = name
+        self.themeDescription = description
+    }
+
+    init(setId: String, color: String, style: Int, name: String, description: String? = nil) {
+        let normalizedColor = color.uppercased().replacingOccurrences(of: "#", with: "")
+        self.id = "\(setId)_\(normalizedColor)_\(style)"
+        self.setId = setId
+        self.color = normalizedColor
+        self.style = style
+        self.name = name
+        self.themeDescription = description
+    }
+
+    // MARK: - GRDB Columns
+
+    enum Columns {
+        static let id = Column(CodingKeys.id)
+        static let setId = Column(CodingKeys.setId)
+        static let color = Column(CodingKeys.color)
+        static let style = Column(CodingKeys.style)
+        static let name = Column(CodingKeys.name)
+        static let themeDescription = Column(CodingKeys.themeDescription)
+    }
+}
+
+/// Export format for themes (simpler, without setId since it's implicit)
+struct HighlightThemeExport: Codable {
+    let color: String
+    let style: Int
+    let name: String
+    let description: String?
+
+    init(from theme: HighlightTheme) {
+        self.color = theme.color
+        self.style = theme.style
+        self.name = theme.name
+        self.description = theme.themeDescription
+    }
+}
+
 // MARK: - Highlight Module File (for import/export)
 
 /// JSON file structure for highlight modules (SQLite format exported/imported)
@@ -359,8 +437,9 @@ struct HighlightModuleFile: Codable {
     let created: Int
     let lastModified: Int
     let highlights: [HighlightExportEntry]
+    let themes: [HighlightThemeExport]?  // Optional themes for color+style meanings
 
-    init(from set: HighlightSet, highlights: [HighlightEntry]) {
+    init(from set: HighlightSet, highlights: [HighlightEntry], themes: [HighlightTheme]? = nil) {
         self.id = set.id
         self.name = set.name
         self.description = set.description
@@ -368,6 +447,7 @@ struct HighlightModuleFile: Codable {
         self.created = set.created
         self.lastModified = set.lastModified
         self.highlights = highlights.map { HighlightExportEntry(from: $0) }
+        self.themes = themes?.map { HighlightThemeExport(from: $0) }
     }
 }
 

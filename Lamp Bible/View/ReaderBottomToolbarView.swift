@@ -604,26 +604,7 @@ struct PlanInfoPopover: View {
     let plansWithReadings: [PlanWithReadings]
     let selectedPlanIndex: Int
     let onSelectPlan: (Int) -> Void
-
-    private var readerCount: Int {
-        UserDatabase.shared.getSettings().planReaderCount
-    }
-
-    private var versesEachLabel: Text? {
-        guard readerCount > 1 else { return nil }
-        let counts = reading.chapterVerseCounts.map { count -> Int in
-            let floor = count / readerCount
-            let ceil = floor + (count % readerCount == 0 ? 0 : 1)
-            let floorRemainder = count - floor * readerCount
-            let ceilRemainder = ceil * readerCount - count
-            return ceilRemainder <= floorRemainder ? ceil : floor
-        }
-        var result = Text("\(counts[0])")
-        for count in counts.dropFirst() {
-            result = result + Text(" · ") + Text("\(count)")
-        }
-        return result + Text(" ea.")
-    }
+    @State private var readerCount: Int = UserDatabase.shared.getSettings().planReaderCount
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -642,17 +623,15 @@ struct PlanInfoPopover: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                if let label = versesEachLabel {
-                    HStack(spacing: 4) {
-                        Image(systemName: readerCount <= 2 ? "person.2.fill" : "person.3.fill")
-                            .font(.caption2)
-                        label
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
+                ReaderSplitControl(
+                    chapterVerseCounts: reading.chapterVerseCounts,
+                    readerCount: $readerCount
+                )
             }
             .padding()
+            .onChange(of: readerCount) { _, newValue in
+                try? UserDatabase.shared.updateSettings { $0.planReaderCount = newValue }
+            }
 
             // Plan switcher section (when multiple plans)
             if plansWithReadings.count > 1 {

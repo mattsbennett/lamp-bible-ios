@@ -46,6 +46,7 @@ struct SplitReaderView: View {
     @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = "devotionals"
     @State private var hasUserScrolled: Bool = false
     @State private var toolbarsHidden: Bool = false
+    @State private var pendingAddNoteVerse: Int? = nil  // Trigger add note sheet in tool panel
 
     // Available modules for tool selection in horizontal split
     @State private var notesModules: [Module] = []
@@ -148,6 +149,10 @@ struct SplitReaderView: View {
         .task {
             // Load available modules for tool selection in horizontal split toolbar
             await loadToolModules()
+        }
+        .onChange(of: toolbarsHidden) { _, newValue in
+            // Sync toolbar visibility to scroll coordinator for offset calculation
+            ScrollSyncCoordinator.shared.toolbarsHidden = newValue
         }
         // Note: Scroll sync is now handled entirely by UIKit via ReaderScrollSpy and ScrollSyncCoordinator
     }
@@ -374,18 +379,23 @@ struct SplitReaderView: View {
                 requestScrollToVerseId = verseId
             },
             toolbarsHidden: $toolbarsHidden,
-            hideHeader: isHorizontalSplit
+            hideHeader: isHorizontalSplit,
+            requestAddNoteForVerse: $pendingAddNoteVerse
         )
     }
 
     private func handleVerseAction(verse: Int, action: VerseAction) {
         switch action {
         case .addNote:
-            // Show tool panel and scroll to verse
+            // Show tool panel and trigger add note for the specific verse
             if !notesPanelVisible {
                 notesPanelVisible = true
             }
-            // Tool panel will pick up the verse from currentVerse
+            toolPanelMode = .notes
+            pendingAddNoteVerse = verse
+        case .highlight:
+            // Highlight the verse with the current/default color
+            HighlightManager.shared.highlightEntireVerse(verse)
         }
     }
 }

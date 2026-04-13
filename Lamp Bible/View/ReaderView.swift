@@ -1092,6 +1092,10 @@ struct ChapterTextView: UIViewRepresentable {
             guard let verse = currentVerse else { return nil }
 
             let actions: [UIAction] = [
+                UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
+                    guard let self = self else { return }
+                    HighlightManager.shared.highlightEntireVerse(verse.ref)
+                },
                 UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
                     self?.parent.onAddNote(verse)
                 }

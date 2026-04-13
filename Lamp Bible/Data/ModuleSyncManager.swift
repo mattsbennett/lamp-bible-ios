@@ -15,7 +15,7 @@ class ModuleSyncManager: ObservableObject {
 
     /// Get the active storage provider - gets from SyncCoordinator, falls back to iCloud
     @MainActor
-    private func getStorage() -> ModuleStorage {
+    func getStorage() -> ModuleStorage {
         SyncCoordinator.shared.activeStorage ?? ICloudModuleStorage.shared
     }
 
@@ -524,6 +524,22 @@ class ModuleSyncManager: ObservableObject {
                                 SELECT ?, ref, sc, ec, style, color
                                 FROM \(dbAlias).highlights
                                 """, arguments: [setId])
+
+                            // Copy themes if table exists
+                            if tableNames.contains("highlight_themes") {
+                                let themeRows = try Row.fetchAll(db, sql: "SELECT * FROM \(dbAlias).highlight_themes")
+                                for row in themeRows {
+                                    let color: String = row["color"] ?? ""
+                                    let style: Int = row["style"] ?? 0
+                                    let name: String = row["name"] ?? ""
+                                    let desc: String? = row["description"]
+                                    let themeId = "\(setId)_\(color.uppercased())_\(style)"
+                                    try db.execute(sql: """
+                                        INSERT OR REPLACE INTO highlight_themes (id, set_id, color, style, name, description)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                        """, arguments: [themeId, setId, color.uppercased(), style, name, desc])
+                                }
+                            }
                         } else if tableNames.contains("highlight_sets") && tableNames.contains("highlights") {
                             // Full GRDB schema - copy directly
                             try db.execute(sql: """
@@ -1962,6 +1978,15 @@ class ModuleSyncManager: ObservableObject {
                         SELECT id, set_id, ref, sc, ec, style, color
                         FROM \(dbAlias).highlights
                         """)
+                    // Import themes if table exists
+                    let themeTables = try Row.fetchAll(db, sql: "SELECT name FROM \(dbAlias).sqlite_master WHERE type='table' AND name='highlight_themes'")
+                    if !themeTables.isEmpty {
+                        try db.execute(sql: """
+                            INSERT OR REPLACE INTO highlight_themes (id, set_id, color, style, name, description)
+                            SELECT id, set_id, color, style, name, description
+                            FROM \(dbAlias).highlight_themes
+                            """)
+                    }
 
                 case .translation:
                     // Check which tables exist in the source
@@ -2393,6 +2418,9 @@ class ModuleSyncManager: ObservableObject {
         // Get all highlights for the set
         let highlights = try database.getAllHighlights(setId: set.id)
 
+        // Get all themes for the set
+        let themes = try database.getHighlightThemes(setId: set.id)
+
         // Create temporary database file
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -2429,6 +2457,17 @@ class ModuleSyncManager: ObservableObject {
                 )
             """)
 
+            // Create highlight_themes table
+            try db.execute(sql: """
+                CREATE TABLE highlight_themes (
+                    color TEXT NOT NULL,
+                    style INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    PRIMARY KEY (color, style)
+                )
+            """)
+
             // Insert highlight set metadata
             try db.execute(
                 sql: "INSERT INTO highlight_meta (id, name, description, translation_id, created, last_modified) VALUES (?, ?, ?, ?, ?, ?)",
@@ -2440,6 +2479,14 @@ class ModuleSyncManager: ObservableObject {
                 try db.execute(
                     sql: "INSERT INTO highlights (ref, sc, ec, style, color) VALUES (?, ?, ?, ?, ?)",
                     arguments: [highlight.ref, highlight.sc, highlight.ec, highlight.style, highlight.color]
+                )
+            }
+
+            // Insert all themes
+            for theme in themes {
+                try db.execute(
+                    sql: "INSERT INTO highlight_themes (color, style, name, description) VALUES (?, ?, ?, ?)",
+                    arguments: [theme.color, theme.style, theme.name, theme.themeDescription]
                 )
             }
         }
