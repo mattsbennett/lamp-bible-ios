@@ -1554,6 +1554,7 @@ struct ReaderView: View {
     @State private var themeEditStyle: HighlightStyle = .highlight
     @State private var themeEditExisting: HighlightTheme?
     @State private var showingThemeEditor: Bool = false
+    @State private var pendingThemeEdit: Bool = false
 
     let LOADING_NEXT_CHAPTER = "next_chapter"
     let LOADING_PREV_CHAPTER = "prev_chapter"
@@ -2404,7 +2405,7 @@ struct ReaderView: View {
                         themeEditColor = color
                         themeEditStyle = style
                         themeEditExisting = existing
-                        showingThemeEditor = true
+                        pendingThemeEdit = true
                     }
                 )
             }
@@ -2469,6 +2470,12 @@ struct ReaderView: View {
             }
             .toolbar(toolbarsHidden ? .hidden : .visible, for: .navigationBar, .bottomBar)
             .statusBarHidden(toolbarsHidden)
+            .onChange(of: showingOptionsMenu) { _, isShowing in
+                if !isShowing && pendingThemeEdit {
+                    pendingThemeEdit = false
+                    showingThemeEditor = true
+                }
+            }
             .safeAreaInset(edge: .top) {
                 // In horizontal split, parent (SplitReaderView) handles the full-width collapsed header
                 if toolbarsHidden && !isHorizontalSplit {

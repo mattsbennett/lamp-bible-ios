@@ -406,11 +406,8 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         VStack(alignment: .leading, spacing: 0) {
             // Style and color picker
             InlineHighlightPicker(onEditTheme: onEditTheme != nil ? { color, style, existingTheme in
+                onEditTheme?(color, style, existingTheme)
                 showingOptionsMenu = false
-                // Small delay to let popover dismiss before showing sheet
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    onEditTheme?(color, style, existingTheme)
-                }
             } : nil)
 
             Divider()
