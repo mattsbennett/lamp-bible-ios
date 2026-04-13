@@ -419,6 +419,9 @@ struct InlineHighlightPicker: View {
     @ObservedObject var highlightManager = HighlightManager.shared
     @State private var colors: [HighlightColor] = []
     @State private var showingFullPicker = false
+    @State private var themes: [String: HighlightTheme] = [:] // key: "colorHex_style"
+    @State private var colorForThemeEdit: HighlightColor?
+    @State private var showingThemeEditor = false
 
     /// Maximum colors to show inline before showing +N button
     private let maxInlineColors = 6
@@ -430,6 +433,7 @@ struct InlineHighlightPicker: View {
                 ForEach(HighlightStyle.allCases, id: \.rawValue) { style in
                     Button {
                         highlightManager.selectStyle(style)
+                        loadThemes()
                     } label: {
                         style.icon
                             .font(.body)
@@ -496,28 +500,65 @@ struct InlineHighlightPicker: View {
         }
         .onAppear {
             loadColors()
+            loadThemes()
         }
         .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
             loadColors()
+            loadThemes()
+        }
+        .sheet(isPresented: $showingThemeEditor) {
+            if let color = colorForThemeEdit, let setId = highlightManager.activeSetId {
+                let existingTheme = themeFor(color: color)
+                HighlightThemeEditorSheet(
+                    setId: setId,
+                    color: color,
+                    style: highlightManager.selectedStyle,
+                    existingTheme: existingTheme
+                ) { theme in
+                    try? ModuleDatabase.shared.saveHighlightTheme(theme)
+                    loadThemes()
+                    scheduleSyncForActiveSet()
+                }
+            }
         }
     }
 
     @ViewBuilder
     private func inlineColorSwatch(color: HighlightColor) -> some View {
-        Button {
-            highlightManager.selectColor(color)
-        } label: {
-            Circle()
-                .fill(color.color)
-                .frame(width: 28, height: 28)
-                .overlay(
-                    Circle()
-                        .strokeBorder(Color.primary, lineWidth: 2)
-                        .opacity(highlightManager.selectedColor == color ? 1 : 0)
-                )
+        VStack(spacing: 2) {
+            Button {
+                highlightManager.selectColor(color)
+            } label: {
+                Circle()
+                    .fill(color.color)
+                    .frame(width: 28, height: 28)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(Color.primary, lineWidth: 2)
+                            .opacity(highlightManager.selectedColor == color ? 1 : 0)
+                    )
+            }
+            .buttonStyle(.plain)
+
+            // Show theme name if available
+            if let name = themeNameFor(color: color) {
+                Text(name)
+                    .font(.system(size: 7, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: 32)
+            }
         }
-        .buttonStyle(.plain)
         .contextMenu {
+            if highlightManager.activeSetId != nil {
+                Button {
+                    colorForThemeEdit = color
+                    showingThemeEditor = true
+                } label: {
+                    Label(themeNameFor(color: color) != nil ? "Edit Theme" : "Add Theme", systemImage: "tag")
+                }
+            }
+
             Button(role: .destructive) {
                 HighlightColorManager.shared.removeColor(color)
                 loadColors()
@@ -529,6 +570,39 @@ struct InlineHighlightPicker: View {
 
     private func loadColors() {
         colors = HighlightColorManager.shared.getColors()
+    }
+
+    private func loadThemes() {
+        guard let setId = highlightManager.activeSetId else {
+            themes = [:]
+            return
+        }
+
+        if let setThemes = try? ModuleDatabase.shared.getHighlightThemes(setId: setId) {
+            var themeMap: [String: HighlightTheme] = [:]
+            for theme in setThemes {
+                let key = "\(theme.color)_\(theme.style)"
+                themeMap[key] = theme
+            }
+            themes = themeMap
+        }
+    }
+
+    private func themeFor(color: HighlightColor) -> HighlightTheme? {
+        let key = "\(color.hex.uppercased())_\(highlightManager.selectedStyle.rawValue)"
+        return themes[key]
+    }
+
+    private func themeNameFor(color: HighlightColor) -> String? {
+        themeFor(color: color)?.name
+    }
+
+    private func scheduleSyncForActiveSet() {
+        guard let setId = highlightManager.activeSetId,
+              let set = try? ModuleDatabase.shared.getHighlightSet(id: setId) else { return }
+        Task {
+            try? await ModuleSyncManager.shared.exportModule(id: set.moduleId)
+        }
     }
 }
 

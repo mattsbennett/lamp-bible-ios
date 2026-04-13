@@ -177,31 +177,34 @@ struct ReaderSplitControl: View {
                 }
                 labelContent
             }
+            .foregroundStyle(.secondary)
         }
         .popover(isPresented: $showingPopover) {
             VStack(spacing: 8) {
                 Text("Readers")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 16) {
+                HStack(spacing: 12) {
                     Button {
                         if readerCount > 1 { readerCount -= 1 }
                     } label: {
                         Image(systemName: "minus.circle.fill")
-                            .font(.title2)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
                     }
                     .disabled(readerCount <= 1)
 
                     Text("\(readerCount)")
-                        .font(.headline)
+                        .font(.body)
                         .monospacedDigit()
-                        .frame(minWidth: 24)
+                        .frame(minWidth: 20)
 
                     Button {
                         if readerCount < 20 { readerCount += 1 }
                     } label: {
                         Image(systemName: "plus.circle.fill")
-                            .font(.title2)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
                     }
                     .disabled(readerCount >= 20)
                 }
