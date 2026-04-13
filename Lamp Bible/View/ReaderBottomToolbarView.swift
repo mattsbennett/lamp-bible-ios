@@ -579,7 +579,10 @@ struct PlanToolbarContent: View {
                         },
                         onQuiz: onQuiz != nil ? {
                             showingPlanPicker = false
-                            onQuiz?()
+                            // Delay to let popover dismiss before presenting sheet
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                onQuiz?()
+                            }
                         } : nil
                     )
                 }
