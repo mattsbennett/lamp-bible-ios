@@ -1813,6 +1813,23 @@ struct ToolPanelView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
                         }
+                        // General add button (when header is hidden)
+                        if hideHeader {
+                            Button {
+                                newVerseStart = currentVerse
+                                newVerseEnd = nil
+                                showingAddVerseSheet = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "plus.circle")
+                                    Text("Add verse note")
+                                }
+                                .font(.subheadline)
+                                .foregroundColor(.blue)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                        }
                     }
                 }
             }
@@ -4079,9 +4096,9 @@ struct VerseSheetContent: View {
                 // Only show chapter heading if there are multiple chapters
                 let hasMultipleChapters = allVerses.contains { $0.verse.chapter != allVerses.first?.verse.chapter }
                 if hasMultipleChapters {
-                    var chapterHeading = AttributedString("Chapter \(verse.chapter)\n")
+                    var chapterHeading = AttributedString("Chapter \(verse.chapter)\n\n")
                     chapterHeading.font = .headline
-                    chapterHeading.foregroundColor = .primary
+                    chapterHeading.foregroundColor = .secondary
                     result.append(chapterHeading)
                 }
             }
