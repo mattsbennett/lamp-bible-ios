@@ -801,7 +801,7 @@ struct NoteSectionCell: View {
                         }
                     }
                     .font(.subheadline)
-                    .foregroundColor(.blue)
+                    .foregroundColor(.accentColor)
                 }
                 .padding(.vertical, 4)
             }
@@ -1703,7 +1703,7 @@ struct ToolPanelView: View {
                                 .fontWeight(.medium)
                             Spacer()
                             Text("Resolve")
-                                .foregroundColor(.blue)
+                                .foregroundColor(.accentColor)
                             Image(systemName: "chevron.right")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
@@ -1735,7 +1735,7 @@ struct ToolPanelView: View {
                                     Image(systemName: "plus.circle")
                                     Text("Add verse note")
                                 }
-                                .foregroundColor(.blue)
+                                .foregroundColor(.accentColor)
                             }
                             .padding(.top, 8)
                         }
@@ -1808,7 +1808,7 @@ struct ToolPanelView: View {
                                     }
                                 }
                                 .font(.subheadline)
-                                .foregroundColor(.blue)
+                                .foregroundColor(.accentColor)
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
@@ -1833,7 +1833,7 @@ struct ToolPanelView: View {
                 }
             }
             .font(.subheadline)
-            .foregroundColor(.blue)
+            .foregroundColor(.accentColor)
         }
         .padding(.vertical, 4)
     }
