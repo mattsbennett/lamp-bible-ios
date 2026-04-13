@@ -2473,7 +2473,11 @@ struct ReaderView: View {
             .onChange(of: showingOptionsMenu) { _, isShowing in
                 if !isShowing && pendingThemeEdit {
                     pendingThemeEdit = false
-                    showingThemeEditor = true
+                    // Delay to allow popover dismissal animation to complete
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(100))
+                        showingThemeEditor = true
+                    }
                 }
             }
             .safeAreaInset(edge: .top) {
