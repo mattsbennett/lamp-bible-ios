@@ -14,6 +14,7 @@ struct HighlightSetPickerView: View {
     @State private var showingNewSetSheet = false
     @State private var setToDelete: HighlightSet?
     @State private var showingDeleteConfirmation = false
+    @State private var setForThemes: HighlightSet?
 
     var body: some View {
         NavigationView {
@@ -30,6 +31,9 @@ struct HighlightSetPickerView: View {
                             onSelect: {
                                 highlightManager.selectSet(set.id)
                                 dismiss()
+                            },
+                            onEditThemes: {
+                                setForThemes = set
                             }
                         )
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -41,6 +45,11 @@ struct HighlightSetPickerView: View {
                             }
                         }
                     }
+                }
+            }
+            .sheet(item: $setForThemes) { set in
+                NavigationStack {
+                    HighlightThemesListView(set: set)
                 }
             }
             .navigationTitle("Highlight Sets")
@@ -91,6 +100,7 @@ struct HighlightSetRow: View {
     let set: HighlightSet
     let isSelected: Bool
     let onSelect: () -> Void
+    var onEditThemes: (() -> Void)? = nil
 
     var body: some View {
         Button(action: onSelect) {
@@ -106,11 +116,18 @@ struct HighlightSetRow: View {
                             .lineLimit(1)
                     }
 
-                    // Show highlight count
-                    if let count = highlightCount {
-                        Text("\(count) highlight\(count == 1 ? "" : "s")")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
+                    // Show highlight and theme counts
+                    HStack(spacing: 8) {
+                        if let count = highlightCount {
+                            Text("\(count) highlight\(count == 1 ? "" : "s")")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        if let themeCount = themeCount, themeCount > 0 {
+                            Text("\(themeCount) theme\(themeCount == 1 ? "" : "s")")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
 
@@ -123,10 +140,23 @@ struct HighlightSetRow: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if let editThemes = onEditThemes {
+                Button {
+                    editThemes()
+                } label: {
+                    Label("Edit Themes", systemImage: "tag")
+                }
+            }
+        }
     }
 
     private var highlightCount: Int? {
         try? ModuleDatabase.shared.getHighlightCount(setId: set.id)
+    }
+
+    private var themeCount: Int? {
+        try? ModuleDatabase.shared.getHighlightThemes(setId: set.id).count
     }
 }
 

@@ -39,6 +39,9 @@ struct HighlightColorPickerView: View {
     @ObservedObject var highlightManager = HighlightManager.shared
     @State private var colors: [HighlightColor] = []
     @State private var draggingColor: HighlightColor?
+    @State private var themes: [String: HighlightTheme] = [:] // key: "colorHex_style"
+    @State private var colorForThemeEdit: HighlightColor?
+    @State private var showingThemeEditor = false
 
     let onSelect: (HighlightColor) -> Void
 
@@ -56,6 +59,7 @@ struct HighlightColorPickerView: View {
                 ForEach(HighlightStyle.allCases, id: \.rawValue) { style in
                     Button(action: {
                         highlightManager.selectStyle(style)
+                        loadThemes() // Reload themes when style changes
                     }) {
                         VStack(spacing: 4) {
                             style.icon
@@ -91,7 +95,12 @@ struct HighlightColorPickerView: View {
                         colors: $colors,
                         onSelect: { onSelect(color) },
                         onDelete: { deleteColor(color) },
-                        onReorder: { saveColors() }
+                        onReorder: { saveColors() },
+                        themeName: themeNameFor(color: color),
+                        onEditTheme: highlightManager.activeSetId != nil ? {
+                            colorForThemeEdit = color
+                            showingThemeEditor = true
+                        } : nil
                     )
                 }
 
@@ -108,14 +117,64 @@ struct HighlightColorPickerView: View {
         .presentationCompactAdaptation(.popover)
         .onAppear {
             loadColors()
+            loadThemes()
         }
         .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
             loadColors()
+            loadThemes()
+        }
+        .sheet(isPresented: $showingThemeEditor) {
+            if let color = colorForThemeEdit, let setId = highlightManager.activeSetId {
+                let existingTheme = themeFor(color: color)
+                HighlightThemeEditorSheet(
+                    setId: setId,
+                    color: color,
+                    style: highlightManager.selectedStyle,
+                    existingTheme: existingTheme
+                ) { theme in
+                    try? ModuleDatabase.shared.saveHighlightTheme(theme)
+                    loadThemes()
+                    scheduleSyncForActiveSet()
+                }
+            }
         }
     }
 
     private func loadColors() {
         colors = HighlightColorManager.shared.getColors()
+    }
+
+    private func loadThemes() {
+        guard let setId = highlightManager.activeSetId else {
+            themes = [:]
+            return
+        }
+
+        if let setThemes = try? ModuleDatabase.shared.getHighlightThemes(setId: setId) {
+            var themeMap: [String: HighlightTheme] = [:]
+            for theme in setThemes {
+                let key = "\(theme.color)_\(theme.style)"
+                themeMap[key] = theme
+            }
+            themes = themeMap
+        }
+    }
+
+    private func themeFor(color: HighlightColor) -> HighlightTheme? {
+        let key = "\(color.hex.uppercased())_\(highlightManager.selectedStyle.rawValue)"
+        return themes[key]
+    }
+
+    private func themeNameFor(color: HighlightColor) -> String? {
+        themeFor(color: color)?.name
+    }
+
+    private func scheduleSyncForActiveSet() {
+        guard let setId = highlightManager.activeSetId,
+              let set = try? ModuleDatabase.shared.getHighlightSet(id: setId) else { return }
+        Task {
+            try? await ModuleSyncManager.shared.exportModule(id: set.moduleId)
+        }
     }
 
     private func addColor(_ color: HighlightColor) {
@@ -213,14 +272,27 @@ struct DraggableColorSwatch: View {
     let onSelect: () -> Void
     let onDelete: () -> Void
     let onReorder: () -> Void
+    var themeName: String? = nil
+    var onEditTheme: (() -> Void)? = nil
 
     var body: some View {
-        ColorSwatchButton(
-            color: color,
-            isSelected: isSelected,
-            action: onSelect
-        )
-        .opacity(draggingColor == color ? 0.5 : 1.0)
+        VStack(spacing: 2) {
+            ColorSwatchButton(
+                color: color,
+                isSelected: isSelected,
+                action: onSelect
+            )
+            .opacity(draggingColor == color ? 0.5 : 1.0)
+
+            // Show theme name if available
+            if let name = themeName {
+                Text(name)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: 40)
+            }
+        }
         .onDrag {
             draggingColor = color
             return NSItemProvider(object: color.hex as NSString)
@@ -232,6 +304,14 @@ struct DraggableColorSwatch: View {
             onReorder: onReorder
         ))
         .contextMenu {
+            if let editTheme = onEditTheme {
+                Button {
+                    editTheme()
+                } label: {
+                    Label(themeName != nil ? "Edit Theme" : "Add Theme", systemImage: "tag")
+                }
+            }
+
             Button(role: .destructive) {
                 onDelete()
             } label: {
