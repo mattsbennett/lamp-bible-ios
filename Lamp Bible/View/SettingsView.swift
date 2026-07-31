@@ -886,7 +886,7 @@ struct WebDAVConfigSheet: View {
             )
 
             // Reconfigure storage
-            await SyncCoordinator.shared.configureStorage()
+            SyncCoordinator.shared.configureStorage()
 
             onDone(true)
         } catch {

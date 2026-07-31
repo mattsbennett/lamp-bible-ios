@@ -15,6 +15,14 @@ enum SyncBackend: String, Codable, CaseIterable {
     case webdav = "webdav"
     case none = "none"
 
+    var usesRemoteStorage: Bool {
+        self != .none
+    }
+
+    var usesICloudDocuments: Bool {
+        self == .icloudDrive
+    }
+
     var displayName: String {
         switch self {
         case .icloudDrive: return "iCloud Drive"
@@ -35,6 +43,68 @@ enum SyncBackend: String, Codable, CaseIterable {
     }
 }
 
+// MARK: - Legacy Backend Resolution
+
+/// Result of a read-only inspection of the app's iCloud Documents container.
+enum ICloudContentState: Equatable {
+    case hasContent
+    case empty
+    case unavailable
+}
+
+/// Resolves the nullable backend used by builds that predate an explicitly
+/// persisted local/iCloud/WebDAV choice.
+struct LegacySyncBackendResolver {
+    static func requiresICloudInspection(
+        storedSettings: SyncSettings?,
+        isExistingInstallation: Bool
+    ) -> Bool {
+        guard isExistingInstallation else {
+            return false
+        }
+        guard let storedSettings else {
+            return true
+        }
+        return !(storedSettings.backendSelectionWasExplicit ?? false)
+            && storedSettings.backend == .none
+    }
+
+    static func resolve(
+        storedSettings: SyncSettings?,
+        iCloudContentState: ICloudContentState,
+        isExistingInstallation: Bool
+    ) -> SyncSettings {
+        if let storedSettings,
+           storedSettings.backendSelectionWasExplicit == true {
+            return storedSettings
+        }
+
+        var resolvedSettings = storedSettings ?? SyncSettings()
+        let backend: SyncBackend
+        if let storedSettings, storedSettings.backend != .none {
+            // Legacy remote choices were necessarily explicit.
+            backend = storedSettings.backend
+        } else {
+            switch iCloudContentState {
+            case .hasContent:
+                backend = .icloudDrive
+            case .empty:
+                backend = .none
+            case .unavailable:
+                // Existing installations historically wrote to iCloud even
+                // when their persisted/default setting appeared local.
+                backend = isExistingInstallation ? .icloudDrive : .none
+            }
+        }
+
+        resolvedSettings.backend = backend
+        resolvedSettings.backendSelectionWasExplicit = true
+        resolvedSettings.legacyICloudReconciliationPending =
+            backend == .icloudDrive ? true : nil
+        return resolvedSettings
+    }
+}
+
 // MARK: - Sync Settings
 
 /// User's sync configuration
@@ -46,6 +116,8 @@ struct SyncSettings: Codable {
     var lastSyncDate: Date?
     var lastEditableSyncDate: Date?
     var lastModuleSyncDate: Date?
+    var backendSelectionWasExplicit: Bool?
+    var legacyICloudReconciliationPending: Bool?
 
     init(
         backend: SyncBackend = .none,
@@ -53,7 +125,9 @@ struct SyncSettings: Codable {
         webdavUsername: String? = nil,
         lastSyncDate: Date? = nil,
         lastEditableSyncDate: Date? = nil,
-        lastModuleSyncDate: Date? = nil
+        lastModuleSyncDate: Date? = nil,
+        backendSelectionWasExplicit: Bool? = nil,
+        legacyICloudReconciliationPending: Bool? = nil
     ) {
         self.backend = backend
         self.webdavURL = webdavURL
@@ -61,10 +135,12 @@ struct SyncSettings: Codable {
         self.lastSyncDate = lastSyncDate
         self.lastEditableSyncDate = lastEditableSyncDate
         self.lastModuleSyncDate = lastModuleSyncDate
+        self.backendSelectionWasExplicit = backendSelectionWasExplicit
+        self.legacyICloudReconciliationPending = legacyICloudReconciliationPending
     }
 
     static var `default`: SyncSettings {
-        SyncSettings(backend: .none)
+        SyncSettings(backend: .none, backendSelectionWasExplicit: true)
     }
 }
 

@@ -13,10 +13,10 @@ import Combine
 class ModuleSyncManager: ObservableObject {
     static let shared = ModuleSyncManager()
 
-    /// Get the active storage provider - gets from SyncCoordinator, falls back to iCloud
+    /// Get the explicitly configured remote storage provider.
     @MainActor
-    func getStorage() -> ModuleStorage {
-        SyncCoordinator.shared.activeStorage ?? ICloudModuleStorage.shared
+    func getStorage() -> ModuleStorage? {
+        SyncCoordinator.shared.activeStorage
     }
 
     private let database = ModuleDatabase.shared
@@ -41,7 +41,8 @@ class ModuleSyncManager: ObservableObject {
 
     /// Check if configured storage is available
     func isAvailable() async -> Bool {
-        await getStorage().isAvailable()
+        guard let storage = await getStorage() else { return false }
+        return await storage.isAvailable()
     }
 
     // MARK: - Full Sync
@@ -51,6 +52,7 @@ class ModuleSyncManager: ObservableObject {
     /// then translations (most likely to be needed immediately),
     /// then everything else.
     func syncAll() async {
+        guard let _ = await getStorage() else { return }
         guard !isSyncing else { return }
         isSyncing = true
         defer { isSyncing = false }
@@ -65,15 +67,18 @@ class ModuleSyncManager: ObservableObject {
             print("Failed to sync translation modules: \(error)")
         }
 
-        // 3. Process markdown note imports from iCloud/Import/ directory
-        do {
-            let importResults = try await NotesImportExportManager.shared.processImports()
-            if !importResults.isEmpty {
-                let successCount = importResults.filter { $0.success }.count
-                print("[Sync] Imported \(successCount) note file(s) from Import directory")
+        // 3. The markdown drop folder is an iCloud Documents feature.
+        let backend = await SyncCoordinator.shared.settings.backend
+        if backend.usesICloudDocuments {
+            do {
+                let importResults = try await NotesImportExportManager.shared.processImports()
+                if !importResults.isEmpty {
+                    let successCount = importResults.filter { $0.success }.count
+                    print("[Sync] Imported \(successCount) note file(s) from Import directory")
+                }
+            } catch {
+                print("[Sync] Note import error: \(error)")
             }
-        } catch {
-            print("[Sync] Note import error: \(error)")
         }
 
         // 4. Remaining module types
@@ -88,18 +93,26 @@ class ModuleSyncManager: ObservableObject {
 
     /// Sync all modules of a specific type
     func syncModuleType(_ type: ModuleType) async throws {
-        guard await getStorage().isAvailable() else {
-            print("iCloud storage not available for \(type.rawValue)")
+        guard let storage = await getStorage() else {
+            print("Remote storage not available for \(type.rawValue)")
+            return
+        }
+        try await syncModuleType(type, using: storage)
+    }
+
+    func syncModuleType(_ type: ModuleType, using storage: ModuleStorage) async throws {
+        guard await storage.isAvailable() else {
+            print("Remote storage not available for \(type.rawValue)")
             return
         }
 
         // Debug: Print the directory being scanned
-        if let dirURL = await getStorage().directoryURL(for: type) {
+        if let dirURL = storage.directoryURL(for: type) {
             print("Scanning directory for \(type.rawValue): \(dirURL.path)")
         }
 
-        // Get files from iCloud
-        let cloudFiles = try await getStorage().listModuleFiles(type: type)
+        // Get files from the selected remote provider
+        let cloudFiles = try await storage.listModuleFiles(type: type)
         print("Found \(cloudFiles.count) \(type.rawValue) files: \(cloudFiles.map { $0.id })")
 
         // Get registered modules from database
@@ -115,11 +128,15 @@ class ModuleSyncManager: ObservableObject {
 
             if isNew || needsUpdate {
                 do {
-                    try await importModuleFromCloud(fileInfo: fileInfo, type: type)
+                    try await importModuleFromCloud(
+                        fileInfo: fileInfo,
+                        type: type,
+                        storage: storage
+                    )
 
                     // If we imported a legacy bible-notes file, delete it and export the new notes file
                     if type == .notes && fileInfo.id == "bible-notes" {
-                        try? await getStorage().deleteModuleFile(type: .notes, fileName: "bible-notes.json")
+                        try? await storage.deleteModuleFile(type: .notes, fileName: "bible-notes.json")
                         try? await exportModule(id: "notes")
                         print("[NoteSync] Migrated bible-notes.json to notes.json")
                     }
@@ -129,27 +146,15 @@ class ModuleSyncManager: ObservableObject {
             }
         }
 
-        // Remove modules that were previously synced but no longer exist in cloud
-        // (Only delete if the module has a lastSynced timestamp, meaning it was synced before)
+        // Remote absence is not a tombstone. It may indicate a backend switch,
+        // partial migration, or temporarily incomplete remote storage.
         var cloudIds = Set(cloudFiles.map { $0.id })
         // If bible-notes exists in cloud, consider "notes" as present
         if cloudIds.contains("bible-notes") {
             cloudIds.insert("notes")
         }
         for module in registeredModules where !cloudIds.contains(module.id) {
-            // Only delete if this module was previously synced to cloud
-            // If lastSynced is nil, it was created locally but never synced - don't delete it
-            guard module.lastSynced != nil else {
-                print("[Sync] Preserving local-only module \(module.id) (never synced to cloud)")
-                continue
-            }
-            do {
-                print("[Sync] Deleting module \(module.id) (was synced but no longer in cloud)")
-                try database.deleteAllEntriesForModule(moduleId: module.id)
-                try database.deleteModule(id: module.id)
-            } catch {
-                print("Failed to delete module \(module.id): \(error)")
-            }
+            print("[Sync] Preserving local module \(module.id); remote absence is not a deletion marker")
         }
     }
 
@@ -161,13 +166,14 @@ class ModuleSyncManager: ObservableObject {
             throw ModuleSyncError.moduleNotFound(id)
         }
 
-        guard await getStorage().isAvailable() else {
+        guard let storage = await getStorage(),
+              await storage.isAvailable() else {
             throw ModuleStorageError.notAvailable
         }
 
         // Use the stored file path from module metadata
         let fileName = module.filePath
-        let cloudHash = try await getStorage().getFileHash(type: module.type, fileName: fileName)
+        let cloudHash = try await storage.getFileHash(type: module.type, fileName: fileName)
 
         if cloudHash != module.fileHash {
             // Cloud has changes - reimport
@@ -183,10 +189,14 @@ class ModuleSyncManager: ObservableObject {
                     fileHash: cloudHash,
                     modificationDate: nil
                 )
-                try await importModuleFromSQLite(fileInfo: fileInfo, type: module.type)
+                try await importModuleFromSQLite(
+                    fileInfo: fileInfo,
+                    type: module.type,
+                    storage: storage
+                )
             } else {
                 // JSON format
-                let data = try await getStorage().readModuleFile(type: module.type, fileName: fileName)
+                let data = try await storage.readModuleFile(type: module.type, fileName: fileName)
                 try await importModuleData(id: id, type: module.type, data: data, hash: cloudHash)
             }
         }
@@ -194,24 +204,36 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Import from Cloud
 
-    private func importModuleFromCloud(fileInfo: ModuleFileInfo, type: ModuleType) async throws {
+    private func importModuleFromCloud(
+        fileInfo: ModuleFileInfo,
+        type: ModuleType,
+        storage: ModuleStorage
+    ) async throws {
         // Check file extension to determine import method
         let isCompressedDb = fileInfo.filePath.hasSuffix(".lamp") || fileInfo.filePath.hasSuffix(".db.zlib")
         let fileExtension = (fileInfo.filePath as NSString).pathExtension.lowercased()
 
         if fileExtension == "db" || isCompressedDb {
             // SQLite format (compressed or uncompressed) - use fast ATTACH DATABASE method
-            try await importModuleFromSQLite(fileInfo: fileInfo, type: type)
+            try await importModuleFromSQLite(
+                fileInfo: fileInfo,
+                type: type,
+                storage: storage
+            )
         } else {
             // JSON format - use traditional JSON decoding
-            let data = try await getStorage().readModuleFile(type: type, fileName: fileInfo.filePath)
+            let data = try await storage.readModuleFile(type: type, fileName: fileInfo.filePath)
             try await importModuleData(id: fileInfo.id, type: type, data: data, hash: fileInfo.fileHash)
         }
     }
 
-    private func importModuleFromSQLite(fileInfo: ModuleFileInfo, type: ModuleType) async throws {
+    private func importModuleFromSQLite(
+        fileInfo: ModuleFileInfo,
+        type: ModuleType,
+        storage: ModuleStorage
+    ) async throws {
         // Download the .db or .lamp file to temporary location
-        let data = try await getStorage().readModuleFile(type: type, fileName: fileInfo.filePath)
+        let data = try await storage.readModuleFile(type: type, fileName: fileInfo.filePath)
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
 
         // Decompress if it's a compressed file (.lamp or .db.zlib)
@@ -220,6 +242,32 @@ class ModuleSyncManager: ObservableObject {
             try decompressedData.write(to: tempURL)
         } else {
             try data.write(to: tempURL)
+        }
+
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        // Editable modules need reconciliation before any local rows are removed.
+        if type == .notes {
+            try await importNoteModuleFromSQLite(
+                fileInfo: fileInfo,
+                tempURL: tempURL
+            )
+            return
+        }
+        if type == .devotional {
+            try await importDevotionalModuleFromSQLite(
+                fileInfo: fileInfo,
+                tempURL: tempURL
+            )
+            try await downloadDevotionalMedia(moduleId: fileInfo.id, from: storage)
+            return
+        }
+        if type == .highlights,
+           try shouldPreserveLocalHighlights(moduleId: fileInfo.id, tempURL: tempURL) {
+            print("[HighlightSync] Preserving newer local highlight set \(fileInfo.id)")
+            return
         }
 
         // Create module metadata FIRST (entries have foreign key to modules table)
@@ -721,8 +769,108 @@ class ModuleSyncManager: ObservableObject {
 
         // Download media files for devotional modules
         if type == .devotional {
-            try await downloadDevotionalMedia(moduleId: fileInfo.id)
+            try await downloadDevotionalMedia(moduleId: fileInfo.id, from: storage)
         }
+    }
+
+    private func importNoteModuleFromSQLite(
+        fileInfo: ModuleFileInfo,
+        tempURL: URL
+    ) async throws {
+        let remoteQueue = try DatabaseQueue(path: tempURL.path)
+        let remoteEntries = try await remoteQueue.read { db in
+            try NoteEntry.fetchAll(db)
+        }
+        let localEntries = try database.read { db in
+            try NoteEntry
+                .filter(Column("module_id") == fileInfo.id)
+                .fetchAll(db)
+        }
+        let mergeResult = mergeNoteEntries(
+            local: localEntries,
+            cloud: remoteEntries,
+            moduleId: fileInfo.id
+        )
+
+        try await createModuleMetadata(
+            id: fileInfo.id,
+            type: .notes,
+            hash: fileInfo.fileHash,
+            tempURL: tempURL
+        )
+        try database.deleteAllEntriesForModule(moduleId: fileInfo.id)
+        try database.importNoteEntries(mergeResult.entriesToSave)
+
+        if !mergeResult.conflicts.isEmpty {
+            await MainActor.run {
+                pendingConflicts = mergeResult.conflicts
+                conflictModuleId = fileInfo.id
+            }
+        }
+
+        print(
+            "[NoteSync] SQLite merge: \(mergeResult.cloudMergeCount) remote, "
+            + "\(mergeResult.localKeptCount) local, \(mergeResult.conflicts.count) conflicts"
+        )
+    }
+
+    private func importDevotionalModuleFromSQLite(
+        fileInfo: ModuleFileInfo,
+        tempURL: URL
+    ) async throws {
+        let remoteQueue = try DatabaseQueue(path: tempURL.path)
+        let remoteEntries = try await remoteQueue.read { db in
+            try DevotionalEntry.fetchAll(db)
+        }
+        let localEntries = try database.read { db in
+            try DevotionalEntry
+                .filter(Column("module_id") == fileInfo.id)
+                .fetchAll(db)
+        }
+        let mergeResult = mergeDevotionalEntries(
+            local: localEntries,
+            cloud: remoteEntries,
+            moduleId: fileInfo.id
+        )
+
+        try await createModuleMetadata(
+            id: fileInfo.id,
+            type: .devotional,
+            hash: fileInfo.fileHash,
+            tempURL: tempURL
+        )
+        try database.deleteAllEntriesForModule(moduleId: fileInfo.id)
+        try database.importDevotionalEntries(mergeResult.entriesToSave)
+
+        if !mergeResult.conflicts.isEmpty {
+            await MainActor.run {
+                pendingDevotionalConflicts = mergeResult.conflicts
+                devotionalConflictModuleId = fileInfo.id
+            }
+        }
+
+        print(
+            "[DevotionalSync] SQLite merge: \(mergeResult.cloudMergeCount) remote, "
+            + "\(mergeResult.localKeptCount) local, \(mergeResult.conflicts.count) conflicts"
+        )
+    }
+
+    private func shouldPreserveLocalHighlights(
+        moduleId: String,
+        tempURL: URL
+    ) throws -> Bool {
+        guard let localSet = try database.getHighlightSets(forModule: moduleId).first else {
+            return false
+        }
+
+        let remoteQueue = try DatabaseQueue(path: tempURL.path)
+        let remoteModified = try remoteQueue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT last_modified FROM highlight_meta LIMIT 1"
+            ) ?? 0
+        }
+        return localSet.lastModified >= remoteModified
     }
 
     private func createModuleMetadata(id: String, type: ModuleType, hash: String?, tempURL: URL) async throws {
@@ -1898,9 +2046,9 @@ class ModuleSyncManager: ObservableObject {
         // Import using ATTACH DATABASE
         try await importFromTempDatabase(tempURL: tempURL, fileInfo: fileInfo, type: moduleType)
 
-        // If cloud storage is available, also write there for sync
+        // If remote storage is configured, also write there for sync.
         let storage = await MainActor.run { getStorage() }
-        if await storage.isAvailable() {
+        if let storage, await storage.isAvailable() {
             try await storage.writeModuleFile(type: moduleType, fileName: fileName, data: compressedData)
         }
 
@@ -2053,8 +2201,16 @@ class ModuleSyncManager: ObservableObject {
         }
     }
 
-    /// Export an editable module to iCloud
+    /// Export an editable module to the configured remote provider.
+    /// Local-only mode intentionally treats this as a no-op.
     func exportModule(id: String) async throws {
+        guard let storage = await getStorage() else { return }
+        try await exportModule(id: id, to: storage)
+    }
+
+    /// Export an editable module to a specific provider. Used by migrations so
+    /// data is written before the active backend changes.
+    func exportModule(id: String, to storage: ModuleStorage) async throws {
         guard let module = try database.getModule(id: id) else {
             throw ModuleSyncError.moduleNotFound(id)
         }
@@ -2063,7 +2219,7 @@ class ModuleSyncManager: ObservableObject {
             throw ModuleSyncError.moduleNotEditable(id)
         }
 
-        guard await getStorage().isAvailable() else {
+        guard await storage.isAvailable() else {
             throw ModuleStorageError.notAvailable
         }
 
@@ -2102,7 +2258,7 @@ class ModuleSyncManager: ObservableObject {
             let jsonFileName = "\(id).json"
 
             // Check SQLite format first
-            if let cloudData = try? await getStorage().readModuleFile(type: module.type, fileName: sqliteFileName) {
+            if let cloudData = try? await storage.readModuleFile(type: module.type, fileName: sqliteFileName) {
                 let cloudEntryCount = try? countEntriesInCloudSQLite(cloudData, type: module.type)
                 if let count = cloudEntryCount, count > 0 {
                     print("[Export] BLOCKED: Refusing to overwrite \(count) cloud entries with empty local data for \(id)")
@@ -2110,7 +2266,7 @@ class ModuleSyncManager: ObservableObject {
                 }
             }
             // Also check legacy JSON format
-            else if let cloudData = try? await getStorage().readModuleFile(type: module.type, fileName: jsonFileName) {
+            else if let cloudData = try? await storage.readModuleFile(type: module.type, fileName: jsonFileName) {
                 let decoder = JSONDecoder()
                 if module.type == .notes,
                    let cloudFile = try? decoder.decode(NoteModuleFile.self, from: cloudData),
@@ -2127,10 +2283,10 @@ class ModuleSyncManager: ObservableObject {
             }
         }
 
-        try await getStorage().writeModuleFile(type: module.type, fileName: fileName, data: data)
+        try await storage.writeModuleFile(type: module.type, fileName: fileName, data: data)
 
         // Update hash after export
-        if let newHash = try await getStorage().getFileHash(type: module.type, fileName: fileName) {
+        if let newHash = try await storage.getFileHash(type: module.type, fileName: fileName) {
             var updatedModule = module
             updatedModule.fileHash = newHash
             updatedModule.lastSynced = Int(Date().timeIntervalSince1970)
@@ -2139,7 +2295,7 @@ class ModuleSyncManager: ObservableObject {
 
         // Sync media files for devotional modules
         if module.type == .devotional {
-            try await uploadDevotionalMedia(moduleId: module.id)
+            try await uploadDevotionalMedia(moduleId: module.id, to: storage)
         }
     }
 
@@ -2534,13 +2690,46 @@ class ModuleSyncManager: ObservableObject {
         }
     }
 
+    // MARK: - Backend Reconciliation
+
+    func reconcileEditableModules(with storage: ModuleStorage) async throws {
+        for type in [ModuleType.notes, .devotional, .highlights] {
+            try await syncModuleType(type, using: storage)
+        }
+    }
+
+    func exportAllEditableModules(to storage: ModuleStorage) async throws {
+        let modules = try database.getAllModules().filter {
+            $0.isEditable
+                && ($0.type == .notes
+                    || $0.type == .devotional
+                    || $0.type == .highlights)
+        }
+
+        var firstError: Error?
+        for module in modules {
+            do {
+                try await exportModule(id: module.id, to: storage)
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
+                print("[Migration] Failed to export \(module.id): \(error)")
+            }
+        }
+
+        if let firstError {
+            throw firstError
+        }
+    }
+
     // MARK: - Create Default Notes Module
 
     /// Create the default "My Notes" module if it doesn't exist
     func ensureDefaultNotesModule() async throws {
         print("[Notes] ensureDefaultNotesModule starting...")
 
-        // First sync notes from iCloud to get any existing notes
+        // First sync notes from the configured provider, if any.
         try await syncModuleType(.notes)
         print("[Notes] syncModuleType(.notes) completed")
 
@@ -2560,10 +2749,7 @@ class ModuleSyncManager: ObservableObject {
             )
             try database.saveModule(defaultModule)
 
-            // Export empty module to iCloud
-            if await getStorage().isAvailable() {
-                try await exportModule(id: defaultModule.id)
-            }
+            try await exportModule(id: defaultModule.id)
         }
     }
 
@@ -2647,10 +2833,7 @@ class ModuleSyncManager: ObservableObject {
             )
             try database.saveModule(defaultModule)
 
-            // Export empty module to iCloud
-            if await getStorage().isAvailable() {
-                try await exportModule(id: defaultModule.id)
-            }
+            try await exportModule(id: defaultModule.id)
         }
     }
 
@@ -2674,7 +2857,11 @@ class ModuleSyncManager: ObservableObject {
 
     /// Upload all media files for a devotional module to the sync provider
     func uploadDevotionalMedia(moduleId: String) async throws {
-        let storage = await getStorage()
+        guard let storage = await getStorage() else { return }
+        try await uploadDevotionalMedia(moduleId: moduleId, to: storage)
+    }
+
+    func uploadDevotionalMedia(moduleId: String, to storage: ModuleStorage) async throws {
         guard await storage.isAvailable() else {
             print("[MediaSync] Sync provider not available")
             return
@@ -2723,7 +2910,11 @@ class ModuleSyncManager: ObservableObject {
 
     /// Download all media files for a devotional module from the sync provider
     func downloadDevotionalMedia(moduleId: String) async throws {
-        let storage = await getStorage()
+        guard let storage = await getStorage() else { return }
+        try await downloadDevotionalMedia(moduleId: moduleId, from: storage)
+    }
+
+    func downloadDevotionalMedia(moduleId: String, from storage: ModuleStorage) async throws {
         guard await storage.isAvailable() else {
             print("[MediaSync] Sync provider not available")
             return

@@ -27,6 +27,96 @@ class ICloudModuleStorage: ModuleStorage {
         return container.appendingPathComponent("Documents")
     }
 
+    /// Inspect existing iCloud content without creating directories or files.
+    func probeExistingContent() -> ICloudContentState {
+        guard fileManager.ubiquityIdentityToken != nil else {
+            return .unavailable
+        }
+        guard let documentsURL else {
+            return .unavailable
+        }
+        return Self.inspectExistingContent(
+            documentsURL: documentsURL,
+            fileManager: fileManager
+        )
+    }
+
+    static func inspectExistingContent(
+        documentsURL: URL,
+        fileManager: FileManager = .default
+    ) -> ICloudContentState {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: documentsURL.path, isDirectory: &isDirectory) else {
+            return .empty
+        }
+        guard isDirectory.boolValue else {
+            return .unavailable
+        }
+
+        let userSettingsNames = [
+            "user-settings.db",
+            ".user-settings.db.icloud"
+        ]
+        let userDataURL = documentsURL.appendingPathComponent("UserData")
+        if userSettingsNames.contains(where: {
+            fileManager.fileExists(atPath: userDataURL.appendingPathComponent($0).path)
+        }) {
+            return .hasContent
+        }
+
+        let moduleDirectories = [
+            "Translations",
+            "Dictionaries",
+            "Commentaries",
+            "Devotionals",
+            "Notes",
+            "Plans",
+            "Highlights",
+            "Quizzes"
+        ]
+
+        for directoryName in moduleDirectories {
+            let directoryURL = documentsURL.appendingPathComponent(directoryName)
+            guard fileManager.fileExists(atPath: directoryURL.path) else {
+                continue
+            }
+
+            let contents: [URL]
+            do {
+                contents = try fileManager.contentsOfDirectory(
+                    at: directoryURL,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: []
+                )
+            } catch {
+                return .unavailable
+            }
+
+            if contents.contains(where: isMeaningfulModuleFile) {
+                return .hasContent
+            }
+        }
+
+        return .empty
+    }
+
+    private static func isMeaningfulModuleFile(_ url: URL) -> Bool {
+        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            return false
+        }
+
+        var fileName = url.lastPathComponent.lowercased()
+        if fileName.hasPrefix("."), fileName.hasSuffix(".icloud") {
+            fileName.removeFirst()
+            fileName.removeLast(".icloud".count)
+        }
+
+        return fileName.hasSuffix(".json")
+            || fileName.hasSuffix(".db")
+            || fileName.hasSuffix(".db.zlib")
+            || fileName.hasSuffix(".lamp")
+    }
+
     func directoryURL(for type: ModuleType) -> URL? {
         guard let docs = documentsURL else { return nil }
         return docs.appendingPathComponent(directoryName(for: type))

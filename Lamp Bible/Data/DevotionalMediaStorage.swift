@@ -269,6 +269,9 @@ class DevotionalMediaStorage {
 
     /// Upload a media file to iCloud
     func uploadMediaToCloud(_ mediaRef: DevotionalMediaReference, devotionalId: String, moduleId: String) async throws {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw MediaStorageError.cloudNotAvailable
+        }
         guard let cloudDir = iCloudMediaDirectory(moduleId: moduleId) else {
             throw MediaStorageError.cloudNotAvailable
         }
@@ -297,6 +300,9 @@ class DevotionalMediaStorage {
 
     /// Download a media file from iCloud to local cache
     func downloadMediaFromCloud(_ mediaRef: DevotionalMediaReference, devotionalId: String, moduleId: String) async throws {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw MediaStorageError.cloudNotAvailable
+        }
         guard let cloudDir = iCloudMediaDirectory(moduleId: moduleId) else {
             throw MediaStorageError.cloudNotAvailable
         }

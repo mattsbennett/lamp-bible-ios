@@ -51,6 +51,9 @@ class DevotionalImportExportManager {
     /// Process all markdown files in the Import/Devotionals directory
     /// Returns list of imported devotionals, deletes files after successful import
     func processImports(moduleId: String = "devotionals") async throws -> [ImportResult] {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            return []
+        }
         print("[DevotionalImport] processImports() called")
         guard let importDir = importDirectoryURL else {
             print("[DevotionalImport] Import directory not available")
@@ -235,6 +238,9 @@ class DevotionalImportExportManager {
 
     /// Export a single devotional to markdown (with media if present)
     func exportDevotional(_ devotional: Devotional, moduleId: String = "devotionals") async throws -> URL {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw ExportError.directoryNotAvailable
+        }
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
@@ -262,6 +268,9 @@ class DevotionalImportExportManager {
 
     /// Export all devotionals from a module (with shared media folder)
     func exportAllDevotionals(moduleId: String) async throws -> [URL] {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw ExportError.directoryNotAvailable
+        }
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
@@ -366,6 +375,9 @@ class DevotionalImportExportManager {
 
     /// Export all devotionals to a single combined markdown file
     func exportAllToSingleFile(moduleId: String) async throws -> URL {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw ExportError.directoryNotAvailable
+        }
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }

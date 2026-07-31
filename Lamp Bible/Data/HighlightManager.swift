@@ -215,9 +215,10 @@ class HighlightManager: ObservableObject {
         try ModuleDatabase.shared.deleteModule(id: moduleId)
 
         // Delete from cloud storage
-        let storage = await ModuleSyncManager.shared.getStorage()
-        let fileName = "\(moduleId).lamp"
-        try? await storage.deleteModuleFile(type: ModuleType.highlights, fileName: fileName)
+        if let storage = await ModuleSyncManager.shared.getStorage() {
+            let fileName = "\(moduleId).lamp"
+            try? await storage.deleteModuleFile(type: ModuleType.highlights, fileName: fileName)
+        }
 
         // Refresh available sets
         if let translationId = currentTranslationId {

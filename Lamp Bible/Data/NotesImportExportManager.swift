@@ -143,6 +143,9 @@ class NotesImportExportManager {
     /// Process all markdown files in the Import directory
     /// Returns list of imported book names, deletes files after successful import
     func processImports() async throws -> [ImportResult] {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            return []
+        }
         print("[NotesImport] processImports() called")
         guard let importDir = importDirectoryURL else {
             print("[NotesImport] Import directory not available")
@@ -1050,6 +1053,9 @@ class NotesImportExportManager {
 
     /// Export a single book's notes to markdown
     func exportToMarkdown(notesBook: UserNotesBook) async throws -> URL {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw ExportError.directoryNotAvailable
+        }
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
@@ -1310,6 +1316,9 @@ class NotesImportExportManager {
     /// Export all user notes to markdown files
     /// Returns list of exported file URLs
     func exportAllToMarkdown() async throws -> [URL] {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw ExportError.directoryNotAvailable
+        }
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
@@ -1346,6 +1355,9 @@ class NotesImportExportManager {
     /// Export all user notes to a single combined markdown file
     /// Returns the URL of the exported file
     func exportAllToSingleFile() async throws -> URL {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw ExportError.directoryNotAvailable
+        }
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
@@ -1611,6 +1623,9 @@ class NotesImportExportManager {
 
     /// Export notes for a single book with media support
     func exportNotesWithMedia(moduleId: String, bookNumber: Int) async throws -> URL {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw ExportError.directoryNotAvailable
+        }
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
@@ -1641,6 +1656,9 @@ class NotesImportExportManager {
 
     /// Export all notes with media to the export directory
     func exportAllNotesWithMedia(moduleId: String = "notes") async throws -> [URL] {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            throw ExportError.directoryNotAvailable
+        }
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
@@ -1803,6 +1821,9 @@ class NotesImportExportManager {
 
     /// Process imports with media support
     func processImportsWithMedia() async throws -> [ImportResult] {
+        guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
+            return []
+        }
         print("[NotesImport] processImportsWithMedia() called")
         guard let importDir = importDirectoryURL else {
             print("[NotesImport] Import directory not available")

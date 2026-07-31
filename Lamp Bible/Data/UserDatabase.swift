@@ -19,6 +19,7 @@ class UserDatabase {
 
     private var dbQueue: DatabaseQueue?
     private let localURL: URL
+    let databaseExistedAtLaunch: Bool
     private var fileMonitorSource: DispatchSourceFileSystemObject?
     private var fileDescriptor: Int32 = -1
     private var debounceWorkItem: DispatchWorkItem?
@@ -38,6 +39,9 @@ class UserDatabase {
         // Always use local storage - sync happens via ModuleSyncManager
         localURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent("UserData")
+        databaseExistedAtLaunch = FileManager.default.fileExists(
+            atPath: localURL.appendingPathComponent("user.db").path
+        )
 
         setupDatabase()
         startFileMonitoring()

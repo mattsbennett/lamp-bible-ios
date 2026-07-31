@@ -39,19 +39,37 @@ class SyncCoordinator: ObservableObject {
     // MARK: - Initialization
 
     private init() {
-        // Load settings from UserDatabase
-        self.settings = userDatabase.getSyncSettings() ?? .default
+        let storedSettings = userDatabase.getSyncSettings()
+        let shouldInspectICloud = LegacySyncBackendResolver.requiresICloudInspection(
+            storedSettings: storedSettings,
+            isExistingInstallation: userDatabase.databaseExistedAtLaunch
+        )
+        let resolvedSettings = LegacySyncBackendResolver.resolve(
+            storedSettings: storedSettings,
+            iCloudContentState: shouldInspectICloud
+                ? ICloudModuleStorage.shared.probeExistingContent()
+                : .empty,
+            isExistingInstallation: userDatabase.databaseExistedAtLaunch
+        )
+        self.settings = resolvedSettings
 
-        // Configure storage based on settings
-        Task {
-            await configureStorage()
+        // Persist the one-time resolution so future launches never reinterpret it.
+        if !(storedSettings?.backendSelectionWasExplicit ?? false) {
+            do {
+                try userDatabase.saveSyncSettings(resolvedSettings)
+                print("[SyncCoordinator] Resolved legacy backend: \(resolvedSettings.backend)")
+            } catch {
+                print("[SyncCoordinator] Failed to persist resolved backend: \(error)")
+            }
         }
+
+        configureStorage()
     }
 
     // MARK: - Configuration
 
     /// Configure storage provider based on current settings
-    func configureStorage() async {
+    func configureStorage() {
         switch settings.backend {
         case .icloudDrive:
             storage = ICloudModuleStorage.shared
@@ -79,13 +97,15 @@ class SyncCoordinator: ObservableObject {
     func setBackend(_ backend: SyncBackend) async throws {
         var updatedSettings = settings
         updatedSettings.backend = backend
+        updatedSettings.backendSelectionWasExplicit = true
+        updatedSettings.legacyICloudReconciliationPending = nil
         settings = updatedSettings
 
         // Persist settings
         try userDatabase.saveSyncSettings(settings)
 
         // Reconfigure storage
-        await configureStorage()
+        configureStorage()
 
         // Initialize directory structure on new backend
         if backend != .none, let storage = storage {
@@ -134,6 +154,10 @@ class SyncCoordinator: ObservableObject {
 
         // Now switch to the new backend
         try await setBackend(backend)
+
+        if backend.usesRemoteStorage, let storage {
+            try await UserSettingsSyncManager.shared.exportToRemote(storage: storage)
+        }
     }
 
     /// Upload local syncable data to the specified backend
@@ -143,20 +167,40 @@ class SyncCoordinator: ObservableObject {
             throw SyncError.notConfigured
         }
 
-        // Initialize directory structure
-        try? await targetStorage.initializeDirectoryStructure()
+        guard await targetStorage.isAvailable() else {
+            throw SyncError.notAvailable
+        }
+        try await targetStorage.initializeDirectoryStructure()
 
-        // Export notes and devotionals to files and upload
-        // This leverages the existing sync infrastructure
-        // The actual upload happens when we call syncAll() after switching
-        print("[SyncCoordinator] Local data will be synced to \(backend) on next sync")
+        // Merge any existing destination content before writing the combined
+        // editable modules back. This avoids choosing either side wholesale.
+        try await ModuleSyncManager.shared.reconcileEditableModules(with: targetStorage)
+        try await ModuleSyncManager.shared.exportAllEditableModules(to: targetStorage)
+
+        do {
+            try await UserSettingsSyncManager.shared.mergeFromRemote(storage: targetStorage)
+        } catch ModuleStorageError.fileNotFound {
+            // A new destination has no user-settings file yet.
+        }
     }
 
     /// Download data from the specified backend to local storage
     private func downloadDataFromBackend(_ backend: SyncBackend) async throws {
-        // The data is already in the local database from previous syncs
-        // When switching to local-only, we just keep the existing local data
-        print("[SyncCoordinator] Keeping local copy of data from \(backend)")
+        guard let sourceStorage = try createStorage(for: backend) else {
+            throw SyncError.notConfigured
+        }
+        guard await sourceStorage.isAvailable() else {
+            throw SyncError.notAvailable
+        }
+
+        for type in ModuleType.allCases {
+            try await ModuleSyncManager.shared.syncModuleType(type, using: sourceStorage)
+        }
+        do {
+            try await UserSettingsSyncManager.shared.mergeFromRemote(storage: sourceStorage)
+        } catch ModuleStorageError.fileNotFound {
+            // The provider may predate user-settings sync.
+        }
     }
 
     /// Update WebDAV settings
@@ -171,7 +215,7 @@ class SyncCoordinator: ObservableObject {
 
         // Reconfigure if WebDAV is active
         if settings.backend == .webdav {
-            await configureStorage()
+            configureStorage()
         }
     }
 
@@ -179,7 +223,7 @@ class SyncCoordinator: ObservableObject {
     func reloadSettings() async {
         if let savedSettings = userDatabase.getSyncSettings() {
             settings = savedSettings
-            await configureStorage()
+            configureStorage()
             print("[SyncCoordinator] Reloaded settings: backend=\(settings.backend)")
         }
     }
@@ -190,13 +234,18 @@ class SyncCoordinator: ObservableObject {
     /// Delegates to ModuleSyncManager with the configured storage provider
     func syncAll() async throws {
         guard settings.backend != .none else { return }
-        guard storage != nil else {
+        guard let activeStorage = storage else {
             throw SyncError.notConfigured
         }
 
         syncState = .syncing(progress: nil)
 
         do {
+            if settings.legacyICloudReconciliationPending == true {
+                try await ModuleSyncManager.shared.reconcileEditableModules(with: activeStorage)
+                try await ModuleSyncManager.shared.exportAllEditableModules(to: activeStorage)
+            }
+
             // Delegate to existing ModuleSyncManager
             // In the future, this could use storage parameter to allow custom providers
             await ModuleSyncManager.shared.syncAll()
@@ -204,8 +253,10 @@ class SyncCoordinator: ObservableObject {
             // Update last sync date
             var updatedSettings = settings
             updatedSettings.lastSyncDate = Date()
+            updatedSettings.legacyICloudReconciliationPending = nil
             settings = updatedSettings
-            try? userDatabase.saveSyncSettings(settings)
+            try userDatabase.saveSyncSettings(settings)
+            try await UserSettingsSyncManager.shared.exportToRemote(storage: activeStorage)
 
             syncState = .idle
         } catch {
@@ -292,30 +343,15 @@ class SyncCoordinator: ObservableObject {
         }
 
         var result = MigrationResult()
-        let moduleTypes: [ModuleType] = [.notes, .devotional, .translation, .dictionary, .commentary, .plan]
+        let moduleTypes = ModuleType.allCases
 
         // Initialize directory structure on destination
-        try? await dest.initializeDirectoryStructure()
+        try await dest.initializeDirectoryStructure()
 
-        // Delete existing files on destination first
-        migrationProgress = MigrationProgress(
-            currentFile: "Clearing destination...",
-            filesCompleted: 0,
-            totalFiles: 0,
-            currentType: nil
-        )
-
-        for type in moduleTypes {
-            do {
-                let existingFiles = try await dest.listModuleFiles(type: type)
-                for file in existingFiles {
-                    try? await dest.deleteModuleFile(type: type, fileName: file.filePath)
-                    print("[Migration] Deleted existing \(type)/\(file.filePath) from destination")
-                }
-            } catch {
-                print("[Migration] Failed to list existing \(type) files on destination: \(error)")
-            }
-        }
+        // Merge editable data from both providers into the local database before
+        // copying files. Destination-only files remain in place throughout.
+        try await ModuleSyncManager.shared.reconcileEditableModules(with: source)
+        try await ModuleSyncManager.shared.reconcileEditableModules(with: dest)
 
         // First pass: count total files
         var totalFiles = 0
@@ -365,6 +401,11 @@ class SyncCoordinator: ObservableObject {
                 print("[Migration] Failed to copy \(type)/\(fileInfo.filePath): \(error)")
             }
         }
+
+        // Raw copies preserve bundled/read-only modules. Editable modules are
+        // rewritten from the reconciled local database so neither side wins
+        // wholesale when both providers contain changes.
+        try await ModuleSyncManager.shared.exportAllEditableModules(to: dest)
 
         // Update progress to complete
         migrationProgress = MigrationProgress(
