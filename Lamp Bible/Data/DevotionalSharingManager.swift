@@ -158,15 +158,31 @@ class DevotionalSharingManager {
                 applicationActivities: nil
             )
 
-            // Configure for iPad
-            if let sourceView = sourceView {
-                activityVC.popoverPresentationController?.sourceView = sourceView
-                activityVC.popoverPresentationController?.sourceRect = sourceView.bounds
+            // Get the presenting view controller
+            guard let presenter = viewController ?? getRootViewController() else {
+                print("[DevotionalSharingManager] No presenter available")
+                return
             }
 
-            // Get the presenting view controller
-            let presenter = viewController ?? getRootViewController()
-            presenter?.present(activityVC, animated: true)
+            // Configure for iPad. A popover without an anchor throws, so fall back to
+            // the centre of the presenter's view when no source was supplied.
+            if let popover = activityVC.popoverPresentationController {
+                if let sourceView = sourceView {
+                    popover.sourceView = sourceView
+                    popover.sourceRect = sourceView.bounds
+                } else {
+                    popover.sourceView = presenter.view
+                    popover.sourceRect = CGRect(
+                        x: presenter.view.bounds.midX,
+                        y: presenter.view.bounds.midY,
+                        width: 0,
+                        height: 0
+                    )
+                    popover.permittedArrowDirections = []
+                }
+            }
+
+            presenter.present(activityVC, animated: true)
 
         } catch {
             print("[DevotionalSharingManager] Export failed: \(error)")
@@ -214,13 +230,28 @@ class DevotionalSharingManager {
             }
         }
 
-        // Try markdown
+        // Try markdown. parseMarkdown accepts any text without frontmatter, so screen
+        // out binary junk first - otherwise an unreadable file previews as an
+        // "Untitled" devotional instead of reporting that it can't be read.
         if let content = String(data: data, encoding: .utf8),
+           looksLikePlainText(content),
            let devotional = MarkdownDevotionalConverter.parseMarkdown(content) {
             return LampFilePreview(type: .devotional, devotional: devotional)
         }
 
         throw ImportError.invalidFormat
+    }
+
+    /// Whether a decoded string is plausibly a human-authored text document.
+    /// Rejects empty content and control characters other than tab/newline.
+    private func looksLikePlainText(_ content: String) -> Bool {
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return !content.unicodeScalars.contains { scalar in
+            scalar.properties.generalCategory == .control
+                && scalar != "\n" && scalar != "\r" && scalar != "\t"
+        }
     }
 
     /// Preview a bundled .lamp file (ZIP format)
@@ -259,39 +290,55 @@ class DevotionalSharingManager {
 
     // MARK: - Import
 
-    /// Import a devotional from a .lamp file (handles both JSON and bundle formats)
-    func importFromFile(_ fileURL: URL, moduleId: String = "devotionals") throws -> Devotional {
+    /// Import the devotionals held in a .lamp file (handles both JSON and bundle
+    /// formats). A shared single devotional yields one entry; a collection yields all
+    /// of them, so importing a collection never discards its contents.
+    func importFromFile(_ fileURL: URL, moduleId: String = "devotionals") throws -> [Devotional] {
         let format = detectFileFormat(fileURL)
 
         switch format {
         case .bundle:
-            return try importFromBundle(fileURL, moduleId: moduleId)
+            // The bundle format wraps exactly one devotional plus its media
+            return [try importFromBundle(fileURL, moduleId: moduleId)]
         case .plainJSON:
             return try importFromJSON(fileURL)
         }
     }
 
     /// Import from plain JSON .lamp file
-    private func importFromJSON(_ fileURL: URL) throws -> Devotional {
+    private func importFromJSON(_ fileURL: URL) throws -> [Devotional] {
         let data = try Data(contentsOf: fileURL)
 
         // Try to decode as DevotionalShareData first
         if let shareData = try? JSONDecoder().decode(DevotionalShareData.self, from: data) {
-            return shareData.devotional
+            return [withFreshIdentity(shareData.devotional)]
         }
 
         // Try as raw Devotional
         if let devotional = try? JSONDecoder().decode(Devotional.self, from: data) {
-            return devotional
+            return [withFreshIdentity(devotional)]
         }
 
-        // Try as DevotionalModuleFile (for backwards compatibility)
+        // Try as DevotionalModuleFile - keep every entry, not just the first
         if let moduleFile = try? JSONDecoder().decode(DevotionalModuleFile.self, from: data),
-           let first = moduleFile.entries.first {
-            return first
+           !moduleFile.entries.isEmpty {
+            return moduleFile.entries.map { withFreshIdentity($0) }
         }
 
         throw ImportError.invalidFormat
+    }
+
+    /// Give an incoming devotional a new identity so importing never overwrites an
+    /// existing entry. Saving upserts on `meta.id`, so a shared devotional that kept
+    /// its original ID would silently replace the recipient's copy — and re-importing
+    /// the same file would replace the previous import instead of adding a copy.
+    private func withFreshIdentity(_ devotional: Devotional) -> Devotional {
+        var copy = devotional
+        let now = Int(Date().timeIntervalSince1970)
+        copy.meta.id = UUID().uuidString
+        copy.meta.created = now
+        copy.meta.lastModified = now
+        return copy
     }
 
     /// Import from bundled .lamp file (ZIP with media)
@@ -307,13 +354,8 @@ class DevotionalSharingManager {
         let devotionalURL = tempDir.appendingPathComponent("devotional.json")
         let data = try Data(contentsOf: devotionalURL)
         let shareData = try JSONDecoder().decode(DevotionalShareData.self, from: data)
-        var devotional = shareData.devotional
-
-        // Generate new ID
-        let newId = UUID().uuidString
-        devotional.meta.id = newId
-        devotional.meta.created = Int(Date().timeIntervalSince1970)
-        devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
+        let devotional = withFreshIdentity(shareData.devotional)
+        let newId = devotional.meta.id
 
         // Import media files
         let sourceMediaDir = tempDir.appendingPathComponent("media")
@@ -342,31 +384,51 @@ class DevotionalSharingManager {
         guard let devotional = MarkdownDevotionalConverter.parseMarkdown(content) else {
             throw ImportError.invalidFormat
         }
-        return devotional
+        return withFreshIdentity(devotional)
     }
 
-    /// Import and save a devotional to the database
-    func importAndSave(_ fileURL: URL, moduleId: String = "devotionals") throws -> Devotional {
-        let devotional: Devotional
+    /// Import and save every devotional in a file into the given module, exporting to
+    /// iCloud like any other devotional edit. Returns all entries that were saved.
+    @discardableResult
+    func importAndSave(_ fileURL: URL, moduleId: String = "devotionals") async throws -> [Devotional] {
+        let imported: [Devotional]
 
         if fileURL.pathExtension.lowercased() == "md" {
-            devotional = try importFromMarkdown(fileURL)
+            imported = [try importFromMarkdown(fileURL)]
         } else {
-            devotional = try importFromFile(fileURL, moduleId: moduleId)
+            imported = try importFromFile(fileURL, moduleId: moduleId)
         }
 
-        // Generate a new ID to avoid conflicts (if not already done by bundle import)
-        var imported = devotional
-        if imported.meta.created == nil || imported.meta.created == 0 {
-            imported.meta.id = UUID().uuidString
-            imported.meta.created = Int(Date().timeIntervalSince1970)
-            imported.meta.lastModified = Int(Date().timeIntervalSince1970)
+        guard !imported.isEmpty else {
+            throw ImportError.invalidFormat
         }
 
-        // Save to database
-        try DevotionalStorage.shared.saveDevotional(imported, moduleId: moduleId)
+        for devotional in imported {
+            try await ModuleSyncManager.shared.saveDevotional(devotional, moduleId: moduleId)
+        }
 
         return imported
+    }
+
+    // MARK: - Staging
+
+    /// Copy an incoming file into the temporary directory so it can be imported after
+    /// its security-scoped access is released — e.g. once the user has chosen a
+    /// destination module. Call `startAccessingSecurityScopedResource()` around this.
+    func stageForImport(_ fileURL: URL) throws -> URL {
+        let stagedDir = fileManager.temporaryDirectory
+            .appendingPathComponent("devotional-import", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: stagedDir, withIntermediateDirectories: true)
+
+        let stagedURL = stagedDir.appendingPathComponent(fileURL.lastPathComponent)
+        try fileManager.copyItem(at: fileURL, to: stagedURL)
+        return stagedURL
+    }
+
+    /// Remove a file previously produced by `stageForImport(_:)`
+    func discardStagedImport(_ stagedURL: URL) {
+        try? fileManager.removeItem(at: stagedURL.deletingLastPathComponent())
     }
 
     // MARK: - Deep Link Sharing
@@ -431,11 +493,22 @@ class DevotionalSharingManager {
     }
 
     private func getRootViewController() -> UIViewController? {
-        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let window = windowScene.windows.first else {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+
+        guard let window = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first,
+              var top = window.rootViewController else {
             return nil
         }
-        return window.rootViewController
+
+        // Present from the topmost controller, otherwise the presentation is a no-op
+        // whenever a sheet is already on screen.
+        while let presented = top.presentedViewController, !presented.isBeingDismissed {
+            top = presented
+        }
+        return top
     }
 
     // MARK: - ZIP Archive Helpers
@@ -729,6 +802,16 @@ struct LampFilePreview {
 
     var hasMedia: Bool {
         type == .devotionalBundle || (mediaCount ?? 0) > 0
+    }
+
+    /// How many devotionals this file will import. A collection imports all of its
+    /// entries, so this is what callers should use to decide whether a file holds
+    /// anything importable.
+    var devotionalCount: Int {
+        if let moduleFile = moduleFile {
+            return moduleFile.entries.count
+        }
+        return devotional != nil ? 1 : 0
     }
 
     var exportDateFormatted: String? {

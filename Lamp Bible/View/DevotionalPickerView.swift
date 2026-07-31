@@ -289,15 +289,35 @@ struct DevotionalPickerView: View {
         // Use the selected module ID, or fall back to current module
         let targetModuleId = selectedImportModuleId.isEmpty ? selectedModuleId : selectedImportModuleId
 
+        // Stage a copy while the security scope is still held; the import itself is
+        // async and would otherwise outlive the scope released below.
+        let staged: URL
         do {
-            _ = try DevotionalSharingManager.shared.importAndSave(url, moduleId: targetModuleId)
-            loadDevotionals()
+            staged = try DevotionalSharingManager.shared.stageForImport(url)
         } catch {
             importError = error.localizedDescription
             showingImportError = true
+            cleanupPendingImport()
+            return
         }
 
         cleanupPendingImport()
+
+        Task {
+            do {
+                try await DevotionalSharingManager.shared.importAndSave(staged, moduleId: targetModuleId)
+                // Show the module the devotional landed in, otherwise the import looks
+                // like it did nothing when the destination isn't the current module.
+                if selectedModuleId != targetModuleId {
+                    selectedModuleId = targetModuleId
+                }
+                loadDevotionals()
+            } catch {
+                importError = error.localizedDescription
+                showingImportError = true
+            }
+            DevotionalSharingManager.shared.discardStagedImport(staged)
+        }
     }
 
     private func cleanupPendingImport() {

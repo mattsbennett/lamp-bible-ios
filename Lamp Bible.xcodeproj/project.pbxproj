@@ -94,6 +94,7 @@
 		B89229632F05FE5600A58F81 /* ModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229622F05FE5600A58F81 /* ModuleStorage.swift */; };
 		B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */; };
 		B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */; };
+		B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */; };
 		B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */; };
 		B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */; };
 		B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229942F12032700A58F81 /* NotesImportExportManager.swift */; };
@@ -246,6 +247,7 @@
 		B89229622F05FE5600A58F81 /* ModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleStorage.swift; sourceTree = "<group>"; };
 		B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSyncManager.swift; sourceTree = "<group>"; };
 		B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceParsingTests.swift; sourceTree = "<group>"; };
+		B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalSharingTests.swift; sourceTree = "<group>"; };
 		B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSettingsView.swift; sourceTree = "<group>"; };
 		B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentaryRenderer.swift; sourceTree = "<group>"; };
 		B89229942F12032700A58F81 /* NotesImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesImportExportManager.swift; sourceTree = "<group>"; };
@@ -507,6 +509,7 @@
 			children = (
 				B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */,
 				B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */,
+				B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */,
 			);
 			path = "Lamp BibleTests";
 			sourceTree = "<group>";
@@ -902,6 +905,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */,
+				B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */,
 				B885E4282ADB47ED0066F0A0 /* Lamp_BibleTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

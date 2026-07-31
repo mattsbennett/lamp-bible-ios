@@ -18,6 +18,10 @@ struct ContentView: View {
     @State private var duplicateModuleName = ""
     @State private var pendingImportURL: URL?
     @State private var pendingImportType: ModuleType?
+    @State private var devotionalImportPreview: LampFilePreview?
+    @State private var stagedDevotionalURL: URL?
+    @State private var devotionalModules: [Module] = []
+    @State private var showingDevotionalImport = false
 
     var body: some View {
         PlanView()
@@ -28,7 +32,7 @@ struct ContentView: View {
                     await handleLampFileImport(url: url)
                 }
             }
-            .alert("Module Import", isPresented: $showingImportAlert) {
+            .alert("Import", isPresented: $showingImportAlert) {
                 Button("OK") {}
             } message: {
                 Text(importAlertMessage ?? "")
@@ -57,6 +61,21 @@ struct ContentView: View {
                 }
             } message: {
                 Text("\"\(duplicateModuleName)\" is already installed. Overwrite it?")
+            }
+            .sheet(isPresented: $showingDevotionalImport, onDismiss: cleanupStagedDevotional) {
+                if let preview = devotionalImportPreview {
+                    ImportPreviewSheet(
+                        preview: preview,
+                        devotionalModules: devotionalModules,
+                        defaultModuleId: defaultDevotionalModuleId,
+                        onImport: { moduleId in
+                            importStagedDevotional(into: moduleId)
+                        },
+                        onCancel: {
+                            cleanupStagedDevotional()
+                        }
+                    )
+                }
             }
     }
 
@@ -90,12 +109,13 @@ struct ContentView: View {
                 return
             }
 
-            // Try as devotional (JSON or ZIP bundle)
+            // Try as devotional or devotional collection (JSON or ZIP bundle)
             let preview = try DevotionalSharingManager.shared.previewFile(url)
-            if preview.devotional != nil {
-                let _ = try DevotionalSharingManager.shared.importAndSave(url)
-                importAlertMessage = "Successfully imported devotional."
-                showingImportAlert = true
+            if preview.devotionalCount > 0 {
+                // Stage a copy while the security scope is still held, so the import can
+                // run after the user has chosen a destination module.
+                let staged = try DevotionalSharingManager.shared.stageForImport(url)
+                await presentDevotionalImport(preview: preview, stagedURL: staged)
                 return
             }
 
@@ -105,6 +125,64 @@ struct ContentView: View {
             importAlertMessage = "Import failed: \(error.localizedDescription)"
             showingImportAlert = true
         }
+    }
+
+    // MARK: - Devotional Import
+
+    /// Module used when the recipient has only one place to put the devotional
+    private var defaultDevotionalModuleId: String {
+        devotionalModules.first(where: { $0.isEditable })?.id ?? "devotionals"
+    }
+
+    @MainActor
+    private func presentDevotionalImport(preview: LampFilePreview, stagedURL: URL) async {
+        do {
+            // Guarantee there is at least one editable module to import into
+            try await ModuleSyncManager.shared.ensureDefaultDevotionalsModule()
+            devotionalModules = try ModuleDatabase.shared.getAllModules(type: .devotional)
+        } catch {
+            devotionalModules = []
+        }
+
+        devotionalImportPreview = preview
+        stagedDevotionalURL = stagedURL
+        showingDevotionalImport = true
+    }
+
+    private func importStagedDevotional(into moduleId: String) {
+        guard let staged = stagedDevotionalURL else { return }
+        let targetModuleId = moduleId.isEmpty ? defaultDevotionalModuleId : moduleId
+        let moduleName = devotionalModules.first(where: { $0.id == targetModuleId })?.name
+
+        // Ownership of the staged file moves to this task so dismissal can't delete it
+        // out from under the import.
+        stagedDevotionalURL = nil
+
+        Task {
+            do {
+                let imported = try await DevotionalSharingManager.shared.importAndSave(
+                    staged,
+                    moduleId: targetModuleId
+                )
+                let subject = imported.count == 1
+                    ? "Devotional"
+                    : "\(imported.count) devotionals"
+                importAlertMessage = moduleName.map { "\(subject) imported into \($0)." }
+                    ?? "Successfully imported \(subject.lowercased())."
+            } catch {
+                importAlertMessage = "Import failed: \(error.localizedDescription)"
+            }
+            DevotionalSharingManager.shared.discardStagedImport(staged)
+            showingImportAlert = true
+        }
+    }
+
+    private func cleanupStagedDevotional() {
+        if let staged = stagedDevotionalURL {
+            DevotionalSharingManager.shared.discardStagedImport(staged)
+            stagedDevotionalURL = nil
+        }
+        devotionalImportPreview = nil
     }
 
     private func detectModuleType(tempURL: URL) throws -> ModuleType {

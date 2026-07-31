@@ -23,9 +23,21 @@ struct ImportPreviewSheet: View {
         preview.type == .devotional || preview.type == .devotionalBundle || preview.type == .devotionalModule
     }
 
-    /// Available modules for the picker (filters to devotional type)
+    /// Modules an import can be written to. Subscription/bundled modules are read-only,
+    /// so they are never offered as a destination.
     private var availableModules: [Module] {
-        devotionalModules.filter { $0.type == .devotional }
+        devotionalModules.filter { $0.type == .devotional && $0.isEditable }
+    }
+
+    /// Only ask which module to use when there is an actual choice to make
+    private var needsModuleChoice: Bool {
+        isDevotionalImport && availableModules.count > 1
+    }
+
+    /// Name of the single destination, shown for confirmation when there is no choice
+    private var soleDestinationName: String? {
+        guard isDevotionalImport, availableModules.count == 1 else { return nil }
+        return availableModules.first?.name
     }
 
     var body: some View {
@@ -127,8 +139,9 @@ struct ImportPreviewSheet: View {
                         moduleContentsPreview(moduleFile)
                     }
 
-                    // Module selector for devotional imports
-                    if isDevotionalImport && !availableModules.isEmpty {
+                    // Destination module. Only ask when more than one module can accept
+                    // the import; otherwise just confirm where it is going.
+                    if needsModuleChoice {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Import to")
                                 .font(.headline)
@@ -144,6 +157,12 @@ struct ImportPreviewSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color(UIColor.secondarySystemBackground))
                         .cornerRadius(12)
+                    } else if let destination = soleDestinationName {
+                        metadataRow(label: "Import to", value: destination, icon: "tray.and.arrow.down")
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(UIColor.secondarySystemBackground))
+                            .cornerRadius(12)
                     }
 
                     Spacer(minLength: 80)
