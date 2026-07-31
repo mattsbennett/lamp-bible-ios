@@ -2878,9 +2878,7 @@ struct ReaderView: View {
                         themeEditStyle = style
                         themeEditExisting = existing
                         pendingThemeEdit = true
-                    },
-                    isReadingAloud: planSpeech.playbackState != .idle,
-                    onStopReadAloud: { planSpeech.stop() }
+                    }
                 )
             }
             .toolbar {
@@ -4137,14 +4135,6 @@ struct QuizSheetView: View {
                     )
 
                     Menu {
-                        if speech.playbackState != .idle {
-                            Button {
-                                speech.stop()
-                            } label: {
-                                Label("Stop Reading Aloud", systemImage: "stop.fill")
-                            }
-                        }
-
                         Toggle(isOn: $alwaysShowAnswers) {
                             Label("Always Show Answers", systemImage: "eye")
                         }

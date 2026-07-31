@@ -44,8 +44,6 @@ struct ReaderNavigationToolbarView: ToolbarContent {
 
     /// Read aloud stop action, offered only while something is being read. Play and
     /// pause live on their own toolbar button; stop is rare enough to sit in here.
-    var isReadingAloud: Bool = false
-    var onStopReadAloud: (() -> Void)? = nil
 
     init(
         userSettings: Binding<UserSettings>,
@@ -67,9 +65,7 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         notesModules: [Module] = [],
         commentarySeries: [String] = [],
         devotionalsModules: [Module] = [],
-        onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil,
-        isReadingAloud: Bool = false,
-        onStopReadAloud: (() -> Void)? = nil
+        onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil
     ) {
         _userSettings = userSettings
         _readingMetaData = readingMetaData
@@ -91,8 +87,6 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         self.commentarySeries = commentarySeries
         self.devotionalsModules = devotionalsModules
         self.onEditTheme = onEditTheme
-        self.isReadingAloud = isReadingAloud
-        self.onStopReadAloud = onStopReadAloud
     }
 
     var body: some ToolbarContent {
@@ -230,22 +224,6 @@ struct ReaderNavigationToolbarView: ToolbarContent {
 
             // Bible options section
             VStack(alignment: .leading, spacing: 0) {
-                if isReadingAloud, let stopReadAloud = onStopReadAloud {
-                    Button {
-                        showingOptionsMenu = false
-                        stopReadAloud()
-                    } label: {
-                        Label("Stop Reading Aloud", systemImage: "stop.fill")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-
-                    Divider()
-                }
-
                 if let hideToolbars = onHideToolbars {
                     Button {
                         showingOptionsMenu = false
