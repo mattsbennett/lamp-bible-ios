@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		115D622AA82F562690671C60 /* RealmSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 42E72CDD647A5E4E99060E4D /* RealmSwift */; };
+		2F27C8FF80EE746DAB3A213C /* RealmSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 42E72CDD647A5E4E99060E4D /* RealmSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		69953A461E33453590607608 /* TipTapEditor in Resources */ = {isa = PBXBuildFile; fileRef = 9CF26519566447318332A93B /* TipTapEditor */; };
 		8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */; };
 		8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 0E27D0DD0B6FBDAAD354572B /* GRDB */; };
@@ -132,6 +133,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		B35FC0A32D110AA31CBB3089 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				2F27C8FF80EE746DAB3A213C /* RealmSwift in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B884323A2F4A7F9900A699B9 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -537,6 +549,7 @@
 				B885E4102ADB47E40066F0A0 /* Frameworks */,
 				B885E4112ADB47E40066F0A0 /* Resources */,
 				B884323A2F4A7F9900A699B9 /* Embed Foundation Extensions */,
+				B35FC0A32D110AA31CBB3089 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
