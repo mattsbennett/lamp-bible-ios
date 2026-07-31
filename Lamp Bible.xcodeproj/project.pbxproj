@@ -7,9 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		13350B121503A4344D2C14B5 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A0BB31BAAADBFFB0E149DF1 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework */; };
-		69953A461E33453590607608 /* Resources/TipTapEditor in Resources */ = {isa = PBXBuildFile; fileRef = 9CF26519566447318332A93B /* Resources/TipTapEditor */; };
+		115D622AA82F562690671C60 /* RealmSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 42E72CDD647A5E4E99060E4D /* RealmSwift */; };
+		69953A461E33453590607608 /* TipTapEditor in Resources */ = {isa = PBXBuildFile; fileRef = 9CF26519566447318332A93B /* TipTapEditor */; };
 		8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */; };
+		8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 0E27D0DD0B6FBDAAD354572B /* GRDB */; };
 		B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A962B549ADD008341F0 /* ViewModel.swift */; };
 		B8210A9B2B549ED7008341F0 /* ChapterListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9A2B549ED7008341F0 /* ChapterListView.swift */; };
 		B8210AA02B54A6CE008341F0 /* Utilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A9F2B54A6CE008341F0 /* Utilities.swift */; };
@@ -94,17 +95,15 @@
 		B89229632F05FE5600A58F81 /* ModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229622F05FE5600A58F81 /* ModuleStorage.swift */; };
 		B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */; };
 		B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */; };
-		B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */; };
 		B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */; };
 		B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */; };
 		B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229942F12032700A58F81 /* NotesImportExportManager.swift */; };
 		B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229962F16A00000A58F81 /* NoteConflictView.swift */; };
+		B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
 		B8EF6D2F3016BCC700ACF12D /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B8EF6D2E3016BCC700ACF12D /* bundled_modules.db.zlib */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
 		B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33472B3F4AC7009C544D /* ReaderView.swift */; };
-		C54EA5AEDD610FC18EBD7C3E /* Pods_Lamp_Bible.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1611527E5F09925F4316396A /* Pods_Lamp_Bible.framework */; };
-		CBB1169420EE332202E07EC1 /* Pods_Lamp_BibleTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 382D5810AFA3A23BD83E6508 /* Pods_Lamp_BibleTests.framework */; };
 		CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95873C478D642C9B5444C02 /* TipTapEditorView.swift */; };
 /* End PBXBuildFile section */
 
@@ -147,17 +146,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		091632FE262EE429EB5AC72D /* Pods-Lamp Bible-Lamp BibleUITests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible-Lamp BibleUITests.release.xcconfig"; path = "Target Support Files/Pods-Lamp Bible-Lamp BibleUITests/Pods-Lamp Bible-Lamp BibleUITests.release.xcconfig"; sourceTree = "<group>"; };
-		1611527E5F09925F4316396A /* Pods_Lamp_Bible.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Lamp_Bible.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		382D5810AFA3A23BD83E6508 /* Pods_Lamp_BibleTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Lamp_BibleTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorCoordinator.swift; sourceTree = "<group>"; };
-		5A0BB31BAAADBFFB0E149DF1 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Lamp_Bible_Lamp_BibleUITests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		5F141EED7DCA77F54DE41F1E /* Pods-Lamp Bible.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible.release.xcconfig"; path = "Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible.release.xcconfig"; sourceTree = "<group>"; };
-		6EE8E26A9CB57A497B453132 /* Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig"; path = "Target Support Files/Pods-Lamp Bible-Lamp BibleUITests/Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig"; sourceTree = "<group>"; };
-		92DDDDBA1FB50EC67ADF2767 /* Pods-Lamp BibleTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp BibleTests.debug.xcconfig"; path = "Target Support Files/Pods-Lamp BibleTests/Pods-Lamp BibleTests.debug.xcconfig"; sourceTree = "<group>"; };
-		9CF26519566447318332A93B /* Resources/TipTapEditor */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/TipTapEditor; sourceTree = "<group>"; };
+		9CF26519566447318332A93B /* TipTapEditor */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/TipTapEditor; sourceTree = "<group>"; };
 		A95873C478D642C9B5444C02 /* TipTapEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorView.swift; sourceTree = "<group>"; };
-		AA1177D0A8D0C66B61AF6D5A /* Pods-Lamp Bible.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp Bible.debug.xcconfig"; path = "Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible.debug.xcconfig"; sourceTree = "<group>"; };
 		B8210A962B549ADD008341F0 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModel.swift; sourceTree = "<group>"; };
 		B8210A9A2B549ED7008341F0 /* ChapterListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterListView.swift; sourceTree = "<group>"; };
 		B8210A9F2B54A6CE008341F0 /* Utilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Utilities.swift; sourceTree = "<group>"; };
@@ -247,20 +238,19 @@
 		B89229622F05FE5600A58F81 /* ModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleStorage.swift; sourceTree = "<group>"; };
 		B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSyncManager.swift; sourceTree = "<group>"; };
 		B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceParsingTests.swift; sourceTree = "<group>"; };
-		B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalSharingTests.swift; sourceTree = "<group>"; };
 		B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSettingsView.swift; sourceTree = "<group>"; };
 		B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentaryRenderer.swift; sourceTree = "<group>"; };
 		B89229942F12032700A58F81 /* NotesImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesImportExportManager.swift; sourceTree = "<group>"; };
 		B89229962F16A00000A58F81 /* NoteConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictView.swift; sourceTree = "<group>"; };
+		B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalSharingTests.swift; sourceTree = "<group>"; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
 		B8EF6D2E3016BCC700ACF12D /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
 		B8FC33472B3F4AC7009C544D /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
-		BC1111E4EE3F363F57311829 /* Pods-Lamp BibleTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Lamp BibleTests.release.xcconfig"; path = "Target Support Files/Pods-Lamp BibleTests/Pods-Lamp BibleTests.release.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		B88432362F4A7F9900A699B9 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+		B88432362F4A7F9900A699B9 /* Exceptions for "LampBibleWidget" folder in "LampBibleWidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -270,7 +260,18 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		B88432252F4A7F9700A699B9 /* LampBibleWidget */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (B88432362F4A7F9900A699B9 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = LampBibleWidget; sourceTree = "<group>"; };
+		B88432252F4A7F9700A699B9 /* LampBibleWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B88432362F4A7F9900A699B9 /* Exceptions for "LampBibleWidget" folder in "LampBibleWidgetExtension" target */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = LampBibleWidget;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -287,7 +288,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C54EA5AEDD610FC18EBD7C3E /* Pods_Lamp_Bible.framework in Frameworks */,
+				8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */,
+				115D622AA82F562690671C60 /* RealmSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -295,7 +297,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				CBB1169420EE332202E07EC1 /* Pods_Lamp_BibleTests.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -303,32 +304,15 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				13350B121503A4344D2C14B5 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		5439D19EDAAB55DC6CA9F001 /* Pods */ = {
-			isa = PBXGroup;
-			children = (
-				AA1177D0A8D0C66B61AF6D5A /* Pods-Lamp Bible.debug.xcconfig */,
-				5F141EED7DCA77F54DE41F1E /* Pods-Lamp Bible.release.xcconfig */,
-				6EE8E26A9CB57A497B453132 /* Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig */,
-				091632FE262EE429EB5AC72D /* Pods-Lamp Bible-Lamp BibleUITests.release.xcconfig */,
-				92DDDDBA1FB50EC67ADF2767 /* Pods-Lamp BibleTests.debug.xcconfig */,
-				BC1111E4EE3F363F57311829 /* Pods-Lamp BibleTests.release.xcconfig */,
-			);
-			path = Pods;
-			sourceTree = "<group>";
-		};
 		86AF55560C987358262F5429 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				1611527E5F09925F4316396A /* Pods_Lamp_Bible.framework */,
-				5A0BB31BAAADBFFB0E149DF1 /* Pods_Lamp_Bible_Lamp_BibleUITests.framework */,
-				382D5810AFA3A23BD83E6508 /* Pods_Lamp_BibleTests.framework */,
 				B88432212F4A7F9700A699B9 /* WidgetKit.framework */,
 				B88432232F4A7F9700A699B9 /* SwiftUI.framework */,
 			);
@@ -463,7 +447,6 @@
 				B885E4302ADB47ED0066F0A0 /* Lamp BibleUITests */,
 				B88432252F4A7F9700A699B9 /* LampBibleWidget */,
 				B885E4142ADB47E40066F0A0 /* Products */,
-				5439D19EDAAB55DC6CA9F001 /* Pods */,
 				86AF55560C987358262F5429 /* Frameworks */,
 			);
 			sourceTree = "<group>";
@@ -491,7 +474,7 @@
 				B8210A9C2B54A4D7008341F0 /* Data */,
 				B8210A9D2B54A508008341F0 /* Utility */,
 				B8210A9E2B54A58D008341F0 /* View */,
-				9CF26519566447318332A93B /* Resources/TipTapEditor */,
+				9CF26519566447318332A93B /* TipTapEditor */,
 			);
 			path = "Lamp Bible";
 			sourceTree = "<group>";
@@ -542,8 +525,6 @@
 				B88432252F4A7F9700A699B9 /* LampBibleWidget */,
 			);
 			name = LampBibleWidgetExtension;
-			packageProductDependencies = (
-			);
 			productName = LampBibleWidgetExtension;
 			productReference = B88432202F4A7F9700A699B9 /* LampBibleWidgetExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -552,11 +533,9 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = B885E4372ADB47ED0066F0A0 /* Build configuration list for PBXNativeTarget "Lamp Bible" */;
 			buildPhases = (
-				02AF211883898A7C8722D1C2 /* [CP] Check Pods Manifest.lock */,
 				B885E40F2ADB47E40066F0A0 /* Sources */,
 				B885E4102ADB47E40066F0A0 /* Frameworks */,
 				B885E4112ADB47E40066F0A0 /* Resources */,
-				671F735C0DD8367DAB3BE26B /* [CP] Embed Pods Frameworks */,
 				B884323A2F4A7F9900A699B9 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
@@ -565,6 +544,10 @@
 				B88432342F4A7F9900A699B9 /* PBXTargetDependency */,
 			);
 			name = "Lamp Bible";
+			packageProductDependencies = (
+				0E27D0DD0B6FBDAAD354572B /* GRDB */,
+				42E72CDD647A5E4E99060E4D /* RealmSwift */,
+			);
 			productName = "Lamp Bible";
 			productReference = B885E4132ADB47E40066F0A0 /* Lamp Bible.app */;
 			productType = "com.apple.product-type.application";
@@ -573,7 +556,6 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = B885E43A2ADB47ED0066F0A0 /* Build configuration list for PBXNativeTarget "Lamp BibleTests" */;
 			buildPhases = (
-				C0D2C28A09CAF0EE42EC85AC /* [CP] Check Pods Manifest.lock */,
 				B885E41F2ADB47ED0066F0A0 /* Sources */,
 				B885E4202ADB47ED0066F0A0 /* Frameworks */,
 				B885E4212ADB47ED0066F0A0 /* Resources */,
@@ -592,11 +574,9 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = B885E43D2ADB47ED0066F0A0 /* Build configuration list for PBXNativeTarget "Lamp BibleUITests" */;
 			buildPhases = (
-				D0E3AE5098641DE57CFEDC44 /* [CP] Check Pods Manifest.lock */,
 				B885E4292ADB47ED0066F0A0 /* Sources */,
 				B885E42A2ADB47ED0066F0A0 /* Frameworks */,
 				B885E42B2ADB47ED0066F0A0 /* Resources */,
-				149E4E47E658A72790EF642D /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -643,6 +623,10 @@
 				Base,
 			);
 			mainGroup = B885E40A2ADB47E40066F0A0;
+			packageReferences = (
+				651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */,
+			);
 			productRefGroup = B885E4142ADB47E40066F0A0 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -671,7 +655,7 @@
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
 				B8EF6D2F3016BCC700ACF12D /* bundled_modules.db.zlib in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
-				69953A461E33453590607608 /* Resources/TipTapEditor in Resources */,
+				69953A461E33453590607608 /* TipTapEditor in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -690,117 +674,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		02AF211883898A7C8722D1C2 /* [CP] Check Pods Manifest.lock */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
-				"${PODS_ROOT}/Manifest.lock",
-			);
-			name = "[CP] Check Pods Manifest.lock";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-Lamp Bible-checkManifestLockResult.txt",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
-		149E4E47E658A72790EF642D /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-Lamp Bible-Lamp BibleUITests/Pods-Lamp Bible-Lamp BibleUITests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			inputPaths = (
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-Lamp Bible-Lamp BibleUITests/Pods-Lamp Bible-Lamp BibleUITests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Lamp Bible-Lamp BibleUITests/Pods-Lamp Bible-Lamp BibleUITests-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		671F735C0DD8367DAB3BE26B /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			inputPaths = (
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Lamp Bible/Pods-Lamp Bible-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		C0D2C28A09CAF0EE42EC85AC /* [CP] Check Pods Manifest.lock */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
-				"${PODS_ROOT}/Manifest.lock",
-			);
-			name = "[CP] Check Pods Manifest.lock";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-Lamp BibleTests-checkManifestLockResult.txt",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
-		D0E3AE5098641DE57CFEDC44 /* [CP] Check Pods Manifest.lock */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
-				"${PODS_ROOT}/Manifest.lock",
-			);
-			name = "[CP] Check Pods Manifest.lock";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-Lamp Bible-Lamp BibleUITests-checkManifestLockResult.txt",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B884321C2F4A7F9700A699B9 /* Sources */ = {
@@ -1129,7 +1002,6 @@
 		};
 		B885E4382ADB47ED0066F0A0 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = AA1177D0A8D0C66B61AF6D5A /* Pods-Lamp Bible.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1163,7 +1035,6 @@
 		};
 		B885E4392ADB47ED0066F0A0 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 5F141EED7DCA77F54DE41F1E /* Pods-Lamp Bible.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -1197,7 +1068,6 @@
 		};
 		B885E43B2ADB47ED0066F0A0 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 92DDDDBA1FB50EC67ADF2767 /* Pods-Lamp BibleTests.debug.xcconfig */;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -1218,7 +1088,6 @@
 		};
 		B885E43C2ADB47ED0066F0A0 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = BC1111E4EE3F363F57311829 /* Pods-Lamp BibleTests.release.xcconfig */;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -1239,7 +1108,6 @@
 		};
 		B885E43E2ADB47ED0066F0A0 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 6EE8E26A9CB57A497B453132 /* Pods-Lamp Bible-Lamp BibleUITests.debug.xcconfig */;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				CODE_SIGN_STYLE = Automatic;
@@ -1258,7 +1126,6 @@
 		};
 		B885E43F2ADB47ED0066F0A0 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 091632FE262EE429EB5AC72D /* Pods-Lamp Bible-Lamp BibleUITests.release.xcconfig */;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				CODE_SIGN_STYLE = Automatic;
@@ -1324,6 +1191,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/realm/realm-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 20.0.5;
+			};
+		};
+		651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 6.24.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0E27D0DD0B6FBDAAD354572B /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		42E72CDD647A5E4E99060E4D /* RealmSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */;
+			productName = RealmSwift;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B885E40B2ADB47E40066F0A0 /* Project object */;
 }

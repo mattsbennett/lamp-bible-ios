@@ -3,8 +3,8 @@
 **/.DS_Store
 **/._.DS_Store
 
-Pods
 xcuserdata
+.swiftpm
 *.realm
 *.db.zlib
 prompts/**
