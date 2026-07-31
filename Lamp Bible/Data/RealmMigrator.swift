@@ -11,8 +11,27 @@
 import Foundation
 import RealmSwift
 
+/// Values read out of a legacy Realm file, detached from Realm so they can be
+/// inspected and asserted on without a live Realm or the shared UserDatabase.
+struct LegacyRealmData: Equatable {
+    var planIds: String
+    var planInAppBible: Bool
+    var planExternalBible: String?
+    var planWpm: Double
+    var planNotification: Bool
+    var planNotificationHour: Int
+    var planNotificationMinute: Int
+    var readerTranslationId: String
+    var readerCrossReferenceSort: String
+    var readerFontSize: Float
+    var completedReadingIds: [String]
+}
+
 /// Handles one-time migration from Realm to GRDB UserDatabase
 class RealmMigrator {
+
+    /// Default translation when the legacy user has no translation set
+    static let fallbackTranslationId = "BSBs"
 
     /// Realm database files with their schema versions (from old RealmManager)
     /// Schema versions: default.realm=1, v1-v4.realm=2
@@ -53,55 +72,35 @@ class RealmMigrator {
 
         print("RealmMigrator: Starting migration from \(realmURL.lastPathComponent)...")
 
-        // Open old Realm with the correct schema version for that file
-        let config = Realm.Configuration(
-            fileURL: realmURL,
-            schemaVersion: foundSchemaVersion,
-            objectTypes: [LegacyUser.self, LegacyTranslation.self, LegacyPlan.self, LegacyCompletedReading.self]
-        )
-
-        guard let oldRealm = try? Realm(configuration: config) else {
-            print("RealmMigrator: Failed to open Realm database")
+        guard let legacy = readLegacyData(at: realmURL, schemaVersion: foundSchemaVersion) else {
             cleanupAllRealmFiles()
             return
         }
-
-        guard let oldUser = oldRealm.objects(LegacyUser.self).first else {
-            print("RealmMigrator: No user found in Realm database")
-            cleanupAllRealmFiles()
-            return
-        }
-
-        // Convert plans list to comma-separated string of IDs
-        let planIds = oldUser.plans.map { String($0.id) }.joined(separator: ",")
-
-        // Get translation ID - use abbreviation if available, otherwise default
-        let translationId = oldUser.readerTranslation?.abbreviation ?? "BSBs"
 
         // Migrate user settings to GRDB
         do {
             try UserDatabase.shared.updateSettings { settings in
-                settings.selectedPlanIds = planIds
-                settings.planInAppBible = oldUser.planInAppBible
-                settings.planExternalBible = oldUser.planExternalBible
-                settings.planWpm = oldUser.planWpm
-                settings.planNotification = oldUser.planNotification
-                settings.planNotificationHour = Calendar.current.component(.hour, from: oldUser.planNotificationDate)
-                settings.planNotificationMinute = Calendar.current.component(.minute, from: oldUser.planNotificationDate)
-                settings.readerTranslationId = translationId
-                settings.readerCrossReferenceSort = oldUser.readerCrossReferenceSort
-                settings.readerFontSize = oldUser.readerFontSize
+                settings.selectedPlanIds = legacy.planIds
+                settings.planInAppBible = legacy.planInAppBible
+                settings.planExternalBible = legacy.planExternalBible
+                settings.planWpm = legacy.planWpm
+                settings.planNotification = legacy.planNotification
+                settings.planNotificationHour = legacy.planNotificationHour
+                settings.planNotificationMinute = legacy.planNotificationMinute
+                settings.readerTranslationId = legacy.readerTranslationId
+                settings.readerCrossReferenceSort = legacy.readerCrossReferenceSort
+                settings.readerFontSize = legacy.readerFontSize
             }
-            print("RealmMigrator: Migrated user settings (translation: \(translationId), plans: \(planIds))")
+            print("RealmMigrator: Migrated user settings (translation: \(legacy.readerTranslationId), plans: \(legacy.planIds))")
         } catch {
             print("RealmMigrator: Failed to migrate user settings: \(error)")
         }
 
         // Migrate completed readings
         var migratedCount = 0
-        for reading in oldUser.completedReadings {
+        for readingId in legacy.completedReadingIds {
             do {
-                try UserDatabase.shared.addCompletedReading(reading.id)
+                try UserDatabase.shared.addCompletedReading(readingId)
                 migratedCount += 1
             } catch {
                 // Ignore duplicate key errors (reading already exists)
@@ -113,6 +112,45 @@ class RealmMigrator {
         cleanupAllRealmFiles()
 
         print("RealmMigrator: Migration complete!")
+    }
+
+    /// Read a legacy Realm file into plain values.
+    ///
+    /// Split out from `migrateIfNeeded()` so the legacy schema can be exercised
+    /// without touching the shared UserDatabase or the app's Documents directory.
+    /// Realm objects are thread-confined, so everything is copied out eagerly.
+    static func readLegacyData(at realmURL: URL, schemaVersion: UInt64) -> LegacyRealmData? {
+        let config = Realm.Configuration(
+            fileURL: realmURL,
+            schemaVersion: schemaVersion,
+            objectTypes: [LegacyUser.self, LegacyTranslation.self, LegacyPlan.self, LegacyCompletedReading.self]
+        )
+
+        guard let oldRealm = try? Realm(configuration: config) else {
+            print("RealmMigrator: Failed to open Realm database")
+            return nil
+        }
+
+        guard let oldUser = oldRealm.objects(LegacyUser.self).first else {
+            print("RealmMigrator: No user found in Realm database")
+            return nil
+        }
+
+        return LegacyRealmData(
+            // Plans become a comma-separated string of IDs
+            planIds: oldUser.plans.map { String($0.id) }.joined(separator: ","),
+            planInAppBible: oldUser.planInAppBible,
+            planExternalBible: oldUser.planExternalBible,
+            planWpm: oldUser.planWpm,
+            planNotification: oldUser.planNotification,
+            planNotificationHour: Calendar.current.component(.hour, from: oldUser.planNotificationDate),
+            planNotificationMinute: Calendar.current.component(.minute, from: oldUser.planNotificationDate),
+            // Use the translation abbreviation if set, otherwise the default
+            readerTranslationId: oldUser.readerTranslation?.abbreviation ?? fallbackTranslationId,
+            readerCrossReferenceSort: oldUser.readerCrossReferenceSort,
+            readerFontSize: oldUser.readerFontSize,
+            completedReadingIds: oldUser.completedReadings.map { $0.id }
+        )
     }
 
     /// Remove all Realm database files (all versions)

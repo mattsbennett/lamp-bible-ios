@@ -8,8 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		115D622AA82F562690671C60 /* RealmSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 42E72CDD647A5E4E99060E4D /* RealmSwift */; };
-		2F27C8FF80EE746DAB3A213C /* RealmSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 42E72CDD647A5E4E99060E4D /* RealmSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1494365326988E2206AE576E /* RealmSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 42E72CDD647A5E4E99060E4D /* RealmSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		505A032EB8C68181C333D3E1 /* RealmSwift in Frameworks */ = {isa = PBXBuildFile; productRef = BB167F29BAB71312257C29C9 /* RealmSwift */; };
 		69953A461E33453590607608 /* TipTapEditor in Resources */ = {isa = PBXBuildFile; fileRef = 9CF26519566447318332A93B /* TipTapEditor */; };
+		76D1ED02B3D86B929A895CBB /* RealmMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63E97884C32E4D3D92C1CA62 /* RealmMigrationTests.swift */; };
 		8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */; };
 		8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 0E27D0DD0B6FBDAAD354572B /* GRDB */; };
 		B8210A972B549ADD008341F0 /* ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8210A962B549ADD008341F0 /* ViewModel.swift */; };
@@ -133,17 +135,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		B35FC0A32D110AA31CBB3089 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				2F27C8FF80EE746DAB3A213C /* RealmSwift in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		B884323A2F4A7F9900A699B9 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -155,10 +146,22 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F123865309B952ECD1AD61A4 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				1494365326988E2206AE576E /* RealmSwift in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorCoordinator.swift; sourceTree = "<group>"; };
+		63E97884C32E4D3D92C1CA62 /* RealmMigrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RealmMigrationTests.swift; sourceTree = "<group>"; };
 		9CF26519566447318332A93B /* TipTapEditor */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/TipTapEditor; sourceTree = "<group>"; };
 		A95873C478D642C9B5444C02 /* TipTapEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorView.swift; sourceTree = "<group>"; };
 		B8210A962B549ADD008341F0 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModel.swift; sourceTree = "<group>"; };
@@ -309,6 +312,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				505A032EB8C68181C333D3E1 /* RealmSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -505,6 +509,7 @@
 				B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */,
 				B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */,
 				B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */,
+				63E97884C32E4D3D92C1CA62 /* RealmMigrationTests.swift */,
 			);
 			path = "Lamp BibleTests";
 			sourceTree = "<group>";
@@ -549,7 +554,7 @@
 				B885E4102ADB47E40066F0A0 /* Frameworks */,
 				B885E4112ADB47E40066F0A0 /* Resources */,
 				B884323A2F4A7F9900A699B9 /* Embed Foundation Extensions */,
-				B35FC0A32D110AA31CBB3089 /* Embed Frameworks */,
+				F123865309B952ECD1AD61A4 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -579,6 +584,9 @@
 				B885E4252ADB47ED0066F0A0 /* PBXTargetDependency */,
 			);
 			name = "Lamp BibleTests";
+			packageProductDependencies = (
+				BB167F29BAB71312257C29C9 /* RealmSwift */,
+			);
 			productName = "Lamp BibleTests";
 			productReference = B885E4232ADB47ED0066F0A0 /* Lamp BibleTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -793,6 +801,7 @@
 				B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */,
 				B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */,
 				B885E4282ADB47ED0066F0A0 /* Lamp_BibleTests.swift in Sources */,
+				76D1ED02B3D86B929A895CBB /* RealmMigrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1231,6 +1240,11 @@
 			productName = GRDB;
 		};
 		42E72CDD647A5E4E99060E4D /* RealmSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */;
+			productName = RealmSwift;
+		};
+		BB167F29BAB71312257C29C9 /* RealmSwift */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */;
 			productName = RealmSwift;
