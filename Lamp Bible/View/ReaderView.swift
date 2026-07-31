@@ -128,7 +128,9 @@ enum ChapterNavigationDirection {
 struct ChapterNavigationButton: View {
     let direction: ChapterNavigationDirection
     let progress: CGFloat  // 0 = no pull, 1 = threshold reached, can exceed 1
-    let chapterLabel: String?  // e.g., "Genesis 49" - shown when threshold reached
+    /// Destination shown when the threshold is reached — a chapter ("Genesis 49")
+    /// or, in plan mode, a reading ("Genesis 1-2")
+    let label: String?
     let action: () -> Void
 
     private let circleSize: CGFloat = 30
@@ -195,7 +197,7 @@ struct ChapterNavigationButton: View {
             }
             .overlay {
                 // Chapter label as overlay so it doesn't affect layout
-                if isThresholdReached, let label = chapterLabel {
+                if isThresholdReached, let label {
                     Text(label)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.secondary)
@@ -282,6 +284,9 @@ struct ChapterTextView: UIViewRepresentable {
     let onPositionsCalculated: (([Int: CGFloat]) -> Void)?
     // True while scrolling (drag OR deceleration)
     let isUserScrolling: Bool
+    /// Verse currently being read aloud, highlighted so you can follow along.
+    /// Deliberately absent from `buildKey()` — see `applySpokenVerse`.
+    var spokenVerseId: Int? = nil
 
     // Debug/perf toggle: render as simplified plain text to isolate TextKit/interaction overhead.
     // Enable by setting: UserDefaults.standard.set(true, forKey: "readerSimplifiedText")
@@ -291,6 +296,23 @@ struct ChapterTextView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
+    }
+
+    /// Move the read-aloud cursor. Cheap by design: it repositions one sibling view
+    /// in the gutter, leaving the attributed string and verse positions untouched,
+    /// so advancing a verse costs nothing near the text rendering path.
+    private func applySpokenVerse(_ textView: UITextView, coordinator: Coordinator, afterRebuild: Bool) {
+        // A rebuild replaces the ranges the cursor was resolved against, and a width
+        // change moves the gutter, so re-resolve on both even if the verse hasn't
+        // moved.
+        let width = textView.bounds.width
+        guard afterRebuild
+                || coordinator.appliedSpokenVerseId != spokenVerseId
+                || coordinator.appliedSpokenIndicatorWidth != width else { return }
+        coordinator.appliedSpokenVerseId = spokenVerseId
+        coordinator.appliedSpokenIndicatorWidth = width
+
+        coordinator.updateSpokenVerseCursor(verseId: spokenVerseId, animated: !afterRebuild)
     }
 
     func makeUIView(context: Context) -> UITextView {
@@ -346,7 +368,8 @@ struct ChapterTextView: UIViewRepresentable {
         // Only rebuild if content actually changed
         let currentKey = context.coordinator.buildKey()
         let effectiveKey = isSimplifiedText ? (currentKey + "-simplified") : currentKey
-        if context.coordinator.lastBuildKey != effectiveKey {
+        let didRebuild = context.coordinator.lastBuildKey != effectiveKey
+        if didRebuild {
             context.coordinator.lastBuildKey = effectiveKey
 
             // Preserve selection during rebuild
@@ -371,6 +394,8 @@ struct ChapterTextView: UIViewRepresentable {
                 context.coordinator.markVersePositionsDirty()
             }
         }
+
+        applySpokenVerse(textView, coordinator: context.coordinator, afterRebuild: didRebuild)
 
         // Note: Scroll-to-verse is handled by onChange(of: versePositions) in ReaderView
         // This ensures scrolling happens after positions are calculated
@@ -908,6 +933,93 @@ struct ChapterTextView: UIViewRepresentable {
         var verseTextRanges: [Int: NSRange] = [:]  // Verse text content ranges (excluding verse number)
         var verseYPositions: [Int: CGFloat] = [:]
         var lastBuildKey: String = ""
+        var appliedSpokenVerseId: Int?
+        var appliedSpokenIndicatorWidth: CGFloat = 0
+
+        /// Cursor in the left gutter marking the verse being read aloud.
+        ///
+        /// A sibling view rather than a text attribute or a custom draw pass: it
+        /// can't disturb text layout or the user's own highlights, and it can slide
+        /// from one verse to the next.
+        private var spokenCursor: UIView?
+
+        func updateSpokenVerseCursor(verseId: Int?, animated: Bool) {
+            guard let textView else { return }
+
+            guard let verseId,
+                  let range = verseTextRanges[verseId],
+                  range.location + range.length <= textView.attributedText.length,
+                  let layoutManager = textView.layoutManager as? CompactBackgroundLayoutManager
+            else {
+                hideSpokenCursor()
+                return
+            }
+
+            let container = textView.textContainer
+            layoutManager.ensureLayout(for: container)
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            var verseRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: container)
+            guard !verseRect.isNull, verseRect.height > 0 else {
+                hideSpokenCursor()
+                return
+            }
+
+            verseRect.origin.y += textView.textContainerInset.top
+            // The bounding rect carries the line spacing added below the final line;
+            // drop it so the cursor spans the verse's visible height.
+            if layoutManager.lineSpacingTrim > 0, verseRect.height > layoutManager.lineSpacingTrim {
+                verseRect.size.height -= layoutManager.lineSpacingTrim * 0.66
+            }
+
+            let cursorWidth: CGFloat = 4
+            // Sit in the left gutter, 4pt clear of the text's leading edge.
+            let gutter = textView.textContainerInset.left
+            let frame = CGRect(
+                x: max(0, gutter - 4 - cursorWidth),
+                y: verseRect.minY,
+                width: cursorWidth,
+                height: verseRect.height
+            )
+
+            let cursor = spokenCursor ?? makeSpokenCursor(in: textView, width: cursorWidth)
+            cursor.backgroundColor = .label
+
+            if cursor.isHidden || !animated {
+                cursor.frame = frame
+                if cursor.isHidden {
+                    cursor.isHidden = false
+                    cursor.alpha = 0
+                    UIView.animate(withDuration: 0.15) { cursor.alpha = 1 }
+                }
+            } else {
+                UIView.animate(
+                    withDuration: 0.25,
+                    delay: 0,
+                    options: [.curveEaseOut, .beginFromCurrentState]
+                ) {
+                    cursor.frame = frame
+                }
+            }
+        }
+
+        private func makeSpokenCursor(in textView: UITextView, width: CGFloat) -> UIView {
+            let cursor = UIView()
+            cursor.layer.cornerRadius = width / 2
+            cursor.isUserInteractionEnabled = false
+            cursor.isHidden = true
+            textView.addSubview(cursor)
+            spokenCursor = cursor
+            return cursor
+        }
+
+        private func hideSpokenCursor() {
+            guard let cursor = spokenCursor, !cursor.isHidden else { return }
+            UIView.animate(withDuration: 0.15, animations: {
+                cursor.alpha = 0
+            }, completion: { _ in
+                cursor.isHidden = true
+            })
+        }
 
         private var versePositionsDirty: Bool = true
         private var lastVersePositionsContainerWidth: CGFloat = 0
@@ -1495,6 +1607,21 @@ private class ScrollDebouncer {
     }
 }
 
+/// Everything that changes the words read-aloud would speak. Scroll position,
+/// pull progress and highlight changes deliberately aren't in here.
+private struct PlanSpeechInputs: Equatable {
+    let readingId: String
+    let readingDescription: String
+    let translationId: String
+    let firstRef: Int
+    let lastRef: Int
+    let verseCount: Int
+
+    var speechId: String {
+        "plan-reading-\(readingId)-\(translationId)-\(firstRef)-\(lastRef)-\(verseCount)"
+    }
+}
+
 struct ReaderView: View {
     @Environment(\.dismiss) var dismiss
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
@@ -1549,6 +1676,17 @@ struct ReaderView: View {
     @State private var quizQuestions: [QuizQuestion] = []
     @State private var showingQuizSheet: Bool = false
 
+    // Read aloud state for plan mode
+    @State private var planSpeech = TextSpeechController()
+    @State private var planSpeechRequest: TextSpeechRequest?
+    @State private var planSpeechUnavailableMessage: String?
+    @State private var showingSpeechTransport = false
+    /// Scroll-driven toolbar collapse, distinct from the tap-driven `toolbarsHidden`
+    /// immersive mode — this one leaves the status bar alone. A binding so split
+    /// view can share it with the tool panel and collapse both headers together.
+    @Binding var toolbarsCollapsed: Bool
+    @AppStorage("readAloudFollowsText") private var readAloudFollowsText: Bool = true
+
     // Theme editing state
     @State private var themeEditColor: HighlightColor?
     @State private var themeEditStyle: HighlightStyle = .highlight
@@ -1566,6 +1704,12 @@ struct ReaderView: View {
     let LOADING_HISTORY = "history"
 
     @State private var isHistoryNavigation: Bool = false
+    /// Incremented per load so a slow background read can't clobber a newer one
+    @State private var loadGeneration: Int = 0
+    /// True while a background content read is in flight. Scroll position is
+    /// meaningless against soon-to-be-replaced content, so verse commits and the
+    /// scroll spy stay suppressed until the new content lands.
+    @State private var isFetchingContent: Bool = false
 
     // Pull-to-refresh progress (0.0 to 1.0+) for arrow scaling
     @State private var pullProgressTop: CGFloat = 0
@@ -1606,6 +1750,7 @@ struct ReaderView: View {
         visibleVerseId: Binding<Int> = .constant(1001001),
         scrollOrigin: Binding<ScrollOrigin> = .constant(.none),
         toolbarsHidden: Binding<Bool> = .constant(false),
+        toolbarsCollapsed: Binding<Bool> = .constant(false),
         initialToolbarMode: BottomToolbarMode? = nil,
         // Horizontal split toolbar integration
         isHorizontalSplit: Bool = false,
@@ -1657,6 +1802,7 @@ struct ReaderView: View {
         _requestScrollToVerseId = requestScrollToVerseId
         _requestScrollAnimated = requestScrollAnimated
         _toolbarsHidden = toolbarsHidden
+        _toolbarsCollapsed = toolbarsCollapsed
     }
 
     private var bookName: String {
@@ -1724,8 +1870,8 @@ struct ReaderView: View {
                     Text("· \(toolDisplayName)")
                 }
             }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(.caption)
+                .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
                 .background(Color(UIColor.systemBackground).ignoresSafeArea(edges: .top))
@@ -1742,6 +1888,29 @@ struct ReaderView: View {
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) {
                 toolbarsHidden = false
+                toolbarsCollapsed = false
+            }
+        }
+    }
+
+    /// What to read for a given navigation. Resolving this is cheap; running it
+    /// is not, so the read happens off the main thread.
+    private enum VerseFetch {
+        case chapter(translationId: String, book: Int, chapter: Int)
+        case range(translationId: String, startRef: Int, endRef: Int)
+
+        func run() throws -> (verses: [TranslationVerse], headings: [TranslationHeading]) {
+            switch self {
+            case let .chapter(translationId, book, chapter):
+                let content = try TranslationDatabase.shared.getChapter(
+                    translationId: translationId, book: book, chapter: chapter
+                )
+                return (content.verses, content.headings)
+            case let .range(translationId, startRef, endRef):
+                let verses = try TranslationDatabase.shared.getVerseRange(
+                    translationId: translationId, startRef: startRef, endRef: endRef
+                )
+                return (verses, [])  // No headings for verse ranges
             }
         }
     }
@@ -1759,67 +1928,97 @@ struct ReaderView: View {
         positionTracker.positions = [:]
         scrollTargetY = nil
 
-        do {
-            switch loadingCase {
-            case LOADING_PREV_CHAPTER:
-                let (newBook, newChapter) = getPreviousChapter(book: currentBook, chapter: currentChapter)
-                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: newBook, chapter: newChapter)
-                verses = content.verses
-                headings = content.headings
+        // Resolve what to read. These are cheap metadata lookups; the verse text
+        // itself is fetched on a background queue below.
+        var fetch: VerseFetch?
 
-            case LOADING_NEXT_CHAPTER:
-                let (newBook, newChapter) = getNextChapter(book: currentBook, chapter: currentChapter, translationId: translationId)
-                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: newBook, chapter: newChapter)
-                verses = content.verses
-                headings = content.headings
+        switch loadingCase {
+        case LOADING_PREV_CHAPTER:
+            let (newBook, newChapter) = getPreviousChapter(book: currentBook, chapter: currentChapter)
+            fetch = .chapter(translationId: translationId, book: newBook, chapter: newChapter)
 
-            case LOADING_PREV_BOOK:
-                let newBook = max(1, currentBook - 1)
-                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: newBook, chapter: 1)
-                verses = content.verses
-                headings = content.headings
+        case LOADING_NEXT_CHAPTER:
+            let (newBook, newChapter) = getNextChapter(book: currentBook, chapter: currentChapter, translationId: translationId)
+            fetch = .chapter(translationId: translationId, book: newBook, chapter: newChapter)
 
-            case LOADING_NEXT_BOOK:
-                let newBook = min(66, currentBook + 1)
-                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: newBook, chapter: 1)
-                verses = content.verses
-                headings = content.headings
+        case LOADING_PREV_BOOK:
+            fetch = .chapter(translationId: translationId, book: max(1, currentBook - 1), chapter: 1)
 
-            case LOADING_READING:
-                let reading = readingMetaData![currentReadingIndex]
-                verses = try TranslationDatabase.shared.getVerseRange(translationId: translationId, startRef: reading.sv, endRef: reading.ev)
-                headings = []  // No headings for verse ranges
+        case LOADING_NEXT_BOOK:
+            fetch = .chapter(translationId: translationId, book: min(66, currentBook + 1), chapter: 1)
 
-            case LOADING_HISTORY:
-                if let targetId = targetVerseId {
-                    let (_, targetChapter, targetBook) = splitVerseId(targetId)
-                    let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: targetBook, chapter: targetChapter)
-                    verses = content.verses
-                    headings = content.headings
-                }
-
-            case LOADING_CURRENT:
-                let content = try TranslationDatabase.shared.getChapter(translationId: translationId, book: currentBook, chapter: currentChapter)
-                verses = content.verses
-                headings = content.headings
-
-            case LOADING_TRANSLATION:
-                // Use explicitly passed translation ID, or fall back to current translation
-                let newTranslationId = forTranslationId ?? translationId
-                translationId = newTranslationId
-                // Reload highlight sets for the new translation
-                HighlightManager.shared.loadSetsForTranslation(newTranslationId)
-                let content = try TranslationDatabase.shared.getChapter(translationId: newTranslationId, book: currentBook, chapter: currentChapter)
-                verses = content.verses
-                headings = content.headings
-
-            default:
-                break
+        case LOADING_READING:
+            // The index can outrun the readings when a plan or date changes
+            if let readings = readingMetaData, readings.indices.contains(currentReadingIndex) {
+                let reading = readings[currentReadingIndex]
+                fetch = .range(translationId: translationId, startRef: reading.sv, endRef: reading.ev)
             }
-        } catch {
-            print("ReaderView: Error loading verses: \(error)")
-            verses = []
-            headings = []
+
+        case LOADING_HISTORY:
+            if let targetId = targetVerseId {
+                let (_, targetChapter, targetBook) = splitVerseId(targetId)
+                fetch = .chapter(translationId: translationId, book: targetBook, chapter: targetChapter)
+            }
+
+        case LOADING_CURRENT:
+            fetch = .chapter(translationId: translationId, book: currentBook, chapter: currentChapter)
+
+        case LOADING_TRANSLATION:
+            // Use explicitly passed translation ID, or fall back to current translation
+            let newTranslationId = forTranslationId ?? translationId
+            translationId = newTranslationId
+            // Reload highlight sets for the new translation
+            HighlightManager.shared.loadSetsForTranslation(newTranslationId)
+            fetch = .chapter(translationId: newTranslationId, book: currentBook, chapter: currentChapter)
+
+        default:
+            break
+        }
+
+        // Bump the generation so a slower earlier load can't overwrite this one
+        loadGeneration &+= 1
+        let generation = loadGeneration
+
+        guard let fetch else {
+            // LOADING_HISTORY without a target, or an unknown case: the original
+            // behaviour left the existing verses in place. The generation bump
+            // above already superseded any in-flight read, so release the flag
+            // here — nothing else will.
+            isFetchingContent = false
+            applyLoadedVerses(nil, loadingCase: loadingCase, targetVerseId: targetVerseId)
+            return
+        }
+
+        isFetchingContent = true
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let loaded: (verses: [TranslationVerse], headings: [TranslationHeading])
+            do {
+                loaded = try fetch.run()
+            } catch {
+                print("ReaderView: Error loading verses: \(error)")
+                loaded = ([], [])
+            }
+
+            DispatchQueue.main.async {
+                // A newer load owns the flag, so leave it set when superseded
+                guard generation == loadGeneration else { return }
+                isFetchingContent = false
+                applyLoadedVerses(loaded, loadingCase: loadingCase, targetVerseId: targetVerseId)
+            }
+        }
+    }
+
+    /// Main-thread tail of `loadVerses`: publish the content and run the
+    /// navigation side effects in the same order as before.
+    private func applyLoadedVerses(
+        _ loaded: (verses: [TranslationVerse], headings: [TranslationHeading])?,
+        loadingCase: String,
+        targetVerseId: Int?
+    ) {
+        if let loaded {
+            verses = loaded.verses
+            headings = loaded.headings
         }
 
         // For history navigation, use the target verse (preserving scroll position)
@@ -1941,6 +2140,275 @@ struct ReaderView: View {
         loadVerses(loadingCase: LOADING_NEXT_CHAPTER)
     }
 
+    // MARK: - Scroll-Trigger Navigation
+
+    /// True when the reader is showing a plan's readings rather than free chapters.
+    private var isPlanReadingMode: Bool {
+        toolbarMode == .plan && plansWithReadings.indices.contains(selectedPlanIndex)
+    }
+
+    /// Readings of the currently selected plan, empty outside plan mode.
+    private var currentPlanReadings: [ReadingMetaData] {
+        guard isPlanReadingMode else { return [] }
+        return plansWithReadings[selectedPlanIndex].readings
+    }
+
+    private var currentPlanReading: ReadingMetaData? {
+        guard isPlanReadingMode,
+              currentPlanReadings.indices.contains(planReadingIndex) else { return nil }
+        return currentPlanReadings[planReadingIndex]
+    }
+
+    /// Identity of the passage read-aloud speaks. Cheap enough for the body to
+    /// compute every pass; the spoken text itself is not — see
+    /// `rebuildPlanSpeechRequest`.
+    private var planSpeechInputs: PlanSpeechInputs? {
+        guard toolbarMode == .plan, let reading = currentPlanReading, !verses.isEmpty else { return nil }
+        return PlanSpeechInputs(
+            readingId: reading.id,
+            readingDescription: reading.description,
+            translationId: translationId,
+            firstRef: verses.first?.ref ?? 0,
+            lastRef: verses.last?.ref ?? 0,
+            verseCount: verses.count
+        )
+    }
+
+    /// Rebuild the spoken text off the main thread whenever the passage changes.
+    ///
+    /// This walks every verse and queries the bundled database for book names, so
+    /// it can't live in a computed property the body reads: scrolling updates
+    /// `pullProgressTop`, which would rebuild the entire reading twice per frame.
+    private func rebuildPlanSpeechRequest(for inputs: PlanSpeechInputs?) {
+        guard let inputs else {
+            // Never leave audio running for a passage that's gone — the transport is
+            // keyed to the request and would vanish with it.
+            planSpeech.stop()
+            planSpeechRequest = nil
+            return
+        }
+
+        let verses = self.verses
+        let wpm = userSettings.planWpm
+        DispatchQueue.global(qos: .userInitiated).async {
+            let segments = ReaderSpeechTextBuilder.planReadingSegments(
+                readingDescription: inputs.readingDescription,
+                verses: verses
+            )
+            let translation = try? TranslationDatabase.shared.getTranslation(id: inputs.translationId)
+            let language = translation?.language
+            let hasVoice = SpeechVoiceCatalog.hasVoice(for: language)
+            let request = TextSpeechRequest(
+                id: inputs.speechId,
+                title: inputs.readingDescription,
+                // The translation, not the plan: which words are being read matters
+                // here, and the plan name is already on the reader's bottom bar.
+                subtitle: translation?.abbreviation,
+                segments: segments,
+                languageCode: language,
+                wordsPerMinute: wpm
+            )
+            DispatchQueue.main.async {
+                // Drop the result if a newer passage has superseded this one
+                guard inputs == planSpeechInputs else { return }
+                guard !request.isEmpty else {
+                    planSpeechRequest = nil
+                    planSpeechUnavailableMessage = nil
+                    return
+                }
+                guard hasVoice else {
+                    // Better to say why than to read Greek with an English voice.
+                    planSpeechRequest = nil
+                    planSpeechUnavailableMessage = Self.noVoiceMessage(for: language)
+                    return
+                }
+                planSpeechRequest = request
+                planSpeechUnavailableMessage = nil
+            }
+        }
+    }
+
+    /// Verse to highlight as read-aloud speaks it, scoped to the request actually
+    /// playing so a stale controller state can't light up the wrong verse.
+    private var spokenVerseId: Int? {
+        guard let planSpeechRequest, planSpeech.isActive(for: planSpeechRequest.id) else { return nil }
+        return planSpeech.currentVerseId
+    }
+
+    /// Clearance from the bottom of the window to the top of the floating bottom
+    /// bar. The bar is drawn by the navigation controller outside SwiftUI's safe
+    /// area accounting — a `GeometryReader` here reports a bottom inset of zero —
+    /// so the lift has to be stated rather than derived. Measured against the
+    /// standard bottom bar; a taller one would need this raised.
+    private static let bottomBarClearance: CGFloat = 94
+
+    /// How much of the passage the floating bottom bar covers. Measured from the
+    /// view hierarchy: its container runs from y=788 to the bottom of an 874pt
+    /// window. Unlike the navigation bar it contributes nothing to
+    /// `adjustedContentInset`, so nothing can derive this.
+    private static let bottomBarObscuredHeight: CGFloat = 86
+
+    /// Drops the button onto the row the bottom bar occupied, so collapsing moves
+    /// it into the vacated space rather than leaving it hovering mid-page.
+    /// Measured from the same layout as `bottomBarClearance`.
+    private static let collapsedBarClearance: CGFloat = 36
+
+    /// Kept out of the reader's body expression, which is already at the
+    /// type-checker's limit — inlining even this much tips it over.
+    @ViewBuilder
+    private var floatingSpeechButton: some View {
+        if isPlanSpeechActive {
+            GeometryReader { proxy in
+                SpeechFloatingButton(
+                    controller: planSpeech,
+                    onOpenTransport: { showingSpeechTransport = true }
+                )
+                // Measured from the window's bottom edge, deliberately ignoring
+                // `safeAreaInsets.bottom`. This overlay spans the raw window and
+                // reports a zero bottom inset while the bar is up, but once the bar
+                // goes the home indicator becomes that inset — so including it made
+                // the button drop on our animation and then hop back up on
+                // SwiftUI's, which read as an overshoot. Both clearances already
+                // account for the safe area.
+                .position(
+                    x: proxy.size.width / 2,
+                    y: proxy.size.height - SpeechFloatingButton.diameter / 2
+                        - (toolbarsHidden || toolbarsCollapsed
+                           ? Self.collapsedBarClearance
+                           : Self.bottomBarClearance)
+                )
+            }
+            .transition(.scale.combined(with: .opacity))
+        }
+    }
+
+    /// Whether this reading is the one being spoken — gates the floating transport
+    /// so it can't linger over a passage the audio has moved on from.
+    private var isPlanSpeechActive: Bool {
+        guard let planSpeechRequest else { return false }
+        return planSpeech.isActive(for: planSpeechRequest.id)
+    }
+
+    /// Keep the spoken verse on screen without fighting the reader: stay out of the
+    /// way while they're scrolling, and only move when the verse has actually left
+    /// the viewport.
+    private func followSpokenVerse(_ verseId: Int) {
+        guard readAloudFollowsText, !isScrolling, !isProgrammaticScroll else { return }
+        guard let y = positionTracker.positions[verseId] else { return }
+        guard let scrollView = ScrollSyncCoordinator.shared.readerScrollView else { return }
+
+        // The top bar is in `adjustedContentInset` (116pt, measured), but the
+        // bottom bar floats over the content and contributes nothing to it — a
+        // verse can sit well inside the scroll view's insets and still be entirely
+        // hidden behind it. Its height has to be stated, and drops to zero once
+        // the bar is collapsed.
+        let bottomObscured = (toolbarsHidden || toolbarsCollapsed)
+            ? scrollView.adjustedContentInset.bottom
+            : max(scrollView.adjustedContentInset.bottom, Self.bottomBarObscuredHeight)
+
+        let visibleTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+        let visibleBottom = scrollView.contentOffset.y + scrollView.bounds.height - bottomObscured
+
+        // The whole verse has to be visible, not just the point it starts at.
+        // Testing the start alone leaves a verse that begins just above the bottom
+        // edge sitting there with its body off-screen, which is the state this is
+        // supposed to prevent. The next verse's start is where this one ends.
+        let verseTop = y
+        let verseBottom = positionTracker.positions.values.filter { $0 > y }.min()
+
+        let trigger: CGFloat = 24
+        let needsScroll: Bool
+        if let verseBottom, verseBottom - verseTop < visibleBottom - visibleTop {
+            needsScroll = verseTop < visibleTop + trigger || verseBottom > visibleBottom - trigger
+        } else {
+            // Taller than the viewport, or the last verse with nothing after it to
+            // measure against: keeping its start in view is the best available.
+            needsScroll = verseTop < visibleTop + trigger || verseTop > visibleBottom - trigger
+        }
+        guard needsScroll else { return }
+
+        animateScroll = true
+        // `scrollTo(anchor: .top)` lands at the safe-area top, which already
+        // accounts for the navigation bar; this is the reading lead below it.
+        scrollTargetY = max(0, y - 80)
+    }
+
+    static func noVoiceMessage(for languageCode: String?) -> String {
+        let howToFix = "Add one in Settings › Accessibility › Spoken Content › Voices."
+        guard let language = SpeechVoiceCatalog.languageName(for: languageCode) else {
+            return "No speech voice is installed for this text. \(howToFix)"
+        }
+        return "No \(language) voice is installed, so this can't be read aloud. \(howToFix)"
+    }
+
+    /// Where the top/bottom scroll affordance goes. In plan mode it steps through
+    /// the selected plan's readings; otherwise through chapters. `nil` means
+    /// there's nowhere to go and the affordance is hidden.
+    private struct ReaderNavTarget {
+        let label: String?
+        let action: () -> Void
+    }
+
+    private var previousNavTarget: ReaderNavTarget? {
+        if isPlanReadingMode {
+            // Deliberately not gated on loaded verses: if a reading fails to load,
+            // navigation has to stay available or there's no way out.
+            let target = planReadingIndex - 1
+            guard currentPlanReadings.indices.contains(target) else { return nil }
+            return ReaderNavTarget(
+                label: currentPlanReadings[target].description,
+                // Mirrors chapter navigation: pulling back lands at the end of
+                // the previous unit, not its start.
+                action: { goToPlanReading(at: target, scrollToEnd: true) }
+            )
+        }
+        guard readingMetaData == nil, let firstVerse = verses.first,
+              hasPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter) else {
+            return nil
+        }
+        return ReaderNavTarget(label: previousChapterLabel, action: goToPreviousChapter)
+    }
+
+    private var nextNavTarget: ReaderNavTarget? {
+        if isPlanReadingMode {
+            let target = planReadingIndex + 1
+            guard currentPlanReadings.indices.contains(target) else { return nil }
+            return ReaderNavTarget(
+                label: currentPlanReadings[target].description,
+                action: { goToPlanReading(at: target, scrollToEnd: false) }
+            )
+        }
+        guard readingMetaData == nil, let firstVerse = verses.first,
+              hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) else {
+            return nil
+        }
+        return ReaderNavTarget(label: nextChapterLabel, action: goToNextChapter)
+    }
+
+    /// True when the verse already belongs to the plan reading on screen, meaning
+    /// it's part of the loaded content and needs no fetch.
+    private func isWithinCurrentPlanReading(_ verseId: Int) -> Bool {
+        guard isPlanReadingMode,
+              currentPlanReadings.indices.contains(planReadingIndex) else { return false }
+        let reading = currentPlanReadings[planReadingIndex]
+        return verseId >= reading.sv && verseId <= reading.ev
+    }
+
+    /// Plan-mode counterpart to `goToPreviousChapter` / `goToNextChapter`.
+    private func goToPlanReading(at index: Int, scrollToEnd: Bool) {
+        // Reset pull progress immediately to hide sticky buttons
+        pullProgressTop = 0
+        pullProgressBottom = 0
+
+        animateScroll = false
+        loadPlanReading(at: index, scrollToEnd: scrollToEnd)
+    }
+
+    private func openQuizSheet() {
+        planSpeech.stop()
+        showingQuizSheet = true
+    }
+
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
@@ -1974,25 +2442,25 @@ struct ReaderView: View {
                                 isScrolling = false
                             },
                             onPullToLoadPrevious: {
-                                // Pull-to-refresh at top - load previous chapter
-                                if readingMetaData == nil, let firstVerse = verses.first,
-                                   hasPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
-                                    goToPreviousChapter()
-                                }
+                                // Pull at top - previous reading in plan mode, else previous chapter
+                                previousNavTarget?.action()
                             },
                             onPullToLoadNext: {
-                                // Pull-to-refresh at bottom - load next chapter
-                                if readingMetaData == nil, let firstVerse = verses.first,
-                                   hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
-                                    goToNextChapter()
-                                }
+                                // Pull at bottom - next reading in plan mode, else next chapter
+                                nextNavTarget?.action()
                             },
                             onPullProgressTop: { progress in
                                 pullProgressTop = progress
                             },
                             onPullProgressBottom: { progress in
                                 pullProgressBottom = progress
-                            }
+                            },
+                            onToolbarCollapseChange: { collapsed in
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    toolbarsCollapsed = collapsed
+                                }
+                            },
+                            toolbarsCollapsed: toolbarsCollapsed
                         )
                             .frame(width: 1, height: 1)
 
@@ -2001,14 +2469,13 @@ struct ReaderView: View {
                                 .frame(height: 1)
                                 .id("top")
 
-                            // Previous chapter button (only show for non-plan readings)
-                            if readingMetaData == nil, let firstVerse = verses.first,
-                               hasPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
+                            // Previous button - previous reading in plan mode, else previous chapter
+                            if let previousNavTarget {
                                 ChapterNavigationButton(
                                     direction: .previous,
                                     progress: pullProgressTop,
-                                    chapterLabel: previousChapterLabel,
-                                    action: goToPreviousChapter
+                                    label: previousNavTarget.label,
+                                    action: previousNavTarget.action
                                 )
                                 .padding(.bottom, 20)
                             }
@@ -2042,7 +2509,8 @@ struct ReaderView: View {
                                     // Signal that positions were calculated - onChange handler will check pendingScrollVerseId
                                     positionsVersion += 1
                                 },
-                                isUserScrolling: isScrolling
+                                isUserScrolling: isScrolling,
+                                spokenVerseId: spokenVerseId
                             )
                             .id("chapter_\(chapterNumber)_\(translationId)")
 
@@ -2050,20 +2518,19 @@ struct ReaderView: View {
                             if toolbarMode == .plan, quizModule != nil, !quizQuestions.isEmpty {
                                 QuizCardView(
                                     questionCount: quizQuestions.count,
-                                    onStart: { showingQuizSheet = true }
+                                    onStart: openQuizSheet
                                 )
                                 .padding(.horizontal)
                                 .padding(.top, 24)
                             }
 
-                            // Next chapter button (inline, hidden when sticky overlay shows)
-                            if readingMetaData == nil, let firstVerse = verses.first,
-                               hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
+                            // Next button (inline, hidden when sticky overlay shows)
+                            if let nextNavTarget {
                                 ChapterNavigationButton(
                                     direction: .next,
                                     progress: pullProgressBottom,
-                                    chapterLabel: nextChapterLabel,
-                                    action: goToNextChapter
+                                    label: nextNavTarget.label,
+                                    action: nextNavTarget.action
                                 )
                                 .background(
                                     GeometryReader { buttonGeo in
@@ -2104,7 +2571,7 @@ struct ReaderView: View {
                                 scrollView.setContentOffset(CGPoint(x: 0, y: topOffset), animated: false)
                             }
 
-                            if pendingScrollVerseId == nil {
+                            if pendingScrollVerseId == nil && !isFetchingContent {
                                 isProgrammaticScroll = false
                             }
                         }
@@ -2165,7 +2632,7 @@ struct ReaderView: View {
                                 scrollView.setContentOffset(CGPoint(x: 0, y: topOffset), animated: false)
                             }
 
-                            if pendingScrollVerseId == nil {
+                            if pendingScrollVerseId == nil && !isFetchingContent {
                                 isProgrammaticScroll = false
                             }
                         }
@@ -2201,8 +2668,13 @@ struct ReaderView: View {
                         let (_, currentCh, currentBk) = splitVerseId(currentVerseId)
                         // Use the requested animation setting
                         animateScroll = requestScrollAnimated
-                        // Check if target is in a different chapter
-                        if targetBook != currentBk || targetChapter != currentCh {
+                        // Check if target is in a different chapter. A plan reading
+                        // can span chapters and already has those verses loaded, so
+                        // a target inside it must scroll rather than reload —
+                        // reloading swaps the reading for a single chapter and
+                        // leaves the bottom toolbar pointing at the old reading.
+                        if !isWithinCurrentPlanReading(verseId),
+                           targetBook != currentBk || targetChapter != currentCh {
                             // Load the new chapter
                             loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: verseId)
                         } else {
@@ -2298,9 +2770,7 @@ struct ReaderView: View {
                 } // ScrollViewReader
 
                 // Sticky overlay for bottom button
-                if readingMetaData == nil,
-                   let firstVerse = verses.first,
-                   hasNextChapter(book: firstVerse.book, chapter: firstVerse.chapter) {
+                if let nextNavTarget {
                     if bottomButtonAboveViewport {
                         // Stick at top (below nav bar) when scrolled up past visible area
                         // Leave space at top for last line of content to show through
@@ -2309,8 +2779,8 @@ struct ReaderView: View {
                             ChapterNavigationButton(
                                 direction: .next,
                                 progress: pullProgressBottom,
-                                chapterLabel: nextChapterLabel,
-                                action: goToNextChapter
+                                label: nextNavTarget.label,
+                                action: nextNavTarget.action
                             )
                             .background(Color(UIColor.systemBackground))
                             Spacer()
@@ -2322,14 +2792,16 @@ struct ReaderView: View {
                             ChapterNavigationButton(
                                 direction: .next,
                                 progress: pullProgressBottom,
-                                chapterLabel: nextChapterLabel,
-                                action: goToNextChapter
+                                label: nextNavTarget.label,
+                                action: nextNavTarget.action
                             )
                             .background(Color(UIColor.systemBackground))
                         }
                     }
                 }
             } // GeometryReader
+            .overlay { floatingSpeechButton }
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isPlanSpeechActive)
             .navigationBarBackButtonHidden(true)
             .toolbar {
                 ReaderBottomToolbarView(
@@ -2371,7 +2843,7 @@ struct ReaderView: View {
                         loadPlanReading(at: 0)
                     },
                     onQuiz: quizModule != nil ? {
-                        showingQuizSheet = true
+                        openQuizSheet()
                     } : nil
                 )
             }
@@ -2406,8 +2878,29 @@ struct ReaderView: View {
                         themeEditStyle = style
                         themeEditExisting = existing
                         pendingThemeEdit = true
-                    }
+                    },
+                    isReadingAloud: planSpeech.playbackState != .idle,
+                    onStopReadAloud: { planSpeech.stop() }
                 )
+            }
+            .toolbar {
+                // Same placement and glyph as the quiz sheet's control, so the two
+                // read-aloud surfaces look like one feature. Present for the whole of
+                // plan mode — disabled while the text is still building — so the
+                // ellipsis beside it never moves.
+                if toolbarMode == .plan {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        SpeechToolbarButton(
+                            request: planSpeechRequest,
+                            unavailableMessage: planSpeechUnavailableMessage,
+                            controller: planSpeech,
+                            onOpenTransport: { showingSpeechTransport = true }
+                        )
+                    }
+                }
+            }
+            .sheet(isPresented: $showingSpeechTransport) {
+                SpeechTransportSheet(controller: planSpeech, request: planSpeechRequest)
             }
             .sheet(isPresented: $showingBookPicker) {
                 bookPickerSheet
@@ -2430,7 +2923,11 @@ struct ReaderView: View {
                 )
                 .presentationDetents([.medium, .large])
             }
-            .sheet(isPresented: $showingQuizSheet) {
+            .sheet(isPresented: $showingQuizSheet, onDismiss: {
+                // The sheet may have changed the age group preference; pick up
+                // the matching questions for the inline quiz card.
+                loadQuizForCurrentReading()
+            }) {
                 if let module = quizModule,
                    selectedPlanIndex >= 0,
                    selectedPlanIndex < plansWithReadings.count,
@@ -2468,7 +2965,11 @@ struct ReaderView: View {
                     }
                 }
             }
-            .toolbar(toolbarsHidden ? .hidden : .visible, for: .navigationBar, .bottomBar)
+            // Two separate ideas share this modifier: `toolbarsHidden` is the
+            // tap-driven immersive mode, which also takes the status bar and swaps
+            // in the collapsed header; `toolbarsCollapsed` is the lighter
+            // scroll-driven one, which only moves the bars.
+            .toolbar(toolbarsHidden || toolbarsCollapsed ? .hidden : .visible, for: .navigationBar, .bottomBar)
             .statusBarHidden(toolbarsHidden)
             .onChange(of: showingOptionsMenu) { _, isShowing in
                 if !isShowing && pendingThemeEdit {
@@ -2482,7 +2983,7 @@ struct ReaderView: View {
             }
             .safeAreaInset(edge: .top) {
                 // In horizontal split, parent (SplitReaderView) handles the full-width collapsed header
-                if toolbarsHidden && !isHorizontalSplit {
+                if (toolbarsHidden || toolbarsCollapsed) && !isHorizontalSplit {
                     collapsedHeader
                 }
             }
@@ -2585,11 +3086,13 @@ struct ReaderView: View {
                     toolbarMode = .search
                 }
             } else if readingMetaData == nil {
+                planSpeech.stop()
                 // Switch back to chapter view
                 loadVerses(loadingCase: LOADING_CURRENT)
             }
         }
         .onChange(of: date) { _, _ in
+            planSpeech.stop()
             // Reload plan readings when date changes
             loadPlanReadings()
             if toolbarMode == .plan {
@@ -2601,12 +3104,26 @@ struct ReaderView: View {
                 }
             }
         }
+        .onChange(of: planSpeechInputs, initial: true) { _, inputs in
+            rebuildPlanSpeechRequest(for: inputs)
+        }
+        .onChange(of: spokenVerseId) { _, verseId in
+            if let verseId {
+                followSpokenVerse(verseId)
+            }
+        }
+        .onDisappear {
+            planSpeech.stop()
+        }
     }
 
     private func commitVisibleVerseIfNeeded(_ verseId: Int) {
         // Commit verse state only after scroll settles.
         verseCommitDebouncer.debounce(delay: 0.12) {
             guard !isProgrammaticScroll else { return }
+            // The verse belongs to content that's about to be replaced; committing
+            // it can kick off a spurious chapter load that cancels the real one.
+            guard !isFetchingContent else { return }
             guard verseId != currentVerseId else { return }
 
             var transaction = Transaction()
@@ -2693,16 +3210,26 @@ struct ReaderView: View {
             selectedPlanIndex = 0
         }
         planReadingIndex = 0
+        currentReadingIndex = 0
     }
 
-    /// Loads verses for the specified plan reading index within the selected plan
-    private func loadPlanReading(at index: Int) {
+    /// Loads verses for the specified plan reading index within the selected plan.
+    /// `scrollToEnd` lands on the reading's last verse instead of its first, which
+    /// is what backwards scroll-trigger navigation wants.
+    private func loadPlanReading(at index: Int, scrollToEnd: Bool = false) {
         guard selectedPlanIndex >= 0 && selectedPlanIndex < plansWithReadings.count else { return }
-        let currentPlanReadings = plansWithReadings[selectedPlanIndex].readings
-        guard index >= 0 && index < currentPlanReadings.count else { return }
+        let planReadings = plansWithReadings[selectedPlanIndex].readings
+        guard index >= 0 && index < planReadings.count else { return }
 
-        let reading = currentPlanReadings[index]
+        planSpeech.stop()
+
+        let reading = planReadings[index]
         planReadingIndex = index
+        // The bottom toolbar renders from currentReadingIndex, so keep the two in
+        // step here rather than relying on callers to do it. Safe in plan mode:
+        // the onChange handler for this only acts on the legacy readingMetaData
+        // path, which is nil here.
+        currentReadingIndex = index
 
         // Plan navigation swaps the content in-place, so clear any stale
         // positions and force the same scroll reset path used for chapter loads.
@@ -2720,43 +3247,60 @@ struct ReaderView: View {
         currentVerseId = reading.sv
         visibleVerseId = reading.sv
 
-        // Load the verses for this reading
-        if let fetchedVerses = try? TranslationDatabase.shared.getVerseRange(
-            translationId: translationId,
-            startRef: reading.sv,
-            endRef: reading.ev
-        ) {
-            verses = fetchedVerses
+        // Bump the generation so a slower earlier load can't overwrite this one
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let translationId = self.translationId
+        isFetchingContent = true
 
-            // Fetch headings for all chapters in the verse range
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fetchedVerses = (try? TranslationDatabase.shared.getVerseRange(
+                translationId: translationId,
+                startRef: reading.sv,
+                endRef: reading.ev
+            )) ?? []
+
+            // Headings for exactly the chapters the reading covers. Deriving them
+            // from the fetched verses avoids probing chapters that don't exist.
+            var seen = Set<Int>()
             var allHeadings: [TranslationHeading] = []
-            if !fetchedVerses.isEmpty {
-                let startBook = reading.sv / 1000000
-                let startChapter = (reading.sv % 1000000) / 1000
-                let endBook = reading.ev / 1000000
-                let endChapter = (reading.ev % 1000000) / 1000
-
-                // Collect headings for each book/chapter in the range
-                for book in startBook...endBook {
-                    let firstChapter = (book == startBook) ? startChapter : 1
-                    let lastChapter = (book == endBook) ? endChapter : 150  // Use high number, will be limited by actual chapters
-                    for chapter in firstChapter...lastChapter {
-                        if let chapterHeadings = try? TranslationDatabase.shared.getHeadingsForChapter(
-                            translationId: translationId,
-                            book: book,
-                            chapter: chapter
-                        ) {
-                            allHeadings.append(contentsOf: chapterHeadings)
-                        }
-                    }
+            for verse in fetchedVerses {
+                let key = verse.book * 1000 + verse.chapter
+                guard seen.insert(key).inserted else { continue }
+                if let chapterHeadings = try? TranslationDatabase.shared.getHeadingsForChapter(
+                    translationId: translationId,
+                    book: verse.book,
+                    chapter: verse.chapter
+                ) {
+                    allHeadings.append(contentsOf: chapterHeadings)
                 }
             }
 
-            headings = allHeadings
-            isLoading = true
-        }
+            DispatchQueue.main.async {
+                // A newer load owns the flag, so leave it set when superseded
+                guard generation == loadGeneration else { return }
+                isFetchingContent = false
 
-        loadQuizForCurrentReading()
+                if fetchedVerses.isEmpty {
+                    // Every bundled translation covers every plan reading, so this
+                    // means the selected translation doesn't have the range.
+                    print("ReaderView: no verses for reading \(reading.sv)-\(reading.ev) in '\(translationId)'")
+                }
+
+                verses = fetchedVerses
+                headings = allHeadings
+
+                if scrollToEnd, let lastVerse = fetchedVerses.last {
+                    currentVerseId = lastVerse.ref
+                    visibleVerseId = lastVerse.ref
+                    // Picked up by checkPendingScroll once positions are laid out
+                    pendingScrollVerseId = lastVerse.ref
+                }
+
+                isLoading = true
+                loadQuizForCurrentReading()
+            }
+        }
     }
 
     /// Loads quiz questions for the current plan reading if a quiz module exists
@@ -2797,7 +3341,9 @@ struct ReaderView: View {
         }
 
         quizModule = module
-        let ageGroup = userSettings.defaultQuizAgeGroup
+        // Read the age group live: `userSettings` is captured at init, and the
+        // quiz sheet can change this preference while the reader is on screen.
+        let ageGroup = UserDatabase.shared.getSettings().defaultQuizAgeGroup
         quizQuestions = (try? BundledModuleDatabase.shared.getQuizQuestionsForReading(
             moduleId: module.id, day: dayNum, sv: reading.sv, ev: reading.ev, ageGroup: ageGroup
         )) ?? []
@@ -2842,6 +3388,479 @@ struct QuizCardView: View {
     }
 }
 
+// MARK: - Read Aloud Controls
+
+/// Toolbar entry point for read-aloud, identical in the reader and the quiz so
+/// one feature doesn't read as two.
+///
+/// Always rendered — disabled rather than removed when there's nothing to read —
+/// so the items beside it never shift out from under a tap.
+struct SpeechToolbarButton: View {
+    let request: TextSpeechRequest?
+    /// Set when read-aloud can't run for this passage. Shown on tap rather than
+    /// leaving a dead control with no explanation.
+    var unavailableMessage: String? = nil
+    var controller: TextSpeechController
+    /// Opens the full transport. Absent in contexts that don't offer one.
+    var onOpenTransport: (() -> Void)? = nil
+    @State private var showingUnavailable = false
+
+    private var isPlaying: Bool {
+        guard let request else { return false }
+        return controller.isPlaying(for: request.id)
+    }
+
+    private var isActive: Bool {
+        guard let request else { return false }
+        return controller.isActive(for: request.id)
+    }
+
+    /// Where a transport exists it owns playback state, so this stays a stable way
+    /// in rather than doubling as a play/pause toggle. Only the quiz, which has no
+    /// transport, still toggles directly.
+    private var opensTransport: Bool {
+        onOpenTransport != nil
+    }
+
+    private var iconName: String {
+        if opensTransport { return "speaker.wave.2" }
+        if isPlaying { return "pause.fill" }
+        if isActive { return "play.fill" }
+        return "speaker.wave.2"
+    }
+
+    private var accessibilityLabel: String {
+        if opensTransport { return "Read aloud controls" }
+        if isPlaying { return "Pause reading aloud" }
+        if isActive { return "Resume reading aloud" }
+        return "Read aloud"
+    }
+
+    var body: some View {
+        Button {
+            if unavailableMessage != nil {
+                showingUnavailable = true
+            } else if opensTransport {
+                onOpenTransport?()
+            } else if let request {
+                controller.toggle(request)
+            }
+        } label: {
+            Image(systemName: iconName)
+        }
+        .disabled(request == nil && unavailableMessage == nil)
+        .accessibilityLabel(accessibilityLabel)
+        .alert("Can't Read Aloud", isPresented: $showingUnavailable) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(unavailableMessage ?? "")
+        }
+    }
+}
+
+/// Floating play/pause button that rides above the bottom toolbar while
+/// read-aloud is running, ringed by overall progress.
+///
+/// Its own view, and the only place `spokenFraction` is read on this screen, so
+/// the per-word progress updates invalidate this button alone and never reach
+/// the reader's text layout.
+struct SpeechFloatingButton: View {
+    var controller: TextSpeechController
+    var onOpenTransport: () -> Void
+
+    static let diameter: CGFloat = 48
+    private var diameter: CGFloat { Self.diameter }
+    private let ringWidth: CGFloat = 3
+
+    /// Ring and glyph only — the surface behind them is supplied by `surface`, so
+    /// the glass sits under the progress ring rather than over it.
+    private var content: some View {
+        ZStack {
+            Circle()
+                .strokeBorder(Color.secondary.opacity(0.25), lineWidth: ringWidth)
+            Circle()
+                .inset(by: ringWidth / 2)
+                .trim(from: 0, to: max(controller.spokenFraction, 0.001))
+                .stroke(Color.primary, style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.linear(duration: 0.3), value: controller.spokenFraction)
+            Image(systemName: controller.isPlayingAnything ? "pause.fill" : "play.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.primary)
+        }
+        .frame(width: diameter, height: diameter)
+    }
+
+    /// Liquid Glass where the OS has it; the app still ships to iOS 18, which
+    /// falls back to a material and needs its own shadow to lift off the page.
+    @ViewBuilder
+    private var surface: some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            content
+                .background(.regularMaterial, in: Circle())
+                .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        }
+    }
+
+    var body: some View {
+        Button(action: { controller.isPlayingAnything ? controller.pause() : controller.resume() }) {
+            surface
+        }
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .accessibilityLabel(controller.isPlayingAnything ? "Pause reading aloud" : "Resume reading aloud")
+        .accessibilityValue("\(Int(controller.spokenFraction * 100)) percent")
+        .accessibilityHint("Double tap and hold for more controls")
+        .onLongPressGesture(perform: onOpenTransport)
+    }
+}
+
+/// Full read-aloud transport: play/pause, verse skip, stop, and a scrubber.
+struct SpeechTransportSheet: View {
+    var controller: TextSpeechController
+    /// Needed to *start* playback: the toolbar button only opens this sheet, so
+    /// the first tap of play happens here.
+    var request: TextSpeechRequest?
+    @Environment(\.dismiss) private var dismiss
+
+    /// Non-nil only while a drag is in flight, so the thumb follows the finger
+    /// instead of the speech position.
+    @State private var scrubFraction: Double?
+
+    private var displayedFraction: Double {
+        scrubFraction ?? controller.spokenFraction
+    }
+
+    /// Falls back to the request while idle, when the controller holds nothing.
+    private var displayedTitle: String {
+        controller.title.isEmpty ? (request?.title ?? "") : controller.title
+    }
+
+    private var displayedSubtitle: String? {
+        controller.title.isEmpty ? request?.subtitle : controller.subtitle
+    }
+
+    private func togglePlayback() {
+        guard let request else { return }
+        controller.toggle(request)
+    }
+
+    /// Verse skip needs verses to step between — `skipVerse` compares verse tags,
+    /// so without them the buttons do nothing and are hidden. The scrubber stays
+    /// either way: seeking falls back to the chunk boundaries every request has.
+    private var showsVerseSkip: Bool {
+        request?.hasVerseStructure ?? false
+    }
+
+    var body: some View {
+        VStack(spacing: 24) {
+            VStack(spacing: 4) {
+                Text(displayedTitle)
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                if let subtitle = displayedSubtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(spacing: 6) {
+                SpeechScrubber(fraction: displayedFraction) { fraction, isCommitted in
+                    if isCommitted {
+                        scrubFraction = nil
+                        controller.seek(toFraction: fraction)
+                    } else {
+                        scrubFraction = fraction
+                    }
+                }
+                .frame(height: 28)
+
+                HStack {
+                    Text(timeLabel(for: displayedFraction))
+                    Spacer()
+                    Text("-" + timeLabel(for: 1 - displayedFraction))
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 44) {
+                if showsVerseSkip {
+                    Button { controller.skipVerse(by: -1) } label: {
+                        Image(systemName: "backward.fill").font(.title2)
+                    }
+                    .accessibilityLabel("Previous verse")
+                }
+
+                Button(action: togglePlayback) {
+                    Image(systemName: controller.isPlayingAnything ? "pause.fill" : "play.fill")
+                        .font(.system(size: 40))
+                }
+                .disabled(request == nil)
+                .accessibilityLabel(controller.isPlayingAnything ? "Pause" : "Play")
+
+                if showsVerseSkip {
+                    Button { controller.skipVerse(by: 1) } label: {
+                        Image(systemName: "forward.fill").font(.title2)
+                    }
+                    .accessibilityLabel("Next verse")
+                }
+            }
+            .foregroundStyle(Color.primary)
+
+            Button {
+                controller.stop()
+                dismiss()
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .buttonStyle(.bordered)
+            .tint(Color(UIColor.label))
+            .disabled(controller.playbackState == .idle)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 28)
+        .presentationDetents([.height(320)])
+        .presentationDragIndicator(.visible)
+        // Close once playback finishes — but only on an actual transition, since
+        // the sheet is now also the way to start, and so opens while idle.
+        .onChange(of: controller.playbackState) { previous, state in
+            if previous != .idle, state == .idle { dismiss() }
+        }
+    }
+
+    private func timeLabel(for fraction: Double) -> String {
+        let seconds = Int((controller.estimatedDuration * min(max(fraction, 0), 1)).rounded())
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// Scrubber that reports its fraction continuously while dragging and once on
+/// release. Seeking speech is expensive — it tears down and rebuilds the
+/// utterance queue — so only the release commits.
+private struct SpeechScrubber: View {
+    let fraction: Double
+    let onChange: (Double, Bool) -> Void
+
+    private let trackHeight: CGFloat = 6
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let clamped = min(max(fraction, 0), 1)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.25))
+                    .frame(height: trackHeight)
+                // `Color(UIColor.label)`, not `Color.primary`: the latter is a
+                // hierarchical style that blends with the sheet's vibrancy and
+                // renders washed out. This needs a flat, opaque fill.
+                Capsule()
+                    .fill(Color(UIColor.label))
+                    .frame(width: width * clamped, height: trackHeight)
+                Circle()
+                    .fill(Color(UIColor.label))
+                    .frame(width: 20, height: 20)
+                    .offset(x: width * clamped - 10)
+            }
+            .frame(height: geometry.size.height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { onChange(min(max($0.location.x / width, 0), 1), false) }
+                    .onEnded { onChange(min(max($0.location.x / width, 0), 1), true) }
+            )
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Playback position")
+        .accessibilityValue("\(Int(fraction * 100)) percent")
+        .accessibilityAdjustableAction { direction in
+            let step = 0.05
+            let target = direction == .increment ? fraction + step : fraction - step
+            onChange(min(max(target, 0), 1), true)
+        }
+    }
+}
+
+private enum ReaderSpeechTextBuilder {
+    /// One segment per verse (plus the reference and any chapter headings) so the
+    /// reader can follow along with what's being spoken. Chapter headings are
+    /// attributed to the verse that follows them, so following doesn't stall.
+    static func planReadingSegments(readingDescription: String, verses: [TranslationVerse]) -> [TextSpeechSegment] {
+        var parts: [TextSpeechSegment] = []
+        let description = normalized(readingDescription)
+        if !description.isEmpty {
+            parts.append(TextSpeechSegment(text: description))
+        }
+
+        var currentChapterKey: String?
+        for verse in verses {
+            let chapterKey = "\(verse.book)-\(verse.chapter)"
+            if chapterKey != currentChapterKey {
+                currentChapterKey = chapterKey
+                let bookName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name ?? "Book \(verse.book)"
+                let heading = "\(bookName) \(verse.chapter)"
+                // A single-chapter reading is described as "Genesis 1" and its only
+                // chapter heading is also "Genesis 1" — announcing both reads the
+                // title twice. Multi-chapter readings don't collide.
+                if heading != description {
+                    parts.append(TextSpeechSegment(text: heading, verseId: verse.ref))
+                }
+            }
+
+            let verseText = normalized(verse.text)
+            if !verseText.isEmpty {
+                parts.append(TextSpeechSegment(text: verseText, verseId: verse.ref))
+            }
+        }
+
+        return parts
+    }
+
+    static func quizText(question: QuizQuestion, index: Int, count: Int, includeAnswer: Bool) -> String {
+        var parts = [
+            "Question \(index + 1) of \(count)",
+            normalized(QuizTextParser.parse(question.questionJson).text)
+        ].filter { !$0.isEmpty }
+
+        if includeAnswer {
+            let answer = normalized(QuizTextParser.parse(question.answerJson).text)
+            if !answer.isEmpty {
+                parts.append("Answer")
+                parts.append(answer)
+            }
+        }
+
+        return parts.joined(separator: "\n")
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+}
+
+private enum QuizTextParser {
+    /// Parse quiz text JSON into AnnotatedText; handles plain strings and annotated text objects.
+    /// Normalizes crossref annotations to scripture so the renderer makes them tappable.
+    static func parse(_ json: String) -> AnnotatedText {
+        guard let data = json.data(using: .utf8) else {
+            return AnnotatedText(text: json)
+        }
+
+        // Try as AnnotatedText (object with "text" and "annotations" keys)
+        if var annotated = try? JSONDecoder().decode(AnnotatedText.self, from: data) {
+            // Normalize crossref to scripture so the renderer treats them as tappable verse refs
+            annotated.annotations = annotated.annotations?.map { annotation in
+                if annotation.type == .crossref, annotation.data?.sv != nil {
+                    var normalized = annotation
+                    normalized.type = .scripture
+                    return normalized
+                }
+                return annotation
+            }
+            return annotated
+        }
+
+        // Try as plain JSON string
+        if let plainString = try? JSONDecoder().decode(String.self, from: data) {
+            return AnnotatedText(text: plainString)
+        }
+
+        // Fallback: raw string
+        return AnnotatedText(text: json)
+    }
+}
+
+// MARK: - Selectable Quiz Text
+
+/// Quiz text rendered in a non-editable `UITextView` so it gets native text
+/// selection and the system callout menu (Look Up, Translate, Copy, Share).
+/// SwiftUI's `Text` can't offer that alongside tappable links, which the quiz
+/// needs for scripture references.
+private struct SelectableQuizText: UIViewRepresentable {
+    let attributedText: NSAttributedString
+    let onLinkTap: (URL) -> Void
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.linkTextAttributes = [:]  // Use the attributes from the string
+        textView.dataDetectorTypes = []
+        textView.adjustsFontForContentSizeCategory = true
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        textView.delegate = context.coordinator
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        context.coordinator.onLinkTap = onLinkTap
+
+        guard !textView.attributedText.isEqual(to: attributedText) else { return }
+        textView.attributedText = attributedText
+        context.coordinator.cachedSize = nil
+        textView.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIView.layoutFittingExpandedSize.width
+
+        if let cached = context.coordinator.cachedSize, abs(cached.width - width) < 1 {
+            return cached
+        }
+
+        let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let result = CGSize(width: width, height: size.height)
+        context.coordinator.cachedSize = result
+        return result
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onLinkTap: onLinkTap)
+    }
+
+    class Coordinator: NSObject, UITextViewDelegate {
+        var onLinkTap: (URL) -> Void
+        var cachedSize: CGSize?
+
+        init(onLinkTap: @escaping (URL) -> Void) {
+            self.onLinkTap = onLinkTap
+        }
+
+        func textView(
+            _ textView: UITextView,
+            primaryActionFor textItem: UITextItem,
+            defaultAction: UIAction
+        ) -> UIAction? {
+            guard case let .link(url) = textItem.content else { return defaultAction }
+            let handler = onLinkTap
+            return UIAction(title: "") { _ in handler(url) }
+        }
+
+        func textView(
+            _ textView: UITextView,
+            menuConfigurationFor textItem: UITextItem,
+            defaultMenu: UIMenu
+        ) -> UITextItem.MenuConfiguration? {
+            // Suppress the link preview menu so a long press anywhere — including
+            // on a scripture reference — falls through to text selection.
+            nil
+        }
+    }
+}
+
 // MARK: - Quiz Sheet View
 
 struct QuizSheetView: View {
@@ -2856,7 +3875,16 @@ struct QuizSheetView: View {
     @State private var showAnswer: Bool = false
     @State private var selectedAgeGroup: String
     @State private var previewState: PreviewSheetState? = nil
+    @State private var speech = TextSpeechController()
+    @State private var showingSpeechTransport = false
     @AppStorage("quizContextAmount") private var contextAmount: SearchContextAmount = .oneVerse
+    @AppStorage("quizAlwaysShowAnswers") private var alwaysShowAnswers: Bool = false
+
+    /// Answers are visible either because this question was revealed by tapping,
+    /// or because the always-show preference is on.
+    private var isAnswerVisible: Bool {
+        alwaysShowAnswers || showAnswer
+    }
 
     init(quizModule: QuizModule, questions: [QuizQuestion], day: Int, sv: Int, ev: Int, readingDescription: String) {
         self.quizModule = quizModule
@@ -2864,6 +3892,9 @@ struct QuizSheetView: View {
         self.sv = sv
         self.ev = ev
         self.readingDescription = readingDescription
+        // Seeded only so the first frame isn't empty; `.onAppear` re-derives it
+        // from the selected age group, since the caller's copy may have been
+        // loaded under a different one.
         self._questions = State(initialValue: questions)
         let settings = UserDatabase.shared.getSettings()
         self._selectedAgeGroup = State(initialValue: settings.defaultQuizAgeGroup)
@@ -2872,6 +3903,70 @@ struct QuizSheetView: View {
     private var currentQuestion: QuizQuestion? {
         guard currentIndex >= 0, currentIndex < questions.count else { return nil }
         return questions[currentIndex]
+    }
+
+    /// What read-aloud would speak right now. `nil` when there's nothing to read,
+    /// which disables the control rather than removing it.
+    ///
+    /// The id folds in `isAnswerVisible` because revealing the answer changes the
+    /// words, and the single source keeps the toolbar button and the stop action from
+    /// ever disagreeing about which utterance is current.
+    private var currentSpeechRequest: TextSpeechRequest? {
+        guard let question = currentQuestion else { return nil }
+        let text = ReaderSpeechTextBuilder.quizText(
+            question: question,
+            index: currentIndex,
+            count: questions.count,
+            includeAnswer: isAnswerVisible
+        )
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return TextSpeechRequest(
+            id: "quiz-\(quizModule.id)-\(day)-\(selectedAgeGroup)-\(question.id)-answer-\(isAnswerVisible)",
+            title: "Question \(currentIndex + 1) of \(questions.count)",
+            // Questions are worded differently per age group, so which one is being
+            // read is part of identifying the passage, not just a picker setting.
+            subtitle: selectedAgeGroupLabel.map { "\(readingDescription) · \($0)" } ?? readingDescription,
+            text: text,
+            languageCode: quizLanguageCode,
+            wordsPerMinute: UserDatabase.shared.getSettings().planWpm
+        )
+    }
+
+    /// Human-readable name of the age group in play, for display rather than the
+    /// raw id stored in settings.
+    private var selectedAgeGroupLabel: String? {
+        quizModule.ageGroups.first { $0.id == selectedAgeGroup }?.label
+    }
+
+    /// Whether the question on screen is the one being spoken. Moving between
+    /// questions changes the request, so this also retires the button when the
+    /// audio no longer matches what's displayed.
+    private var isQuizSpeechActive: Bool {
+        guard let currentSpeechRequest else { return false }
+        return speech.isActive(for: currentSpeechRequest.id)
+    }
+
+    @ViewBuilder
+    private var floatingSpeechButton: some View {
+        if isQuizSpeechActive {
+            SpeechFloatingButton(
+                controller: speech,
+                onOpenTransport: { showingSpeechTransport = true }
+            )
+            .padding(.bottom, 12)
+            .transition(.scale.combined(with: .opacity))
+        }
+    }
+
+    /// Quiz modules don't declare a language, so read them in the device's.
+    private var quizLanguageCode: String {
+        Locale.current.language.languageCode?.identifier ?? "en"
+    }
+
+    private var quizSpeechUnavailableMessage: String? {
+        SpeechVoiceCatalog.hasVoice(for: quizLanguageCode)
+            ? nil
+            : ReaderView.noVoiceMessage(for: quizLanguageCode)
     }
 
     var body: some View {
@@ -2948,7 +4043,7 @@ struct QuizSheetView: View {
                             quizAnnotatedText(for: question.questionJson)
 
                             // Answer
-                            if showAnswer {
+                            if isAnswerVisible {
                                 Divider()
 
                                 VStack(alignment: .leading, spacing: 8) {
@@ -2961,6 +4056,7 @@ struct QuizSheetView: View {
                                 .transition(.opacity.combined(with: .move(edge: .top)))
                             } else {
                                 Button {
+                                    speech.stop()
                                     withAnimation(.easeOut(duration: 0.2)) {
                                         showAnswer = true
                                     }
@@ -2977,7 +4073,16 @@ struct QuizSheetView: View {
                             }
                         }
                         .padding()
+                        // Room for the floating button to scroll clear of, so the
+                        // last of the answer isn't stuck underneath it. Only while
+                        // it's on screen — otherwise it's dead space.
+                        .padding(.bottom, isQuizSpeechActive ? SpeechFloatingButton.diameter + 24 : 0)
                     }
+                    // Anchored to the scroll area, which ends where the question
+                    // navigation begins — so the button clears it without the
+                    // measured offset the reader needs for its floating toolbar.
+                    .overlay(alignment: .bottom) { floatingSpeechButton }
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isQuizSpeechActive)
 
                     // Navigation
                     Divider()
@@ -3021,8 +4126,29 @@ struct QuizSheetView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
                 }
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    // Stop lives in the transport and the menu, not here: a toolbar
+                    // item that appears on playback shoves the menu sideways mid-tap.
+                    SpeechToolbarButton(
+                        request: currentSpeechRequest,
+                        unavailableMessage: quizSpeechUnavailableMessage,
+                        controller: speech,
+                        onOpenTransport: { showingSpeechTransport = true }
+                    )
+
                     Menu {
+                        if speech.playbackState != .idle {
+                            Button {
+                                speech.stop()
+                            } label: {
+                                Label("Stop Reading Aloud", systemImage: "stop.fill")
+                            }
+                        }
+
+                        Toggle(isOn: $alwaysShowAnswers) {
+                            Label("Always Show Answers", systemImage: "eye")
+                        }
+
                         Menu {
                             Picker("Context", selection: $contextAmount) {
                                 ForEach(SearchContextAmount.allCases, id: \.self) { amount in
@@ -3037,12 +4163,29 @@ struct QuizSheetView: View {
                     }
                 }
             }
+            // A sheet presented from a sheet, which this view already relies on for
+            // the passage preview below.
+            .sheet(isPresented: $showingSpeechTransport) {
+                SpeechTransportSheet(controller: speech, request: currentSpeechRequest)
+            }
             .sheet(item: $previewState) { _ in
                 PreviewSheet(
                     state: $previewState,
                     translationId: UserDatabase.shared.getSettings().readerTranslationId,
                     contextAmount: contextAmount
                 )
+            }
+            .onAppear {
+                // The seeded questions were loaded by the reader under whichever
+                // age group was current then, which may no longer be the selected
+                // one. Re-derive so the picker and the questions always agree.
+                reloadQuestions()
+            }
+            .onChange(of: alwaysShowAnswers) {
+                speech.stop()
+            }
+            .onDisappear {
+                speech.stop()
             }
         }
     }
@@ -3051,38 +4194,45 @@ struct QuizSheetView: View {
 
     @ViewBuilder
     private func quizAnnotatedText(for json: String) -> some View {
-        let parsed = parseQuizAnnotatedText(json)
-        let attrString = buildQuizAttributedString(from: parsed)
-        Text(attrString)
-            .font(.body)
-            .environment(\.openURL, OpenURLAction { url in
+        let parsed = QuizTextParser.parse(json)
+        SelectableQuizText(
+            attributedText: buildQuizAttributedString(from: parsed),
+            onLinkTap: { url in
                 handleQuizURL(url, annotatedText: parsed)
-                return .handled
-            })
+            }
+        )
     }
 
-    /// Build a SwiftUI AttributedString with tappable links for scripture annotations
-    private func buildQuizAttributedString(from annotatedText: AnnotatedText) -> AttributedString {
-        var result = AttributedString(annotatedText.text)
+    /// Build an NSAttributedString with tappable links for scripture annotations.
+    /// UIKit-flavoured because the quiz text is rendered by a UITextView, which is
+    /// what provides selection and the native callout menu.
+    private func buildQuizAttributedString(from annotatedText: AnnotatedText) -> NSAttributedString {
+        let text = annotatedText.text
+        let result = NSMutableAttributedString(
+            string: text,
+            attributes: [
+                .font: UIFont.preferredFont(forTextStyle: .body),
+                .foregroundColor: UIColor.label
+            ]
+        )
+
         guard let annotations = annotatedText.annotations else { return result }
 
-        let text = annotatedText.text
         for annotation in annotations {
             guard annotation.start >= 0, annotation.end <= text.count, annotation.start < annotation.end else { continue }
+            guard annotation.type == .scripture || annotation.type == .crossref,
+                  let sv = annotation.data?.sv,
+                  let url = URL(string: "lampbible://quiz-ref/\(sv)/\(annotation.data?.ev ?? sv)") else { continue }
 
+            // Annotation offsets are in Characters; NSAttributedString wants UTF-16
             let startIdx = text.index(text.startIndex, offsetBy: annotation.start)
             let endIdx = text.index(text.startIndex, offsetBy: annotation.end)
-            let attrStart = AttributedString.Index(startIdx, within: result)
-            let attrEnd = AttributedString.Index(endIdx, within: result)
-            guard let attrStart, let attrEnd else { continue }
-            let range = attrStart..<attrEnd
+            let nsRange = NSRange(startIdx..<endIdx, in: text)
 
-            if annotation.type == .scripture || annotation.type == .crossref,
-               let sv = annotation.data?.sv {
-                let ev = annotation.data?.ev ?? sv
-                result[range].link = URL(string: "lampbible://quiz-ref/\(sv)/\(ev)")
-                result[range].foregroundColor = .blue
-            }
+            result.addAttributes([
+                .link: url,
+                .foregroundColor: UIColor.systemBlue
+            ], range: nsRange)
         }
 
         return result
@@ -3131,6 +4281,7 @@ struct QuizSheetView: View {
 
     private func goToQuestion(_ index: Int) {
         guard index >= 0, index < questions.count else { return }
+        speech.stop()
         showAnswer = false
         currentIndex = index
     }
@@ -3142,41 +4293,12 @@ struct QuizSheetView: View {
     }
 
     private func reloadQuestions() {
+        speech.stop()
         questions = (try? BundledModuleDatabase.shared.getQuizQuestionsForReading(
             moduleId: quizModule.id, day: day, sv: sv, ev: ev, ageGroup: selectedAgeGroup
         )) ?? []
         currentIndex = 0
         showAnswer = false
-    }
-
-    /// Parse quiz text JSON into AnnotatedText — handles plain strings and annotated text objects.
-    /// Normalizes crossref annotations to scripture so the renderer makes them tappable.
-    private func parseQuizAnnotatedText(_ json: String) -> AnnotatedText {
-        guard let data = json.data(using: .utf8) else {
-            return AnnotatedText(text: json)
-        }
-
-        // Try as AnnotatedText (object with "text" and "annotations" keys)
-        if var annotated = try? JSONDecoder().decode(AnnotatedText.self, from: data) {
-            // Normalize crossref → scripture so the renderer treats them as tappable verse refs
-            annotated.annotations = annotated.annotations?.map { annotation in
-                if annotation.type == .crossref, annotation.data?.sv != nil {
-                    var normalized = annotation
-                    normalized.type = .scripture
-                    return normalized
-                }
-                return annotation
-            }
-            return annotated
-        }
-
-        // Try as plain JSON string
-        if let plainString = try? JSONDecoder().decode(String.self, from: data) {
-            return AnnotatedText(text: plainString)
-        }
-
-        // Fallback: raw string
-        return AnnotatedText(text: json)
     }
 }
 

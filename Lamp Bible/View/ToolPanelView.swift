@@ -194,6 +194,89 @@ protocol ToolPanelScrollable: AnyObject {
     func scrollToVerse(_ verse: Int, animated: Bool)
 }
 
+// MARK: - Toolbar Collapse Tracking
+
+/// Scroll-direction tracking for collapsing the headers on scroll.
+///
+/// Shared by the reader and the tool panel so both panes collapse on the same
+/// gesture and by the same thresholds — in split view they show one combined
+/// header, and it would read as broken if one pane collapsed without the other.
+final class ToolbarCollapseTracker {
+    private var lastOffset: CGFloat = 0
+    private var downwardTravel: CGFloat = 0
+    private var upwardTravel: CGFloat = 0
+    private var isCollapsed = false
+
+    /// Reveal is deliberately easier to trigger than collapse: reaching for a
+    /// control shouldn't require a deliberate swipe.
+    private let collapseThreshold: CGFloat = 140
+    private let revealThreshold: CGFloat = 24
+
+    /// Adopt a state decided elsewhere — the other pane, a tap on the collapsed
+    /// header, leaving immersive mode — so the next scroll is measured against
+    /// what is actually on screen rather than what this tracker last reported.
+    func sync(_ collapsed: Bool) {
+        guard isCollapsed != collapsed else { return }
+        isCollapsed = collapsed
+        downwardTravel = 0
+        upwardTravel = 0
+    }
+
+    /// The new collapse state when it should change, otherwise `nil`.
+    ///
+    /// Travel is accumulated per direction rather than measured from a fixed
+    /// anchor, so a reversal takes effect from where it began instead of having to
+    /// unwind everything scrolled before it.
+    func update(scrollView: UIScrollView) -> Bool? {
+        let offset = scrollView.contentOffset.y
+        let topInset = scrollView.adjustedContentInset.top
+        let bottomInset = scrollView.adjustedContentInset.bottom
+        let viewport = scrollView.bounds.height
+        let delta = offset - lastOffset
+        lastOffset = offset
+
+        func change(to collapsed: Bool) -> Bool? {
+            guard isCollapsed != collapsed else { return nil }
+            isCollapsed = collapsed
+            downwardTravel = 0
+            upwardTravel = 0
+            return collapsed
+        }
+
+        // Nothing worth hiding for when the content already fits on screen.
+        guard scrollView.contentSize.height > viewport + collapseThreshold else {
+            return change(to: false)
+        }
+
+        // The top always shows its controls, and overscroll at either end belongs
+        // to pull-to-navigate, not to the toolbars.
+        if offset <= -topInset + 1 {
+            return change(to: false)
+        }
+        guard offset + viewport < scrollView.contentSize.height + bottomInset else { return nil }
+
+        // Only the reader's own hand moves the bars. Programmatic scrolling — the
+        // read-aloud follow, chapter jumps, cross-pane scroll sync — sets none of
+        // these flags, and must not disturb them.
+        guard scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else {
+            downwardTravel = 0
+            upwardTravel = 0
+            return nil
+        }
+
+        if delta > 0 {
+            downwardTravel += delta
+            upwardTravel = 0
+            if downwardTravel > collapseThreshold { return change(to: true) }
+        } else if delta < 0 {
+            upwardTravel -= delta
+            downwardTravel = 0
+            if upwardTravel > revealThreshold { return change(to: false) }
+        }
+        return nil
+    }
+}
+
 // MARK: - Reader Scroll Spy
 
 /// Invisible UIView that intercepts scroll events from the parent SwiftUI ScrollView
@@ -228,8 +311,14 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
     var onPullProgressTop: ((CGFloat) -> Void)?
     var onPullProgressBottom: ((CGFloat) -> Void)?
 
+    /// Fires with `true` when sustained downward scrolling should collapse the
+    /// toolbars, `false` when upward scrolling should bring them back.
+    var onToolbarCollapseChange: ((Bool) -> Void)?
+
     // Threshold for triggering pull-to-refresh (in points)
     private let pullToRefreshThreshold: CGFloat = 84
+
+    private let collapseTracker = ToolbarCollapseTracker()
 
     // Verse position lookup - set by ReaderView
     var versePositions: [Int: CGFloat] = [:] {
@@ -282,6 +371,8 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         // Report pull progress for arrow scaling
         reportPullProgress(scrollView: scrollView)
 
+        updateToolbarCollapse(scrollView: scrollView)
+
         // Skip during initial load
         guard isReady else { return }
 
@@ -299,6 +390,22 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
                 // Direct sync using full verse ID (handles multi-chapter readings)
                 coordinator.readerDidScrollToVerse(verseId)
             }
+        }
+    }
+
+    /// Adopt a collapse state decided elsewhere — a tap on the collapsed header,
+    /// or leaving immersive mode — so the next scroll is measured against what is
+    /// actually on screen rather than what this view last reported.
+    /// Adopt a collapse state decided elsewhere so the next scroll is measured
+    /// against what is actually on screen.
+    func syncToolbarCollapsed(_ collapsed: Bool) {
+        collapseTracker.sync(collapsed)
+    }
+
+    private func updateToolbarCollapse(scrollView: UIScrollView) {
+        guard let onToolbarCollapseChange, isReady else { return }
+        if let collapsed = collapseTracker.update(scrollView: scrollView) {
+            onToolbarCollapseChange(collapsed)
         }
     }
 
@@ -468,6 +575,10 @@ struct ReaderScrollSpy: UIViewRepresentable {
     var onPullToLoadNext: (() -> Void)? = nil
     var onPullProgressTop: ((CGFloat) -> Void)? = nil
     var onPullProgressBottom: ((CGFloat) -> Void)? = nil
+    var onToolbarCollapseChange: ((Bool) -> Void)? = nil
+    /// Current collapse state, fed back so a change made outside this view doesn't
+    /// leave the scroll tracking out of step with the screen.
+    var toolbarsCollapsed: Bool = false
 
     func makeUIView(context: Context) -> ReaderScrollSpyView {
         let view = ReaderScrollSpyView()
@@ -485,6 +596,8 @@ struct ReaderScrollSpy: UIViewRepresentable {
         uiView.onPullToLoadNext = onPullToLoadNext
         uiView.onPullProgressTop = onPullProgressTop
         uiView.onPullProgressBottom = onPullProgressBottom
+        uiView.onToolbarCollapseChange = onToolbarCollapseChange
+        uiView.syncToolbarCollapsed(toolbarsCollapsed)
     }
 }
 
@@ -502,6 +615,8 @@ struct UIKitVerseList<ItemData, CellContent: View>: UIViewControllerRepresentabl
     let cellContent: (ItemData) -> CellContent
     let listId: String // Force recreation when this changes
     var additionalTopOffset: CGFloat = 0  // Extra offset for collapsed header in horizontal split
+    var onToolbarCollapseChange: ((Bool) -> Void)? = nil
+    var toolbarsCollapsed: Bool = false
 
     class Coordinator {
         var lastListId: String?
@@ -520,6 +635,8 @@ struct UIKitVerseList<ItemData, CellContent: View>: UIViewControllerRepresentabl
     func updateUIViewController(_ uiViewController: UIKitVerseListController<ItemData, CellContent>, context: Context) {
         uiViewController.cellContent = cellContent
         uiViewController.additionalTopOffset = additionalTopOffset
+        uiViewController.onToolbarCollapseChange = onToolbarCollapseChange
+        uiViewController.syncToolbarCollapsed(toolbarsCollapsed)
 
         // Ensure this controller is registered for scroll sync (re-register on every update
         // in case SwiftUI recreated the view or another panel was active)
@@ -553,6 +670,14 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
 
     // Additional top offset for collapsed header in horizontal split
     var additionalTopOffset: CGFloat = 0
+
+    // Scrolling this pane collapses both headers, same as scrolling the reader.
+    var onToolbarCollapseChange: ((Bool) -> Void)?
+    private let collapseTracker = ToolbarCollapseTracker()
+
+    func syncToolbarCollapsed(_ collapsed: Bool) {
+        collapseTracker.sync(collapsed)
+    }
 
     // Direct coordinator reference - no SwiftUI state
     private let scrollCoordinator = ScrollSyncCoordinator.shared
@@ -677,6 +802,11 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !isProgrammaticScroll else { return }
+
+        if let onToolbarCollapseChange,
+           let collapsed = collapseTracker.update(scrollView: scrollView) {
+            onToolbarCollapseChange(collapsed)
+        }
 
         // Find visible verse from top visible cell
         let visiblePoint = CGPoint(x: scrollView.bounds.midX, y: scrollView.contentOffset.y + 50)
@@ -979,6 +1109,9 @@ struct ToolPanelView: View {
     var endChapter: Int? = nil    // For multi-chapter plan readings
     var onNavigateToVerse: ((Int) -> Void)?
     @Binding var toolbarsHidden: Bool
+    /// Scroll-driven collapse, shared with the reader so both panes' headers
+    /// collapse together.
+    @Binding var toolbarsCollapsed: Bool
     var hideHeader: Bool = false  // Hide header when in horizontal split mode
     @Binding var requestAddNoteForVerse: Int?  // External trigger to add note for a specific verse
 
@@ -1079,6 +1212,12 @@ struct ToolPanelView: View {
         (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Unknown"
     }
 
+    /// The header shows its compact form for either reason: the tap-driven
+    /// immersive mode, or the scroll-driven collapse shared with the reader.
+    private var isHeaderCollapsed: Bool {
+        toolbarsHidden || toolbarsCollapsed
+    }
+
     /// Display name for current panel mode - shows module/series name
     private var currentPanelModeDisplayName: String {
         if panelMode == .commentary {
@@ -1103,7 +1242,7 @@ struct ToolPanelView: View {
                 // Spacer for header height (only when showing our own header)
                 // In horizontal split (hideHeader), no spacer - content scrolls under the shared toolbar
                 if !hideHeader {
-                    if toolbarsHidden {
+                    if isHeaderCollapsed {
                         Color.clear.frame(height: 24)
                     } else {
                         Color.clear.frame(height: 44)
@@ -1119,7 +1258,7 @@ struct ToolPanelView: View {
                 }
             }
             // In horizontal split, add content margins so content starts below toolbar but scrolls under it
-            .contentMargins(.top, hideHeader ? (toolbarsHidden ? 24 : 56) : 0, for: .scrollContent)
+            .contentMargins(.top, hideHeader ? (isHeaderCollapsed ? 24 : 56) : 0, for: .scrollContent)
 
             // Transparent top area for horizontal split mode - content scrolls under with no overlay
             // (The reader's navigation bar provides the visual treatment)
@@ -1127,7 +1266,7 @@ struct ToolPanelView: View {
             // Header overlay layer (hidden in horizontal split mode - controls are in main toolbar)
             if !hideHeader {
             VStack(spacing: 0) {
-                if toolbarsHidden {
+                if isHeaderCollapsed {
                     Text(currentPanelModeDisplayName)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -1137,6 +1276,7 @@ struct ToolPanelView: View {
                         .contentShape(Rectangle())
                         .onTapGesture {
                             toolbarsHidden = false
+                            toolbarsCollapsed = false
                         }
                 } else {
                 HStack {
@@ -1819,7 +1959,13 @@ struct ToolPanelView: View {
                             )
                         },
                         listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(isReadOnly)_\(sections.count)",
-                        additionalTopOffset: hideHeader && toolbarsHidden ? 36 : 0
+                        additionalTopOffset: hideHeader && isHeaderCollapsed ? 36 : 0,
+                        onToolbarCollapseChange: { collapsed in
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                toolbarsCollapsed = collapsed
+                            }
+                        },
+                        toolbarsCollapsed: toolbarsCollapsed
                     )
 
                     // Trailing gap button (after last verse section)
@@ -2000,7 +2146,13 @@ struct ToolPanelView: View {
                 .padding(.vertical, 10)
             },
             listId: "commentary_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)_\(selectedCommentarySeries)_\(toolFontSize)",
-            additionalTopOffset: hideHeader && toolbarsHidden ? 36 : 0
+            additionalTopOffset: hideHeader && isHeaderCollapsed ? 36 : 0,
+                        onToolbarCollapseChange: { collapsed in
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                toolbarsCollapsed = collapsed
+                            }
+                        },
+                        toolbarsCollapsed: toolbarsCollapsed
         )
     }
 
@@ -4814,6 +4966,7 @@ class NoteTextView: UITextView {
         chapter: 3,
         currentVerse: 16,
         toolbarsHidden: .constant(false),
+        toolbarsCollapsed: .constant(false),
         requestAddNoteForVerse: .constant(nil)
     )
 }

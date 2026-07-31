@@ -1952,6 +1952,62 @@ struct TranslationBook: Codable, FetchableRecord, PersistableRecord, Identifiabl
     }
 }
 
+// MARK: - Verse Range Stats
+
+/// Cheap summary of a verse range: enough to size a reading without paying for
+/// the per-verse annotation/footnote/poetry JSON that a full row fetch drags in.
+struct VerseRangeStats {
+    let wordCount: Int
+    /// Verse counts per chapter, ordered by chapter.
+    let chapterVerseCounts: [Int]
+    /// Book number of the first verse in the range, if any.
+    let firstBook: Int?
+
+    static let empty = VerseRangeStats(wordCount: 0, chapterVerseCounts: [], firstBook: nil)
+
+    var verseCount: Int { chapterVerseCounts.reduce(0, +) }
+
+    /// Reads only `book`, `chapter` and `text` for the range.
+    static func fetch(_ db: Database, translationId: String, startRef: Int, endRef: Int) throws -> VerseRangeStats {
+        var wordCount = 0
+        var firstBook: Int?
+        // Chapters arrive in `ref` order, so tally them in encounter order
+        // rather than sorting a dictionary afterwards.
+        var chapterVerseCounts: [Int] = []
+        var currentChapter: Int?
+
+        let cursor = try Row.fetchCursor(db, sql: """
+            SELECT book, chapter, text
+            FROM translation_verses
+            WHERE translation_id = ? AND ref >= ? AND ref <= ?
+            ORDER BY ref
+            """, arguments: [translationId, startRef, endRef])
+
+        while let row = try cursor.next() {
+            let book: Int = row["book"]
+            let chapter: Int = row["chapter"]
+            let text: String = row["text"]
+
+            if firstBook == nil { firstBook = book }
+
+            if currentChapter != chapter {
+                currentChapter = chapter
+                chapterVerseCounts.append(1)
+            } else {
+                chapterVerseCounts[chapterVerseCounts.count - 1] += 1
+            }
+
+            wordCount += countWords(source: text)
+        }
+
+        return VerseRangeStats(
+            wordCount: wordCount,
+            chapterVerseCounts: chapterVerseCounts,
+            firstBook: firstBook
+        )
+    }
+}
+
 // MARK: - Translation Verse (GRDB Record)
 
 /// A single verse in a translation

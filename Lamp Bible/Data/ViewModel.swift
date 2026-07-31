@@ -15,7 +15,11 @@ class PlanMetaData {
     let readingTime: Int
     var readingMetaData: [ReadingMetaData] = []
 
-    init(id: String, plan: Plan, date: Date) {
+    convenience init(id: String, plan: Plan, date: Date) {
+        self.init(id: id, plan: plan, date: date, userSettings: UserDatabase.shared.getSettings())
+    }
+
+    init(id: String, plan: Plan, date: Date, userSettings: UserSettings) {
         var readingTimeAcc: Int = 0
         var readingMetaDataInit: [ReadingMetaData] = []
         self.id = id
@@ -33,31 +37,25 @@ class PlanMetaData {
         self.description = planDay.getReadingsDescription()
         let readings = planDay.readings
 
-        // Get user settings from GRDB
-        let userSettings = UserDatabase.shared.getSettings()
+        let translationId = userSettings.readerTranslationId
 
         for (index, reading) in readings.enumerated() {
             let sv = reading.sv
             let ev = reading.ev
             let readingDescription = reading.getDescription()
 
-            // Fetch verses from GRDB using translationId
-            let translationId = userSettings.readerTranslationId
-            let verses = (try? TranslationDatabase.shared.getVerseRange(
+            // Only the word count and verse tallies are needed here, so avoid
+            // pulling the full verse rows (annotations/footnotes/poetry JSON).
+            let stats = (try? TranslationDatabase.shared.getVerseRangeStats(
                 translationId: translationId,
                 startRef: sv,
                 endRef: ev
-            )) ?? []
+            )) ?? .empty
 
-            let concatenatedString = verses.map { $0.text }.joined(separator: " ")
-            let readingWordCount = countWords(source: concatenatedString)
-            let readingTimeReading = Int(ceil(Double(readingWordCount) / userSettings.planWpm))
-            let book = try? BundledModuleDatabase.shared.getBook(id: verses.first?.book ?? 1)
+            let readingTimeReading = Int(ceil(Double(stats.wordCount) / userSettings.planWpm))
+            let book = try? BundledModuleDatabase.shared.getBook(id: stats.firstBook ?? 1)
             let genre = (try? BundledModuleDatabase.shared.getGenre(id: book?.genre ?? 1))?.name ?? "General"
-            // Compute per-chapter verse counts (ordered by chapter)
-            var chapterCounts: [Int: Int] = [:]
-            for v in verses { chapterCounts[v.chapter, default: 0] += 1 }
-            let chapterVerseCounts = chapterCounts.sorted { $0.key < $1.key }.map { $0.value }
+            let chapterVerseCounts = stats.chapterVerseCounts
 
             let year = Calendar.iso8601.component(.year, from: date)
             let readingId = "\(id)_\(dayNum)_\(index)_\(year)"
@@ -113,13 +111,89 @@ class PlansMetaData {
     let date: Date
     var planMetaData: [PlanMetaData] = []
 
-    init(plans: [Plan]? = nil, date: Date) {
+    convenience init(plans: [Plan]? = nil, date: Date) {
+        self.init(plans: plans, date: date, userSettings: UserDatabase.shared.getSettings())
+    }
+
+    init(plans: [Plan]?, date: Date, userSettings: UserSettings) {
         // Get all plans from GRDB bundled database if not provided
         self.plans = plans ?? ((try? BundledModuleDatabase.shared.getAllPlans()) ?? [])
         self.date = date
 
         for plan in self.plans {
-            planMetaData.append(PlanMetaData(id: plan.id, plan: plan, date: date))
+            planMetaData.append(
+                PlanMetaDataCache.shared.metaData(for: plan, date: date, userSettings: userSettings)
+            )
         }
+    }
+}
+
+// MARK: - Plan Meta Data Cache
+
+/// Memoises built plan metadata.
+///
+/// Building one entry queries the bundled database once per reading, and the
+/// same day gets rebuilt constantly — stepping back and forth through dates, and
+/// the widget payload covering a 30-day window. Everything that can change the
+/// result is part of the key, so entries never need explicit invalidation.
+final class PlanMetaDataCache {
+    static let shared = PlanMetaDataCache()
+
+    private struct Key: Hashable {
+        let planId: String
+        let dayNum: Int
+        let year: Int
+        let translationId: String
+        let wpm: Double
+    }
+
+    private var entries: [Key: PlanMetaData] = [:]
+    /// Insertion order, for cheap FIFO eviction.
+    private var insertionOrder: [Key] = []
+    private let lock = NSLock()
+    private let limit = 400
+
+    private init() {}
+
+    func metaData(for plan: Plan, date: Date, userSettings: UserSettings) -> PlanMetaData {
+        let key = Key(
+            planId: plan.id,
+            dayNum: plan.getPlanDay(date: date),
+            year: Calendar.iso8601.component(.year, from: date),
+            translationId: userSettings.readerTranslationId,
+            wpm: userSettings.planWpm
+        )
+
+        lock.lock()
+        if let cached = entries[key] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        // Built outside the lock: this is the expensive part, and building the
+        // same entry twice is harmless.
+        let built = PlanMetaData(id: plan.id, plan: plan, date: date, userSettings: userSettings)
+
+        lock.lock()
+        if entries[key] == nil {
+            entries[key] = built
+            insertionOrder.append(key)
+            while insertionOrder.count > limit {
+                entries.removeValue(forKey: insertionOrder.removeFirst())
+            }
+        }
+        lock.unlock()
+
+        return built
+    }
+
+    /// Drop everything. Needed when the underlying module data changes (a
+    /// translation is imported or removed), which the key can't see.
+    func invalidate() {
+        lock.lock()
+        entries.removeAll()
+        insertionOrder.removeAll()
+        lock.unlock()
     }
 }

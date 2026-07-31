@@ -1874,6 +1874,8 @@ class ModuleDatabase {
         try dbQueue.write { db in
             _ = try TranslationModule.deleteOne(db, key: id)
         }
+        // Plan metadata is keyed by translation id, which can't see content changes
+        PlanMetaDataCache.shared.invalidate()
     }
 
     func getTranslation(id: String) throws -> TranslationModule? {
@@ -2012,6 +2014,14 @@ class ModuleDatabase {
                 .filter(Column("ref") <= endRef)
                 .order(Column("ref"))
                 .fetchAll(db)
+        }
+    }
+
+    /// Summary statistics for a verse range, without loading the full rows.
+    /// See `BundledModuleDatabase.getVerseRangeStats`.
+    func getVerseRangeStats(translationId: String, startRef: Int, endRef: Int) throws -> VerseRangeStats {
+        try dbQueue.read { db in
+            try VerseRangeStats.fetch(db, translationId: translationId, startRef: startRef, endRef: endRef)
         }
     }
 
@@ -2365,6 +2375,8 @@ class ModuleDatabase {
                 try heading.save(db)
             }
         }
+        // Plan metadata is keyed by translation id, which can't see content changes
+        PlanMetaDataCache.shared.invalidate()
     }
 
     // MARK: - Plan Queries (User Plans)

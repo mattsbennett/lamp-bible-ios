@@ -46,6 +46,8 @@ struct SplitReaderView: View {
     @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = "devotionals"
     @State private var hasUserScrolled: Bool = false
     @State private var toolbarsHidden: Bool = false
+    /// Shared by both panes so a scroll in either collapses both headers.
+    @State private var toolbarsCollapsed: Bool = false
     @State private var pendingAddNoteVerse: Int? = nil  // Trigger add note sheet in tool panel
 
     // Available modules for tool selection in horizontal split
@@ -157,30 +159,30 @@ struct SplitReaderView: View {
         // Note: Scroll sync is now handled entirely by UIKit via ReaderScrollSpy and ScrollSyncCoordinator
     }
 
+    /// These are all database reads. `.task` runs on the main actor, so without
+    /// the hop below they'd block the first frame of the reader.
     private func loadToolModules() async {
-        // Load notes modules
-        if let modules = try? ModuleDatabase.shared.getAllModules(type: .notes) {
-            notesModules = modules
-        }
+        let loaded: (notes: [Module], series: [String], devotionals: [Module]) =
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let notes = (try? ModuleDatabase.shared.getAllModules(type: .notes)) ?? []
 
-        // Load commentary series (bundled + user modules)
-        var allSeries: [String] = []
-        if let bundledSeries = try? BundledModuleDatabase.shared.getBundledCommentarySeriesNames() {
-            allSeries = bundledSeries
-        }
-        if let userSeries = try? ModuleDatabase.shared.getCommentarySeriesNames() {
-            for series in userSeries {
-                if !allSeries.contains(series) {
-                    allSeries.append(series)
+                    // Commentary series (bundled + user modules)
+                    var allSeries = (try? BundledModuleDatabase.shared.getBundledCommentarySeriesNames()) ?? []
+                    if let userSeries = try? ModuleDatabase.shared.getCommentarySeriesNames() {
+                        for series in userSeries where !allSeries.contains(series) {
+                            allSeries.append(series)
+                        }
+                    }
+
+                    let devotionals = (try? ModuleDatabase.shared.getAllModules(type: .devotional)) ?? []
+                    continuation.resume(returning: (notes, allSeries, devotionals))
                 }
             }
-        }
-        commentarySeries = allSeries
 
-        // Load devotionals modules
-        if let modules = try? ModuleDatabase.shared.getAllModules(type: .devotional) {
-            devotionalsModules = modules
-        }
+        notesModules = loaded.notes
+        commentarySeries = loaded.series
+        devotionalsModules = loaded.devotionals
     }
 
     @ViewBuilder
@@ -321,6 +323,7 @@ struct SplitReaderView: View {
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) {
                 toolbarsHidden = false
+                toolbarsCollapsed = false
             }
         }
     }
@@ -342,6 +345,7 @@ struct SplitReaderView: View {
             requestScrollAnimated: $requestScrollAnimated,
             visibleVerseId: $currentVerseId,
             toolbarsHidden: $toolbarsHidden,
+            toolbarsCollapsed: $toolbarsCollapsed,
             initialToolbarMode: initialToolbarMode,
             // Horizontal split toolbar integration
             isHorizontalSplit: isHorizontalSplit,
@@ -379,6 +383,7 @@ struct SplitReaderView: View {
                 requestScrollToVerseId = verseId
             },
             toolbarsHidden: $toolbarsHidden,
+            toolbarsCollapsed: $toolbarsCollapsed,
             hideHeader: isHorizontalSplit,
             requestAddNoteForVerse: $pendingAddNoteVerse
         )

@@ -6,15 +6,26 @@
 //
 import SwiftUI
 
+/// The inputs that actually change plan metadata. Anything else (marking a
+/// reading complete, changing the reader count, a sync touching an unrelated
+/// column) shouldn't trigger a rebuild.
+private struct PlanMetaDataInputs: Equatable {
+    let planIds: [String]
+    let translationId: String
+    let wpm: Double
+    let date: Date
+}
+
 struct PlanView: View {
     @State private var userSettings: UserSettings = UserSettings()
     @State private var planViewRefreshId = UUID()
     @State private var showingDatePicker = false
     @State private var showingInfoModal = false
     @State private var date = Date.now
-    @State private var plansMetaData: PlansMetaData = PlansMetaData(plans: [], date: Date.now)
+    @State private var plansMetaData: PlansMetaData = PlansMetaData(plans: [], date: Date.now, userSettings: UserSettings())
     @State private var plans: [Plan] = []
     @State private var isLoaded = false
+    @State private var metaDataInputs: PlanMetaDataInputs?
     @Environment(\.colorScheme) var colorScheme
 
     // Deep link navigation
@@ -39,23 +50,18 @@ struct PlanView: View {
                     .task {
                         guard !isLoaded else { return }
                         isLoaded = true
-                        let settings = UserDatabase.shared.getSettings()
-                        let allPlans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
-                        userSettings = settings
-                        plans = allPlans
-                        plansMetaData = PlansMetaData(plans: allPlans, date: date)
+                        plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+                        refreshMetaData()
                     }
                     .onChange(of: planViewRefreshId) {
-                        userSettings = UserDatabase.shared.getSettings()
                         plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
-                        plansMetaData = PlansMetaData(plans: plans, date: date)
+                        refreshMetaData()
                     }
                     .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
-                        userSettings = UserDatabase.shared.getSettings()
-                        plansMetaData = PlansMetaData(plans: plans, date: date)
+                        refreshMetaData()
                     }
                     .onChange(of: date) {
-                        plansMetaData = PlansMetaData(plans: plans, date: date)
+                        refreshMetaData()
                     }
                     .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSCalendarDayChanged)) { _ in
                         date = Date()
@@ -167,6 +173,39 @@ struct PlanView: View {
         }
     }
 
+    // MARK: - Meta Data Loading
+
+    /// Refresh settings, then rebuild plan metadata only if something it depends
+    /// on actually moved. The build itself queries the bundled database once per
+    /// reading, so it runs off the main thread.
+    private func refreshMetaData() {
+        let settings = UserDatabase.shared.getSettings()
+        userSettings = settings
+
+        // Metadata is only ever displayed for selected plans, so don't build the
+        // rest.
+        let selectedPlans = plans.filter { settings.isPlanSelected($0.id) }
+        let inputs = PlanMetaDataInputs(
+            planIds: selectedPlans.map(\.id),
+            translationId: settings.readerTranslationId,
+            wpm: settings.planWpm,
+            date: date
+        )
+
+        guard inputs != metaDataInputs else { return }
+        metaDataInputs = inputs
+
+        let buildDate = date
+        DispatchQueue.global(qos: .userInitiated).async {
+            let built = PlansMetaData(plans: selectedPlans, date: buildDate, userSettings: settings)
+            DispatchQueue.main.async {
+                // Drop the result if a newer refresh has superseded this one
+                guard inputs == metaDataInputs else { return }
+                plansMetaData = built
+            }
+        }
+    }
+
     // MARK: - Main Content
 
     @ViewBuilder
@@ -217,10 +256,12 @@ struct PlanView: View {
 
     @ViewBuilder
     private func planSection(plan: Plan, geometry: GeometryProxy, proxy: ScrollViewProxy) -> some View {
-        let planMetaData = plansMetaData.planMetaData.first(where: { $0.id == plan.id })!
-        let readings = planMetaData.readingMetaData
+        // Metadata can lag a plan-list change by a frame, so tolerate a miss
+        // instead of trapping.
+        if userSettings.isPlanSelected(plan.id),
+           let planMetaData = plansMetaData.planMetaData.first(where: { $0.id == plan.id }) {
+            let readings = planMetaData.readingMetaData
 
-        if userSettings.isPlanSelected(plan.id) {
             Spacer().id(plan.name)
 
             planHeader(plan: plan, planMetaData: planMetaData, readings: readings)

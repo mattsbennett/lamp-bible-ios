@@ -17,6 +17,10 @@ class BundledModuleDatabase {
     private var dbQueue: DatabaseQueue?
     private var isAvailable: Bool = false
 
+    /// Cached set of bundled translation ids — see `isTranslationBundled`.
+    private var bundledTranslationIds: Set<String>?
+    private let bundledTranslationIdsLock = NSLock()
+
     private init() {
         setupDatabase()
     }
@@ -136,12 +140,29 @@ class BundledModuleDatabase {
         }
     }
 
-    /// Check if a translation is bundled
+    /// Check if a translation is bundled.
+    ///
+    /// Every unified verse/chapter lookup calls this first, so the id set is
+    /// cached. The bundled database is read-only, so it can never go stale.
     func isTranslationBundled(id: String) throws -> Bool {
         guard isAvailable else { return false }
-        return try read { db in
-            try TranslationModule.fetchOne(db, key: id) != nil
+
+        bundledTranslationIdsLock.lock()
+        if let ids = bundledTranslationIds {
+            bundledTranslationIdsLock.unlock()
+            return ids.contains(id)
         }
+        bundledTranslationIdsLock.unlock()
+
+        let ids = try read { db in
+            Set(try String.fetchAll(db, sql: "SELECT id FROM translations"))
+        }
+
+        bundledTranslationIdsLock.lock()
+        bundledTranslationIds = ids
+        bundledTranslationIdsLock.unlock()
+
+        return ids.contains(id)
     }
 
     /// Get bundled translations by language
@@ -236,6 +257,18 @@ class BundledModuleDatabase {
                 .filter(Column("ref") <= endRef)
                 .order(Column("ref"))
                 .fetchAll(db)
+        }
+    }
+
+    /// Summary statistics for a verse range, without loading the full rows.
+    ///
+    /// `translation_verses` carries large per-verse JSON columns (`annotations_json`
+    /// averages ~2 KB against ~120 bytes of actual text), so the full-row fetch is
+    /// wildly wasteful when all the caller wants is a word count and verse tallies.
+    func getVerseRangeStats(translationId: String, startRef: Int, endRef: Int) throws -> VerseRangeStats {
+        guard isAvailable else { return .empty }
+        return try read { db in
+            try VerseRangeStats.fetch(db, translationId: translationId, startRef: startRef, endRef: endRef)
         }
     }
 
@@ -1515,6 +1548,15 @@ class TranslationDatabase {
             return try bundledDb.getVerseRange(translationId: translationId, startRef: startRef, endRef: endRef)
         } else {
             return try userDb.getVerseRange(translationId: translationId, startRef: startRef, endRef: endRef)
+        }
+    }
+
+    /// Summary statistics for a verse range, without loading the full rows.
+    func getVerseRangeStats(translationId: String, startRef: Int, endRef: Int) throws -> VerseRangeStats {
+        if try bundledDb.isTranslationBundled(id: translationId) {
+            return try bundledDb.getVerseRangeStats(translationId: translationId, startRef: startRef, endRef: endRef)
+        } else {
+            return try userDb.getVerseRangeStats(translationId: translationId, startRef: startRef, endRef: endRef)
         }
     }
 

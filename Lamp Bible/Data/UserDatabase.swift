@@ -24,6 +24,19 @@ class UserDatabase {
     private var fileDescriptor: Int32 = -1
     private var debounceWorkItem: DispatchWorkItem?
 
+    /// Settings are read from dozens of call sites, several of them inside
+    /// SwiftUI view bodies, so the singleton row is memoised and invalidated on
+    /// every write path.
+    private var cachedSettings: UserSettings?
+    private let cacheLock = NSLock()
+
+    /// Timestamp of the most recent write we made ourselves. The file monitor
+    /// sees those writes too and would otherwise re-post a notification we have
+    /// already sent directly — doubling every downstream refresh.
+    private var lastLocalWriteAt: Date = .distantPast
+    private let localWriteLock = NSLock()
+    private let localWriteSuppressionWindow: TimeInterval = 1.0
+
     private static let lastExportedAtKey = "UserDatabase.lastExportedAt"
 
     /// True when local changes have been made that haven't been exported yet
@@ -118,14 +131,37 @@ class UserDatabase {
         // Debounce rapid changes
         debounceWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.notifyDatabaseChange()
+            guard let self else { return }
+            // Writes we made ourselves already posted a notification directly;
+            // don't post a second one for the same change.
+            guard !self.isRecentLocalWrite else { return }
+            self.invalidateSettingsCache()
+            self.notifyDatabaseChange()
         }
         debounceWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
     }
 
+    /// Record that we just wrote to the database ourselves.
+    private func markLocalWrite() {
+        localWriteLock.lock()
+        lastLocalWriteAt = Date()
+        localWriteLock.unlock()
+    }
+
+    private var isRecentLocalWrite: Bool {
+        localWriteLock.lock()
+        defer { localWriteLock.unlock() }
+        return Date().timeIntervalSince(lastLocalWriteAt) < localWriteSuppressionWindow
+    }
+
+    private func invalidateSettingsCache() {
+        cacheLock.lock()
+        cachedSettings = nil
+        cacheLock.unlock()
+    }
+
     private func notifyDatabaseChange() {
-        print("[UserDB] Database changed, notifying observers")
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .userDatabaseDidChange, object: nil)
         }
@@ -140,6 +176,7 @@ class UserDatabase {
     func notifyExternalChange() {
         // Imported data doesn't need re-exporting — mark as synced
         UserDefaults.standard.set(Date(), forKey: Self.lastExportedAtKey)
+        invalidateSettingsCache()
         notifyDatabaseChange()
     }
 
@@ -152,6 +189,7 @@ class UserDatabase {
     /// Call before replacing the database file on disk.
     func closeDatabase() {
         stopFileMonitoring()
+        invalidateSettingsCache()
         dbQueue = nil
     }
 
@@ -159,6 +197,7 @@ class UserDatabase {
     /// Call after replacing the database file to pick up new data.
     func reopenDatabase() {
         stopFileMonitoring()
+        invalidateSettingsCache()
         dbQueue = nil
         setupDatabase()
         startFileMonitoring()
@@ -275,16 +314,28 @@ class UserDatabase {
 
     // MARK: - User Settings Access
 
-    /// Get current user settings (creates default if none exist)
+    /// Get current user settings (creates default if none exist).
+    /// Served from an in-memory cache; every write path invalidates it.
     func getSettings() -> UserSettings {
+        cacheLock.lock()
+        if let cached = cachedSettings {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
         guard let dbQueue = dbQueue else {
             return UserSettings()
         }
 
         do {
-            return try dbQueue.read { db in
+            let settings = try dbQueue.read { db in
                 try UserSettings.fetchOne(db, key: 1) ?? UserSettings()
             }
+            cacheLock.lock()
+            cachedSettings = settings
+            cacheLock.unlock()
+            return settings
         } catch {
             print("[UserDB] Failed to fetch settings: \(error)")
             return UserSettings()
@@ -297,12 +348,18 @@ class UserDatabase {
             throw DatabaseError(message: "Database not initialized")
         }
 
-        try dbQueue.write { db in
+        let updated = try dbQueue.write { db -> UserSettings in
             var settings = try UserSettings.fetchOne(db, key: 1) ?? UserSettings()
             update(&settings)
             settings.updatedAt = Date()
             try settings.save(db)
+            return settings
         }
+
+        cacheLock.lock()
+        cachedSettings = updated
+        cacheLock.unlock()
+        markLocalWrite()
 
         // Post directly — the file monitor may miss WAL-mode writes
         notifyDatabaseChange()
@@ -379,6 +436,9 @@ class UserDatabase {
             try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
         }
 
+        // updated_at moved, so the memoised settings are stale
+        invalidateSettingsCache()
+        markLocalWrite()
         notifyDatabaseChange()
     }
 
@@ -394,6 +454,9 @@ class UserDatabase {
             try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
         }
 
+        // updated_at moved, so the memoised settings are stale
+        invalidateSettingsCache()
+        markLocalWrite()
         notifyDatabaseChange()
     }
 
@@ -409,6 +472,9 @@ class UserDatabase {
             try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
         }
 
+        // updated_at moved, so the memoised settings are stale
+        invalidateSettingsCache()
+        markLocalWrite()
         notifyDatabaseChange()
     }
 
@@ -434,6 +500,9 @@ class UserDatabase {
     @discardableResult
     func syncCompletedReadings(with remoteReadings: [CompletedReading]) -> Bool {
         guard let dbQueue = dbQueue else { return false }
+
+        // The write below bumps updated_at when anything changes
+        defer { invalidateSettingsCache() }
 
         do {
             return try dbQueue.write { db in
@@ -478,6 +547,8 @@ class UserDatabase {
     @discardableResult
     func mergeSettings(from remote: UserSettings) -> Bool {
         guard let dbQueue = dbQueue else { return false }
+
+        defer { invalidateSettingsCache() }
 
         do {
             return try dbQueue.write { db in
@@ -592,6 +663,9 @@ class UserDatabase {
                 UPDATE user_settings SET sync_settings_json = ?, updated_at = datetime('now') WHERE id = 1
                 """, arguments: [jsonString])
         }
+
+        invalidateSettingsCache()
+        markLocalWrite()
     }
 }
 

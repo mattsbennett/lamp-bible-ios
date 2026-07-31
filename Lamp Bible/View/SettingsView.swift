@@ -8,6 +8,7 @@
 import SwiftUI
 import Combine
 import GRDB
+import AVFoundation
 
 struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
@@ -56,6 +57,11 @@ struct SettingsView: View {
         self.externalApps = externalApps
         _planViewRefreshID = planViewRefreshId
         _planWpm = State(initialValue: settings.planWpm)
+    }
+
+    @ViewBuilder
+    private var readAloudSection: some View {
+        ReadAloudSettingsSection(translationId: userSettings.readerTranslationId)
     }
 
     func scheduleRecurringNotification(at date: Date) {
@@ -428,9 +434,11 @@ struct SettingsView: View {
                 } header: {
                     Text("Reading Rate (WPM)")
                 } footer: {
-                    Text("Adjust reading rate to achieve personalized accuracy in reading plan reading time estimates")
+                    Text("Sets both the reading time estimates for plan readings and the pace Read Aloud speaks at.")
                 }
                 .listRowSeparator(.hidden)
+
+                readAloudSection
 
                 Section {
                     Toggle(isOn: Binding(
@@ -1114,6 +1122,78 @@ struct WebDAVSetupSheet: View {
         } catch {
             connectionError = error.localizedDescription
         }
+    }
+}
+
+// MARK: - Read Aloud
+
+/// Read-aloud preferences. Voice choice is stored per language, because the voice
+/// that suits an English translation is no use for a Greek one — and when the
+/// language has no installed voice at all, saying so here is the only way the user
+/// finds out it's fixable.
+private struct ReadAloudSettingsSection: View {
+    let translationId: String
+
+    @AppStorage("readAloudFollowsText") private var followsText: Bool = true
+    @State private var languageCode: String?
+    @State private var voices: [AVSpeechSynthesisVoice] = []
+    @State private var selectedVoiceId: String = ""
+
+    private var languageName: String? {
+        SpeechVoiceCatalog.languageName(for: languageCode)
+    }
+
+    var body: some View {
+        Section {
+            Toggle(isOn: $followsText) {
+                Text("Follow Along")
+            }
+
+            if voices.isEmpty {
+                Text(noVoiceText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("Voice", selection: $selectedVoiceId) {
+                    ForEach(voices, id: \.identifier) { voice in
+                        Text(SpeechVoiceCatalog.displayName(for: voice))
+                            .tag(voice.identifier)
+                    }
+                }
+                .onChange(of: selectedVoiceId) { oldValue, newValue in
+                    // Ignore the assignment `load()` makes on first appearance, so
+                    // merely opening Settings doesn't pin a preference.
+                    guard !oldValue.isEmpty, oldValue != newValue else { return }
+                    SpeechVoiceCatalog.setPreferredVoiceIdentifier(newValue, for: languageCode)
+                }
+            }
+        } header: {
+            Text("Read Aloud")
+        } footer: {
+            if let languageName, !voices.isEmpty {
+                Text("Follow Along highlights each verse as it's spoken and keeps it on screen. The voice applies to \(languageName) translations.")
+            } else {
+                Text("Follow Along highlights each verse as it's spoken and keeps it on screen.")
+            }
+        }
+        .task(id: translationId) {
+            load()
+        }
+    }
+
+    private var noVoiceText: String {
+        let howToFix = "Add one in Settings › Accessibility › Spoken Content › Voices."
+        guard let languageName else {
+            return "No speech voice is installed for this translation. \(howToFix)"
+        }
+        return "No \(languageName) voice is installed, so this translation can't be read aloud. \(howToFix)"
+    }
+
+    private func load() {
+        let language = (try? TranslationDatabase.shared.getTranslation(id: translationId))?.language
+        languageCode = language
+        voices = SpeechVoiceCatalog.voices(for: language)
+        selectedVoiceId = SpeechVoiceCatalog.preferredVoice(for: language)?.identifier ?? ""
     }
 }
 

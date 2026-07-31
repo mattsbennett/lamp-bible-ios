@@ -17,8 +17,7 @@ struct ReadingsView: View {
     var body: some View {
         ConditionalStack(isHorizonalStack: stackHorizontally) {
             let readings = planMetaData.readingMetaData
-            ForEach(readings.indices, id: \.self) { index in
-                let readingMetaData = planMetaData.readingMetaData.first(where: { $0.index == index })!
+            ForEach(Array(readings.enumerated()), id: \.element.id) { index, readingMetaData in
                 VStack(alignment: .leading) {
                     HStack {
                         let readingId = readingMetaData.id
@@ -103,16 +102,24 @@ struct ReadingsView: View {
             Spacer()
         }
         .onAppear {
-            userSettings = UserDatabase.shared.getSettings()
-            completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
+            syncFromDatabase()
         }
         .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
-            userSettings = UserDatabase.shared.getSettings()
-            completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
+            syncFromDatabase()
         }
         .onChange(of: readerCount) { _, newValue in
+            // Guard against writing back a value we just read from the database
+            guard newValue != userSettings.planReaderCount else { return }
             try? UserDatabase.shared.updateSettings { $0.planReaderCount = newValue }
         }
+    }
+
+    private func syncFromDatabase() {
+        let settings = UserDatabase.shared.getSettings()
+        userSettings = settings
+        completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
+        // Keep every plan's control in step — each ReadingsView holds its own copy
+        readerCount = settings.planReaderCount
     }
 }
 
@@ -125,19 +132,21 @@ struct ReaderSplitControl: View {
     private var totalVerses: Int { chapterVerseCounts.reduce(0, +) }
 
     private var labelContent: Text {
-        if readerCount <= 1 {
+        // A reading can legitimately resolve to no verses (e.g. the selected
+        // translation doesn't cover the range), so never index into the counts.
+        guard readerCount > 1, let firstCount = chapterVerseCounts.first else {
             return Text("\(totalVerses)v")
         }
-        let counts = chapterVerseCounts.map { count -> Int in
+        let split = { (count: Int) -> Int in
             let floor = count / readerCount
             let ceil = floor + (count % readerCount == 0 ? 0 : 1)
             let floorRemainder = count - floor * readerCount
             let ceilRemainder = ceil * readerCount - count
             return ceilRemainder <= floorRemainder ? ceil : floor
         }
-        var result = Text("\(counts[0])")
-        for count in counts.dropFirst() {
-            result = result + Text(" · ") + Text("\(count)")
+        var result = Text("\(split(firstCount))")
+        for count in chapterVerseCounts.dropFirst() {
+            result = result + Text(" · ") + Text("\(split(count))")
         }
         return result + Text(" ea.")
     }

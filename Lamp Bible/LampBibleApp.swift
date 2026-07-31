@@ -98,10 +98,8 @@ struct LampBibleApp: App {
         // Migrate from Realm if needed (one-time migration)
         RealmMigrator.migrateIfNeeded()
 
-        // Write widget data in background to avoid blocking launch
-        DispatchQueue.global(qos: .utility).async {
-            WidgetDataService.shared.writeAll()
-        }
+        // writeAll dispatches to its own background queue
+        WidgetDataService.shared.writeAll()
     }
 
     var body: some Scene {
@@ -113,9 +111,7 @@ struct LampBibleApp: App {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                DispatchQueue.global(qos: .utility).async {
-                    WidgetDataService.shared.refreshWidget()
-                }
+                WidgetDataService.shared.refreshWidget()
                 // Start debounce + polling for user settings
                 UserSettingsSyncManager.shared.startSync()
                 // Full sync from remote on foreground
@@ -123,8 +119,10 @@ struct LampBibleApp: App {
                     try? await SyncCoordinator.shared.syncAll()
                 }
             } else if newPhase == .background {
-                // Refresh widget so any throttled reloads are picked up
-                WidgetDataService.shared.refreshWidget()
+                // Refresh widget so any throttled reloads are picked up. Skips
+                // the debounce and holds a background assertion so the write
+                // survives suspension.
+                WidgetDataService.shared.refreshWidgetImmediately()
                 // Stop debounce + polling
                 UserSettingsSyncManager.shared.stopSync()
                 // Final conditional export if there are unsynced local changes
