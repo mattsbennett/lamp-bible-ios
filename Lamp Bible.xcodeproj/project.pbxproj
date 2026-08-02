@@ -10,7 +10,7 @@
 		115D622AA82F562690671C60 /* RealmSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 42E72CDD647A5E4E99060E4D /* RealmSwift */; };
 		1494365326988E2206AE576E /* RealmSwift in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 42E72CDD647A5E4E99060E4D /* RealmSwift */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		505A032EB8C68181C333D3E1 /* RealmSwift in Frameworks */ = {isa = PBXBuildFile; productRef = BB167F29BAB71312257C29C9 /* RealmSwift */; };
-		69953A461E33453590607608 /* TipTapEditor in Resources */ = {isa = PBXBuildFile; fileRef = 9CF26519566447318332A93B /* TipTapEditor */; };
+		69953A461E33453590607608 /* Resources/TipTapEditor in Resources */ = {isa = PBXBuildFile; fileRef = 9CF26519566447318332A93B /* Resources/TipTapEditor */; };
 		76D1ED02B3D86B929A895CBB /* RealmMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63E97884C32E4D3D92C1CA62 /* RealmMigrationTests.swift */; };
 		8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */; };
 		8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 0E27D0DD0B6FBDAAD354572B /* GRDB */; };
@@ -104,7 +104,7 @@
 		B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229962F16A00000A58F81 /* NoteConflictView.swift */; };
 		B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
-		B8EF6D2F3016BCC700ACF12D /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B8EF6D2E3016BCC700ACF12D /* bundled_modules.db.zlib */; };
+		B8EF6E44301EF91700ACF12D /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
 		B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33472B3F4AC7009C544D /* ReaderView.swift */; };
 		CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95873C478D642C9B5444C02 /* TipTapEditorView.swift */; };
@@ -162,7 +162,7 @@
 /* Begin PBXFileReference section */
 		54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorCoordinator.swift; sourceTree = "<group>"; };
 		63E97884C32E4D3D92C1CA62 /* RealmMigrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RealmMigrationTests.swift; sourceTree = "<group>"; };
-		9CF26519566447318332A93B /* TipTapEditor */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/TipTapEditor; sourceTree = "<group>"; };
+		9CF26519566447318332A93B /* Resources/TipTapEditor */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/TipTapEditor; sourceTree = "<group>"; };
 		A95873C478D642C9B5444C02 /* TipTapEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorView.swift; sourceTree = "<group>"; };
 		B8210A962B549ADD008341F0 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModel.swift; sourceTree = "<group>"; };
 		B8210A9A2B549ED7008341F0 /* ChapterListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterListView.swift; sourceTree = "<group>"; };
@@ -259,13 +259,13 @@
 		B89229962F16A00000A58F81 /* NoteConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictView.swift; sourceTree = "<group>"; };
 		B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalSharingTests.swift; sourceTree = "<group>"; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
-		B8EF6D2E3016BCC700ACF12D /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
+		B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
 		B8FC33472B3F4AC7009C544D /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		B88432362F4A7F9900A699B9 /* Exceptions for "LampBibleWidget" folder in "LampBibleWidgetExtension" target */ = {
+		B88432362F4A7F9900A699B9 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -275,18 +275,7 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		B88432252F4A7F9700A699B9 /* LampBibleWidget */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				B88432362F4A7F9900A699B9 /* Exceptions for "LampBibleWidget" folder in "LampBibleWidgetExtension" target */,
-			);
-			explicitFileTypes = {
-			};
-			explicitFolders = (
-			);
-			path = LampBibleWidget;
-			sourceTree = "<group>";
-		};
+		B88432252F4A7F9700A699B9 /* LampBibleWidget */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (B88432362F4A7F9900A699B9 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = LampBibleWidget; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -481,7 +470,6 @@
 		B885E4152ADB47E40066F0A0 /* Lamp Bible */ = {
 			isa = PBXGroup;
 			children = (
-				B8EF6D2E3016BCC700ACF12D /* bundled_modules.db.zlib */,
 				B87B2AC72F007EFB006DC53D /* Lamp Bible.entitlements */,
 				B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */,
 				B885E41A2ADB47ED0066F0A0 /* Assets.xcassets */,
@@ -490,7 +478,8 @@
 				B8210A9C2B54A4D7008341F0 /* Data */,
 				B8210A9D2B54A508008341F0 /* Utility */,
 				B8210A9E2B54A58D008341F0 /* View */,
-				9CF26519566447318332A93B /* TipTapEditor */,
+				9CF26519566447318332A93B /* Resources/TipTapEditor */,
+				B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */,
 			);
 			path = "Lamp Bible";
 			sourceTree = "<group>";
@@ -645,7 +634,7 @@
 			);
 			mainGroup = B885E40A2ADB47E40066F0A0;
 			packageReferences = (
-				651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB" */,
 				1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */,
 			);
 			productRefGroup = B885E4142ADB47E40066F0A0 /* Products */;
@@ -674,9 +663,9 @@
 			files = (
 				B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */,
 				B885E41B2ADB47ED0066F0A0 /* Assets.xcassets in Resources */,
-				B8EF6D2F3016BCC700ACF12D /* bundled_modules.db.zlib in Resources */,
+				B8EF6E44301EF91700ACF12D /* bundled_modules.db.zlib in Resources */,
 				B8932D9E2AEE056E008B1444 /* Resource Files in Resources */,
-				69953A461E33453590607608 /* TipTapEditor in Resources */,
+				69953A461E33453590607608 /* Resources/TipTapEditor in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1223,7 +1212,7 @@
 				minimumVersion = 20.0.5;
 			};
 		};
-		651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+		651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/groue/GRDB.swift";
 			requirement = {
@@ -1236,7 +1225,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		0E27D0DD0B6FBDAAD354572B /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			package = 651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB" */;
 			productName = GRDB;
 		};
 		42E72CDD647A5E4E99060E4D /* RealmSwift */ = {
