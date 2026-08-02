@@ -80,9 +80,15 @@ class BundledModuleDatabase {
         let decompressedPath = decompressedURL.path
         let versionMarkerURL = appSupport.appendingPathComponent("bundled_modules.version")
 
-        // Use app bundle version as a stable marker instead of modification dates,
-        // which are unreliable because iOS changes the bundle path on every install/update
-        let currentVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+        // Marker combines the app build version with the compressed bundle's byte
+        // size. Modification dates are unreliable (iOS rewrites the bundle path on
+        // every install/update), and the build version alone misses content-only
+        // changes — a rebuilt bundle with the same build number (e.g. local dev
+        // rebuilds, or a data-only update) would otherwise reuse the stale copy.
+        // Including the compressed size means any changed bundle is re-decompressed.
+        let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+        let compressedSize = ((try? fileManager.attributesOfItem(atPath: compressedPath))?[.size] as? Int) ?? 0
+        let currentVersion = "\(appBuild):\(compressedSize)"
 
         // Check if already decompressed and up-to-date
         if fileManager.fileExists(atPath: decompressedPath),
