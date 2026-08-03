@@ -232,8 +232,23 @@ class ModuleSyncManager: ObservableObject {
         type: ModuleType,
         storage: ModuleStorage
     ) async throws {
-        // Download the .db or .lamp file to temporary location
         let data = try await storage.readModuleFile(type: type, fileName: fileInfo.filePath)
+        try await importModuleFromSQLite(
+            fileInfo: fileInfo,
+            type: type,
+            compressedData: data,
+            mediaStorage: storage
+        )
+    }
+
+    /// Imports module bytes through the same compatibility path regardless of
+    /// whether they came from remote storage or a user-selected local file.
+    private func importModuleFromSQLite(
+        fileInfo: ModuleFileInfo,
+        type: ModuleType,
+        compressedData data: Data,
+        mediaStorage: ModuleStorage?
+    ) async throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
 
         // Decompress if it's a compressed file (.lamp or .db.zlib)
@@ -261,7 +276,9 @@ class ModuleSyncManager: ObservableObject {
                 fileInfo: fileInfo,
                 tempURL: tempURL
             )
-            try await downloadDevotionalMedia(moduleId: fileInfo.id, from: storage)
+            if let mediaStorage {
+                try await downloadDevotionalMedia(moduleId: fileInfo.id, from: mediaStorage)
+            }
             return
         }
         if type == .highlights,
@@ -768,8 +785,8 @@ class ModuleSyncManager: ObservableObject {
         print("Imported \(type.rawValue) module \(fileInfo.id) from SQLite")
 
         // Download media files for devotional modules
-        if type == .devotional {
-            try await downloadDevotionalMedia(moduleId: fileInfo.id, from: storage)
+        if type == .devotional, let mediaStorage {
+            try await downloadDevotionalMedia(moduleId: fileInfo.id, from: mediaStorage)
         }
     }
 
@@ -1998,21 +2015,17 @@ class ModuleSyncManager: ObservableObject {
     /// Import a .lamp module from a local file URL
     /// If cloud storage is available, also writes to cloud for sync
     func importModuleFromFile(url: URL, moduleType: ModuleType) async throws {
-        // Read the compressed data
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer {
+            if hasSecurityScope {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
         let compressedData = try Data(contentsOf: url)
         let fileName = url.lastPathComponent
         let moduleId = fileName.replacingOccurrences(of: ".lamp", with: "")
-
-        // Decompress to temp file for import
-        let decompressedData = try decompressZlib(compressedData)
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
-        try decompressedData.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        // Calculate hash from compressed data
         let hash = compressedData.sha256Hash
-
-        // Create the file info
         let fileInfo = ModuleFileInfo(
             id: moduleId,
             type: moduleType,
@@ -2021,30 +2034,12 @@ class ModuleSyncManager: ObservableObject {
             modificationDate: Date()
         )
 
-        // Create module metadata first
-        if moduleType != .commentary {
-            try await createModuleMetadata(id: moduleId, type: moduleType, hash: hash, tempURL: tempURL)
-        }
-
-        // Delete existing entries
-        if moduleType == .translation {
-            try database.deleteAllTranslationContent(translationId: moduleId)
-            try database.deleteTranslation(id: moduleId)
-        } else if moduleType == .commentary {
-            if let existingModule = try database.getModule(id: moduleId), let seriesId = existingModule.seriesId {
-                let modulesWithSeries = try database.getModulesForSeries(seriesId: seriesId)
-                if modulesWithSeries.count <= 1 {
-                    try database.deleteCommentarySeries(id: seriesId)
-                }
-            }
-            try database.deleteAllEntriesForModule(moduleId: moduleId)
-            try database.deleteModule(id: moduleId)
-        } else {
-            try database.deleteAllEntriesForModule(moduleId: moduleId)
-        }
-
-        // Import using ATTACH DATABASE
-        try await importFromTempDatabase(tempURL: tempURL, fileInfo: fileInfo, type: moduleType)
+        try await importModuleFromSQLite(
+            fileInfo: fileInfo,
+            type: moduleType,
+            compressedData: compressedData,
+            mediaStorage: nil
+        )
 
         // If remote storage is configured, also write there for sync.
         let storage = await MainActor.run { getStorage() }
@@ -2053,152 +2048,6 @@ class ModuleSyncManager: ObservableObject {
         }
 
         print("[ModuleSyncManager] Imported module from file: \(moduleId)")
-    }
-
-    /// Helper to import from a temp database file using ATTACH DATABASE
-    private func importFromTempDatabase(tempURL: URL, fileInfo: ModuleFileInfo, type: ModuleType) async throws {
-        let dbAlias = "import_\(UUID().uuidString.prefix(8).replacingOccurrences(of: "-", with: ""))"
-
-        try database.writeWithoutTransaction { db in
-            try db.execute(sql: "ATTACH DATABASE '\(tempURL.path)' AS \(dbAlias)")
-
-            do {
-                try db.execute(sql: "BEGIN IMMEDIATE TRANSACTION")
-
-                switch type {
-                case .dictionary:
-                    try db.execute(sql: """
-                        INSERT OR REPLACE INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json)
-                        SELECT id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json
-                        FROM \(dbAlias).dictionary_entries
-                        """)
-
-                case .notes:
-                    try db.execute(sql: """
-                        INSERT OR REPLACE INTO note_entries (id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified)
-                        SELECT id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified
-                        FROM \(dbAlias).note_entries
-                        """)
-
-                case .devotional:
-                    // Check source schema
-                    let devCols = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(devotional_entries)")
-                    let devColNames = Set(devCols.compactMap { $0["name"] as String? })
-
-                    if devColNames.contains("content_json") {
-                        // Check if media_json column exists in source
-                        let hasMediaJson = devColNames.contains("media_json")
-                        let mediaJsonInsert = hasMediaJson ? ", media_json" : ""
-                        let mediaJsonSelect = hasMediaJson ? ", media_json" : ""
-
-                        try db.execute(sql: """
-                            INSERT OR REPLACE INTO devotional_entries
-                            (id, module_id, title, subtitle, author, date, tags, category,
-                             series_id, series_name, series_order, key_scriptures_json,
-                             summary_json, content_json, footnotes_json, related_ids,
-                             created, last_modified, search_text\(mediaJsonInsert))
-                            SELECT id, module_id, title, subtitle, author, date, tags, category,
-                                   series_id, series_name, series_order, key_scriptures_json,
-                                   summary_json, content_json, footnotes_json, related_ids,
-                                   created, last_modified, search_text\(mediaJsonSelect)
-                            FROM \(dbAlias).devotional_entries
-                            """)
-                    } else {
-                        // Legacy schema
-                        try db.execute(sql: """
-                            INSERT OR REPLACE INTO devotional_entries
-                            (id, module_id, title, date, tags, content_json, last_modified, search_text)
-                            SELECT id, module_id, title, month_day, tags, content, last_modified, content
-                            FROM \(dbAlias).devotional_entries
-                            """)
-                    }
-
-                case .highlights:
-                    // Import highlight sets first
-                    try db.execute(sql: """
-                        INSERT OR REPLACE INTO highlight_sets (id, module_id, name, description, translation_id, created, last_modified)
-                        SELECT id, module_id, name, description, translation_id, created, last_modified
-                        FROM \(dbAlias).highlight_sets
-                        """)
-                    // Import highlights
-                    try db.execute(sql: """
-                        INSERT OR REPLACE INTO highlights (id, set_id, ref, sc, ec, style, color)
-                        SELECT id, set_id, ref, sc, ec, style, color
-                        FROM \(dbAlias).highlights
-                        """)
-                    // Import themes if table exists
-                    let themeTables = try Row.fetchAll(db, sql: "SELECT name FROM \(dbAlias).sqlite_master WHERE type='table' AND name='highlight_themes'")
-                    if !themeTables.isEmpty {
-                        try db.execute(sql: """
-                            INSERT OR REPLACE INTO highlight_themes (id, set_id, color, style, name, description)
-                            SELECT id, set_id, color, style, name, description
-                            FROM \(dbAlias).highlight_themes
-                            """)
-                    }
-
-                case .translation:
-                    // Check which tables exist in the source
-                    let tables = try Row.fetchAll(db, sql: "SELECT name FROM \(dbAlias).sqlite_master WHERE type='table'")
-                    let tableNames = Set(tables.compactMap { $0["name"] as String? })
-
-                    // Import translations metadata
-                    if tableNames.contains("translations") {
-                        let now = Int(Date().timeIntervalSince1970)
-                        try db.execute(sql: """
-                            INSERT OR REPLACE INTO translations (id, name, abbreviation, description, language, language_name,
-                                text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
-                                license, source_texts_json, features_json, versification, file_path, file_hash,
-                                last_synced, is_bundled, created_at, updated_at)
-                            SELECT id, name, abbreviation, description, language, language_name,
-                                text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
-                                license, source_texts_json, features_json, versification, file_path, file_hash,
-                                ?, 0, ?, ?
-                            FROM \(dbAlias).translations
-                            """, arguments: [now, now, now])
-                    }
-
-                    // Import translation books
-                    if tableNames.contains("translation_books") {
-                        try db.execute(sql: """
-                            INSERT OR REPLACE INTO translation_books (id, translation_id, book_number, book_id, name, testament, chapter_count)
-                            SELECT id, translation_id, book_number, book_id, name, testament, chapter_count
-                            FROM \(dbAlias).translation_books
-                            """)
-                    }
-
-                    // Import translation verses
-                    if tableNames.contains("translation_verses") {
-                        try db.execute(sql: """
-                            INSERT OR REPLACE INTO translation_verses (translation_id, ref, book, chapter, verse, text,
-                                annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json)
-                            SELECT translation_id, ref, book, chapter, verse, text,
-                                annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json
-                            FROM \(dbAlias).translation_verses
-                            """)
-                    }
-
-                    // Import translation headings
-                    if tableNames.contains("translation_headings") {
-                        try db.execute(sql: """
-                            INSERT OR REPLACE INTO translation_headings (translation_id, book, chapter, before_verse, level, text)
-                            SELECT translation_id, book, chapter, before_verse, level, text
-                            FROM \(dbAlias).translation_headings
-                            """)
-                    }
-
-                default:
-                    break
-                }
-
-                try db.execute(sql: "COMMIT")
-            } catch {
-                try? db.execute(sql: "ROLLBACK")
-                try db.execute(sql: "DETACH DATABASE \(dbAlias)")
-                throw error
-            }
-
-            try db.execute(sql: "DETACH DATABASE \(dbAlias)")
-        }
     }
 
     /// Export an editable module to the configured remote provider.
