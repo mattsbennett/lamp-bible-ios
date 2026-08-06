@@ -1289,6 +1289,84 @@ class ModuleDatabase {
             try db.create(index: "idx_highlight_themes_color_style", on: "highlight_themes", columns: ["color", "style"])
         }
 
+        // v23: Hierarchical long-form book modules
+        migrator.registerMigration("v23") { db in
+            try db.create(table: "book_modules", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey().references("modules", onDelete: .cascade)
+                t.column("title", .text).notNull()
+                t.column("subtitle", .text)
+                t.column("description", .text)
+                t.column("author", .text)
+                t.column("editor", .text)
+                t.column("publisher", .text)
+                t.column("year", .integer)
+                t.column("edition", .text)
+                t.column("isbn", .text)
+                t.column("language", .text).notNull()
+                t.column("text_direction", .text).notNull().defaults(to: "ltr")
+                t.column("copyright", .text)
+                t.column("license", .text)
+                t.column("version", .text)
+                t.column("schema_version", .text).notNull()
+                t.column("tags_json", .text)
+                t.column("cover_media_id", .text)
+                t.column("is_editable", .integer).notNull().defaults(to: 0)
+                t.column("created", .integer)
+                t.column("last_modified", .integer)
+                t.column("footnotes_json", .text)
+                t.column("media_json", .text)
+            }
+
+            try db.create(table: "book_sections", ifNotExists: true) { t in
+                t.column("id", .text).primaryKey()
+                t.column("module_id", .text).notNull().references("book_modules", onDelete: .cascade)
+                t.column("section_id", .text).notNull()
+                t.column("parent_id", .text).references("book_sections", onDelete: .cascade)
+                t.column("section_type", .text).notNull()
+                t.column("number", .text)
+                t.column("title", .text).notNull()
+                t.column("subtitle", .text)
+                t.column("depth", .integer).notNull()
+                t.column("order_index", .integer).notNull()
+                t.column("key_scriptures_json", .text)
+                t.column("content_json", .text).notNull()
+                t.column("search_text", .text).notNull().defaults(to: "")
+                t.uniqueKey(["module_id", "section_id"])
+            }
+            try db.create(index: "idx_book_sections_module", on: "book_sections", columns: ["module_id"])
+            try db.create(index: "idx_book_sections_parent", on: "book_sections", columns: ["parent_id", "order_index"])
+            try db.create(index: "idx_book_sections_type", on: "book_sections", columns: ["module_id", "section_type"])
+
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE book_sections_fts USING fts5(
+                    title,
+                    search_text,
+                    content='book_sections',
+                    content_rowid='rowid'
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER book_sections_fts_insert AFTER INSERT ON book_sections BEGIN
+                    INSERT INTO book_sections_fts(rowid, title, search_text)
+                    VALUES (new.rowid, new.title, new.search_text);
+                END
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER book_sections_fts_delete AFTER DELETE ON book_sections BEGIN
+                    INSERT INTO book_sections_fts(book_sections_fts, rowid, title, search_text)
+                    VALUES ('delete', old.rowid, old.title, old.search_text);
+                END
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER book_sections_fts_update AFTER UPDATE ON book_sections BEGIN
+                    INSERT INTO book_sections_fts(book_sections_fts, rowid, title, search_text)
+                    VALUES ('delete', old.rowid, old.title, old.search_text);
+                    INSERT INTO book_sections_fts(rowid, title, search_text)
+                    VALUES (new.rowid, new.title, new.search_text);
+                END
+                """)
+        }
+
         return migrator
     }
 
@@ -1319,6 +1397,63 @@ class ModuleDatabase {
             } else {
                 return try Module.fetchAll(db)
             }
+        }
+    }
+
+    // MARK: - Long-form Book CRUD
+
+    func getBookModules() throws -> [BookModule] {
+        try dbQueue.read { db in
+            try BookModule.order(Column("title").collating(.localizedCaseInsensitiveCompare)).fetchAll(db)
+        }
+    }
+
+    func getBookModule(id: String) throws -> BookModule? {
+        try dbQueue.read { db in
+            try BookModule.fetchOne(db, key: id)
+        }
+    }
+
+    func getBookSections(moduleId: String) throws -> [BookSection] {
+        try dbQueue.read { db in
+            try BookSection
+                .filter(Column("module_id") == moduleId)
+                .order(Column.rowID)
+                .fetchAll(db)
+        }
+    }
+
+    func getBookSection(id: String) throws -> BookSection? {
+        try dbQueue.read { db in
+            try BookSection.fetchOne(db, key: id)
+        }
+    }
+
+    func searchBookSections(query: String, moduleIds: Set<String>? = nil, limit: Int = 200) throws -> [BookSection] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        return try dbQueue.read { db in
+            var conditions = [
+                "(title LIKE ? COLLATE NOCASE OR COALESCE(subtitle, '') LIKE ? COLLATE NOCASE OR search_text LIKE ? COLLATE NOCASE)"
+            ]
+            let pattern = "%\(trimmed)%"
+            var arguments: StatementArguments = [pattern, pattern, pattern]
+            if let moduleIds, !moduleIds.isEmpty {
+                let placeholders = Array(repeating: "?", count: moduleIds.count).joined(separator: ", ")
+                conditions.append("module_id IN (\(placeholders))")
+                arguments += StatementArguments(moduleIds.sorted())
+            }
+            arguments += [min(max(limit, 1), 500)]
+            return try BookSection.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM book_sections
+                    WHERE \(conditions.joined(separator: " AND "))
+                    ORDER BY rowid
+                    LIMIT ?
+                    """,
+                arguments: arguments
+            )
         }
     }
 
@@ -1805,6 +1940,8 @@ class ModuleDatabase {
             try db.execute(sql: "DELETE FROM commentary_books WHERE module_id = ?", arguments: [moduleId])
             try db.execute(sql: "DELETE FROM devotional_entries WHERE module_id = ?", arguments: [moduleId])
             try db.execute(sql: "DELETE FROM note_entries WHERE module_id = ?", arguments: [moduleId])
+            try db.execute(sql: "DELETE FROM book_sections WHERE module_id = ?", arguments: [moduleId])
+            try db.execute(sql: "DELETE FROM book_modules WHERE id = ?", arguments: [moduleId])
             // Delete highlights (must delete highlights before highlight_sets due to FK)
             try db.execute(sql: "DELETE FROM highlights WHERE set_id IN (SELECT id FROM highlight_sets WHERE module_id = ?)", arguments: [moduleId])
             try db.execute(sql: "DELETE FROM highlight_sets WHERE module_id = ?", arguments: [moduleId])

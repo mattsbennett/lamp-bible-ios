@@ -75,7 +75,7 @@ extension ModuleType {
 
     /// Module types that are read-only
     static var readOnlyCases: [ModuleType] {
-        [.translation, .dictionary, .commentary, .plan]
+        [.translation, .dictionary, .commentary, .book, .plan]
     }
 
     /// Whether this module type contains user-editable content

@@ -350,6 +350,7 @@ struct SearchView: View {
     @State private var selectedDevotional: ModuleSearchResult? = nil
     @State private var selectedNote: ModuleSearchResult? = nil
     @State private var selectedCommentary: ModuleSearchResult? = nil
+    @State private var selectedBookSection: ModuleSearchResult? = nil
     @State private var selectedHighlight: ModuleSearchResult? = nil
     @State private var selectedTranslation: ModuleSearchResult? = nil
 
@@ -1141,8 +1142,8 @@ struct SearchView: View {
     /// Group results by module type for sectioned display
     private var groupedModuleResults: [(type: ModuleType, results: [ModuleSearchResult])] {
         let grouped = Dictionary(grouping: moduleSearchResults) { $0.moduleType }
-        // Order by type display order (dictionary, translation, commentary, notes, devotional, highlights)
-        let typeOrder: [ModuleType] = [.dictionary, .translation, .commentary, .notes, .devotional, .highlights]
+        // Order by type display order.
+        let typeOrder: [ModuleType] = [.dictionary, .translation, .commentary, .book, .notes, .devotional, .highlights]
         return typeOrder.compactMap { type in
             if let results = grouped[type], !results.isEmpty {
                 return (type: type, results: results)
@@ -1227,6 +1228,9 @@ struct SearchView: View {
         .sheet(item: $selectedCommentary) { result in
             CommentaryEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId, searchQuery: currentSearchText, translationId: translationId)
         }
+        .sheet(item: $selectedBookSection) { result in
+            BookModuleView(moduleId: result.moduleId, initialSectionId: result.id)
+        }
         .sheet(item: $selectedHighlight) { result in
             HighlightPreviewSheet(
                 result: result,
@@ -1263,6 +1267,8 @@ struct SearchView: View {
             selectedNote = result
         case .commentary:
             selectedCommentary = result
+        case .book:
+            selectedBookSection = result
         case .plan:
             break  // Plans have dedicated UI
         case .highlights:
@@ -1996,6 +2002,7 @@ struct ModuleSearchResultRow: View {
         case .translation: return .gray
         case .notes: return .blue
         case .commentary: return .green
+        case .book: return .brown
         case .devotional: return .orange
         case .dictionary: return .purple
         case .plan: return .teal

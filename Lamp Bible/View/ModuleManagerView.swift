@@ -178,6 +178,7 @@ struct ModuleManagerView: View {
     @State private var duplicateModuleName: String = ""
     @State private var selectedCommentarySeries: CommentarySeriesGroup? = nil
     @State private var selectedDictionarySeries: DictionarySeriesGroup? = nil
+    @State private var selectedBookModule: DisplayModule? = nil
     @State private var selectedQuiz: QuizModule? = nil
 
     // Markdown export
@@ -493,6 +494,8 @@ struct ModuleManagerView: View {
             return .highlights
         } else if tables.contains("commentary_entries") || tables.contains("commentary_units") {
             return .commentary
+        } else if tables.contains("book_modules") && tables.contains("book_sections") {
+            return .book
         } else if tables.contains("dictionary_entries") {
             return .dictionary
         } else if tables.contains("quiz_modules") && tables.contains("quiz_questions") {
@@ -750,6 +753,9 @@ struct ModuleManagerView: View {
         .sheet(item: $selectedQuiz) { quiz in
             QuizDetailView(quiz: quiz)
         }
+        .sheet(item: $selectedBookModule) { module in
+            BookModuleView(moduleId: module.id)
+        }
         .sheet(item: $moduleToEdit) { module in
             ModuleEditSheet(module: module) { updatedModule in
                 Task { await saveModuleMetadata(updatedModule) }
@@ -787,6 +793,12 @@ struct ModuleManagerView: View {
                 }
             }
         )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if displayModule.type == .book {
+                selectedBookModule = displayModule
+            }
+        }
     }
 
     @MainActor
@@ -891,6 +903,21 @@ struct ModuleManagerView: View {
                 description: "Brown-Driver-Briggs Hebrew Lexicon",
                 entryCount: bdbCount
             ))
+        }
+
+        // Long-form books are optional in the bundled database.
+        if let books = try? bundledDb.getBookModules() {
+            for book in books {
+                let sectionCount = (try? bundledDb.getBookSections(moduleId: book.id).count) ?? 0
+                allModules.append(DisplayModule(
+                    id: book.id,
+                    name: book.title,
+                    type: .book,
+                    description: book.description,
+                    version: book.version,
+                    entryCount: sectionCount
+                ))
+            }
         }
 
         // Load user modules from GRDB
@@ -1834,6 +1861,7 @@ extension ModuleType {
         case .translation: return "Translation"
         case .dictionary: return "Dictionary"
         case .commentary: return "Commentary"
+        case .book: return "Book"
         case .devotional: return "Devotional"
         case .notes: return "Notes"
         case .plan: return "Plan"

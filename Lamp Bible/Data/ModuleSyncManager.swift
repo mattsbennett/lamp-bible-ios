@@ -433,6 +433,38 @@ class ModuleSyncManager: ObservableObject {
                                 """)
                         }
 
+                    case .book:
+                        try db.execute(sql: """
+                            INSERT OR REPLACE INTO book_modules (
+                                id, title, subtitle, description, author, editor, publisher,
+                                year, edition, isbn, language, text_direction, copyright,
+                                license, version, schema_version, tags_json, cover_media_id,
+                                is_editable, created, last_modified, footnotes_json, media_json
+                            )
+                            SELECT id, title, subtitle, description, author, editor, publisher,
+                                   year, edition, isbn, language, text_direction, copyright,
+                                   license, version, schema_version, tags_json, cover_media_id,
+                                   is_editable, created, last_modified, footnotes_json, media_json
+                            FROM \(dbAlias).book_modules
+                            WHERE id = ?
+                            """, arguments: [fileInfo.id])
+
+                        // Compiler/bundler output stores parents before children.
+                        // Preserve that order so the self-referencing FK is valid.
+                        try db.execute(sql: """
+                            INSERT OR REPLACE INTO book_sections (
+                                id, module_id, section_id, parent_id, section_type,
+                                number, title, subtitle, depth, order_index,
+                                key_scriptures_json, content_json, search_text
+                            )
+                            SELECT id, module_id, section_id, parent_id, section_type,
+                                   number, title, subtitle, depth, order_index,
+                                   key_scriptures_json, content_json, search_text
+                            FROM \(dbAlias).book_sections
+                            WHERE module_id = ?
+                            ORDER BY rowid
+                            """, arguments: [fileInfo.id])
+
                     case .devotional:
                         // Check which schema the source database uses
                         let devCols = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(devotional_entries)")
@@ -1023,6 +1055,49 @@ class ModuleSyncManager: ObservableObject {
             )
             try database.saveModule(module)
 
+        case .book:
+            var moduleName = id
+            var moduleDescription: String?
+            var moduleAuthor: String?
+            var moduleVersion: String?
+            var isEditable = false
+
+            do {
+                var config = Configuration()
+                config.readonly = true
+                let tempDb = try DatabaseQueue(path: tempURL.path, configuration: config)
+                try await tempDb.read { db in
+                    if let row = try Row.fetchOne(
+                        db,
+                        sql: "SELECT title, description, author, version, is_editable FROM book_modules WHERE id = ?",
+                        arguments: [id]
+                    ) {
+                        moduleName = row["title"]
+                        moduleDescription = row["description"]
+                        moduleAuthor = row["author"]
+                        moduleVersion = row["version"]
+                        let editable: Int = row["is_editable"]
+                        isEditable = editable != 0
+                    }
+                }
+            } catch {
+                print("Could not read book metadata from temp database: \(error)")
+            }
+
+            let bookModule = Module(
+                id: id,
+                type: .book,
+                name: moduleName,
+                description: moduleDescription,
+                author: moduleAuthor,
+                version: moduleVersion,
+                filePath: filePath,
+                fileHash: hash,
+                lastSynced: Int(Date().timeIntervalSince1970),
+                isEditable: isEditable
+            )
+            try database.saveModule(bookModule)
+
         case .devotional:
             // Try to read module metadata from the temp database
             var moduleName = id
@@ -1156,6 +1231,9 @@ class ModuleSyncManager: ObservableObject {
         case .commentary:
             let moduleFile = try decoder.decode(CommentaryBookFile.self, from: data)
             try importCommentaryModule(moduleFile, moduleId: id, hash: hash)
+
+        case .book:
+            throw ModuleSyncError.importFailed("JSON import not supported for books. Compile the JSON to .lamp first.")
 
         case .devotional:
             let moduleFile = try decoder.decode(DevotionalModuleFile.self, from: data)
@@ -2094,7 +2172,7 @@ class ModuleSyncManager: ObservableObject {
                 sum + (try database.getHighlightCount(setId: set.id))
             }
             data = try exportHighlightModuleToSQLite(module)
-        case .translation, .dictionary, .commentary, .plan, .quiz:
+        case .translation, .dictionary, .commentary, .book, .plan, .quiz:
             throw ModuleSyncError.moduleNotEditable(id)
         }
 

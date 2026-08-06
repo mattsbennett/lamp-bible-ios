@@ -49,6 +49,7 @@ enum ModuleType: String, Codable, CaseIterable {
     case translation
     case dictionary
     case commentary
+    case book
     case devotional
     case notes
     case plan
@@ -58,7 +59,7 @@ enum ModuleType: String, Codable, CaseIterable {
     /// Module types that are searchable in the module search UI
     /// Excludes plan and quiz (have dedicated UI)
     static var searchableTypes: [ModuleType] {
-        [.translation, .dictionary, .commentary, .devotional, .notes, .highlights]
+        [.translation, .dictionary, .commentary, .book, .devotional, .notes, .highlights]
     }
 }
 
@@ -215,6 +216,150 @@ struct Module: Codable, FetchableRecord, PersistableRecord, Identifiable {
         seriesId = row["series_id"]
         createdAt = row["created_at"]
         updatedAt = row["updated_at"]
+    }
+}
+
+// MARK: - Long-form Books
+
+struct BookModule: Codable, FetchableRecord, PersistableRecord, Identifiable {
+    static let databaseTableName = "book_modules"
+
+    var id: String
+    var title: String
+    var subtitle: String?
+    var description: String?
+    var author: String?
+    var editor: String?
+    var publisher: String?
+    var year: Int?
+    var edition: String?
+    var isbn: String?
+    var language: String
+    var textDirection: String
+    var copyright: String?
+    var license: String?
+    var version: String?
+    var schemaVersion: String
+    var tagsJson: String?
+    var coverMediaId: String?
+    var isEditable: Int
+    var created: Int?
+    var lastModified: Int?
+    var footnotesJson: String?
+    var mediaJson: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, subtitle, description, author, editor, publisher, year
+        case edition, isbn, language, copyright, license, version, created
+        case textDirection = "text_direction"
+        case schemaVersion = "schema_version"
+        case tagsJson = "tags_json"
+        case coverMediaId = "cover_media_id"
+        case isEditable = "is_editable"
+        case lastModified = "last_modified"
+        case footnotesJson = "footnotes_json"
+        case mediaJson = "media_json"
+    }
+
+    var tags: [String] {
+        guard let tagsJson, let data = tagsJson.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
+}
+
+struct BookSection: Codable, FetchableRecord, PersistableRecord, Identifiable {
+    static let databaseTableName = "book_sections"
+
+    var id: String
+    var moduleId: String
+    var sectionId: String
+    var parentId: String?
+    var sectionType: String
+    var number: String?
+    var title: String
+    var subtitle: String?
+    var depth: Int
+    var orderIndex: Int
+    var keyScripturesJson: String?
+    var contentJson: String
+    var searchText: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, number, title, subtitle, depth
+        case moduleId = "module_id"
+        case sectionId = "section_id"
+        case parentId = "parent_id"
+        case sectionType = "section_type"
+        case orderIndex = "order_index"
+        case keyScripturesJson = "key_scriptures_json"
+        case contentJson = "content_json"
+        case searchText = "search_text"
+    }
+
+    var contentBlocks: [BookContentBlock] {
+        guard let data = contentJson.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([BookContentBlock].self, from: data)) ?? []
+    }
+
+    var keyScriptures: [BookScriptureRange] {
+        guard let keyScripturesJson,
+              let data = keyScripturesJson.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([BookScriptureRange].self, from: data)) ?? []
+    }
+}
+
+struct BookScriptureRange: Codable, Hashable {
+    let sv: Int
+    let ev: Int?
+    let label: String?
+}
+
+struct BookAnnotatedText: Codable {
+    let text: String
+}
+
+struct BookListItem: Codable {
+    let content: BookAnnotatedText
+    let children: [BookListItem]?
+}
+
+struct BookContentBlock: Codable {
+    let type: String
+    let content: BookAnnotatedText?
+    let level: Int?
+    let listType: String?
+    let items: [BookListItem]?
+    let mediaId: String?
+    let caption: BookTextValue?
+}
+
+/// The schema permits captions and footnotes to be either strings or annotated text.
+enum BookTextValue: Codable {
+    case plain(String)
+    case annotated(BookAnnotatedText)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            self = .plain(value)
+        } else {
+            self = .annotated(try container.decode(BookAnnotatedText.self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .plain(let value): try container.encode(value)
+        case .annotated(let value): try container.encode(value)
+        }
+    }
+
+    var text: String {
+        switch self {
+        case .plain(let value): return value
+        case .annotated(let value): return value.text
+        }
     }
 }
 

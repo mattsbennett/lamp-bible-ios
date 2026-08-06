@@ -724,6 +724,53 @@ class BundledModuleDatabase {
         }
     }
 
+    // MARK: - Long-form Book Queries
+
+    /// Whether this app bundle contains the optional long-form book tables.
+    func hasBookModulesTable() -> Bool {
+        guard isAvailable else { return false }
+        return (try? read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE type = 'table' AND name = 'book_modules'
+                """) ?? 0
+        }) == 1
+    }
+
+    func getBookModules() throws -> [BookModule] {
+        guard hasBookModulesTable() else { return [] }
+        return try read { db in
+            try BookModule
+                .order(Column("title").collating(.localizedCaseInsensitiveCompare))
+                .fetchAll(db)
+        }
+    }
+
+    func getBookModule(id: String) throws -> BookModule? {
+        guard hasBookModulesTable() else { return nil }
+        return try read { db in
+            try BookModule.fetchOne(db, key: id)
+        }
+    }
+
+    func getBookSections(moduleId: String) throws -> [BookSection] {
+        guard hasBookModulesTable() else { return [] }
+        return try read { db in
+            try BookSection.fetchAll(
+                db,
+                sql: "SELECT * FROM book_sections WHERE module_id = ? ORDER BY rowid",
+                arguments: [moduleId]
+            )
+        }
+    }
+
+    func getBookSection(id: String) throws -> BookSection? {
+        guard hasBookModulesTable() else { return nil }
+        return try read { db in
+            try BookSection.fetchOne(db, key: id)
+        }
+    }
+
     // MARK: - Bundled Commentary Series Queries
 
     /// Check if the bundled database has the commentary_series table

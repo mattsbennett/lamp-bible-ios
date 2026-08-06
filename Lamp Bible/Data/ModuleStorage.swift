@@ -146,6 +146,8 @@ extension ModuleStorage {
             return "Dictionaries"
         case .commentary:
             return "Commentaries"
+        case .book:
+            return "Books"
         case .devotional:
             return "Devotionals"
         case .notes:

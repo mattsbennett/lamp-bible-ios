@@ -124,6 +124,15 @@ class ModuleSearch {
 
         // User modules from SQLite (excluding highlights - those are added via highlight sets below)
         do {
+            let bundledBooks = try BundledModuleDatabase.shared.getBookModules()
+            modules.append(contentsOf: bundledBooks.map {
+                SearchableModule(id: $0.id, name: $0.title, type: .book, isBundled: true)
+            })
+        } catch {
+            print("Failed to get bundled books: \(error)")
+        }
+
+        do {
             let userModules = try database.getAllModules()
 
             // Get series info for commentary modules
@@ -297,6 +306,10 @@ class ModuleSearch {
             results.append(contentsOf: try searchCommentaries(ftsQuery: ftsQuery, filter: filter, limit: limit))
         }
 
+        if filter.types.contains(.book) && hasTextQuery {
+            results.append(contentsOf: try searchBooks(ftsQuery: ftsQuery, filter: filter, limit: limit))
+        }
+
         if filter.types.contains(.devotional) && hasTextQuery {
             results.append(contentsOf: try searchDevotionals(ftsQuery: ftsQuery, filter: filter, limit: limit))
         }
@@ -335,6 +348,79 @@ class ModuleSearch {
     }
 
     // MARK: - Type-Specific Search
+
+    private func searchBooks(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+        var results = try database.read { db in
+            try searchBooks(in: db, ftsQuery: ftsQuery, filter: filter, limit: limit)
+        }
+
+        if BundledModuleDatabase.shared.hasBookModulesTable() {
+            results.append(contentsOf: try BundledModuleDatabase.shared.read { db in
+                try searchBooks(in: db, ftsQuery: ftsQuery, filter: filter, limit: limit)
+            })
+        }
+
+        return results
+    }
+
+    private func searchBooks(
+        in db: Database,
+        ftsQuery: String,
+        filter: ModuleSearchFilter,
+        limit: Int
+    ) throws -> [ModuleSearchResult] {
+        var conditions = ["book_sections_fts MATCH ?"]
+        var arguments: [DatabaseValueConvertible] = [ftsQuery]
+
+        if let moduleIds = filter.moduleIds {
+            guard !moduleIds.isEmpty else { return [] }
+            let sortedIds = moduleIds.sorted()
+            let placeholders = sortedIds.map { _ in "?" }.joined(separator: ", ")
+            conditions.append("s.module_id IN (\(placeholders))")
+            arguments.append(contentsOf: sortedIds)
+        }
+
+        arguments.append(limit)
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT s.id, s.module_id, s.title, s.subtitle, s.key_scriptures_json,
+                       b.title AS module_name,
+                       bm25(book_sections_fts) AS rank,
+                       snippet(book_sections_fts, 1, '<mark>', '</mark>', '...', 32) AS snippet
+                FROM book_sections_fts f
+                JOIN book_sections s ON f.rowid = s.rowid
+                JOIN book_modules b ON s.module_id = b.id
+                WHERE \(conditions.joined(separator: " AND "))
+                ORDER BY rank
+                LIMIT ?
+                """,
+            arguments: StatementArguments(arguments)
+        )
+
+        return rows.map { row in
+            let title: String = row["title"]
+            let subtitle: String? = row["subtitle"]
+            return ModuleSearchResult(
+                id: row["id"],
+                moduleId: row["module_id"],
+                moduleName: row["module_name"],
+                moduleType: .book,
+                title: subtitle.map { "\(title): \($0)" } ?? title,
+                snippet: row["snippet"] ?? "",
+                verseId: firstScriptureReference(in: row["key_scriptures_json"]),
+                rank: -(row["rank"] as Double)
+            )
+        }
+    }
+
+    private func firstScriptureReference(in json: String?) -> Int? {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let ranges = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+              let first = ranges.first else { return nil }
+        return first["sv"] as? Int
+    }
 
     private func searchDictionaries(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         try database.read { db in
