@@ -108,6 +108,7 @@
 		B8EF6E44301EF91700ACF12D /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
 		B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC33472B3F4AC7009C544D /* ReaderView.swift */; };
+		C1A100052FE1000000000001 /* LampModuleKit in Frameworks */ = {isa = PBXBuildFile; productRef = C1A100322FE1000000000001 /* LampModuleKit */; };
 		CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95873C478D642C9B5444C02 /* TipTapEditorView.swift */; };
 /* End PBXBuildFile section */
 
@@ -261,7 +262,7 @@
 		B89229962F16A00000A58F81 /* NoteConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictView.swift; sourceTree = "<group>"; };
 		B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalSharingTests.swift; sourceTree = "<group>"; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
-		B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; path = bundled_modules.db.zlib; sourceTree = "<group>"; };
+		B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; name = bundled_modules.db.zlib; path = "../lamp-bible-modules/modules_db/bundled_modules.db.zlib"; sourceTree = SOURCE_ROOT; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
 		B8FC33472B3F4AC7009C544D /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -294,6 +295,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C1A100052FE1000000000001 /* LampModuleKit in Frameworks */,
 				8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */,
 				115D622AA82F562690671C60 /* RealmSwift in Frameworks */,
 			);
@@ -557,6 +559,7 @@
 			packageProductDependencies = (
 				0E27D0DD0B6FBDAAD354572B /* GRDB */,
 				42E72CDD647A5E4E99060E4D /* RealmSwift */,
+				C1A100322FE1000000000001 /* LampModuleKit */,
 			);
 			productName = "Lamp Bible";
 			productReference = B885E4132ADB47E40066F0A0 /* Lamp Bible.app */;
@@ -639,6 +642,7 @@
 			packageReferences = (
 				651E6F1E79FCA79D5FC9638A /* XCRemoteSwiftPackageReference "GRDB" */,
 				1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */,
+				C1A100302FE1000000000001 /* XCLocalSwiftPackageReference "../lamp-bible-core" */,
 			);
 			productRefGroup = B885E4142ADB47E40066F0A0 /* Products */;
 			projectDirPath = "";
@@ -1207,6 +1211,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		C1A100302FE1000000000001 /* XCLocalSwiftPackageReference "../lamp-bible-core" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../lamp-bible-core;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1236,6 +1247,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 1B0A636B053B55BE19B1933C /* XCRemoteSwiftPackageReference "realm-swift" */;
 			productName = RealmSwift;
+		};
+		C1A100322FE1000000000001 /* LampModuleKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C1A100302FE1000000000001 /* XCLocalSwiftPackageReference "../lamp-bible-core" */;
+			productName = LampModuleKit;
 		};
 		BB167F29BAB71312257C29C9 /* RealmSwift */ = {
 			isa = XCSwiftPackageProductDependency;

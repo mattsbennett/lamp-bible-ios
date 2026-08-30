@@ -9,6 +9,7 @@ import Foundation
 import GRDB
 import Compression
 import Combine
+import LampModuleKit
 
 class ModuleSyncManager: ObservableObject {
     static let shared = ModuleSyncManager()
@@ -159,6 +160,91 @@ class ModuleSyncManager: ObservableObject {
     }
 
     // MARK: - Single Module Sync
+
+    func moduleType(forDocumentAt url: URL) throws -> ModuleType {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+        let data = try Data(contentsOf: url)
+        if url.pathExtension.lowercased() == "json" {
+            _ = try BookJSONImportDescriptor.decode(from: data)
+            return .book
+        }
+
+        guard let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data else {
+            throw ModuleSyncError.importFailed("Failed to decompress the .lamp module.")
+        }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("db")
+        try decompressed.write(to: tempURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let queue = try DatabaseQueue(path: tempURL.path)
+        let tables = try queue.read { db in
+            Set(try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'"))
+        }
+        guard let type = ModuleType.detected(fromTableNames: tables) else {
+            throw ModuleSyncError.importFailed("Could not determine the module type.")
+        }
+        return type
+    }
+
+    func existingModuleName(forDocumentAt url: URL) throws -> String? {
+        if url.pathExtension.lowercased() == "json" {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let descriptor = try BookJSONImportDescriptor.decode(from: Data(contentsOf: url))
+            return try database.getModule(id: descriptor.id)?.name
+                ?? database.getBookModule(id: descriptor.id)?.title
+        }
+        return existingModuleName(for: url)
+    }
+
+    func importModuleDocumentFromFile(url: URL, moduleType: ModuleType) async throws {
+        if url.pathExtension.lowercased() == "json" {
+            guard moduleType == .book else {
+                throw ModuleSyncError.importFailed("Only book modules can currently be imported directly from JSON.")
+            }
+            try await importBookJSONFromFile(url: url)
+        } else {
+            try await importModuleFromFile(url: url, moduleType: moduleType)
+        }
+    }
+
+    private func importBookJSONFromFile(url: URL) async throws {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let descriptor = try BookJSONImportDescriptor.decode(from: data)
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lamp-book-import-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let lampURL = temporaryDirectory
+            .appendingPathComponent(descriptor.id)
+            .appendingPathExtension("lamp")
+        let result = try LampModuleCompiler().compile(
+            data: data,
+            sourceFilename: url.lastPathComponent,
+            destinationURL: lampURL
+        )
+        guard result.kind == .book else {
+            throw ModuleSyncError.importFailed("The selected JSON document is not a book module.")
+        }
+
+        try await importModuleFromFile(url: lampURL, moduleType: .book)
+        try ModuleMediaStorage.shared.importMediaFromBundle(
+            bundleMediaDir: url.deletingLastPathComponent(),
+            mediaRefs: descriptor.mediaReferences,
+            moduleId: descriptor.id
+        )
+        if let storage = await getStorage(), await storage.isAvailable() {
+            try await uploadBookMedia(moduleId: descriptor.id, to: storage)
+        }
+    }
 
     /// Sync a specific module by ID
     func syncModule(id: String) async throws {
@@ -819,6 +905,8 @@ class ModuleSyncManager: ObservableObject {
         // Download media files for devotional modules
         if type == .devotional, let mediaStorage {
             try await downloadDevotionalMedia(moduleId: fileInfo.id, from: mediaStorage)
+        } else if type == .book, let mediaStorage {
+            try await downloadBookMedia(moduleId: fileInfo.id, from: mediaStorage)
         }
     }
 
@@ -2777,6 +2865,49 @@ class ModuleSyncManager: ObservableObject {
         } catch {
             print("Decompression error: \(error)")
             throw ModuleSyncError.importFailed("Failed to decompress zlib data: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Book Media Sync
+
+    func uploadBookMedia(moduleId: String, to storage: ModuleStorage) async throws {
+        guard await storage.isAvailable(),
+              let book = try database.getBookModule(id: moduleId) else { return }
+
+        for mediaRef in book.mediaReferences {
+            guard BookMediaPath.isSafeFilename(mediaRef.filename) else { continue }
+            guard let localURL = ModuleMediaStorage.shared.getMediaURL(
+                for: mediaRef,
+                moduleId: moduleId
+            ) else { continue }
+            let data = try Data(contentsOf: localURL, options: .mappedIfSafe)
+            try await storage.writeFile(
+                path: "BookMedia/\(moduleId)/\(mediaRef.filename)",
+                data: data
+            )
+        }
+    }
+
+    func downloadBookMedia(moduleId: String, from storage: ModuleStorage) async throws {
+        guard await storage.isAvailable(),
+              let book = try database.getBookModule(id: moduleId) else { return }
+
+        try ModuleMediaStorage.shared.ensureMediaDirectory(for: moduleId)
+        for mediaRef in book.mediaReferences {
+            guard BookMediaPath.isSafeFilename(mediaRef.filename) else { continue }
+            let localURL = ModuleMediaStorage.shared.expectedMediaURL(
+                for: mediaRef,
+                moduleId: moduleId
+            )
+            guard !FileManager.default.fileExists(atPath: localURL.path) else { continue }
+            do {
+                let data = try await storage.readFile(
+                    path: "BookMedia/\(moduleId)/\(mediaRef.filename)"
+                )
+                try data.write(to: localURL, options: .atomic)
+            } catch {
+                print("[BookMediaSync] Could not download \(mediaRef.filename): \(error)")
+            }
         }
     }
 

@@ -389,7 +389,7 @@ struct ModuleManagerView: View {
             // .lamp file importer (presented after import sheet dismisses)
             .fileImporter(
                 isPresented: $showingLampImporter,
-                allowedContentTypes: [.data],
+                allowedContentTypes: [.lampFile, .json],
                 allowsMultipleSelection: false
             ) { result in
                 handleLampImport(result)
@@ -424,10 +424,10 @@ struct ModuleManagerView: View {
                         return
                     }
 
-                    let moduleType = try detectModuleType(from: url)
+                    let moduleType = try syncManager.moduleType(forDocumentAt: url)
 
                     // Check for duplicate
-                    if let existingName = ModuleSyncManager.shared.existingModuleName(for: url) {
+                    if let existingName = try syncManager.existingModuleName(forDocumentAt: url) {
                         pendingImportURL = url
                         pendingImportType = moduleType
                         duplicateModuleName = existingName
@@ -436,7 +436,7 @@ struct ModuleManagerView: View {
                         return
                     }
 
-                    try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: moduleType)
+                    try await syncManager.importModuleDocumentFromFile(url: url, moduleType: moduleType)
                     url.stopAccessingSecurityScopedResource()
                     await loadModules()
                 } catch {
@@ -454,56 +454,16 @@ struct ModuleManagerView: View {
 
     private func performImport(url: URL, moduleType: ModuleType) {
         Task {
-            let accessing = url.startAccessingSecurityScopedResource()
             do {
-                try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: moduleType)
+                try await syncManager.importModuleDocumentFromFile(url: url, moduleType: moduleType)
                 await loadModules()
             } catch {
                 alertMessage = "Failed to import module: \(error.localizedDescription)"
                 showingAlert = true
             }
-            if accessing { url.stopAccessingSecurityScopedResource() }
+            url.stopAccessingSecurityScopedResource()
             pendingImportURL = nil
             pendingImportType = nil
-        }
-    }
-
-    private func detectModuleType(from url: URL) throws -> ModuleType {
-        let data = try Data(contentsOf: url)
-
-        guard let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data else {
-            throw NSError(domain: "ModuleManagerView", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decompress .lamp file"])
-        }
-
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
-        try decompressed.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let db = try DatabaseQueue(path: tempURL.path)
-        let tables = try db.read { db in
-            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
-        }
-
-        if tables.contains("translation_verses") || tables.contains("translations") || tables.contains("translation_meta") {
-            return .translation
-        } else if tables.contains("note_entries") {
-            return .notes
-        } else if tables.contains("devotional_entries") {
-            return .devotional
-        } else if tables.contains("highlight_sets") || tables.contains("highlights") {
-            return .highlights
-        } else if tables.contains("commentary_entries") || tables.contains("commentary_units") {
-            return .commentary
-        } else if tables.contains("book_modules") && tables.contains("book_sections") {
-            return .book
-        } else if tables.contains("dictionary_entries") {
-            return .dictionary
-        } else if tables.contains("quiz_modules") && tables.contains("quiz_questions") {
-            return .quiz
-        } else if tables.contains("plans") || tables.contains("plan_days") {
-            return .plan
-        } else {
-            throw NSError(domain: "ModuleManagerView", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not determine module type"])
         }
     }
 

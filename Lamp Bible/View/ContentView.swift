@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import GRDB
 
 struct ContentView: View {
     @State private var showingPicker = false
@@ -18,6 +17,7 @@ struct ContentView: View {
     @State private var duplicateModuleName = ""
     @State private var pendingImportURL: URL?
     @State private var pendingImportType: ModuleType?
+    @State private var pendingImportHasSecurityScope = false
     @State private var devotionalImportPreview: LampFilePreview?
     @State private var stagedDevotionalURL: URL?
     @State private var devotionalModules: [Module] = []
@@ -41,10 +41,16 @@ struct ContentView: View {
                 Button("Overwrite") {
                     if let url = pendingImportURL, let type = pendingImportType {
                         Task {
-                            let accessing = url.startAccessingSecurityScopedResource()
-                            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                            let hasSecurityScope = pendingImportHasSecurityScope
+                            pendingImportHasSecurityScope = false
+                            let accessing = hasSecurityScope ? false : url.startAccessingSecurityScopedResource()
+                            defer {
+                                if hasSecurityScope || accessing {
+                                    url.stopAccessingSecurityScopedResource()
+                                }
+                            }
                             do {
-                                try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: type)
+                                try await ModuleSyncManager.shared.importModuleDocumentFromFile(url: url, moduleType: type)
                                 importAlertMessage = "Successfully imported \(type.rawValue) module."
                             } catch {
                                 importAlertMessage = "Import failed: \(error.localizedDescription)"
@@ -56,8 +62,12 @@ struct ContentView: View {
                     }
                 }
                 Button("Cancel", role: .cancel) {
+                    if pendingImportHasSecurityScope {
+                        pendingImportURL?.stopAccessingSecurityScopedResource()
+                    }
                     pendingImportURL = nil
                     pendingImportType = nil
+                    pendingImportHasSecurityScope = false
                 }
             } message: {
                 Text("\"\(duplicateModuleName)\" is already installed. Overwrite it?")
@@ -81,29 +91,48 @@ struct ContentView: View {
 
     private func handleLampFileImport(url: URL) async {
         let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        var shouldReleaseAccess = accessing
+        defer { if shouldReleaseAccess { url.stopAccessingSecurityScopedResource() } }
 
         do {
             let data = try Data(contentsOf: url)
 
-            // Try decompressing as zlib (module format: notes, highlights, commentary, etc.)
-            if let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data {
-                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
-                try decompressed.write(to: tempURL)
-                defer { try? FileManager.default.removeItem(at: tempURL) }
+            if url.pathExtension.lowercased() == "json" {
+                let moduleType = try ModuleSyncManager.shared.moduleType(forDocumentAt: url)
+                if let existingName = try ModuleSyncManager.shared.existingModuleName(forDocumentAt: url) {
+                    pendingImportURL = url
+                    pendingImportType = moduleType
+                    pendingImportHasSecurityScope = accessing
+                    duplicateModuleName = existingName
+                    showingDuplicateAlert = true
+                    shouldReleaseAccess = false
+                    return
+                }
+                try await ModuleSyncManager.shared.importModuleDocumentFromFile(
+                    url: url,
+                    moduleType: moduleType
+                )
+                importAlertMessage = "Successfully imported \(moduleType.rawValue) module."
+                showingImportAlert = true
+                return
+            }
 
-                let moduleType = try detectModuleType(tempURL: tempURL)
+            // Try decompressing as zlib (module format: notes, highlights, commentary, etc.)
+            if (try? (data as NSData).decompressed(using: .zlib)) != nil {
+                let moduleType = try ModuleSyncManager.shared.moduleType(forDocumentAt: url)
 
                 // Check for duplicate
                 if let existingName = ModuleSyncManager.shared.existingModuleName(for: url) {
                     pendingImportURL = url
                     pendingImportType = moduleType
+                    pendingImportHasSecurityScope = accessing
                     duplicateModuleName = existingName
                     showingDuplicateAlert = true
+                    shouldReleaseAccess = false
                     return
                 }
 
-                try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: moduleType)
+                try await ModuleSyncManager.shared.importModuleDocumentFromFile(url: url, moduleType: moduleType)
                 importAlertMessage = "Successfully imported \(moduleType.rawValue) module."
                 showingImportAlert = true
                 return
@@ -185,32 +214,6 @@ struct ContentView: View {
         devotionalImportPreview = nil
     }
 
-    private func detectModuleType(tempURL: URL) throws -> ModuleType {
-        let db = try DatabaseQueue(path: tempURL.path)
-        let tables = try db.read { db in
-            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
-        }
-
-        if tables.contains("translation_verses") || tables.contains("translations") || tables.contains("translation_meta") {
-            return .translation
-        } else if tables.contains("note_entries") {
-            return .notes
-        } else if tables.contains("devotional_entries") {
-            return .devotional
-        } else if tables.contains("highlight_sets") || tables.contains("highlights") {
-            return .highlights
-        } else if tables.contains("commentary_entries") || tables.contains("commentary_units") {
-            return .commentary
-        } else if tables.contains("dictionary_entries") {
-            return .dictionary
-        } else if tables.contains("quiz_modules") && tables.contains("quiz_questions") {
-            return .quiz
-        } else if tables.contains("plans") || tables.contains("plan_days") {
-            return .plan
-        } else {
-            throw NSError(domain: "ContentView", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not determine module type"])
-        }
-    }
 }
 
 #Preview {

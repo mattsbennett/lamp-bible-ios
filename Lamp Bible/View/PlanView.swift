@@ -73,7 +73,7 @@ struct PlanView: View {
                     }
                     .toolbar {
                         ToolbarItem(placement: .bottomBar) {
-                            HStack(spacing: 25) {
+                            HStack(spacing: 8) {
                                 NavigationLink(destination: SplitReaderView(
                                     date: $date
                                 )) {
@@ -96,6 +96,18 @@ struct PlanView: View {
                                             .font(.caption2)
                                             .foregroundColor(iOS26OrLater ? .primary : .red)
                                     }
+                                }
+
+                                NavigationLink(destination: BookLibraryView()) {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "books.vertical.fill")
+                                            .font(.title3)
+                                            .foregroundColor(.accentColor)
+                                        Text("Books")
+                                            .font(.caption2)
+                                            .foregroundColor(iOS26OrLater ? .primary : .red)
+                                    }
+                                    .frame(minWidth: 44)
                                 }
 
                                 NavigationLink(destination: PlanPickerView()) {
@@ -139,7 +151,7 @@ struct PlanView: View {
                                 }
                             }
                             .padding(.vertical, 8)
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, 8)
                         }
                     }
                     .onChange(of: deepLinkManager.pendingVerseId) { _, newVerseId in

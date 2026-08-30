@@ -33,7 +33,7 @@ class DeepLinkManager: ObservableObject {
 
     func handleURL(_ url: URL) {
         // Handle .lamp file imports from external sources
-        if url.isFileURL && url.pathExtension.lowercased() == "lamp" {
+        if url.isFileURL && ["lamp", "json"].contains(url.pathExtension.lowercased()) {
             pendingFileImportURL = url
             return
         }

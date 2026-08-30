@@ -61,6 +61,29 @@ enum ModuleType: String, Codable, CaseIterable {
     static var searchableTypes: [ModuleType] {
         [.translation, .dictionary, .commentary, .book, .devotional, .notes, .highlights]
     }
+
+    static func detected(fromTableNames tables: Set<String>) -> ModuleType? {
+        if tables.contains("translation_verses") || tables.contains("translations") || tables.contains("translation_meta") {
+            return .translation
+        } else if tables.contains("note_entries") {
+            return .notes
+        } else if tables.contains("devotional_entries") {
+            return .devotional
+        } else if tables.contains("highlight_sets") || tables.contains("highlights") {
+            return .highlights
+        } else if tables.contains("commentary_entries") || tables.contains("commentary_units") {
+            return .commentary
+        } else if tables.contains("book_modules") && tables.contains("book_sections") {
+            return .book
+        } else if tables.contains("dictionary_entries") {
+            return .dictionary
+        } else if tables.contains("quiz_modules") && tables.contains("quiz_questions") {
+            return .quiz
+        } else if tables.contains("plans") || tables.contains("plan_days") {
+            return .plan
+        }
+        return nil
+    }
 }
 
 // MARK: - Bible Metadata
@@ -265,6 +288,21 @@ struct BookModule: Codable, FetchableRecord, PersistableRecord, Identifiable {
         guard let tagsJson, let data = tagsJson.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([String].self, from: data)) ?? []
     }
+
+    var mediaReferences: [MediaReference] {
+        guard let mediaJson, let data = mediaJson.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([MediaReference].self, from: data)) ?? []
+    }
+
+    var footnotes: [BookFootnote] {
+        guard let footnotesJson, let data = footnotesJson.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([BookFootnote].self, from: data)) ?? []
+    }
+
+    var coverMediaReference: MediaReference? {
+        guard let coverMediaId else { return nil }
+        return mediaReferences.first { $0.id == coverMediaId }
+    }
 }
 
 struct BookSection: Codable, FetchableRecord, PersistableRecord, Identifiable {
@@ -308,6 +346,142 @@ struct BookSection: Codable, FetchableRecord, PersistableRecord, Identifiable {
     }
 }
 
+struct BookSectionNode: Identifiable {
+    let section: BookSection
+    let children: [BookSectionNode]?
+
+    var id: String { section.id }
+}
+
+enum BookSectionHierarchy {
+    static func roots(from sections: [BookSection]) -> [BookSectionNode] {
+        let sectionsByID = Dictionary(uniqueKeysWithValues: sections.map { ($0.id, $0) })
+        let knownIDs = Set(sectionsByID.keys)
+        let childrenByParent = Dictionary(grouping: sections.filter { section in
+            section.parentId.map(knownIDs.contains) == true
+        }) { $0.parentId! }
+
+        func node(for section: BookSection, ancestors: Set<String>) -> BookSectionNode {
+            guard !ancestors.contains(section.id) else {
+                return BookSectionNode(section: section, children: nil)
+            }
+            let childSections = childrenByParent[section.id] ?? []
+            let nextAncestors = ancestors.union([section.id])
+            let children = childSections.map { node(for: $0, ancestors: nextAncestors) }
+            return BookSectionNode(section: section, children: children.isEmpty ? nil : children)
+        }
+
+        return sections
+            .filter { section in
+                guard let parentID = section.parentId else { return true }
+                return !knownIDs.contains(parentID)
+            }
+            .map { node(for: $0, ancestors: []) }
+    }
+}
+
+struct BookJSONImportDescriptor: Equatable {
+    let id: String
+    let title: String
+    let author: String?
+    let sectionCount: Int
+    let mediaReferences: [MediaReference]
+
+    static func decode(from data: Data) throws -> BookJSONImportDescriptor {
+        let document = try JSONDecoder().decode(Document.self, from: data)
+        guard document.meta.type == "book" else {
+            throw BookJSONImportError.notABook
+        }
+        let id = document.meta.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = document.meta.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { throw BookJSONImportError.missingModuleID }
+        guard !title.isEmpty else { throw BookJSONImportError.missingTitle }
+        guard !document.sections.isEmpty else { throw BookJSONImportError.missingSections }
+        let mediaReferences = document.media ?? []
+        guard mediaReferences.allSatisfy({ BookMediaPath.isSafeFilename($0.filename) }) else {
+            throw BookJSONImportError.unsafeMediaFilename
+        }
+
+        return BookJSONImportDescriptor(
+            id: id,
+            title: title,
+            author: document.meta.author,
+            sectionCount: document.sections.reduce(0) { $0 + $1.recursiveCount },
+            mediaReferences: mediaReferences
+        )
+    }
+
+    private struct Document: Decodable {
+        let meta: Meta
+        let sections: [Section]
+        let media: [MediaReference]?
+    }
+
+    private struct Meta: Decodable {
+        let id: String
+        let type: String
+        let title: String
+        let author: String?
+    }
+
+    private struct Section: Decodable {
+        let sections: [Section]?
+        var recursiveCount: Int {
+            1 + (sections ?? []).reduce(0) { $0 + $1.recursiveCount }
+        }
+    }
+}
+
+enum BookJSONImportError: LocalizedError, Equatable {
+    case notABook
+    case missingModuleID
+    case missingTitle
+    case missingSections
+    case unsafeMediaFilename
+
+    var errorDescription: String? {
+        switch self {
+        case .notABook: "The selected JSON document is not a book module."
+        case .missingModuleID: "The book metadata is missing its module ID."
+        case .missingTitle: "The book metadata is missing its title."
+        case .missingSections: "The book does not contain any sections."
+        case .unsafeMediaFilename: "A book media filename contains an unsafe path."
+        }
+    }
+}
+
+enum BookMediaPath {
+    static func isSafeFilename(_ filename: String) -> Bool {
+        guard !filename.isEmpty,
+              filename != ".",
+              filename != "..",
+              !filename.hasPrefix("/"),
+              !filename.contains("/"),
+              !filename.contains("\\") else { return false }
+        return (filename as NSString).lastPathComponent == filename
+    }
+}
+
+struct BookReadingProgressStore {
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func sectionID(for moduleID: String) -> String? {
+        defaults.string(forKey: key(for: moduleID))
+    }
+
+    func save(sectionID: String, for moduleID: String) {
+        defaults.set(sectionID, forKey: key(for: moduleID))
+    }
+
+    private func key(for moduleID: String) -> String {
+        "books.readingProgress.\(moduleID)"
+    }
+}
+
 struct BookScriptureRange: Codable, Hashable {
     let sv: Int
     let ev: Int?
@@ -316,6 +490,41 @@ struct BookScriptureRange: Codable, Hashable {
 
 struct BookAnnotatedText: Codable {
     let text: String
+    let annotations: [BookTextAnnotation]?
+    let footnoteReferences: [BookFootnoteReference]?
+
+    enum CodingKeys: String, CodingKey {
+        case text, annotations
+        case footnoteReferences = "footnote_refs"
+    }
+}
+
+struct BookTextAnnotation: Codable {
+    let type: String
+    let start: Int
+    let end: Int
+    let data: BookTextAnnotationData?
+}
+
+struct BookTextAnnotationData: Codable {
+    let sv: Int?
+    let ev: Int?
+    let refs: [BookScriptureRange]?
+    let strongs: String?
+    let url: String?
+    let style: String?
+    let footnoteId: String?
+    let mediaId: String?
+}
+
+struct BookFootnoteReference: Codable, Hashable {
+    let id: String
+    let offset: Int
+}
+
+struct BookFootnote: Codable, Identifiable {
+    let id: String
+    let content: BookTextValue
 }
 
 struct BookListItem: Codable {
@@ -331,6 +540,9 @@ struct BookContentBlock: Codable {
     let items: [BookListItem]?
     let mediaId: String?
     let caption: BookTextValue?
+    let alignment: MediaAlignment?
+    let showWaveform: Bool?
+    let autoplay: Bool?
 }
 
 /// The schema permits captions and footnotes to be either strings or annotated text.
