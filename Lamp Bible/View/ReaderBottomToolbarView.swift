@@ -96,7 +96,7 @@ struct ReadingPlanToolbarView: ToolbarContent {
 
 /// MARK: - Mode Button Toolbar Item
 
-struct ModeButtonToolbarItem: ToolbarContent {
+struct ModeMenuButton: View {
     @Binding var toolbarMode: BottomToolbarMode
     let translationAbbreviation: String
     let hasPlanReadings: Bool
@@ -128,45 +128,28 @@ struct ModeButtonToolbarItem: ToolbarContent {
         return modes
     }
 
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .bottomBar) {
-            Menu {
-                ForEach(availableModes, id: \.self) { mode in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            toolbarMode = mode
-                        }
-                    } label: {
-                        Label(menuLabel(for: mode), systemImage: mode.icon)
+    var body: some View {
+        Menu {
+            ForEach(availableModes, id: \.self) { mode in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        toolbarMode = mode
                     }
+                } label: {
+                    Label(menuLabel(for: mode), systemImage: mode.icon)
                 }
-            } label: {
-                Image(systemName: toolbarMode.icon)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Rectangle())
             }
-            .frame(width: 36, height: 36)
+        } label: {
+            Image(systemName: toolbarMode.icon)
+                .frame(width: 36, height: 36)
+                .contentShape(Rectangle())
         }
+        .frame(width: 36, height: 36)
     }
 }
 
 // MARK: - Search Mode Toolbar
 
-struct SearchModeToolbarItems: ToolbarContent {
-    @Binding var searchText: String
-    @Binding var showingSearch: Bool
-    let translationAbbreviation: String
-
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .bottomBar) {
-            InlineSearchBar(
-                text: $searchText,
-                placeholder: "Search \(translationAbbreviation)",
-                onSubmit: { showingSearch = true }
-            )
-        }
-    }
-}
 
 // MARK: - Inline Search Bar
 
@@ -224,53 +207,9 @@ struct InlineSearchBar: View {
 
 // MARK: - Navigation Mode Toolbar
 
-struct NavigationModeToolbarItems: ToolbarContent {
-    let currentBook: Int
-    let currentChapter: Int
-    let firstBook: Int
-    let firstChapter: Int
-    let lastBook: Int
-    let lastChapter: Int
-    let loadPrev: () -> Void
-    let loadNext: () -> Void
-    let loadPrevBook: () -> Void
-    let loadNextBook: () -> Void
-
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .bottomBar) {
-            NavigationToolbarContent(
-                currentBook: currentBook,
-                currentChapter: currentChapter,
-                firstBook: firstBook,
-                firstChapter: firstChapter,
-                lastBook: lastBook,
-                lastChapter: lastChapter,
-                loadPrev: loadPrev,
-                loadNext: loadNext,
-                loadPrevBook: loadPrevBook,
-                loadNextBook: loadNextBook
-            )
-            .frame(maxWidth: .infinity)
-        }
-    }
-}
 
 // MARK: - History Mode Toolbar
 
-struct HistoryModeToolbarItems: ToolbarContent {
-    let currentVerseId: Int
-    let navigateToVerseId: (Int) -> Void
-
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .bottomBar) {
-            HistoryToolbarContent(
-                currentVerseId: currentVerseId,
-                navigateToVerseId: navigateToVerseId
-            )
-            .frame(maxWidth: .infinity)
-        }
-    }
-}
 
 // MARK: - Navigation Toolbar Content
 
@@ -467,30 +406,6 @@ struct PlanWithReadings: Equatable {
 
 // MARK: - Plan Mode Toolbar Items
 
-struct PlanModeToolbarItems: ToolbarContent {
-    @Binding var date: Date
-    @Binding var currentReadingIndex: Int
-    @Binding var selectedPlanIndex: Int
-    let plansWithReadings: [PlanWithReadings]
-    let onReadingChanged: (Int) -> Void
-    let onPlanChanged: (Int) -> Void
-    var onQuiz: (() -> Void)? = nil
-
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .bottomBar) {
-            PlanToolbarContent(
-                date: date,
-                currentReadingIndex: $currentReadingIndex,
-                selectedPlanIndex: $selectedPlanIndex,
-                plansWithReadings: plansWithReadings,
-                onReadingChanged: onReadingChanged,
-                onPlanChanged: onPlanChanged,
-                onQuiz: onQuiz
-            )
-            .frame(maxWidth: .infinity)
-        }
-    }
-}
 
 // MARK: - Plan Toolbar Content
 
@@ -729,6 +644,7 @@ struct ReaderBottomToolbarView: ToolbarContent {
     @Binding var toolbarMode: BottomToolbarMode
     @Binding var selectedPlanIndex: Int
     let plansWithReadings: [PlanWithReadings]
+    let availableWidth: CGFloat
     let loadPrev: () -> Void
     let loadNext: () -> Void
     let loadPrevBook: () -> Void
@@ -755,27 +671,43 @@ struct ReaderBottomToolbarView: ToolbarContent {
         freeNavigationContent
     }
 
+    /// The whole bar is one `ToolbarItem`.
+    ///
+    /// Split across several items it could not be sized: each is laid out at its
+    /// ideal size, so a `TextField` came out narrow and `maxWidth: .infinity` was
+    /// discarded. Giving one of them an explicit width instead pushed the row past
+    /// what the bar could fit, and the system collapsed the lot into an overflow
+    /// menu. As a single item there is one width to set, and a plain `HStack`
+    /// distributes it.
     @ToolbarContentBuilder
     private var freeNavigationContent: some ToolbarContent {
-        ModeButtonToolbarItem(
-            toolbarMode: $toolbarMode,
-            translationAbbreviation: translationAbbreviation,
-            hasPlanReadings: hasPlanReadings,
-            date: date
-        )
-
         ToolbarItem(placement: .bottomBar) {
-            Spacer()
-        }
+            HStack(spacing: 8) {
+                ModeMenuButton(
+                    toolbarMode: $toolbarMode,
+                    translationAbbreviation: translationAbbreviation,
+                    hasPlanReadings: hasPlanReadings,
+                    date: date
+                )
 
-        modeSpecificContent
+                modeSpecificContent
+            }
+            .frame(width: barWidth)
+        }
     }
 
-    @ToolbarContentBuilder
-    private var modeSpecificContent: some ToolbarContent {
+    /// Width for the bar's contents. Deliberately conservative: overshooting does
+    /// not merely look wrong, it makes the system hide every control behind an
+    /// overflow menu, so the reserve covers the bar's own insets with room spare.
+    private var barWidth: CGFloat {
+        min(max(availableWidth - 64, 240), 620)
+    }
+
+    @ViewBuilder
+    private var modeSpecificContent: some View {
         switch toolbarMode {
         case .navigation:
-            NavigationModeToolbarItems(
+            NavigationToolbarContent(
                 currentBook: currentBook,
                 currentChapter: currentChapter,
                 firstBook: firstBook,
@@ -787,20 +719,23 @@ struct ReaderBottomToolbarView: ToolbarContent {
                 loadPrevBook: loadPrevBook,
                 loadNextBook: loadNextBook
             )
+            .frame(maxWidth: .infinity)
         case .history:
-            HistoryModeToolbarItems(
+            HistoryToolbarContent(
                 currentVerseId: currentVerseId,
                 navigateToVerseId: navigateToVerseId
             )
+            .frame(maxWidth: .infinity)
         case .search:
-            SearchModeToolbarItems(
-                searchText: $searchText,
-                showingSearch: $showingSearch,
-                translationAbbreviation: translationAbbreviation
+            InlineSearchBar(
+                text: $searchText,
+                placeholder: "Search \(translationAbbreviation)",
+                onSubmit: { showingSearch = true }
             )
+            .frame(maxWidth: .infinity)
         case .plan:
-            PlanModeToolbarItems(
-                date: $date,
+            PlanToolbarContent(
+                date: date,
                 currentReadingIndex: $currentReadingIndex,
                 selectedPlanIndex: $selectedPlanIndex,
                 plansWithReadings: plansWithReadings,
@@ -808,6 +743,7 @@ struct ReaderBottomToolbarView: ToolbarContent {
                 onPlanChanged: onPlanChanged,
                 onQuiz: onQuiz
             )
+            .frame(maxWidth: .infinity)
         }
     }
 }

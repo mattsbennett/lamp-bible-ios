@@ -100,7 +100,7 @@ struct ModuleSettingsView: View {
             } header: {
                 Text("Lexicons")
             } footer: {
-                Text("Show visual hints for words with Strong's numbers in supported translations (BSBs, KJVs).")
+                Text("Show visual hints for words in translations with word-level Strong's tagging.")
             }
 
             Section {

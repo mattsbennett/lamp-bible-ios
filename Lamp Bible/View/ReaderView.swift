@@ -1637,6 +1637,8 @@ struct ReaderView: View {
     @State private var showingOptionsMenu: Bool = false
     @State private var showingSearch: Bool = false
     @State private var bottomSearchText: String = ""
+    /// Reader width, captured for toolbar items that must be sized explicitly.
+    @State private var readerWidth: CGFloat = 0
     @State private var verses: [TranslationVerse] = []
     @State private var headings: [TranslationHeading] = []
     @State private var initialScrollItem: String? = nil
@@ -2800,6 +2802,13 @@ struct ReaderView: View {
                     }
                 }
             } // GeometryReader
+            // The toolbar is attached out here, past the GeometryReader's scope,
+            // so the width its items need is carried across in state.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                readerWidth = width
+            }
             .overlay { floatingSpeechButton }
             .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isPlanSpeechActive)
             .navigationBarBackButtonHidden(true)
@@ -2816,6 +2825,7 @@ struct ReaderView: View {
                     toolbarMode: $toolbarMode,
                     selectedPlanIndex: $selectedPlanIndex,
                     plansWithReadings: plansWithReadings,
+                    availableWidth: readerWidth,
                     loadPrev: {
                         loadVerses(loadingCase: LOADING_PREV_CHAPTER)
                     },

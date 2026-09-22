@@ -26,15 +26,11 @@ struct PlanView: View {
     @State private var plans: [Plan] = []
     @State private var isLoaded = false
     @State private var metaDataInputs: PlanMetaDataInputs?
+    @State private var showingPresentationRemote = false
     @Environment(\.colorScheme) var colorScheme
 
-    // Deep link navigation
-    @ObservedObject private var deepLinkManager = DeepLinkManager.shared
-    @State private var showDeepLinkReader: Bool = false
-    @State private var deepLinkVerseId: Int? = nil
-    @State private var deepLinkTranslationId: String? = nil
-    @State private var deepLinkPlanMode: Bool = false
-
+    /// The app target deploys to iOS 18, so this is a live branch: only the glass
+    /// bar on 26 makes a primary-coloured label readable.
     private var iOS26OrLater: Bool {
         if #available(iOS 26, *) {
             return true
@@ -42,6 +38,13 @@ struct PlanView: View {
             return false
         }
     }
+
+    // Deep link navigation
+    @ObservedObject private var deepLinkManager = DeepLinkManager.shared
+    @State private var showDeepLinkReader: Bool = false
+    @State private var deepLinkVerseId: Int? = nil
+    @State private var deepLinkTranslationId: String? = nil
+    @State private var deepLinkPlanMode: Bool = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -69,88 +72,52 @@ struct PlanView: View {
                     .frame(maxWidth: .infinity)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
-                        PlanDateToolbarView(date: $date, showingDatePicker: $showingDatePicker)
+                        PlanDateToolbarView(
+                            date: $date,
+                            showingDatePicker: $showingDatePicker,
+                            availableWidth: geometry.size.width
+                        )
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                showingPresentationRemote = true
+                            } label: {
+                                Image(systemName: "play.rectangle.on.rectangle")
+                            }
+                            .accessibilityLabel("Presentation Remote")
+                        }
                     }
                     .toolbar {
                         ToolbarItem(placement: .bottomBar) {
-                            HStack(spacing: 8) {
-                                NavigationLink(destination: SplitReaderView(
-                                    date: $date
-                                )) {
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "book.fill")
-                                            .font(.title3)
-                                            .foregroundColor(.accentColor)
-                                        Text("Read")
-                                            .font(.caption2)
-                                            .foregroundColor(iOS26OrLater ? .primary : .red)
-                                    }
+                            HStack(spacing: 16) {
+                                bottomBarLink("Read", systemImage: "book.fill") {
+                                    SplitReaderView(date: $date)
                                 }
 
-                                NavigationLink(destination: SearchView()) {
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "magnifyingglass")
-                                            .font(.title3)
-                                            .foregroundColor(.accentColor)
-                                        Text("Search")
-                                            .font(.caption2)
-                                            .foregroundColor(iOS26OrLater ? .primary : .red)
-                                    }
+                                bottomBarLink("Search", systemImage: "magnifyingglass") {
+                                    SearchView()
                                 }
 
-                                NavigationLink(destination: BookLibraryView()) {
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "books.vertical.fill")
-                                            .font(.title3)
-                                            .foregroundColor(.accentColor)
-                                        Text("Books")
-                                            .font(.caption2)
-                                            .foregroundColor(iOS26OrLater ? .primary : .red)
-                                    }
-                                    .frame(minWidth: 44)
+                                bottomBarLink("Books", systemImage: "books.vertical.fill") {
+                                    BookLibraryView()
                                 }
 
-                                NavigationLink(destination: PlanPickerView()) {
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "calendar")
-                                            .font(.title3)
-                                            .foregroundColor(.accentColor)
-                                        Text("Plans")
-                                            .font(.caption2)
-                                            .foregroundColor(iOS26OrLater ? .primary : .red)
-                                    }
+                                bottomBarLink("Write", systemImage: "pencil.line") {
+                                    DevotionalPickerView(
+                                        isFullScreen: false,
+                                        showNewProminent: true,
+                                        initialModuleId: "devotionals"
+                                    )
                                 }
 
-                                NavigationLink(destination: DevotionalPickerView(
-                                    isFullScreen: false,
-                                    showNewProminent: true,
-                                    initialModuleId: "devotionals"
-                                )) {
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "pencil.line")
-                                            .font(.title3)
-                                            .foregroundColor(.accentColor)
-                                        Text("Write")
-                                            .font(.caption2)
-                                            .foregroundColor(iOS26OrLater ? .primary : .red)
-                                    }
-                                }
-
-                                NavigationLink(destination: SettingsView(
-                                    externalApps: externalBibleApps,
-                                    planViewRefreshId: $planViewRefreshId
-                                )) {
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "gear")
-                                            .font(.title3)
-                                            .foregroundColor(.accentColor)
-                                        Text("Settings")
-                                            .font(.caption2)
-                                            .foregroundColor(iOS26OrLater ? .primary : .red)
-                                    }
+                                bottomBarLink("Settings", systemImage: "gear") {
+                                    SettingsView(
+                                        externalApps: externalBibleApps,
+                                        planViewRefreshId: $planViewRefreshId
+                                    )
                                 }
                             }
-                            .padding(.vertical, 8)
                             .padding(.horizontal, 8)
                         }
                     }
@@ -180,6 +147,10 @@ struct PlanView: View {
                             initialTranslationId: deepLinkTranslationId,
                             initialToolbarMode: deepLinkPlanMode ? .plan : nil
                         )
+                    }
+                    .sheet(isPresented: $showingPresentationRemote) {
+                        PresentationRemoteView()
+                            .presentationDetents([.large])
                     }
             }
         }
@@ -215,6 +186,46 @@ struct PlanView: View {
                 guard inputs == metaDataInputs else { return }
                 plansMetaData = built
             }
+        }
+    }
+
+    // MARK: - Bottom Bar
+
+    /// One destination in the bottom bar.
+    ///
+    /// These are sized by their labels, not divided evenly: a `bottomBar`
+    /// `ToolbarItem` is laid out at its ideal size, so `maxWidth: .infinity` here
+    /// is silently ignored and only removes the spacing that was holding the row
+    /// apart. Explicit spacing on the enclosing `HStack` is what keeps it legible.
+    private func bottomBarLink<Destination: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder destination: () -> Destination
+    ) -> some View {
+        NavigationLink(destination: destination()) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.body)
+                    .foregroundColor(.accentColor)
+                    // These glyphs differ in intrinsic height - books.vertical.fill
+                    // and gear are noticeably taller than pencil.line - so without a
+                    // shared box each label sits at its own baseline and the row
+                    // reads as ragged.
+                    .frame(height: 22)
+                Text(title)
+                    .font(.caption2)
+                    .foregroundColor(iOS26OrLater ? .primary : .red)
+                    // Shrink slightly rather than truncate at large text sizes.
+                    // Capping Dynamic Type here would be the easier fix but it
+                    // overrides an accessibility setting.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            // The 44pt target is the whole height of the item: the glass capsule
+            // behind the bar does not grow to fit its contents, so stacking icon,
+            // label and vertical padding on top of that overflowed it.
+            .frame(minWidth: 44, minHeight: 44, maxHeight: 44)
+            .contentShape(Rectangle())
         }
     }
 
@@ -255,12 +266,40 @@ struct PlanView: View {
         ScrollView {
             ScrollViewReader { proxy in
                 VStack(alignment: .leading) {
+                    plansHeader
                     ForEach(plans) { plan in
                         planSection(plan: plan, geometry: geometry, proxy: proxy)
                     }
                     Spacer()
                 }
             }
+        }
+    }
+
+    // MARK: - Plans Header
+
+    /// Plan management belongs next to the plans themselves rather than in the
+    /// bottom bar, where it held a permanent slot for something you set once.
+    /// The empty state already offers the same destination.
+    private var plansHeader: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Plans")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.secondary)
+
+                Spacer()
+
+                NavigationLink(destination: PlanPickerView()) {
+                    Label("Add", systemImage: "plus.circle.fill")
+                        .font(.subheadline)
+                }
+                .frame(minHeight: 44)
+            }
+            .padding(.horizontal, 20)
+
+            Divider()
         }
     }
 

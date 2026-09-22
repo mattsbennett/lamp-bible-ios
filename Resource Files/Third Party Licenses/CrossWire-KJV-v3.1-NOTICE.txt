@@ -1,0 +1,45 @@
+CROSSWIRE KJV v3.1 CONTENT NOTICE
+
+Lamp Bible includes a converted edition identified in the app as KJVs: King James Version with
+Strong's numbers and morphology. It is derived from the CrossWire Bible Society KJV module v3.1.
+
+Copyright and licence
+
+Any copyright that might be obtained for CrossWire's digital effort is held by the CrossWire Bible
+Society, copyright 2003-2023. CrossWire states that it offers the KJV2003 Project text freely for
+any purpose and grants a general public license to use this text for any purpose. The v3.1 module
+also records "DistributionLicense=GPL". Lamp Bible preserves both statements and relies on the
+express any-purpose grant for distribution of the converted content in this app.
+
+Source and contributors
+
+CrossWire project and rights record:
+https://wiki.crosswire.org/CrossWire_KJV
+
+Original OSIS source repository:
+https://gitlab.com/crosswire-bible-society/kjv
+
+The module credits Old Testament Strong's data to The Bible Foundation; New Testament Strong's
+data to the KJV2003 Project and Dr. Maurice A. Robinson; and formatting markup to Michael Paul
+Johnson. See the CrossWire project record for the complete provenance.
+
+Lamp Bible conversion
+
+Lamp Bible converted the SWORD module into Lamp translation JSON and then into the app's bundled
+SQLite database. This changes the container and annotation representation, not the intended
+biblical wording. The exact source archive and conversion script are retained in the public
+lamp-bible-modules repository:
+
+https://github.com/mattsbennett/lamp-bible-modules
+
+Source archive: sources/bibles/KJV.zip
+Source archive SHA-256: 873815aa4b4123025616d1f41eae75f412111275f4c3884e36f92d4f46dcba1d
+Conversion script: scripts/sword_to_translation_schema.py
+Converted JSON SHA-256: c43a907f56c806d3a11a84cec1eb86e5c7d19caabad4486a4bda3d0edc7da947
+
+United Kingdom availability
+
+Rights in the Authorized Version in the United Kingdom are administered separately. Lamp Bible's
+first-party bundled KJV and KJVs editions are unavailable for United Kingdom and unresolved App
+Store storefronts. This restriction does not apply to a module independently created or imported
+by a user.

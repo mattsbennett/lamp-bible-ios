@@ -77,6 +77,16 @@ class RealmMigrator {
             return
         }
 
+        // Legacy releases bundled translations that may be intentionally absent
+        // from the new rights-audited module database (for example, retired BBE).
+        // Never migrate a reader default that the replacement app cannot open.
+        let availableTranslationIds = ((try? TranslationDatabase.shared.getAllTranslations()) ?? [])
+            .map(\.id)
+        let migratedTranslationId = resolveMigratedTranslationId(
+            legacy.readerTranslationId,
+            availableIds: availableTranslationIds
+        )
+
         // Migrate user settings to GRDB
         do {
             try UserDatabase.shared.updateSettings { settings in
@@ -87,11 +97,11 @@ class RealmMigrator {
                 settings.planNotification = legacy.planNotification
                 settings.planNotificationHour = legacy.planNotificationHour
                 settings.planNotificationMinute = legacy.planNotificationMinute
-                settings.readerTranslationId = legacy.readerTranslationId
+                settings.readerTranslationId = migratedTranslationId
                 settings.readerCrossReferenceSort = legacy.readerCrossReferenceSort
                 settings.readerFontSize = legacy.readerFontSize
             }
-            print("RealmMigrator: Migrated user settings (translation: \(legacy.readerTranslationId), plans: \(legacy.planIds))")
+            print("RealmMigrator: Migrated user settings (translation: \(migratedTranslationId), plans: \(legacy.planIds))")
         } catch {
             print("RealmMigrator: Failed to migrate user settings: \(error)")
         }
@@ -112,6 +122,22 @@ class RealmMigrator {
         cleanupAllRealmFiles()
 
         print("RealmMigrator: Migration complete!")
+    }
+
+    /// Keep a legacy selection only when that translation is actually present
+    /// in the replacement library. Prefer BSB when a bundled translation such
+    /// as BBE has been retired.
+    static func resolveMigratedTranslationId(
+        _ preferredId: String,
+        availableIds: [String]
+    ) -> String {
+        if availableIds.contains(preferredId) {
+            return preferredId
+        }
+        if availableIds.contains(fallbackTranslationId) {
+            return fallbackTranslationId
+        }
+        return availableIds.sorted().first ?? fallbackTranslationId
     }
 
     /// Read a legacy Realm file into plain values.

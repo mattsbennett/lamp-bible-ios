@@ -164,6 +164,24 @@ final class RealmMigrationTests: XCTestCase {
         XCTAssertEqual(data.readerTranslationId, RealmMigrator.fallbackTranslationId)
     }
 
+    func testRetiredLegacyTranslationSelectionFallsBackToBSB() {
+        let resolved = RealmMigrator.resolveMigratedTranslationId(
+            "BBE",
+            availableIds: ["ASVs", "BSBs", "WEBs", "YLT"]
+        )
+
+        XCTAssertEqual(resolved, "BSBs")
+    }
+
+    func testAvailableLegacyTranslationSelectionIsPreserved() {
+        let resolved = RealmMigrator.resolveMigratedTranslationId(
+            "YLT",
+            availableIds: ["ASVs", "BSBs", "WEBs", "YLT"]
+        )
+
+        XCTAssertEqual(resolved, "YLT")
+    }
+
     func testUserWithNoPlansOrReadingsReadsCleanly() throws {
         let url = try makeLegacyRealm(at: realmURL()) { realm in
             realm.add(LegacyUser())

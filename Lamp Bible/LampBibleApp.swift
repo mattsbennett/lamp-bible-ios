@@ -45,9 +45,12 @@ class DeepLinkManager: ObservableObject {
 
         switch parsed {
         case .verse(let verseId, _, let translationId):
-            print("DeepLinkManager: Navigating to verse \(verseId), translation: \(translationId ?? "default")")
+            let availableTranslationId = translationId.flatMap { id in
+                ((try? TranslationDatabase.shared.getTranslation(id: id)) ?? nil) == nil ? nil : id
+            }
+            print("DeepLinkManager: Navigating to verse \(verseId), translation: \(availableTranslationId ?? "default")")
             pendingVerseId = verseId
-            pendingTranslationId = translationId
+            pendingTranslationId = availableTranslationId
             pendingPlanMode = false
         case .reading(let verseId, let endVerseId, let openExternal):
             if openExternal {
@@ -87,6 +90,69 @@ class DeepLinkManager: ObservableObject {
     }
 }
 
+/// Resolves territorial content policy before any content-bearing view is
+/// constructed. Restricted bundled translations fail closed while StoreKit is
+/// unavailable, instead of briefly appearing during launch.
+private struct ContentBootstrapView: View {
+    @State private var isReady = false
+    @State private var didBootstrap = false
+    @State private var contentRevision = 0
+
+    var body: some View {
+        Group {
+            if isReady {
+                ContentView()
+                    .id(contentRevision)
+            } else {
+                ProgressView()
+            }
+        }
+        .task {
+            guard !didBootstrap else { return }
+            didBootstrap = true
+
+            await BundledContentTerritoryPolicy.shared.refresh()
+            RealmMigrator.migrateIfNeeded()
+            enforceReaderTranslationAvailability()
+            BundledContentTerritoryPolicy.shared.startMonitoring()
+            WidgetDataService.shared.writeAll()
+            isReady = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .bundledContentTerritoryDidChange)) { _ in
+            guard isReady else { return }
+            enforceReaderTranslationAvailability()
+            contentRevision &+= 1
+            WidgetDataService.shared.writeAll()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
+            guard isReady else { return }
+            enforceReaderTranslationAvailability()
+        }
+    }
+
+    /// If a legacy or synced setting selects Lamp's bundled KJV in a restricted
+    /// storefront, move the reader to BSB. A user-imported translation with the
+    /// same ID remains available because it resolves through the user database.
+    private func enforceReaderTranslationAvailability() {
+        let settings = UserDatabase.shared.getSettings()
+        let translationId = settings.readerTranslationId
+        let policy = BundledContentTerritoryPolicy.shared
+
+        guard policy.restrictsBundledTranslation(id: translationId) else { return }
+        if ((try? TranslationDatabase.shared.getTranslation(id: translationId)) ?? nil) != nil {
+            return
+        }
+
+        let fallbackId = [RealmMigrator.fallbackTranslationId, "ASVs", "WEBs", "YLT"]
+            .first { ((try? TranslationDatabase.shared.getTranslation(id: $0)) ?? nil) != nil }
+        guard let fallbackId else { return }
+
+        try? UserDatabase.shared.updateSettings { settings in
+            settings.readerTranslationId = fallbackId
+        }
+    }
+}
+
 @main
 struct LampBibleApp: App {
     @Environment(\.scenePhase) private var scenePhase
@@ -94,17 +160,11 @@ struct LampBibleApp: App {
     init() {
         // Initialize UserDatabase first (creates schema if needed)
         _ = UserDatabase.shared
-
-        // Migrate from Realm if needed (one-time migration)
-        RealmMigrator.migrateIfNeeded()
-
-        // writeAll dispatches to its own background queue
-        WidgetDataService.shared.writeAll()
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentBootstrapView()
                 .onOpenURL { url in
                     DeepLinkManager.shared.handleURL(url)
                 }
@@ -116,6 +176,7 @@ struct LampBibleApp: App {
                 UserSettingsSyncManager.shared.startSync()
                 // Full sync from remote on foreground
                 Task {
+                    await BundledContentTerritoryPolicy.shared.refresh()
                     try? await SyncCoordinator.shared.syncAll()
                 }
             } else if newPhase == .background {

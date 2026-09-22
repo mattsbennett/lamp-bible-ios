@@ -479,6 +479,22 @@ struct SettingsView: View {
                 }
                 .textCase(nil)
 
+                Section {
+                    Link(destination: URL(string: "https://lampbible.com/privacy/apps")!) {
+                        Label("Privacy", systemImage: "hand.raised")
+                    }
+                    Link(destination: URL(string: "https://lampbible.com/content-licences")!) {
+                        Label("Content Licences", systemImage: "doc.text")
+                    }
+                    Link(destination: URL(string: "https://lampbible.com/software-licences")!) {
+                        Label("Software Licences", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                } header: {
+                    Text("About")
+                } footer: {
+                    Text("Privacy disclosures and licence notices for bundled content and software.")
+                }
+
 #if DEBUG
                 Section {
                     Toggle(isOn: $readerSimplifiedText) {

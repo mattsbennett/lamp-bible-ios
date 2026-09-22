@@ -106,6 +106,12 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Lamp Bible needs photo library access to add images to your notes and devotionals.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Lamp Bible needs camera access to take photos for your notes and devotionals.</string>
+	<string>Lamp Bible needs camera access to take photos for notes and devotionals and to scan presentation pairing codes.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect to a Lamp Bible presentation on your local network and use this device as a remote.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_lamp-present._tcp</string>
+	</array>
 </dict>
 </plist>

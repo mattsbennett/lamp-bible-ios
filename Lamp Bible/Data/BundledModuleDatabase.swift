@@ -130,17 +130,23 @@ class BundledModuleDatabase {
 
     // MARK: - Translation Queries
 
+    private func allowsBundledTranslation(id: String) -> Bool {
+        BundledContentTerritoryPolicy.shared.allowsBundledTranslation(id: id)
+    }
+
     /// Get all bundled translations
     func getAllTranslations() throws -> [TranslationModule] {
         guard isAvailable else { return [] }
         return try read { db in
-            try TranslationModule.fetchAll(db)
+            try TranslationModule.fetchAll(db).filter {
+                allowsBundledTranslation(id: $0.id)
+            }
         }
     }
 
     /// Get a bundled translation by ID
     func getTranslation(id: String) throws -> TranslationModule? {
-        guard isAvailable else { return nil }
+        guard isAvailable, allowsBundledTranslation(id: id) else { return nil }
         return try read { db in
             try TranslationModule.fetchOne(db, key: id)
         }
@@ -151,7 +157,7 @@ class BundledModuleDatabase {
     /// Every unified verse/chapter lookup calls this first, so the id set is
     /// cached. The bundled database is read-only, so it can never go stale.
     func isTranslationBundled(id: String) throws -> Bool {
-        guard isAvailable else { return false }
+        guard isAvailable, allowsBundledTranslation(id: id) else { return false }
 
         bundledTranslationIdsLock.lock()
         if let ids = bundledTranslationIds {
@@ -179,6 +185,7 @@ class BundledModuleDatabase {
                 .filter(Column("language") == language)
                 .order(Column("name"))
                 .fetchAll(db)
+                .filter { allowsBundledTranslation(id: $0.id) }
         }
     }
 
@@ -186,7 +193,7 @@ class BundledModuleDatabase {
 
     /// Get books for a bundled translation
     func getTranslationBooks(translationId: String) throws -> [TranslationBook] {
-        guard isAvailable else { return [] }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return [] }
         return try read { db in
             try TranslationBook
                 .filter(Column("translation_id") == translationId)
@@ -197,7 +204,7 @@ class BundledModuleDatabase {
 
     /// Get a specific book
     func getTranslationBook(translationId: String, bookNumber: Int) throws -> TranslationBook? {
-        guard isAvailable else { return nil }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return nil }
         return try read { db in
             try TranslationBook
                 .filter(Column("translation_id") == translationId)
@@ -210,7 +217,7 @@ class BundledModuleDatabase {
 
     /// Get a single verse from bundled translation
     func getVerse(translationId: String, ref: Int) throws -> TranslationVerse? {
-        guard isAvailable else { return nil }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return nil }
         return try read { db in
             try TranslationVerse
                 .filter(Column("translation_id") == translationId)
@@ -222,9 +229,11 @@ class BundledModuleDatabase {
     /// Get verses from multiple bundled translations
     func getVerses(translationIds: [String], ref: Int) throws -> [String: TranslationVerse] {
         guard isAvailable else { return [:] }
+        let allowedIds = translationIds.filter { allowsBundledTranslation(id: $0) }
+        guard !allowedIds.isEmpty else { return [:] }
         return try read { db in
             let verses = try TranslationVerse
-                .filter(translationIds.contains(Column("translation_id")))
+                .filter(allowedIds.contains(Column("translation_id")))
                 .filter(Column("ref") == ref)
                 .fetchAll(db)
             return Dictionary(uniqueKeysWithValues: verses.map { ($0.translationId, $0) })
@@ -233,7 +242,9 @@ class BundledModuleDatabase {
 
     /// Get a full chapter from bundled translation
     func getChapter(translationId: String, book: Int, chapter: Int) throws -> ChapterContent {
-        guard isAvailable else { return ChapterContent(verses: [], headings: []) }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else {
+            return ChapterContent(verses: [], headings: [])
+        }
         return try read { db in
             let verses = try TranslationVerse
                 .filter(Column("translation_id") == translationId)
@@ -255,7 +266,7 @@ class BundledModuleDatabase {
 
     /// Get a range of verses from bundled translation
     func getVerseRange(translationId: String, startRef: Int, endRef: Int) throws -> [TranslationVerse] {
-        guard isAvailable else { return [] }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return [] }
         return try read { db in
             try TranslationVerse
                 .filter(Column("translation_id") == translationId)
@@ -272,7 +283,7 @@ class BundledModuleDatabase {
     /// averages ~2 KB against ~120 bytes of actual text), so the full-row fetch is
     /// wildly wasteful when all the caller wants is a word count and verse tallies.
     func getVerseRangeStats(translationId: String, startRef: Int, endRef: Int) throws -> VerseRangeStats {
-        guard isAvailable else { return .empty }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return .empty }
         return try read { db in
             try VerseRangeStats.fetch(db, translationId: translationId, startRef: startRef, endRef: endRef)
         }
@@ -280,7 +291,7 @@ class BundledModuleDatabase {
 
     /// Get headings for a chapter
     func getHeadingsForChapter(translationId: String, book: Int, chapter: Int) throws -> [TranslationHeading] {
-        guard isAvailable else { return [] }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return [] }
         return try read { db in
             try TranslationHeading
                 .filter(Column("translation_id") == translationId)
@@ -297,7 +308,7 @@ class BundledModuleDatabase {
     ///   - chapters: Array of (book, chapter) tuples to fetch
     /// - Returns: Array of ChapterContent in the same order as requested
     func getChapters(translationId: String, chapters: [(book: Int, chapter: Int)]) throws -> [ChapterContent] {
-        guard isAvailable else { return [] }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return [] }
         return try read { db in
             var results: [ChapterContent] = []
             for (book, chapter) in chapters {
@@ -323,7 +334,7 @@ class BundledModuleDatabase {
 
     /// Get headings for a range of chapters (for multi-chapter view)
     func getHeadingsForChapterRange(translationId: String, chapters: [(book: Int, chapter: Int)]) throws -> [TranslationHeading] {
-        guard isAvailable else { return [] }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return [] }
         return try read { db in
             var allHeadings: [TranslationHeading] = []
             for (book, chapter) in chapters {
@@ -341,7 +352,7 @@ class BundledModuleDatabase {
 
     /// Get chapter count for a book
     func getChapterCount(translationId: String, book: Int) throws -> Int {
-        guard isAvailable else { return 0 }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return 0 }
         return try read { db in
             let row = try Row.fetchOne(db, sql: """
                 SELECT MAX(chapter) as max_chapter
@@ -354,7 +365,7 @@ class BundledModuleDatabase {
 
     /// Get verse count for a chapter
     func getVerseCount(translationId: String, book: Int, chapter: Int) throws -> Int {
-        guard isAvailable else { return 0 }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return 0 }
         return try read { db in
             try TranslationVerse
                 .filter(Column("translation_id") == translationId)
@@ -366,7 +377,7 @@ class BundledModuleDatabase {
 
     /// Get total verse count for a translation
     func getTotalVerseCount(translationId: String) throws -> Int {
-        guard isAvailable else { return 0 }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return 0 }
         return try read { db in
             try TranslationVerse
                 .filter(Column("translation_id") == translationId)
@@ -376,7 +387,7 @@ class BundledModuleDatabase {
 
     /// Count Strong's number occurrences in a translation
     func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
-        guard isAvailable else { return 0 }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return 0 }
         return try read { db in
             // Search for Strong's number in annotations_json
             // Pattern: "strongs":"H1234" or "strongs": "H1234" (handles both compact and spaced JSON)
@@ -395,7 +406,7 @@ class BundledModuleDatabase {
         bookRange: ClosedRange<Int>? = nil,
         limit: Int = 50
     ) throws -> [TranslationSearchResult] {
-        guard isAvailable else { return [] }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return [] }
         return try read { db in
             var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
             var arguments: [DatabaseValueConvertible] = [translationId, "%\"strongs\":%\"\(strongsNum)\"%"]
@@ -511,7 +522,7 @@ class BundledModuleDatabase {
 
     /// Get the last verse ref in a chapter
     func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
-        guard isAvailable else { return 0 }
+        guard isAvailable, allowsBundledTranslation(id: translationId) else { return 0 }
         return try read { db in
             let ref = try Int.fetchOne(db, sql: """
                 SELECT MAX(ref) FROM translation_verses
@@ -532,6 +543,14 @@ class BundledModuleDatabase {
     ) throws -> [TranslationSearchResult] {
         guard isAvailable else { return [] }
 
+        let availableTranslationIds = Set(
+            try getAllTranslations().map(\.id)
+        )
+        let searchableTranslationIds = translationIds.map {
+            $0.intersection(availableTranslationIds)
+        } ?? availableTranslationIds
+        guard !searchableTranslationIds.isEmpty else { return [] }
+
         let ftsQuery = prepareFTSQuery(query)
         guard !ftsQuery.isEmpty else { return [] }
 
@@ -540,12 +559,10 @@ class BundledModuleDatabase {
             var arguments: [DatabaseValueConvertible] = [ftsQuery]
 
             // Translation filter
-            if let ids = translationIds, !ids.isEmpty {
-                let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
-                conditions.append("v.translation_id IN (\(placeholders))")
-                for id in ids {
-                    arguments.append(id)
-                }
+            let placeholders = searchableTranslationIds.map { _ in "?" }.joined(separator: ", ")
+            conditions.append("v.translation_id IN (\(placeholders))")
+            for id in searchableTranslationIds {
+                arguments.append(id)
             }
 
             // Book range filter

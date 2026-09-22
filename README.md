@@ -4,7 +4,11 @@ A Bible reading companion app.
 
 ## Build
 
-Add latest `{version}.realm` to `./Lamp Bible`, build in Xcode.
+Keep `lamp-bible-core` beside this repository, add the latest `{version}.realm` to `./Lamp Bible`, and build in Xcode.
+
+## Presentation Remote
+
+The plan screen's presentation button discovers a running Lamp Bible Mac presenter over Bonjour. Select the nearby Mac, then scan its pairing QR code or enter the 16-character fallback code. Pairing is bound to a fresh connection challenge, and all pairing proofs, slide content, notes, and controls travel in authenticated encrypted frames. After pairing, iPhone and iPad display the current and next semantic slides, presenter notes, elapsed time, a slide chooser, previous/next controls, and audience blackout state. The remote requires Local Network permission and does not receive deck content until pairing succeeds; QR scanning also requires Camera permission.
 
 ### Updating Bundled Realm Database
 
