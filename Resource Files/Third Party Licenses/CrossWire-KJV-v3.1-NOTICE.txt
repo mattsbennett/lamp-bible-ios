@@ -34,10 +34,3 @@ Source archive: sources/bibles/KJV.zip
 Source archive SHA-256: 873815aa4b4123025616d1f41eae75f412111275f4c3884e36f92d4f46dcba1d
 Conversion script: scripts/sword_to_translation_schema.py
 Converted JSON SHA-256: c43a907f56c806d3a11a84cec1eb86e5c7d19caabad4486a4bda3d0edc7da947
-
-United Kingdom availability
-
-Rights in the Authorized Version in the United Kingdom are administered separately. Lamp Bible's
-bundled KJVs edition is available in United Kingdom and unresolved App Store storefronts under a
-project-owner distribution decision dated 2026-09-22. This statement does not represent that UK
-Crown permission has been obtained. Redundant plain KJV is excluded from new bundles.
