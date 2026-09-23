@@ -235,56 +235,11 @@ final class Lamp_BibleTests: XCTestCase {
         XCTAssertNil(settings.legacyICloudReconciliationPending)
     }
 
-    func testBundledKJVIsUnavailableInUnitedKingdomStorefronts() {
-        for countryCode in ["GBR", "GB", "UK", "gbr"] {
-            XCTAssertFalse(
-                BundledContentTerritoryRules.allowsBundledTranslation(
-                    id: "KJV",
-                    countryCode: countryCode
-                )
-            )
-            XCTAssertFalse(
-                BundledContentTerritoryRules.allowsBundledTranslation(
-                    id: "KJVs",
-                    countryCode: countryCode
-                )
-            )
-        }
-    }
-
-    func testBundledKJVIsAvailableOutsideUnitedKingdom() {
-        for translationId in ["KJV", "KJVs"] {
-            for countryCode in ["USA", "CAN", "AUS", "FRA"] {
-                XCTAssertTrue(
-                    BundledContentTerritoryRules.allowsBundledTranslation(
-                        id: translationId,
-                        countryCode: countryCode
-                    )
-                )
-            }
-        }
-    }
-
-    func testBundledKJVFailsClosedWithoutResolvedStorefront() {
-        for translationId in ["KJV", "KJVs"] {
-            XCTAssertFalse(
-                BundledContentTerritoryRules.allowsBundledTranslation(
-                    id: translationId,
-                    countryCode: nil
-                )
-            )
-        }
-    }
-
-    func testUnrestrictedBundledTranslationsRemainAvailableEverywhere() {
-        for countryCode in [nil, "GBR", "USA"] as [String?] {
-            XCTAssertTrue(
-                BundledContentTerritoryRules.allowsBundledTranslation(
-                    id: "BSBs",
-                    countryCode: countryCode
-                )
-            )
-        }
+    func testBundledKJVsIsAvailableWithoutStorefrontResolution() throws {
+        let database = BundledModuleDatabase.shared
+        XCTAssertTrue(try database.isTranslationBundled(id: "KJVs"))
+        XCTAssertNotNil(try database.getTranslation(id: "KJVs"))
+        XCTAssertGreaterThan(try database.getTotalVerseCount(translationId: "KJVs"), 0)
     }
 
     func testBookModuleTypeDetectionRequiresBothBookTables() {

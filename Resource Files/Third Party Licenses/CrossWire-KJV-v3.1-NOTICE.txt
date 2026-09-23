@@ -27,10 +27,8 @@ Lamp Bible conversion
 
 Lamp Bible converted the SWORD module into Lamp translation JSON and then into the app's bundled
 SQLite database. This changes the container and annotation representation, not the intended
-biblical wording. The exact source archive and conversion script are retained in the public
-lamp-bible-modules repository:
-
-https://github.com/mattsbennett/lamp-bible-modules
+biblical wording. Lamp Bible retains the exact source archive and conversion script in its
+private development repository. The original OSIS source is linked above through CrossWire.
 
 Source archive: sources/bibles/KJV.zip
 Source archive SHA-256: 873815aa4b4123025616d1f41eae75f412111275f4c3884e36f92d4f46dcba1d
@@ -40,6 +38,6 @@ Converted JSON SHA-256: c43a907f56c806d3a11a84cec1eb86e5c7d19caabad4486a4bda3d0e
 United Kingdom availability
 
 Rights in the Authorized Version in the United Kingdom are administered separately. Lamp Bible's
-first-party bundled KJV and KJVs editions are unavailable for United Kingdom and unresolved App
-Store storefronts. This restriction does not apply to a module independently created or imported
-by a user.
+bundled KJVs edition is available in United Kingdom and unresolved App Store storefronts under a
+project-owner distribution decision dated 2026-09-22. This statement does not represent that UK
+Crown permission has been obtained. Redundant plain KJV is excluded from new bundles.
