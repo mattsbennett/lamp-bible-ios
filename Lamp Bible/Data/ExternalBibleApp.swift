@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import LampCore
 
 
 struct ExternalBibleApp: Identifiable, Hashable {
@@ -18,41 +19,18 @@ struct ExternalBibleApp: Identifiable, Hashable {
     var urlRoot: String
     
     func getFullUrl(sv: Int, ev: Int) -> URL? {
-        let (startVerse, startChapter, startBook) = splitVerseId(sv)
-        let (endVerse, endChapter, endBook) = splitVerseId(ev)
-        guard let startBookObj = try? BundledModuleDatabase.shared.getBook(id: startBook),
-              let endBookObj = try? BundledModuleDatabase.shared.getBook(id: endBook) else {
-            return nil
+        LampExternalBibleApplication(rawValue: name)?.url(
+            startReference: sv, endReference: ev
+        ) { number in
+            guard let book = try? BundledModuleDatabase.shared.getBook(id: number) else {
+                return nil
+            }
+            return LampExternalBibleBook(
+                number: number,
+                name: book.name,
+                osisID: book.osisParatextAbbreviation
+            )
         }
-        let startBookOsis = startBookObj.osisParatextAbbreviation
-        let startBookName = startBookObj.name.lowercased().trimmingCharacters(in: .whitespaces)
-        let endBookName = endBookObj.name.lowercased().trimmingCharacters(in: .whitespaces)
-        let endBookOsis = endBookObj.osisParatextAbbreviation
-        var path = ""
-
-        switch self.name {
-            case "Accordance":
-                // @todo Accordance uses zero-indexed verses (e.g. for Psalms where verse
-                // 0 is the superscript) so we should use only chapters when possible
-                // (i.e. when we just have a book/chapter range)
-                path += "\(startBookOsis)_\(startChapter):\(startVerse)-\(endBookOsis)_\(endChapter):\(endVerse)"
-            case "e-Sword LT":
-                path += "\(startBookName).\(startChapter):\(startVerse)"
-            case "Logos":
-                path += "\(startBookName)\(startChapter):\(startVerse)"
-            case "Olive Tree":
-                path += "\(startBook).\(startChapter).\(startVerse)"
-            case "YouVersion":
-                if startBook == endBook && startChapter == endChapter {
-                    path += "\(startBookOsis).\(startChapter).\(startVerse)-\(endVerse)"
-                } else {
-                    path += "\(startBookOsis).\(startChapter)"
-                }
-            default:
-                path += ""
-        }
-        
-        return URL(string: self.urlRoot + path)
     }
 }
 

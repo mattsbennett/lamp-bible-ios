@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import LampModuleKit
 
 struct BookLibraryView: View {
     @State private var books: [BookLibraryItem] = []
@@ -729,22 +730,40 @@ private struct BookContentBlockView: View {
             }
         case "list":
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array((block.items ?? []).enumerated()), id: \.offset) { index, item in
+                ForEach(Array(block.items.enumerated()), id: \.offset) { index, item in
                     BookListItemView(
                         item: item,
                         marker: block.listType == "numbered" ? "\(index + 1)." : "•"
                     )
                 }
             }
+        case "table":
+            ScrollView(.horizontal) {
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                    ForEach(Array(block.rows.enumerated()), id: \.offset) { _, row in
+                        GridRow {
+                            ForEach(Array(row.cells.sorted { $0.column < $1.column }.enumerated()), id: \.offset) { _, cell in
+                                BookAnnotatedTextView(value: cell.content)
+                                    .fontWeight(cell.isHeader ? .semibold : .regular)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(.secondary.opacity(cell.isHeader ? 0.12 : 0.05))
+                                    .gridCellColumns(cell.columnSpan)
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
         case "thematic-break":
             Divider().padding(.vertical, 8)
         case "image", "audio":
-            if let mediaId = block.mediaId, let mediaRef = mediaByID[mediaId] {
+            if let mediaId = block.mediaID, let mediaRef = mediaByID[mediaId] {
                 ModuleMediaView(
                     mediaRef: mediaRef,
                     moduleId: moduleId,
                     caption: block.caption?.text ?? mediaRef.caption,
-                    alignment: block.alignment ?? .center
+                    alignment: block.alignment.flatMap(MediaAlignment.init(rawValue:)) ?? .center
                 )
             } else {
                 MissingBookMediaView(
@@ -779,7 +798,7 @@ private struct BookAnnotatedTextView: View {
     private var attributedText: AttributedString {
         guard let value else { return AttributedString() }
         var result = AttributedString(value.text)
-        for annotation in value.annotations ?? [] {
+        for annotation in value.annotations {
             guard annotation.start >= 0,
                   annotation.end > annotation.start,
                   annotation.end <= value.text.count else { continue }
@@ -791,8 +810,10 @@ private struct BookAnnotatedTextView: View {
 
             switch annotation.type {
             case "scripture":
-                if let reference = annotation.data?.sv ?? annotation.data?.refs?.first?.sv {
-                    let end = annotation.data?.ev ?? annotation.data?.refs?.first?.ev
+                if let reference = annotation.data?.startReference
+                    ?? annotation.data?.references.first?.startReference {
+                    let end = annotation.data?.endReference
+                        ?? annotation.data?.references.first?.endReference
                     let endReference = end.map { "/\($0)" } ?? ""
                     result[range].link = URL(string: "lampbible://verse/\(reference)\(endReference)")
                     result[range].underlineStyle = .single
@@ -818,7 +839,7 @@ private struct BookAnnotatedTextView: View {
             case "quote":
                 result[range].font = .body.italic()
             case "footnote":
-                if let footnoteID = annotation.data?.footnoteId,
+                if let footnoteID = annotation.data?.footnoteID,
                    let url = bookFootnoteURL(id: footnoteID) {
                     result[range].link = url
                     result[range].underlineStyle = .single
@@ -827,10 +848,10 @@ private struct BookAnnotatedTextView: View {
                 break
             }
         }
-        let linkedFootnotes = Set((value.annotations ?? []).compactMap { annotation in
-            annotation.type == "footnote" ? annotation.data?.footnoteId : nil
+        let linkedFootnotes = Set(value.annotations.compactMap { annotation in
+            annotation.type == "footnote" ? annotation.data?.footnoteID : nil
         })
-        for (index, reference) in (value.footnoteReferences ?? []).enumerated()
+        for (index, reference) in value.footnoteReferences.enumerated()
             where !linkedFootnotes.contains(reference.id) {
             guard let url = bookFootnoteURL(id: reference.id) else { continue }
             var marker = AttributedString(" [\(index + 1)]")
@@ -902,7 +923,7 @@ private struct BookListItemView: View {
                 Text(marker).frame(minWidth: 20, alignment: .trailing)
                 BookAnnotatedTextView(value: item.content).lineSpacing(4)
             }
-            ForEach(Array((item.children ?? []).enumerated()), id: \.offset) { _, child in
+            ForEach(Array(item.children.enumerated()), id: \.offset) { _, child in
                 BookListItemView(item: child, marker: "•")
                     .padding(.leading, 24)
             }

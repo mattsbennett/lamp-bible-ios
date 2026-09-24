@@ -7,6 +7,7 @@
 
 import Foundation
 import UIKit
+import LampCore
 
 /// Manages markdown import/export for user notes
 /// Import: iCloud/Documents/Import/Notes/*.md → parsed and saved to database, file deleted
@@ -572,122 +573,14 @@ class NotesImportExportManager {
 
     /// Parse YAML frontmatter from markdown
     private func parseFrontmatter(content: String) -> (metadata: [String: String], body: String) {
-        guard content.hasPrefix("---") else {
-            return ([:], content)
-        }
-
-        // Find closing ---
-        let lines = content.components(separatedBy: "\n")
-        var endIndex = -1
-        for (i, line) in lines.enumerated() where i > 0 {
-            if line.trimmingCharacters(in: .whitespaces) == "---" {
-                endIndex = i
-                break
-            }
-        }
-
-        guard endIndex > 0 else {
-            return ([:], content)
-        }
-
-        // Parse YAML (simple key: value format)
-        var metadata: [String: String] = [:]
-        for i in 1..<endIndex {
-            let line = lines[i]
-            if let colonIndex = line.firstIndex(of: ":") {
-                let key = String(line[..<colonIndex]).trimmingCharacters(in: .whitespaces)
-                var value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
-                // Remove quotes if present
-                if (value.hasPrefix("\"") && value.hasSuffix("\"")) ||
-                   (value.hasPrefix("'") && value.hasSuffix("'")) {
-                    value = String(value.dropFirst().dropLast())
-                }
-                metadata[key] = value
-            }
-        }
-
-        // Body is everything after the closing ---
-        let bodyLines = Array(lines[(endIndex + 1)...])
-        let body = bodyLines.joined(separator: "\n")
-
-        return (metadata, body)
+        LampPersonalMarkdownDocument.frontmatter(in: content)
     }
 
     /// Extract all footnote definitions from the end of the document (after ---)
     /// Returns the body without the footnotes section and a dictionary of complex ID to content
     private func extractAllFootnoteDefinitions(from body: String) -> (bodyWithoutFootnotes: String, definitions: [String: String]) {
-        var definitions: [String: String] = [:]
-
-        // Find the last --- separator
-        let lines = body.components(separatedBy: "\n")
-        var separatorIndex: Int? = nil
-
-        for (i, line) in lines.enumerated().reversed() {
-            if line.trimmingCharacters(in: .whitespaces) == "---" {
-                separatorIndex = i
-                break
-            }
-        }
-
-        guard let sepIdx = separatorIndex else {
-            // No separator found, return body as-is
-            return (body, [:])
-        }
-
-        // Everything before separator is the body
-        let bodyLines = Array(lines[0..<sepIdx])
-        let footnoteLines = Array(lines[(sepIdx + 1)...])
-
-        // Check if the lines after the separator look like footnotes
-        let looksLikeFootnotes = footnoteLines.contains { $0.contains("[^") && $0.contains("]:") }
-
-        // If the separator doesn't seem to be for footnotes, return body as-is
-        if !looksLikeFootnotes && footnoteLines.allSatisfy({ $0.trimmingCharacters(in: .whitespaces).isEmpty || !$0.contains("[^") }) {
-            return (body, [:])
-        }
-
-        // Parse footnote definitions from the end section
-        let footnotePattern = #"^\[\^([^\]]+)\]:\s*(.*)$"#
-        guard let footnoteRegex = try? NSRegularExpression(pattern: footnotePattern) else {
-            return (bodyLines.joined(separator: "\n"), [:])
-        }
-
-        var i = 0
-        while i < footnoteLines.count {
-            let line = footnoteLines[i]
-            let lineRange = NSRange(line.startIndex..., in: line)
-
-            if let match = footnoteRegex.firstMatch(in: line, range: lineRange),
-               let idRange = Range(match.range(at: 1), in: line),
-               let contentRange = Range(match.range(at: 2), in: line) {
-                let fnId = String(line[idRange])
-                var fnLines = [String(line[contentRange])]
-
-                // Collect continuation lines (4 spaces or tab indented)
-                i += 1
-                while i < footnoteLines.count {
-                    let nextLine = footnoteLines[i]
-                    if nextLine.hasPrefix("    ") {
-                        fnLines.append(String(nextLine.dropFirst(4)))
-                        i += 1
-                    } else if nextLine.hasPrefix("\t") {
-                        fnLines.append(String(nextLine.dropFirst(1)))
-                        i += 1
-                    } else if nextLine.trimmingCharacters(in: .whitespaces).isEmpty {
-                        i += 1
-                    } else {
-                        break
-                    }
-                }
-
-                let fnContent = fnLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                definitions[fnId] = fnContent
-            } else {
-                i += 1
-            }
-        }
-
-        return (bodyLines.joined(separator: "\n"), definitions)
+        let extracted = LampPersonalMarkdownDocument.extractFootnoteDefinitions(in: body)
+        return (extracted.body, extracted.definitions)
     }
 
     /// Parse chapter content from markdown body

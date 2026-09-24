@@ -7,6 +7,7 @@
 
 import Foundation
 import LampModuleKit
+import LampCore
 
 /// Two-way converter between Devotional content and Markdown
 struct MarkdownDevotionalConverter {
@@ -234,140 +235,27 @@ struct MarkdownDevotionalConverter {
     }
 
     private static func parseFrontmatter(_ lines: [String]) -> DevotionalMeta {
-        var id = UUID().uuidString
-        var title = "Untitled"
-        var subtitle: String? = nil
-        var author: String? = nil
-        var date: String? = nil
-        var tags: [String]? = nil
-        var category: DevotionalCategory? = nil
-        var series: DevotionalSeriesInfo? = nil
-        var keyScriptures: [DevotionalKeyScripture]? = nil
-
-        var inSeries = false
-        var inKeyScriptures = false
-        var seriesData: [String: String] = [:]
-        var currentScripture: [String: Any] = [:]
-        var scripturesList: [[String: Any]] = []
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // Nested YAML handling
-            if trimmed.hasPrefix("- ") && inKeyScriptures {
-                // New scripture entry
-                if !currentScripture.isEmpty {
-                    scripturesList.append(currentScripture)
-                }
-                currentScripture = [:]
-                let content = String(trimmed.dropFirst(2))
-                if let colonIndex = content.firstIndex(of: ":") {
-                    let key = String(content[..<colonIndex]).trimmingCharacters(in: .whitespaces)
-                    let value = String(content[content.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "\"", with: "")
-                    currentScripture[key] = value
-                }
-                continue
-            }
-
-            if trimmed.hasPrefix("  ") && (inSeries || inKeyScriptures) {
-                let content = trimmed.trimmingCharacters(in: .whitespaces)
-                if let colonIndex = content.firstIndex(of: ":") {
-                    let key = String(content[..<colonIndex]).trimmingCharacters(in: .whitespaces)
-                    let value = String(content[content.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "\"", with: "")
-
-                    if inSeries {
-                        seriesData[key] = value
-                    } else if inKeyScriptures {
-                        if key == "sv" || key == "ev" {
-                            currentScripture[key] = Int(value)
-                        } else {
-                            currentScripture[key] = value
-                        }
-                    }
-                }
-                continue
-            }
-
-            // Top-level keys
-            inSeries = false
-            if !currentScripture.isEmpty {
-                scripturesList.append(currentScripture)
-                currentScripture = [:]
-            }
-            inKeyScriptures = false
-
-            guard let colonIndex = trimmed.firstIndex(of: ":") else { continue }
-
-            let key = String(trimmed[..<colonIndex]).trimmingCharacters(in: .whitespaces)
-            var value = String(trimmed[trimmed.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
-
-            // Remove quotes
-            if value.hasPrefix("\"") && value.hasSuffix("\"") {
-                value = String(value.dropFirst().dropLast())
-            }
-
-            switch key {
-            case "id":
-                id = value
-            case "title":
-                title = value
-            case "subtitle":
-                subtitle = value
-            case "author":
-                author = value
-            case "date":
-                date = value
-            case "tags":
-                // Parse YAML array: [tag1, tag2] or tag1, tag2
-                let tagsString = value.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
-                tags = tagsString.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "\"", with: "") }
-            case "category":
-                category = DevotionalCategory(rawValue: value)
-            case "series":
-                inSeries = true
-                seriesData = [:]
-            case "keyScriptures":
-                inKeyScriptures = true
-                scripturesList = []
-            default:
-                break
-            }
-        }
-
-        // Finalize series
-        if !seriesData.isEmpty {
-            series = DevotionalSeriesInfo(
-                id: seriesData["id"],
-                name: seriesData["name"],
-                order: seriesData["order"].flatMap { Int($0) }
+        let parsed = LampDevotionalFrontmatter(lines: lines)
+        let series = parsed.series.isEmpty ? nil : DevotionalSeriesInfo(
+            id: parsed.series["id"],
+            name: parsed.series["name"],
+            order: parsed.series["order"].flatMap(Int.init)
+        )
+        let scriptures = parsed.scriptures.map {
+            DevotionalKeyScripture(
+                sv: $0.startReference, ev: $0.endReference, label: $0.label
             )
         }
-
-        // Finalize key scriptures
-        if !currentScripture.isEmpty {
-            scripturesList.append(currentScripture)
-        }
-        if !scripturesList.isEmpty {
-            keyScriptures = scripturesList.compactMap { dict in
-                guard let sv = dict["sv"] as? Int else { return nil }
-                return DevotionalKeyScripture(
-                    sv: sv,
-                    ev: dict["ev"] as? Int,
-                    label: dict["ref"] as? String
-                )
-            }
-        }
-
         return DevotionalMeta(
-            id: id,
-            title: title,
-            subtitle: subtitle,
-            author: author,
-            date: date,
-            tags: tags,
-            category: category,
+            id: parsed.values["id"] ?? UUID().uuidString,
+            title: parsed.values["title"] ?? "Untitled",
+            subtitle: parsed.values["subtitle"],
+            author: parsed.values["author"],
+            date: parsed.values["date"],
+            tags: parsed.tags.isEmpty ? nil : parsed.tags,
+            category: parsed.values["category"].flatMap(DevotionalCategory.init(rawValue:)),
             series: series,
-            keyScriptures: keyScriptures,
+            keyScriptures: scriptures.isEmpty ? nil : scriptures,
             created: Int(Date().timeIntervalSince1970)
         )
     }

@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampCore
 
 class ModuleDatabase {
     static let shared = ModuleDatabase()
@@ -2351,7 +2352,7 @@ class ModuleDatabase {
             let count = try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM translation_verses
                 WHERE translation_id = ? AND annotations_json LIKE ?
-            """, arguments: [translationId, "%\"strongs\":%\"\(strongsNum)\"%"])
+            """, arguments: [translationId, LampStrongsSearch.sqlLikePattern(for: strongsNum)])
             return count ?? 0
         }
     }
@@ -2364,7 +2365,7 @@ class ModuleDatabase {
     ) throws -> [TranslationSearchResult] {
         try dbQueue.read { db in
             var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
-            var arguments: [DatabaseValueConvertible] = [translationId, "%\"strongs\":%\"\(strongsNum)\"%"]
+            var arguments: [DatabaseValueConvertible] = [translationId, LampStrongsSearch.sqlLikePattern(for: strongsNum)]
 
             if let range = bookRange {
                 conditions.append("v.book BETWEEN ? AND ?")
@@ -2399,7 +2400,7 @@ class ModuleDatabase {
                 let annotationsJson: String? = row["annotations_json"]
 
                 // Create snippet with <mark> tags around words matching the Strong's number
-                let snippet = Self.addStrongsMarks(to: text, annotationsJson: annotationsJson, strongsNum: strongsNum)
+                let snippet = LampStrongsSearch.markedText(text, annotationsJSON: annotationsJson, key: strongsNum)
 
                 return TranslationSearchResult(
                     id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
@@ -2419,62 +2420,6 @@ class ModuleDatabase {
     }
 
     /// Add <mark> tags around words that match a Strong's number
-    private static func addStrongsMarks(to text: String, annotationsJson: String?, strongsNum: String) -> String {
-        guard let json = annotationsJson,
-              let data = json.data(using: .utf8) else {
-            return text
-        }
-
-        // Try parsing annotations - some translations use array, others might use wrapped object
-        var annotations: [VerseAnnotation]?
-
-        // Try direct array first
-        annotations = try? JSONDecoder().decode([VerseAnnotation].self, from: data)
-
-        // If that fails, try wrapped in object
-        if annotations == nil {
-            struct WrappedAnnotations: Codable {
-                var annotations: [VerseAnnotation]?
-            }
-            annotations = (try? JSONDecoder().decode(WrappedAnnotations.self, from: data))?.annotations
-        }
-
-        guard let annotations = annotations else { return text }
-
-        let textCount = text.count
-
-        // Find annotations with matching Strong's number, with validation
-        let matchingRanges = annotations
-            .filter { $0.data?.strongs?.uppercased() == strongsNum.uppercased() }
-            .map { (start: $0.start, end: $0.end) }
-            .filter { $0.start >= 0 && $0.end > $0.start && $0.end <= textCount }  // Validate ranges
-            .sorted { $0.start < $1.start }
-
-        guard !matchingRanges.isEmpty else { return text }
-
-        // Merge overlapping ranges to avoid nested marks
-        var mergedRanges: [(start: Int, end: Int)] = []
-        for range in matchingRanges {
-            if let last = mergedRanges.last, range.start <= last.end {
-                // Overlapping or adjacent - extend the previous range
-                mergedRanges[mergedRanges.count - 1] = (last.start, max(last.end, range.end))
-            } else {
-                mergedRanges.append(range)
-            }
-        }
-
-        // Insert marks from end to start to preserve offsets
-        var result = text
-        for range in mergedRanges.reversed() {
-            let startIndex = result.index(result.startIndex, offsetBy: range.start)
-            let endIndex = result.index(result.startIndex, offsetBy: range.end)
-            result.insert(contentsOf: "</mark>", at: endIndex)
-            result.insert(contentsOf: "<mark>", at: startIndex)
-        }
-
-        return result
-    }
-
     func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
         try dbQueue.read { db in
             let ref = try Int.fetchOne(db, sql: """

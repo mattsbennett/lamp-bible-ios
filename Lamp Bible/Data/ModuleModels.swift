@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampModuleKit
 
 // MARK: - Book OSIS Cache
 
@@ -290,13 +291,11 @@ struct BookModule: Codable, FetchableRecord, PersistableRecord, Identifiable {
     }
 
     var mediaReferences: [MediaReference] {
-        guard let mediaJson, let data = mediaJson.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([MediaReference].self, from: data)) ?? []
+        LampPortableBookJSON.decodeArray(mediaJson, as: MediaReference.self).items
     }
 
     var footnotes: [BookFootnote] {
-        guard let footnotesJson, let data = footnotesJson.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([BookFootnote].self, from: data)) ?? []
+        LampPortableBookJSON.decodeArray(footnotesJson, as: BookFootnote.self).items
     }
 
     var coverMediaReference: MediaReference? {
@@ -335,8 +334,7 @@ struct BookSection: Codable, FetchableRecord, PersistableRecord, Identifiable {
     }
 
     var contentBlocks: [BookContentBlock] {
-        guard let data = contentJson.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([BookContentBlock].self, from: data)) ?? []
+        LampPortableBookJSON.decodeArray(contentJson, as: BookContentBlock.self).items
     }
 
     var keyScriptures: [BookScriptureRange] {
@@ -398,7 +396,7 @@ struct BookJSONImportDescriptor: Equatable {
         guard !title.isEmpty else { throw BookJSONImportError.missingTitle }
         guard !document.sections.isEmpty else { throw BookJSONImportError.missingSections }
         let mediaReferences = document.media ?? []
-        guard mediaReferences.allSatisfy({ BookMediaPath.isSafeFilename($0.filename) }) else {
+        guard mediaReferences.allSatisfy({ BookMediaPath.isSafeMediaPath($0.filename) }) else {
             throw BookJSONImportError.unsafeMediaFilename
         }
 
@@ -452,13 +450,11 @@ enum BookJSONImportError: LocalizedError, Equatable {
 
 enum BookMediaPath {
     static func isSafeFilename(_ filename: String) -> Bool {
-        guard !filename.isEmpty,
-              filename != ".",
-              filename != "..",
-              !filename.hasPrefix("/"),
-              !filename.contains("/"),
-              !filename.contains("\\") else { return false }
-        return (filename as NSString).lastPathComponent == filename
+        LampPortableBookJSON.isSafeFilename(filename)
+    }
+
+    static func isSafeMediaPath(_ path: String) -> Bool {
+        LampPortableBookJSON.safeRelativeMediaPath(path) != nil
     }
 }
 
@@ -488,92 +484,14 @@ struct BookScriptureRange: Codable, Hashable {
     let label: String?
 }
 
-struct BookAnnotatedText: Codable {
-    let text: String
-    let annotations: [BookTextAnnotation]?
-    let footnoteReferences: [BookFootnoteReference]?
-
-    enum CodingKeys: String, CodingKey {
-        case text, annotations
-        case footnoteReferences = "footnote_refs"
-    }
-}
-
-struct BookTextAnnotation: Codable {
-    let type: String
-    let start: Int
-    let end: Int
-    let data: BookTextAnnotationData?
-}
-
-struct BookTextAnnotationData: Codable {
-    let sv: Int?
-    let ev: Int?
-    let refs: [BookScriptureRange]?
-    let strongs: String?
-    let url: String?
-    let style: String?
-    let footnoteId: String?
-    let mediaId: String?
-}
-
-struct BookFootnoteReference: Codable, Hashable {
-    let id: String
-    let offset: Int
-}
-
-struct BookFootnote: Codable, Identifiable {
-    let id: String
-    let content: BookTextValue
-}
-
-struct BookListItem: Codable {
-    let content: BookAnnotatedText
-    let children: [BookListItem]?
-}
-
-struct BookContentBlock: Codable {
-    let type: String
-    let content: BookAnnotatedText?
-    let level: Int?
-    let listType: String?
-    let items: [BookListItem]?
-    let mediaId: String?
-    let caption: BookTextValue?
-    let alignment: MediaAlignment?
-    let showWaveform: Bool?
-    let autoplay: Bool?
-}
-
-/// The schema permits captions and footnotes to be either strings or annotated text.
-enum BookTextValue: Codable {
-    case plain(String)
-    case annotated(BookAnnotatedText)
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let value = try? container.decode(String.self) {
-            self = .plain(value)
-        } else {
-            self = .annotated(try container.decode(BookAnnotatedText.self))
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .plain(let value): try container.encode(value)
-        case .annotated(let value): try container.encode(value)
-        }
-    }
-
-    var text: String {
-        switch self {
-        case .plain(let value): return value
-        case .annotated(let value): return value.text
-        }
-    }
-}
+typealias BookAnnotatedText = LampBookAnnotatedText
+typealias BookTextAnnotation = LampBookAnnotation
+typealias BookTextAnnotationData = LampBookAnnotationData
+typealias BookFootnoteReference = LampBookFootnoteReference
+typealias BookFootnote = LampBookFootnote
+typealias BookListItem = LampBookListItem
+typealias BookContentBlock = LampBookContentBlock
+typealias BookTextValue = LampBookTextValue
 
 // MARK: - Translation Usage (word counts from Bible versions)
 

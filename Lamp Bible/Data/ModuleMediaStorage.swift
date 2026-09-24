@@ -45,7 +45,7 @@ class ModuleMediaStorage {
     /// Get the local file URL for a media reference
     /// Returns nil if the file doesn't exist locally
     func getMediaURL(for mediaRef: MediaReference, moduleId: String) -> URL? {
-        guard BookMediaPath.isSafeFilename(mediaRef.filename) else { return nil }
+        guard BookMediaPath.isSafeMediaPath(mediaRef.filename) else { return nil }
         let fileURL = mediaDirectory(for: moduleId).appendingPathComponent(mediaRef.filename)
         if fileManager.fileExists(atPath: fileURL.path) {
             return fileURL
@@ -55,7 +55,7 @@ class ModuleMediaStorage {
 
     /// Get the expected local file URL for a media reference (may not exist yet)
     func expectedMediaURL(for mediaRef: MediaReference, moduleId: String) -> URL {
-        let filename = BookMediaPath.isSafeFilename(mediaRef.filename)
+        let filename = BookMediaPath.isSafeMediaPath(mediaRef.filename)
             ? mediaRef.filename
             : "__invalid_media_reference__"
         return mediaDirectory(for: moduleId).appendingPathComponent(filename)
@@ -226,11 +226,14 @@ class ModuleMediaStorage {
         try ensureMediaDirectory(for: moduleId)
 
         for mediaRef in mediaRefs {
-            guard BookMediaPath.isSafeFilename(mediaRef.filename) else { continue }
+            guard BookMediaPath.isSafeMediaPath(mediaRef.filename) else { continue }
             let sourceURL = bundleMediaDir.appendingPathComponent(mediaRef.filename)
             let destURL = expectedMediaURL(for: mediaRef, moduleId: moduleId)
 
             if fileManager.fileExists(atPath: sourceURL.path) {
+                try fileManager.createDirectory(
+                    at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
                 if fileManager.fileExists(atPath: destURL.path) {
                     try fileManager.removeItem(at: destURL)
                 }
@@ -251,6 +254,9 @@ class ModuleMediaStorage {
             }
 
             let destURL = targetDir.appendingPathComponent(mediaRef.filename)
+            try fileManager.createDirectory(
+                at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
             if fileManager.fileExists(atPath: destURL.path) {
                 try fileManager.removeItem(at: destURL)
             }

@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import LampCore
 
 // MARK: - Lampbible URL Parser
 
@@ -20,87 +21,24 @@ enum LampbibleURL {
 
     /// Parse a URL into a LampbibleURL
     static func parse(_ url: URL) -> LampbibleURL? {
-        guard url.scheme == "lampbible" else {
+        guard url.scheme?.lowercased() == "lampbible" else {
             return .external(url: url)
         }
-
-        // Extract translation from query string
-        let translationId = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first(where: { $0.name == "translation" })?
-            .value
-
-        let urlString = url.absoluteString
-        // Remove query string for path parsing
-        let pathOnly = urlString.split(separator: "?").first.map(String.init) ?? urlString
-
-        // Extract query parameters
-        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
-        let openExternal = queryItems?.first(where: { $0.name == "external" })?.value == "1"
-
-        // Handle reading plan format: lampbible://reading/SV/EV?external=1
-        if pathOnly.hasPrefix("lampbible://reading/") {
-            let pathParts = pathOnly.dropFirst("lampbible://reading/".count).split(separator: "/")
-            if let first = pathParts.first, let sv = Int(first) {
-                let ev = pathParts.count > 1 ? Int(pathParts[1]) : nil
-                return .reading(verseId: sv, endVerseId: ev, openExternal: openExternal)
-            }
-        }
-
-        // Handle legacy format: lampbible://verse/43003016
-        if pathOnly.hasPrefix("lampbible://verse/") {
-            let pathParts = pathOnly.dropFirst("lampbible://verse/".count).split(separator: "/")
-            if let first = pathParts.first, let verseId = Int(first) {
-                let endVerseId = pathParts.count > 1 ? Int(pathParts[1]) : nil
-                return .verse(verseId: verseId, endVerseId: endVerseId, translationId: translationId)
-            }
-        }
-
-        // Handle strongs format: lampbible://strongs/G1234
-        if pathOnly.hasPrefix("lampbible://strongs/") {
-            let key = String(pathOnly.dropFirst("lampbible://strongs/".count))
-            if !key.isEmpty {
-                return .strongs(key: key)
-            }
-        }
-
-        // Handle human-readable format: lampbible://gen1:1 or lampbible://gen1:1-5
-        // Pattern: bookOsisId + chapter + ":" + verse + optional("-" + endVerse)
-        let path = String(pathOnly.dropFirst("lampbible://".count)).lowercased()
-
-        // Use NSRegularExpression for compatibility
-        let pattern = "^([a-z0-9]+)(\\d+):(\\d+)(?:-(\\d+))?$"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
-              let match = regex.firstMatch(in: path, options: [], range: NSRange(path.startIndex..., in: path)) else {
+        guard let link = LampApplicationLink(url: url, bookNumberForOSIS: lookupBookId) else {
             return nil
         }
-
-        // Extract capture groups
-        guard match.numberOfRanges >= 4,
-              let osisRange = Range(match.range(at: 1), in: path),
-              let chapterRange = Range(match.range(at: 2), in: path),
-              let verseRange = Range(match.range(at: 3), in: path) else {
+        switch link {
+        case .verse(let reference, let endReference, let translationID):
+            return .verse(verseId: reference, endVerseId: endReference, translationId: translationID)
+        case .reading(let reference, let endReference, let openExternal):
+            return .reading(verseId: reference, endVerseId: endReference, openExternal: openExternal)
+        case .strongs(let key):
+            return .strongs(key: key)
+        case .reader(let reference?, let translationID):
+            return .verse(verseId: reference, endVerseId: nil, translationId: translationID)
+        case .reader, .book, .section, .moduleFile, .dataFile:
             return nil
         }
-
-        let osisId = String(path[osisRange])
-        guard let chapter = Int(path[chapterRange]),
-              let verse = Int(path[verseRange]) else { return nil }
-
-        // Look up book ID from OSIS ID
-        guard let bookId = lookupBookId(osisId: osisId) else { return nil }
-
-        let verseId = bookId * 1000000 + chapter * 1000 + verse
-        var endVerseId: Int? = nil
-
-        // Check for end verse (optional capture group 4)
-        if match.numberOfRanges >= 5 && match.range(at: 4).location != NSNotFound,
-           let endVerseRange = Range(match.range(at: 4), in: path),
-           let endVerse = Int(path[endVerseRange]), endVerse > verse {
-            endVerseId = bookId * 1000000 + chapter * 1000 + endVerse
-        }
-
-        return .verse(verseId: verseId, endVerseId: endVerseId, translationId: translationId)
     }
 
     /// Parse a URL string into a LampbibleURL

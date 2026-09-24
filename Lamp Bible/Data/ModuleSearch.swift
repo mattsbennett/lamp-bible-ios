@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampCore
 
 // MARK: - Search Result
 
@@ -840,18 +841,7 @@ class ModuleSearch {
 
     /// Simple text rank calculation for Realm results
     private func calculateTextRank(query: String, in texts: [String]) -> Double {
-        var score = 0.0
-        for text in texts {
-            let lower = text.lowercased()
-            if lower == query {
-                score += 10.0  // Exact match
-            } else if lower.hasPrefix(query) {
-                score += 5.0  // Prefix match
-            } else if lower.contains(query) {
-                score += 1.0  // Contains match
-            }
-        }
-        return score
+        LampSearchQuery(query).textRank(in: texts)
     }
 
     /// Extract a snippet centered around the first search term match
@@ -985,38 +975,15 @@ class ModuleSearch {
                 }
             }
 
-            // Date filter (new ISO format)
-            if let date = filter.devotionalDate {
-                conditions.append("d.date = ?")
-                arguments.append(date)
-            }
-
-            // Legacy date filter (month_day format, check against date column)
-            if let monthDay = filter.monthDay {
-                // Match MM-DD portion of YYYY-MM-DD
-                conditions.append("d.date LIKE ?")
-                arguments.append("%-\(monthDay)")
-            }
-
-            // Tags filter
-            if let tags = filter.tags, !tags.isEmpty {
-                // Match any of the tags
-                let tagConditions = tags.map { _ in "d.tags LIKE ?" }
-                conditions.append("(\(tagConditions.joined(separator: " OR ")))")
-                for tag in tags {
-                    arguments.append("%\(tag)%")
-                }
-            }
-
-            // Category filter
-            if let categories = filter.categories, !categories.isEmpty {
-                let categoryStrings = categories.map { $0.rawValue }
-                let placeholders = categoryStrings.map { _ in "?" }.joined(separator: ", ")
-                conditions.append("d.category IN (\(placeholders))")
-                for cat in categoryStrings {
-                    arguments.append(cat)
-                }
-            }
+            let criteria = LampDevotionalSearchCriteria(
+                date: filter.devotionalDate,
+                monthDay: filter.monthDay,
+                tags: filter.tags,
+                categories: filter.categories.map { Set($0.map(\.rawValue)) }
+            )
+            let facets = criteria.sqlConditions(tableAlias: "d")
+            conditions += facets.clauses
+            arguments += facets.arguments
 
             let whereClause = conditions.joined(separator: " AND ")
             let sql = """
@@ -1245,47 +1212,7 @@ class ModuleSearch {
     // MARK: - FTS Query Preparation
 
     private func prepareFTSQuery(_ query: String) -> String {
-        // Trim and check for empty
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-
-        // Parse the query to identify quoted phrases and unquoted terms
-        let searchTerms = parseSearchQuery(trimmed)
-
-        // Build FTS5 query
-        var ftsTerms: [String] = []
-        for term in searchTerms {
-            // Escape FTS5 special characters: * - ^ : ( )
-            var escaped = term.text
-                .replacingOccurrences(of: "*", with: "")
-                .replacingOccurrences(of: "-", with: "")
-                .replacingOccurrences(of: "^", with: "")
-                .replacingOccurrences(of: ":", with: "")
-                .replacingOccurrences(of: "(", with: "")
-                .replacingOccurrences(of: ")", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            guard !escaped.isEmpty else { continue }
-
-            // Escape any quote characters that might be in the term
-            escaped = escaped
-                .replacingOccurrences(of: "\"", with: "\"\"")
-                .replacingOccurrences(of: "\u{201C}", with: "")  // " left double
-                .replacingOccurrences(of: "\u{201D}", with: "")  // " right double
-                .replacingOccurrences(of: "\u{2018}", with: "")  // ' left single
-                .replacingOccurrences(of: "\u{2019}", with: "")  // ' right single
-
-            if term.isExact {
-                // Quoted phrase - use FTS5 phrase matching (no prefix wildcard)
-                // This ensures exact word matching in FTS5
-                ftsTerms.append("\"\(escaped)\"")
-            } else {
-                // Unquoted term - add prefix wildcard for partial matching
-                ftsTerms.append("\"\(escaped)\"*")
-            }
-        }
-
-        return ftsTerms.joined(separator: " ")
+        LampSearchQuery(query).fts5Query
     }
 
     // MARK: - Highlight Search
@@ -1320,8 +1247,7 @@ class ModuleSearch {
             // Filter by color if specified
             if let colorFilter = filter.highlightColors, !colorFilter.isEmpty {
                 highlights = highlights.filter { entry in
-                    let entryColor = entry.color?.uppercased() ?? "FFCC00"  // Default yellow
-                    return colorFilter.contains(entryColor)
+                    LampHighlightSearch.matchesColor(entry.color, in: colorFilter)
                 }
             }
 
@@ -1351,17 +1277,9 @@ class ModuleSearch {
                 let title = "\(bookName) \(chapter):\(verse)"
 
                 // Create snippet - show highlighted portion marked for styling
-                let snippet: String
-                if highlight.sc >= 0 && highlight.ec > highlight.sc && highlight.ec <= verseText.count {
-                    let startIndex = verseText.index(verseText.startIndex, offsetBy: highlight.sc)
-                    let endIndex = verseText.index(verseText.startIndex, offsetBy: min(highlight.ec, verseText.count))
-                    let highlightedText = String(verseText[startIndex..<endIndex])
-                    // Wrap in mark tags so the UI applies highlight styling
-                    snippet = "<mark>\(highlightedText)</mark>"
-                } else {
-                    // Wrap entire text in mark tags
-                    snippet = "<mark>\(verseText)</mark>"
-                }
+                let snippet = LampHighlightSearch.markedSnippet(
+                    text: verseText, startOffset: highlight.sc, endOffset: highlight.ec
+                )
 
                 // Calculate rank based on text match quality
                 let rank: Double
@@ -1389,7 +1307,7 @@ class ModuleSearch {
                     verseId: highlight.ref,
                     rank: rank
                 )
-                result.highlightColor = highlight.color ?? "FFCC00"
+                result.highlightColor = LampHighlightSearch.normalizedColor(highlight.color)
                 result.highlightStyle = highlight.highlightStyle
                 results.append(result)
 

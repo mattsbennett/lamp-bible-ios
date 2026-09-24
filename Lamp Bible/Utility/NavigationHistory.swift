@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftUI
+import LampCore
 
 /// Manages navigation history for the Bible reader, tracking visited chapters and verse positions
 class NavigationHistory: ObservableObject {
@@ -48,6 +49,19 @@ class NavigationHistory: ObservableObject {
         return history[currentIndex]
     }
 
+    private var timeline: LampNavigationTimeline<Int> {
+        get { LampNavigationTimeline(entries: history, currentIndex: currentIndex, capacity: maxHistorySize) }
+        set {
+            history = newValue.entries
+            currentIndex = newValue.currentIndex
+        }
+    }
+
+    private func chapterIdentity(_ verseId: Int) -> AnyHashable {
+        let (_, chapter, book) = splitVerseId(verseId)
+        return AnyHashable("\(book):\(chapter)")
+    }
+
     private init() {
         loadFromUserDefaults()
     }
@@ -75,66 +89,19 @@ class NavigationHistory: ObservableObject {
     /// Call this before navigating away to preserve scroll position
     /// - Parameter verseId: The current visible verseId
     func updateCurrentPosition(to verseId: Int) {
-        guard currentIndex >= 0 && currentIndex < history.count else { return }
-
-        // Only update if we're in the same chapter (don't change chapters)
-        let (_, currentChapter, currentBook) = splitVerseId(history[currentIndex])
-        let (_, newChapter, newBook) = splitVerseId(verseId)
-
-        if currentBook == newBook && currentChapter == newChapter {
-            history[currentIndex] = verseId
-        }
+        var updated = timeline
+        updated.replaceCurrent(with: verseId) { chapterIdentity($0) == chapterIdentity($1) }
+        timeline = updated
     }
 
     /// Record a navigation to a new chapter
     /// - Parameter verseId: The verseId being navigated to
     /// - Parameter isHistoryNavigation: True if this navigation came from going back/forward in history
     func recordNavigation(to verseId: Int, isHistoryNavigation: Bool = false) {
-        let (_, chapter, book) = splitVerseId(verseId)
-
-        // Don't record if this is a history navigation
-        if isHistoryNavigation {
-            return
-        }
-
-        // Don't record if we're navigating to the same chapter as current
-        if let currentEntry = current {
-            let (_, currentChapter, currentBook) = splitVerseId(currentEntry)
-            if book == currentBook && chapter == currentChapter {
-                return
-            }
-        }
-
-        // Find ALL existing entries for the same book:chapter (for deduplication)
-        var indicesToRemove: [Int] = []
-        for (index, existingVerseId) in history.enumerated() {
-            let (_, existingChapter, existingBook) = splitVerseId(existingVerseId)
-            if existingBook == book && existingChapter == chapter {
-                indicesToRemove.append(index)
-            }
-        }
-
-        // Only truncate forward history if this is a NEW chapter (not already in history)
-        // This prevents losing history entries when navigating to an existing chapter
-        if indicesToRemove.isEmpty && currentIndex < history.count - 1 {
-            history = Array(history.prefix(currentIndex + 1))
-        }
-
-        // Remove duplicates in reverse order to preserve indices
-        for index in indicesToRemove.reversed() {
-            history.remove(at: index)
-        }
-
-        // Add new entry with full verseId (preserving verse position)
-        history.append(verseId)
-        currentIndex = history.count - 1
-
-        // Trim if exceeds max size
-        if history.count > maxHistorySize {
-            let excess = history.count - maxHistorySize
-            history.removeFirst(excess)
-            currentIndex -= excess
-        }
+        guard !isHistoryNavigation else { return }
+        var updated = timeline
+        updated.visit(verseId, identity: chapterIdentity, preserveForwardForExistingIdentity: true)
+        timeline = updated
     }
 
     /// Go back in history
@@ -148,8 +115,10 @@ class NavigationHistory: ObservableObject {
             updateCurrentPosition(to: verseId)
         }
 
-        currentIndex -= 1
-        return history[currentIndex]
+        var updated = timeline
+        let destination = updated.goBack()
+        timeline = updated
+        return destination
     }
 
     /// Go forward in history
@@ -163,14 +132,17 @@ class NavigationHistory: ObservableObject {
             updateCurrentPosition(to: verseId)
         }
 
-        currentIndex += 1
-        return history[currentIndex]
+        var updated = timeline
+        let destination = updated.goForward()
+        timeline = updated
+        return destination
     }
 
     /// Clear all history
     func clear() {
-        history = []
-        currentIndex = -1
+        var updated = timeline
+        updated.clear()
+        timeline = updated
     }
 
     /// Navigate to a specific index in history
@@ -185,8 +157,10 @@ class NavigationHistory: ObservableObject {
             updateCurrentPosition(to: verseId)
         }
 
-        currentIndex = index
-        return history[currentIndex]
+        var updated = timeline
+        let destination = updated.goToIndex(index)
+        timeline = updated
+        return destination
     }
 
     /// Get all history entries with their descriptions

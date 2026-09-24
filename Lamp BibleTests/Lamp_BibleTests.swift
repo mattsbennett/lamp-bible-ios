@@ -13,6 +13,79 @@ import LampModuleKit
 final class Lamp_BibleTests: XCTestCase {
     private var temporaryDirectory: URL!
 
+    func testSharedReferenceLinksOpenInIOS() throws {
+        let passage = try XCTUnwrap(URL(
+            string: "lampbible://reference/john3:16-18?translation=KJV"
+        ))
+        guard case .verse(let start, let end, let translation) = LampbibleURL.parse(passage) else {
+            return XCTFail("The shared passage format should open in the iOS reader")
+        }
+        XCTAssertEqual(start, 43_003_016)
+        XCTAssertEqual(end, 43_003_018)
+        XCTAssertEqual(translation, "KJV")
+
+        let reading = try XCTUnwrap(URL(
+            string: "lampbible://reading/43003016/43003018?external=1"
+        ))
+        guard case .reading(let readingStart, let readingEnd, let external) =
+            LampbibleURL.parse(reading) else {
+            return XCTFail("The shared reading format should remain available")
+        }
+        XCTAssertEqual(readingStart, start)
+        XCTAssertEqual(readingEnd, end)
+        XCTAssertTrue(external)
+    }
+
+    func testDevotionalMarkdownRetainsNestedFrontmatter() throws {
+        let markdown = """
+        ---
+        id: "hope"
+        title: "Living Hope"
+        tags: ["hope", "grace"]
+        series:
+          id: "series-1"
+          name: "Daily Hope"
+          order: 2
+        keyScriptures:
+          - ref: "John 1:1"
+            sv: 43001001
+            ev: 43001002
+        ---
+
+        Hope begins here.
+        """
+        let parsed = try XCTUnwrap(MarkdownDevotionalConverter.parseMarkdown(markdown))
+        XCTAssertEqual(parsed.meta.tags, ["hope", "grace"])
+        XCTAssertEqual(parsed.meta.series?.name, "Daily Hope")
+        XCTAssertEqual(parsed.meta.series?.order, 2)
+        XCTAssertEqual(parsed.meta.keyScriptures?.first?.sv, 43_001_001)
+        XCTAssertEqual(parsed.meta.keyScriptures?.first?.ev, 43_001_002)
+    }
+
+    func testNotesMarkdownRetainsFootnoteDefinitions() throws {
+        let markdown = """
+        ---
+        book: John
+        bookNumber: 43
+        ---
+
+        ## Chapter 1
+
+        ### 1:1
+
+        The Word[^one].
+
+        ---
+
+        [^one]: An explanatory footnote.
+        """
+        let notes = try NotesImportExportManager.shared.parseMarkdownToNotes(
+            content: markdown, filename: "John.md"
+        )
+        XCTAssertEqual(notes.chapter(1)?.verses?.first?.footnotes?.first?.plainText,
+            "An explanatory footnote.")
+    }
+
     func testDevotionalMarkdownUsesSharedRichContentProjection() throws {
         let blocks: [DevotionalContentBlock] = [
             .heading("Hope", level: 2),
@@ -735,7 +808,7 @@ final class Lamp_BibleTests: XCTestCase {
             ]}
           ],
           "media": [
-            {"id":"cover","type":"image","filename":"cover.jpg","mimeType":"image/jpeg"}
+            {"id":"cover","type":"image","filename":"chapters/one/cover.jpg","mimeType":"image/jpeg"}
           ]
         }
         """#.utf8)
@@ -747,6 +820,7 @@ final class Lamp_BibleTests: XCTestCase {
         XCTAssertEqual(descriptor.author, "A. Reader")
         XCTAssertEqual(descriptor.sectionCount, 3)
         XCTAssertEqual(descriptor.mediaReferences.map(\.id), ["cover"])
+        XCTAssertEqual(descriptor.mediaReferences.first?.filename, "chapters/one/cover.jpg")
     }
 
     func testBookJSONDescriptorRejectsMediaPathTraversal() {
@@ -763,6 +837,32 @@ final class Lamp_BibleTests: XCTestCase {
         }
     }
 
+    func testBookSectionKeepsValidBlocksAroundMalformedEntry() {
+        let section = BookSection(
+            id: "book:chapter", moduleId: "book", sectionId: "chapter",
+            parentId: nil, sectionType: "chapter", number: nil,
+            title: "Chapter", subtitle: nil, depth: 0, orderIndex: 0,
+            keyScripturesJson: nil,
+            contentJson: #"[{"type":"paragraph","content":{"text":"First"}},{"type":42},{"type":"heading","content":{"text":"Last"}}]"#,
+            searchText: "First Last"
+        )
+        XCTAssertEqual(section.contentBlocks.map(\.type), ["paragraph", "heading"])
+    }
+
+    func testBookSectionDecodesRichTableCells() {
+        let section = BookSection(
+            id: "book:table", moduleId: "book", sectionId: "table",
+            parentId: nil, sectionType: "chapter", number: nil,
+            title: "Table", subtitle: nil, depth: 0, orderIndex: 0,
+            keyScripturesJson: nil,
+            contentJson: #"[{"type":"table","columnCount":2,"rows":[{"cells":[{"column":0,"colSpan":2,"header":true,"content":{"text":"John 1:1","annotations":[{"type":"scripture","start":0,"end":8,"data":{"sv":43001001,"source":"KJV"}}]}}]}]}]"#,
+            searchText: "John 1:1"
+        )
+        let cell = section.contentBlocks.first?.rows.first?.cells.first
+        XCTAssertEqual(cell?.columnSpan, 2)
+        XCTAssertEqual(cell?.content.annotations.first?.data?.source, "KJV")
+    }
+
     func testBookAnnotatedTextDecodesScriptureAndFootnoteLinks() throws {
         let data = Data(#"""
         {
@@ -777,9 +877,9 @@ final class Lamp_BibleTests: XCTestCase {
 
         let text = try JSONDecoder().decode(BookAnnotatedText.self, from: data)
 
-        XCTAssertEqual(text.annotations?.first?.data?.refs?.first?.sv, 43_003_016)
-        XCTAssertEqual(text.annotations?.last?.data?.footnoteId, "note-1")
-        XCTAssertEqual(text.footnoteReferences?.first?.id, "note-2")
+        XCTAssertEqual(text.annotations.first?.data?.references.first?.startReference, 43_003_016)
+        XCTAssertEqual(text.annotations.last?.data?.footnoteID, "note-1")
+        XCTAssertEqual(text.footnoteReferences.first?.id, "note-2")
     }
 
     func testBookSectionHierarchyPreservesNestedAndOrphanedSections() {
@@ -830,7 +930,10 @@ final class Lamp_BibleTests: XCTestCase {
         let sourceDirectory = temporaryDirectory.appendingPathComponent(moduleID, isDirectory: true)
         try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
         let jsonURL = sourceDirectory.appendingPathComponent("source.json")
-        let coverURL = sourceDirectory.appendingPathComponent("cover.jpg")
+        let coverURL = sourceDirectory.appendingPathComponent("chapters/one/cover.jpg")
+        try FileManager.default.createDirectory(
+            at: coverURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
         try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: coverURL)
         let json = """
         {
@@ -853,7 +956,7 @@ final class Lamp_BibleTests: XCTestCase {
             }
           ],
           "media": [
-            {"id":"cover","type":"image","filename":"cover.jpg","mimeType":"image/jpeg"}
+            {"id":"cover","type":"image","filename":"chapters/one/cover.jpg","mimeType":"image/jpeg"}
           ]
         }
         """

@@ -3690,7 +3690,7 @@ class ModuleSyncManager: ObservableObject {
             throw ModuleSyncError.moduleNotFound(moduleId)
         }
         return try book.mediaReferences.map { mediaRef in
-            guard BookMediaPath.isSafeFilename(mediaRef.filename) else {
+            guard BookMediaPath.isSafeMediaPath(mediaRef.filename) else {
                 throw forExport
                     ? ModuleSyncError.exportFailed("Invalid book media filename: \(mediaRef.filename)")
                     : ModuleSyncError.importFailed("Invalid book media filename: \(mediaRef.filename)")
