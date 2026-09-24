@@ -178,21 +178,14 @@ struct MarkdownDevotionalConverter {
         }
 
         // All block and section rendering is shared with Mac.
-        lines.append(portableMarkdown(devotional.content))
+        lines.append(bodyToMarkdown(devotional))
 
         // Footnotes
-        if let footnotes = devotional.footnotes, !footnotes.isEmpty {
+        if let footnotes = footnotesToMarkdown(devotional.footnotes) {
             lines.append("")
             lines.append("---")
             lines.append("")
-            for footnote in footnotes {
-                switch footnote.content {
-                case .plain(let text):
-                    lines.append("[^\(footnote.id)]: \(text)")
-                case .annotated(let annotated):
-                    lines.append("[^\(footnote.id)]: \(annotatedTextToMarkdown(annotated))")
-                }
-            }
+            lines.append(footnotes)
         }
 
         return lines.joined(separator: "\n")
@@ -207,24 +200,41 @@ struct MarkdownDevotionalConverter {
     static func contentToMarkdown(_ devotional: Devotional) -> String {
         var lines: [String] = []
 
-        lines.append(portableMarkdown(devotional.content))
+        lines.append(bodyToMarkdown(devotional))
 
         // Footnotes (with --- separator)
-        if let footnotes = devotional.footnotes, !footnotes.isEmpty {
+        if let footnotes = footnotesToMarkdown(devotional.footnotes) {
             lines.append("")
             lines.append("---")
             lines.append("")
-            for footnote in footnotes {
-                switch footnote.content {
-                case .plain(let text):
-                    lines.append("[^\(footnote.id)]: \(text)")
-                case .annotated(let annotated):
-                    lines.append("[^\(footnote.id)]: \(annotatedTextToMarkdown(annotated))")
-                }
-            }
+            lines.append(footnotes)
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    static func bodyToMarkdown(_ devotional: Devotional) -> String {
+        devotional.markdownContent ?? portableMarkdown(devotional.content)
+    }
+
+    static func summaryToMarkdown(_ devotional: Devotional) -> String? {
+        guard let summary = devotional.summary else { return nil }
+        switch summary {
+        case .plain(let text): return text
+        case .annotated(let annotated): return annotatedTextToMarkdown(annotated)
+        }
+    }
+
+    static func footnotesToMarkdown(_ footnotes: [DevotionalFootnote]?) -> String? {
+        guard let footnotes, !footnotes.isEmpty else { return nil }
+        return LampPersonalMarkdownWriter.footnoteDefinitions(footnotes.map { footnote in
+            let content: String
+            switch footnote.content {
+            case .plain(let text): content = text
+            case .annotated(let annotated): content = annotatedTextToMarkdown(annotated)
+            }
+            return (id: footnote.id, content: content)
+        })
     }
 
     private static func portableMarkdown(_ content: DevotionalContent) -> String {

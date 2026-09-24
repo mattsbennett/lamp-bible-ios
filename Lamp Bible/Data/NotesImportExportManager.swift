@@ -385,7 +385,7 @@ class NotesImportExportManager {
         // Match exporter format: #### Introduction
         let introRegex = try! NSRegularExpression(pattern: #"^####\s+Introduction\s*$"#, options: .caseInsensitive)
         // Match exporter format: #### 1:1 or #### 1:1-5 (chapter:verse format)
-        let verseRegex = try! NSRegularExpression(pattern: #"^####\s+(\d+:\d+(?:-\d+)?)\s*$"#)
+        let verseRegex = try! NSRegularExpression(pattern: #"^####\s+(\d+:\d+(?:-\d+(?::\d+)?)?)\s*$"#)
 
         func flushSection() {
             guard !sectionContent.isEmpty else { return }

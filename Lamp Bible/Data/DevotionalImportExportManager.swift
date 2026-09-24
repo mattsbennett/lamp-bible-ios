@@ -393,75 +393,9 @@ class DevotionalImportExportManager {
             throw ExportError.noDevotionalsFound
         }
 
-        var lines: [String] = []
-
-        // Header
-        lines.append("# My Devotionals")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-
-        // Process each devotional
-        for devotional in devotionals {
-            lines.append("## \(devotional.meta.title)")
-            lines.append("")
-
-            // Metadata
-            var metadataLines: [String] = []
-            if let date = devotional.meta.date {
-                metadataLines.append("**Date:** \(date)")
-            }
-            if let category = devotional.meta.category {
-                metadataLines.append("**Category:** \(category.rawValue)")
-            }
-            if let tags = devotional.meta.tags, !tags.isEmpty {
-                metadataLines.append("**Tags:** \(tags.joined(separator: ", "))")
-            }
-            if let author = devotional.meta.author {
-                metadataLines.append("**Author:** \(author)")
-            }
-
-            if !metadataLines.isEmpty {
-                lines.append(metadataLines.joined(separator: " | "))
-                lines.append("")
-            }
-
-            // Summary
-            if let summary = devotional.summary {
-                lines.append("### Summary")
-                lines.append("")
-                switch summary {
-                case .plain(let text):
-                    lines.append(text)
-                case .annotated(let annotated):
-                    lines.append(annotated.text)
-                }
-                lines.append("")
-            }
-
-            // Content
-            switch devotional.content {
-            case .blocks(let blocks):
-                lines.append(MarkdownDevotionalConverter.blocksToMarkdown(blocks))
-            case .structured(let structured):
-                if let intro = structured.introduction {
-                    lines.append(MarkdownDevotionalConverter.blocksToMarkdown(intro))
-                }
-                if let sections = structured.sections {
-                    for section in sections {
-                        lines.append(sectionToMarkdown(section))
-                    }
-                }
-                if let conclusion = structured.conclusion {
-                    lines.append(MarkdownDevotionalConverter.blocksToMarkdown(conclusion))
-                }
-            }
-
-            lines.append("---")
-            lines.append("")
-        }
-
-        let markdown = lines.joined(separator: "\n")
+        let entries = devotionals.map(MarkdownConverter.devotionalEntryMarkdown)
+        let markdown = "# My Devotionals\n\n---\n\n"
+            + entries.joined(separator: "\n\n---\n\n") + "\n\n---\n"
         let fileName = "All_Devotionals.md"
         let fileURL = exportDir.appendingPathComponent(fileName)
 
@@ -472,27 +406,6 @@ class DevotionalImportExportManager {
     }
 
     // MARK: - Helper Methods
-
-    private func sectionToMarkdown(_ section: DevotionalSection) -> String {
-        var lines: [String] = []
-
-        let level = section.level ?? 2
-        let prefix = String(repeating: "#", count: level + 1) // +1 because we're inside a devotional
-        lines.append("\(prefix) \(section.title)")
-        lines.append("")
-
-        if let blocks = section.blocks {
-            lines.append(MarkdownDevotionalConverter.blocksToMarkdown(blocks))
-        }
-
-        if let subsections = section.subsections {
-            for subsection in subsections {
-                lines.append(sectionToMarkdown(subsection))
-            }
-        }
-
-        return lines.joined(separator: "\n")
-    }
 
     private func sanitizeFilename(_ title: String) -> String {
         title

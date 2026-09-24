@@ -7,6 +7,7 @@
 
 import XCTest
 import GRDB
+import LampCore
 import LampModuleKit
 @testable import Lamp_Bible
 
@@ -84,6 +85,37 @@ final class Lamp_BibleTests: XCTestCase {
         )
         XCTAssertEqual(notes.chapter(1)?.verses?.first?.footnotes?.first?.plainText,
             "An explanatory footnote.")
+    }
+
+    func testMultiBookNotesMarkdownAcceptsCrossChapterRanges() async throws {
+        let moduleID = "markdown-ranges-\(UUID().uuidString)"
+        defer {
+            try? ModuleDatabase.shared.deleteAllEntriesForModule(moduleId: moduleID)
+            try? ModuleDatabase.shared.deleteModule(id: moduleID)
+        }
+        let markdown = """
+        # My Notes
+
+        ## John
+
+        ### Chapter 1
+
+        #### 1:1-2:3
+
+        The Word[^one].
+
+        ---
+
+        [^one]: An explanatory footnote.
+        """
+        let importedCount = try await NotesImportExportManager.shared
+            .importNotesFromMarkdownString(markdown, moduleId: moduleID)
+        XCTAssertEqual(importedCount, 1)
+        let note = try XCTUnwrap(try ModuleDatabase.shared.getNotesForVerse(
+            moduleId: moduleID, verseId: 43_001_001
+        ).first)
+        XCTAssertEqual(note.verseRefs, [43_002_003])
+        XCTAssertEqual(note.footnotes?.first?.plainText, "An explanatory footnote.")
     }
 
     func testDevotionalMarkdownUsesSharedRichContentProjection() throws {
@@ -217,6 +249,68 @@ final class Lamp_BibleTests: XCTestCase {
         var example = row
         example.contentJson = "{\"example\": true}"
         XCTAssertEqual(example.toDevotional()?.markdownContent, example.contentJson)
+    }
+
+    func testMultiDevotionalMarkdownPreservesRichFieldsAcrossImport() throws {
+        let sourceID = "markdown-source-\(UUID().uuidString)"
+        let targetID = "markdown-target-\(UUID().uuidString)"
+        let database = ModuleDatabase.shared
+        defer {
+            for id in [sourceID, targetID] {
+                try? database.deleteAllEntriesForModule(moduleId: id)
+                try? database.deleteModule(id: id)
+            }
+        }
+        try database.saveModule(Module(
+            id: sourceID, type: .devotional, name: "Writing", filePath: "writing.lamp"
+        ))
+        try database.saveModule(Module(
+            id: targetID, type: .devotional, name: "Imported", filePath: "imported.lamp"
+        ))
+        let rich = Devotional(
+            meta: DevotionalMeta(
+                title: "Morning Hope", subtitle: "Beginning well", author: "A Reader",
+                date: "2026-08-03", tags: ["hope"], category: .reflection,
+                series: DevotionalSeriesInfo(id: nil, name: "Daily Hope", order: 1),
+                keyScriptures: [DevotionalKeyScripture(
+                    sv: 43_001_001, ev: nil, label: "John 1:1"
+                )]
+            ),
+            summary: .plain("God gives hope."),
+            content: .blocks([
+                .paragraph("Opening."), .heading("A body heading", level: 2),
+                .paragraph("More detail.")
+            ]),
+            footnotes: [DevotionalFootnote(id: "one", content: .plain("A footnote."))]
+        )
+        try database.saveDevotionalEntry(DevotionalEntry(from: rich, moduleId: sourceID))
+        let markdown = try MarkdownConverter.exportDevotionalsToMarkdown(moduleId: sourceID)
+        XCTAssertTrue(markdown.contains("## A body heading"))
+        let individual = try XCTUnwrap(
+            MarkdownConverter.exportDevotionalsToMarkdownByEntry(moduleId: sourceID)["Morning Hope"]
+        )
+        XCTAssertTrue(individual.contains("series:"))
+        XCTAssertTrue(individual.contains("## A body heading"))
+        XCTAssertEqual(try LampPersonalMarkdownParser.devotionals(
+            from: individual, filename: "Morning Hope"
+        ).first?.footnotes, "[^one]: A footnote.")
+        XCTAssertEqual(try MarkdownConverter.importDevotionalsFromMarkdown(
+            markdown, moduleId: targetID
+        ), 1)
+        let imported = try database.read { db in
+            try DevotionalEntry.filter(Column("module_id") == targetID).fetchOne(db)
+        }
+        let restored = try XCTUnwrap(imported?.toDevotional())
+        XCTAssertEqual(restored.meta.subtitle, "Beginning well")
+        XCTAssertEqual(restored.meta.author, "A Reader")
+        XCTAssertEqual(restored.meta.tags, ["hope"])
+        XCTAssertEqual(restored.meta.category, .reflection)
+        XCTAssertEqual(restored.meta.series?.name, "Daily Hope")
+        XCTAssertEqual(restored.meta.series?.order, 1)
+        XCTAssertEqual(restored.meta.keyScriptures?.first?.sv, 43_001_001)
+        XCTAssertEqual(restored.summary?.plainText, "God gives hope.")
+        XCTAssertTrue(restored.markdownContent?.contains("## A body heading") == true)
+        XCTAssertEqual(restored.footnotes?.first?.plainText, "A footnote.")
     }
 
     override func setUpWithError() throws {
