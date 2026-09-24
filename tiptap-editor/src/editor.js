@@ -18,18 +18,22 @@ let mediaMap = {}
 // Resolve media/id references to HTML figure elements that ImageBlock can parse
 function resolveMediaPaths(md) {
   // Images: ![caption](media/id) -> <figure class="image-block">...</figure>
-  return md.replace(/!\[([^\]]*)\]\(media\/([^)]+)\)/g, (match, caption, id) => {
-    const url = mediaMap[id] || `media/${id}`
-    return `<figure class="image-block" data-media-id="${id}"><img src="${url}" alt="${escapeHtmlContent(caption)}"><figcaption>${escapeHtmlContent(caption)}</figcaption></figure>`
-  })
+  const figure = (caption, id) => {
+    const url = mediaMap[id] || (id.startsWith('lamp-media://') ? id : `media/${id}`)
+    return `<figure class="image-block" data-media-id="${escapeHtmlAttribute(id)}"><img src="${escapeHtmlAttribute(url)}" alt="${escapeHtmlAttribute(caption)}"><figcaption>${escapeHtmlContent(caption)}</figcaption></figure>`
+  }
+  return md
+    .replace(/!\[([^\]]*)\]\(media\/([^)]+)\)/g, (match, caption, id) => figure(caption, id))
+    .replace(/!\[([^\]]*)\]\((lamp-media:\/\/[^)]+)\)/g, (match, caption, id) => figure(caption, id))
 }
 
 // Resolve audio block markdown to HTML that AudioBlock can parse
 function resolveAudioBlocks(md) {
   // Audio: [caption](media/id) on its own line -> <div class="audio-block">...</div>
-  return md.replace(/^(?<!!)\[([^\]]+)\]\(media\/([^)]+)\)$/gm, (match, caption, id) => {
-    return `<div class="audio-block" data-media-id="${id}" data-caption="${escapeHtmlContent(caption)}"><span class="audio-icon">🎵</span><span class="audio-caption">${escapeHtmlContent(caption)}</span></div>`
-  })
+  const block = (caption, id) => `<div class="audio-block" data-media-id="${escapeHtmlAttribute(id)}" data-caption="${escapeHtmlAttribute(caption)}"><span class="audio-icon">🎵</span><span class="audio-caption">${escapeHtmlContent(caption)}</span></div>`
+  return md
+    .replace(/^(?<!!)\[([^\]]+)\]\(media\/([^)]+)\)$/gm, (match, caption, id) => block(caption, id))
+    .replace(/^(?<!!)\[([^\]]+)\]\((lamp-media:\/\/[^)]+)\)$/gm, (match, caption, id) => block(caption, id))
 }
 
 // Preserve line breaks within blockquotes by converting to hard breaks
@@ -602,6 +606,11 @@ function escapeHtmlContent(str) {
   const div = document.createElement('div')
   div.textContent = str
   return div.innerHTML
+}
+
+function escapeHtmlAttribute(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
 // ---- Init ----

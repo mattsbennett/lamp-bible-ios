@@ -172,10 +172,13 @@ enum SyncState: Equatable {
 enum SyncError: Error, LocalizedError {
     case notAvailable
     case notConfigured
+    case incomplete
     case authenticationFailed
     case networkError(Error)
     case serverError(Int, String?)
     case conflictDetected
+    case alreadyRunning
+    case backendTransitionInProgress
     case encodingFailed
     case decodingFailed
     case recordNotFound(String)
@@ -188,6 +191,8 @@ enum SyncError: Error, LocalizedError {
             return "Sync service is not available"
         case .notConfigured:
             return "Sync is not configured"
+        case .incomplete:
+            return "Sync did not finish; some content could not be imported or uploaded"
         case .authenticationFailed:
             return "Authentication failed"
         case .networkError(let error):
@@ -196,6 +201,10 @@ enum SyncError: Error, LocalizedError {
             return "Server error \(code): \(message ?? "Unknown")"
         case .conflictDetected:
             return "Conflict detected during sync"
+        case .alreadyRunning:
+            return "Settings sync is already running"
+        case .backendTransitionInProgress:
+            return "A sync backend change is in progress"
         case .encodingFailed:
             return "Failed to encode data"
         case .decodingFailed:

@@ -27,7 +27,8 @@ export const ImageBlock = Node.create({
           const caption = node.attrs.caption || node.attrs.alt || ''
           const mediaId = node.attrs.mediaId
           if (mediaId) {
-            state.write(`![${caption}](media/${mediaId})`)
+            const path = mediaId.startsWith('lamp-media://') ? mediaId : `media/${mediaId}`
+            state.write(`![${caption}](${path})`)
           } else {
             state.write(`![${caption}](${node.attrs.src || ''})`)
           }

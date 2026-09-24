@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import LampModuleKit
 
 // MARK: - Module Storage Errors
 
@@ -17,6 +18,7 @@ enum ModuleStorageError: Error, LocalizedError {
     case decodingFailed
     case directoryCreationFailed
     case fileCoordinationFailed
+    case unresolvedVersions
     case hashCalculationFailed
 
     var errorDescription: String? {
@@ -35,6 +37,8 @@ enum ModuleStorageError: Error, LocalizedError {
             return "Failed to create directory"
         case .fileCoordinationFailed:
             return "File coordination failed"
+        case .unresolvedVersions:
+            return "The iCloud file has conflicting versions that need resolution"
         case .hashCalculationFailed:
             return "Failed to calculate file hash"
         }
@@ -73,6 +77,9 @@ protocol ModuleStorage {
     /// Read module file data
     func readModuleFile(type: ModuleType, fileName: String) async throws -> Data
 
+    /// Read bytes with the revision that identifies that same body.
+    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile
+
     /// Write module file data
     func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws
 
@@ -100,7 +107,7 @@ protocol ModuleStorage {
     /// Write file at arbitrary path (relative to base storage)
     func writeFile(path: String, data: Data) async throws
 
-    /// Lightweight change token for a file (ETag for WebDAV, mod-date string for iCloud).
+    /// Change token for a file (ETag for WebDAV, content digest for iCloud).
     /// Returns nil if the file doesn't exist or the storage doesn't support it.
     func getChangeToken(path: String) async -> String?
 }
@@ -141,23 +148,23 @@ extension ModuleStorage {
     func directoryName(for type: ModuleType) -> String {
         switch type {
         case .translation:
-            return "Translations"
+            return LampSyncContentKind.translations.rawValue
         case .dictionary:
-            return "Dictionaries"
+            return LampSyncContentKind.dictionaries.rawValue
         case .commentary:
-            return "Commentaries"
+            return LampSyncContentKind.commentaries.rawValue
         case .book:
-            return "Books"
+            return LampSyncContentKind.books.rawValue
         case .devotional:
-            return "Devotionals"
+            return LampSyncContentKind.devotionals.rawValue
         case .notes:
-            return "Notes"
+            return LampSyncContentKind.notes.rawValue
         case .plan:
-            return "Plans"
+            return LampSyncContentKind.plans.rawValue
         case .highlights:
-            return "Highlights"
+            return LampSyncContentKind.highlights.rawValue
         case .quiz:
-            return "Quizzes"
+            return LampSyncContentKind.quizzes.rawValue
         }
     }
 

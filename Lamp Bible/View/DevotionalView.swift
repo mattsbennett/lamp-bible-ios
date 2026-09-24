@@ -53,6 +53,7 @@ struct DevotionalView: View {
     @State private var mode: DevotionalViewMode
     @State private var editMode: DevotionalEditMode = .visual
     @State private var markdownContent: String = ""
+    @State private var preservesRichContentJSON = false
     @State private var showingMetadataEditor: Bool = false
     @State private var hasUnsavedChanges: Bool = false
     @State private var fontSize: CGFloat = 18
@@ -116,6 +117,9 @@ struct DevotionalView: View {
         _mode = State(initialValue: initialMode)
         // Use stored markdown if available, otherwise convert from blocks (legacy data)
         _markdownContent = State(initialValue: devotional.markdownContent ?? MarkdownDevotionalConverter.contentToMarkdown(devotional))
+        _preservesRichContentJSON = State(initialValue:
+            MarkdownDevotionalConverter.shouldRetainContentJSON(devotional)
+        )
         // Load present mode font multiplier from settings
         let settings = UserDatabase.shared.getSettings()
         _presentFontMultiplier = State(initialValue: CGFloat(settings.devotionalPresentFontMultiplier))
@@ -299,7 +303,7 @@ struct DevotionalView: View {
                     syncMarkdownFromVisualEditor()
                 }
                 // Then sync blocks from markdown (works for both visual and markdown modes)
-                syncBlocksFromMarkdown()
+                guard syncBlocksFromMarkdown() else { return }
                 if hasUnsavedChanges {
                     saveNowSync()
                 }
@@ -498,11 +502,25 @@ struct DevotionalView: View {
         markdownContent = MarkdownDevotionalConverter.contentToMarkdown(devotional)
     }
 
-    private func syncBlocksFromMarkdown() {
-        let blocks = MarkdownDevotionalConverter.markdownToBlocks(markdownContent)
-        devotional.content = .blocks(blocks)
-        // Also parse footnotes from markdown
+    @discardableResult
+    private func syncBlocksFromMarkdown() -> Bool {
+        if preservesRichContentJSON {
+            guard let decoded = try? MarkdownDevotionalConverter.revisingContent(
+                devotional.content, with: markdownContent
+            ) else {
+                saveState = .error
+                return false
+            }
+            devotional.content = decoded
+            devotional.markdownContent = nil
+        } else {
+            devotional.content = .blocks(
+                MarkdownDevotionalConverter.markdownToBlocks(markdownContent)
+            )
+            devotional.markdownContent = markdownContent
+        }
         devotional.footnotes = MarkdownDevotionalConverter.parseFootnotes(from: markdownContent)
+        return true
     }
 
     /// Sync markdown from visual editor - TipTap handles this via contentChanged messages,
@@ -1028,13 +1046,7 @@ struct DevotionalView: View {
             syncMarkdownFromVisualEditor()
         }
 
-        // Store markdown directly (preferred over converting to blocks)
-        devotional.markdownContent = markdownContent
-
-        // Also update blocks for searchText computation (but markdown is source of truth)
-        let blocks = MarkdownDevotionalConverter.markdownToBlocks(markdownContent)
-        devotional.content = .blocks(blocks)
-        devotional.footnotes = MarkdownDevotionalConverter.parseFootnotes(from: markdownContent)
+        guard syncBlocksFromMarkdown() else { return }
 
         // Update lastModified timestamp
         devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
@@ -1082,13 +1094,10 @@ struct DevotionalView: View {
             syncMarkdownFromVisualEditor()
         }
 
-        // Store markdown directly (preferred over converting to blocks)
-        devotional.markdownContent = markdownContent
-
-        // Also update blocks for searchText computation (but markdown is source of truth)
-        let blocks = MarkdownDevotionalConverter.markdownToBlocks(markdownContent)
-        devotional.content = .blocks(blocks)
-        devotional.footnotes = MarkdownDevotionalConverter.parseFootnotes(from: markdownContent)
+        guard syncBlocksFromMarkdown() else {
+            isSaving = false
+            return
+        }
 
         devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
 

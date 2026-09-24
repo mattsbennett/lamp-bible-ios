@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import LampModuleKit
 
 // MARK: - Sync Coordinator
 
@@ -31,6 +32,16 @@ class SyncCoordinator: ObservableObject {
 
     /// The active storage provider (iCloud Documents or WebDAV)
     private var storage: ModuleStorage?
+    private var backendRecoveryError: Error?
+    private var backendTransitionInProgress = false
+    private var syncOperationInProgress = false
+
+    struct SyncSession {
+        let storage: ModuleStorage
+        let backend: SyncBackend
+        let archiveSource: String
+        let needsLegacyReconciliation: Bool
+    }
 
     // MARK: - Dependencies
 
@@ -39,7 +50,23 @@ class SyncCoordinator: ObservableObject {
     // MARK: - Initialization
 
     private init() {
-        let storedSettings = userDatabase.getSyncSettings()
+        var storedSettings = userDatabase.getSyncSettings()
+        var pendingPreviousSettings: SyncSettings?
+        var recoveryError: Error?
+        do {
+            pendingPreviousSettings = try ModuleDatabase.shared.pendingBackendTransition()
+            if let pendingPreviousSettings {
+                try userDatabase.saveSyncSettings(pendingPreviousSettings)
+                try ModuleDatabase.shared.clearPendingBackendTransition()
+                storedSettings = pendingPreviousSettings
+            }
+        } catch {
+            recoveryError = error
+            // A pending wipe did not commit. Keep the old provider selected in
+            // memory and suspend sync until its durable choice is restored.
+            storedSettings = pendingPreviousSettings ?? .default
+            print("[SyncCoordinator] Backend recovery pending: \(error)")
+        }
         let shouldInspectICloud = LegacySyncBackendResolver.requiresICloudInspection(
             storedSettings: storedSettings,
             isExistingInstallation: userDatabase.databaseExistedAtLaunch
@@ -52,9 +79,10 @@ class SyncCoordinator: ObservableObject {
             isExistingInstallation: userDatabase.databaseExistedAtLaunch
         )
         self.settings = resolvedSettings
+        self.backendRecoveryError = recoveryError
 
         // Persist the one-time resolution so future launches never reinterpret it.
-        if !(storedSettings?.backendSelectionWasExplicit ?? false) {
+        if recoveryError == nil && !(storedSettings?.backendSelectionWasExplicit ?? false) {
             do {
                 try userDatabase.saveSyncSettings(resolvedSettings)
                 print("[SyncCoordinator] Resolved legacy backend: \(resolvedSettings.backend)")
@@ -70,6 +98,10 @@ class SyncCoordinator: ObservableObject {
 
     /// Configure storage provider based on current settings
     func configureStorage() {
+        guard backendRecoveryError == nil && !backendTransitionInProgress else {
+            storage = nil
+            return
+        }
         switch settings.backend {
         case .icloudDrive:
             storage = ICloudModuleStorage.shared
@@ -92,24 +124,26 @@ class SyncCoordinator: ObservableObject {
         }
     }
 
-    /// Update sync backend and reconfigure storage.
-    /// This is the low-level method - prefer using `switchBackend(to:migrateData:)` instead.
-    func setBackend(_ backend: SyncBackend) async throws {
-        var updatedSettings = settings
-        updatedSettings.backend = backend
-        updatedSettings.backendSelectionWasExplicit = true
-        updatedSettings.legacyICloudReconciliationPending = nil
-        settings = updatedSettings
-
-        // Persist settings
-        try userDatabase.saveSyncSettings(settings)
-
-        // Reconfigure storage
-        configureStorage()
-
-        // Initialize directory structure on new backend
-        if backend != .none, let storage = storage {
-            try? await storage.initializeDirectoryStructure()
+    private func recoverPendingBackendTransition() throws {
+        do {
+            if let previous = try ModuleDatabase.shared.pendingBackendTransition() {
+                try userDatabase.saveSyncSettings(previous)
+                try ModuleDatabase.shared.clearPendingBackendTransition()
+                settings = previous
+                backendRecoveryError = nil
+                configureStorage()
+            } else if let backendRecoveryError {
+                guard let saved = userDatabase.getSyncSettings() else {
+                    throw backendRecoveryError
+                }
+                settings = saved
+                self.backendRecoveryError = nil
+                configureStorage()
+            }
+        } catch {
+            backendRecoveryError = error
+            storage = nil
+            throw error
         }
     }
 
@@ -119,6 +153,10 @@ class SyncCoordinator: ObservableObject {
     ///   - migrateData: If true, migrate existing data to new backend. If false, wipe local data.
     /// - Note: The UI should confirm with the user before calling with migrateData=false
     func switchBackend(to backend: SyncBackend, migrateData: Bool) async throws {
+        guard !backendTransitionInProgress && !syncOperationInProgress else {
+            throw SyncError.backendTransitionInProgress
+        }
+        try recoverPendingBackendTransition()
         let previousBackend = settings.backend
 
         // No change needed
@@ -126,37 +164,85 @@ class SyncCoordinator: ObservableObject {
             return
         }
 
-        if migrateData {
-            // Migrate data from previous backend to new backend
-            if previousBackend != .none && backend != .none {
-                // Both are cloud backends - migrate between them
-                _ = try await migrateStorage(from: previousBackend, to: backend)
-                print("[SyncCoordinator] Migrated data from \(previousBackend) to \(backend)")
-            } else if previousBackend == .none && backend != .none {
-                // Switching from local to cloud - upload local data
-                try await uploadLocalDataToBackend(backend)
-                print("[SyncCoordinator] Uploaded local data to \(backend)")
-            } else if previousBackend != .none && backend == .none {
-                // Switching from cloud to local - download cloud data first
-                try await downloadDataFromBackend(previousBackend)
-                print("[SyncCoordinator] Downloaded data from \(previousBackend) to local")
-            }
-        } else {
-            // Wipe local data (user confirmed this choice)
-            do {
-                try ModuleDatabase.shared.wipeAllSyncableData()
-                print("[SyncCoordinator] Wiped local syncable data before switching from \(previousBackend) to \(backend)")
-            } catch {
-                print("[SyncCoordinator] Failed to wipe syncable data: \(error)")
-                throw error
-            }
+        backendTransitionInProgress = true
+        defer {
+            backendTransitionInProgress = false
+            configureStorage()
         }
 
-        // Now switch to the new backend
-        try await setBackend(backend)
-
-        if backend.usesRemoteStorage, let storage {
-            try await UserSettingsSyncManager.shared.exportToRemote(storage: storage)
+        do {
+            try await LampSyncBackendTransition.run(
+                wipeLocalAfterPublish: !migrateData,
+                pullAndMerge: {
+                    if migrateData {
+                        if previousBackend != .none && backend != .none {
+                            let result = try await self.migrateStorage(
+                                from: previousBackend, to: backend
+                            )
+                            guard result.isFullySuccessful else {
+                                throw MigrationError.incomplete(result)
+                            }
+                        } else if previousBackend == .none && backend != .none {
+                            try await self.uploadLocalDataToBackend(backend)
+                        } else if previousBackend != .none && backend == .none {
+                            try await self.downloadDataFromBackend(previousBackend)
+                        }
+                    }
+                },
+                publish: {
+                    guard backend.usesRemoteStorage else { return }
+                    guard let targetStorage = try self.createStorage(for: backend) else {
+                        throw SyncError.notConfigured
+                    }
+                    try await targetStorage.initializeDirectoryStructure()
+                    try await UserSettingsSyncManager.shared.reconcileWithRemote(
+                        storage: targetStorage
+                    )
+                },
+                persistBackend: {
+                    let previousSettings = self.settings
+                    var selectedSettings = previousSettings
+                    selectedSettings.backend = backend
+                    selectedSettings.backendSelectionWasExplicit = true
+                    selectedSettings.legacyICloudReconciliationPending = nil
+                    if !migrateData {
+                        try ModuleDatabase.shared.prepareBackendTransition(
+                            previousSettings: previousSettings
+                        )
+                    }
+                    // Keep the recovery record if persistence reports an
+                    // error; the next attempt can restore the old choice even
+                    // if the database commit outcome was uncertain.
+                    try self.userDatabase.saveSyncSettings(selectedSettings)
+                    return (previous: previousSettings, selected: selectedSettings)
+                },
+                wipeLocal: {
+                    try ModuleDatabase.shared.wipeAllSyncableData()
+                    try ModuleSyncManager.shared.reloadPendingModuleConflicts()
+                },
+                rollbackBackend: { selection in
+                    try self.userDatabase.saveSyncSettings(selection.previous)
+                    try ModuleDatabase.shared.clearPendingBackendTransition()
+                },
+                activateBackend: { selection in
+                    self.settings = selection.selected
+                    self.configureStorage()
+                }
+            )
+        } catch {
+            // A remaining record means the wipe never committed. A failed
+            // rollback must not expose the newly persisted provider to sync.
+            do {
+                if let previous = try ModuleDatabase.shared.pendingBackendTransition() {
+                    settings = previous
+                    backendRecoveryError = error
+                    storage = nil
+                }
+            } catch {
+                backendRecoveryError = error
+                storage = nil
+            }
+            throw error
         }
     }
 
@@ -205,13 +291,17 @@ class SyncCoordinator: ObservableObject {
 
     /// Update WebDAV settings
     func setWebDAVSettings(url: String?, username: String?) async throws {
+        guard !backendTransitionInProgress else {
+            throw SyncError.backendTransitionInProgress
+        }
+        try recoverPendingBackendTransition()
         var updatedSettings = settings
         updatedSettings.webdavURL = url
         updatedSettings.webdavUsername = username
-        settings = updatedSettings
 
         // Persist settings
-        try userDatabase.saveSyncSettings(settings)
+        try userDatabase.saveSyncSettings(updatedSettings)
+        settings = updatedSettings
 
         // Reconfigure if WebDAV is active
         if settings.backend == .webdav {
@@ -221,6 +311,13 @@ class SyncCoordinator: ObservableObject {
 
     /// Reload settings from database (useful if settings were persisted before SyncCoordinator initialized)
     func reloadSettings() async {
+        guard !backendTransitionInProgress else { return }
+        do {
+            try recoverPendingBackendTransition()
+        } catch {
+            print("[SyncCoordinator] Cannot reload settings during backend recovery: \(error)")
+            return
+        }
         if let savedSettings = userDatabase.getSyncSettings() {
             settings = savedSettings
             configureStorage()
@@ -233,30 +330,46 @@ class SyncCoordinator: ObservableObject {
     /// Perform a full sync of all content
     /// Delegates to ModuleSyncManager with the configured storage provider
     func syncAll() async throws {
+        guard !backendTransitionInProgress && !syncOperationInProgress else {
+            throw SyncError.backendTransitionInProgress
+        }
+        syncOperationInProgress = true
+        defer { syncOperationInProgress = false }
+        try recoverPendingBackendTransition()
         guard settings.backend != .none else { return }
-        guard let activeStorage = storage else {
+        guard let session = activeSession else {
             throw SyncError.notConfigured
         }
+        let activeStorage = session.storage
 
         syncState = .syncing(progress: nil)
 
         do {
-            if settings.legacyICloudReconciliationPending == true {
-                try await ModuleSyncManager.shared.reconcileEditableModules(with: activeStorage)
-                try await ModuleSyncManager.shared.exportAllEditableModules(to: activeStorage)
-            }
-
-            // Delegate to existing ModuleSyncManager
-            // In the future, this could use storage parameter to allow custom providers
-            await ModuleSyncManager.shared.syncAll()
-
-            // Update last sync date
-            var updatedSettings = settings
-            updatedSettings.lastSyncDate = Date()
-            updatedSettings.legacyICloudReconciliationPending = nil
-            settings = updatedSettings
-            try userDatabase.saveSyncSettings(settings)
-            try await UserSettingsSyncManager.shared.exportToRemote(storage: activeStorage)
+            try await ModuleSyncManager.shared.runFullSync(
+                using: activeStorage,
+                backend: session.backend,
+                archiveSource: session.archiveSource,
+                beforePull: {
+                    if session.needsLegacyReconciliation {
+                        try await ModuleSyncManager.shared.reconcileEditableModules(with: activeStorage)
+                    }
+                },
+                afterPublish: {
+                    if session.needsLegacyReconciliation {
+                        try await ModuleSyncManager.shared.exportAllEditableModules(to: activeStorage)
+                    }
+                    if self.userDatabase.hasUnsyncedChanges {
+                        try await UserSettingsSyncManager.shared.reconcileWithRemote(storage: activeStorage)
+                    }
+                },
+                complete: {
+                    var updatedSettings = self.settings
+                    updatedSettings.lastSyncDate = Date()
+                    updatedSettings.legacyICloudReconciliationPending = nil
+                    try self.userDatabase.saveSyncSettings(updatedSettings)
+                    self.settings = updatedSettings
+                }
+            )
 
             syncState = .idle
         } catch {
@@ -281,7 +394,17 @@ class SyncCoordinator: ObservableObject {
 
     /// The active storage provider for external use
     var activeStorage: ModuleStorage? {
-        storage
+        backendTransitionInProgress ? nil : storage
+    }
+
+    var activeSession: SyncSession? {
+        guard let activeStorage else { return nil }
+        return SyncSession(
+            storage: activeStorage,
+            backend: settings.backend,
+            archiveSource: settings.webdavURL ?? "",
+            needsLegacyReconciliation: settings.legacyICloudReconciliationPending == true
+        )
     }
 
     // MARK: - WebDAV Testing
@@ -358,13 +481,9 @@ class SyncCoordinator: ObservableObject {
         var allFiles: [(ModuleType, ModuleFileInfo)] = []
 
         for type in moduleTypes {
-            do {
-                let files = try await source.listModuleFiles(type: type)
-                allFiles.append(contentsOf: files.map { (type, $0) })
-                totalFiles += files.count
-            } catch {
-                print("[Migration] Failed to list \(type) files: \(error)")
-            }
+            let files = try await source.listModuleFiles(type: type)
+            allFiles.append(contentsOf: files.map { (type, $0) })
+            totalFiles += files.count
         }
 
         migrationProgress = MigrationProgress(
@@ -386,12 +505,41 @@ class SyncCoordinator: ObservableObject {
             do {
                 // Read from source
                 let data = try await source.readModuleFile(type: type, fileName: fileInfo.filePath)
-
-                // Write to destination
-                try await dest.writeModuleFile(type: type, fileName: fileInfo.filePath, data: data)
+                let moduleID = fileInfo.id == "bible-notes" ? "notes" : fileInfo.id
+                let localModule = try ModuleDatabase.shared.getModule(id: moduleID)
+                let isEditable = [ModuleType.notes, .devotional, .highlights].contains(type)
+                    && localModule?.type == type && localModule?.isEditable == true
+                _ = try await LampSyncMigrationCopy.run(
+                    isEditable: isEditable,
+                    source: data,
+                    readDestination: {
+                        do {
+                            return try await dest.readModuleFile(
+                                type: type, fileName: fileInfo.filePath
+                            )
+                        } catch ModuleStorageError.fileNotFound {
+                            return nil
+                        }
+                    },
+                    createIfAbsent: { data in
+                        if let iCloud = dest as? ICloudModuleStorage {
+                            try await iCloud.writeModuleFile(
+                                type: type, fileName: fileInfo.filePath,
+                                data: data, matching: nil
+                            )
+                        } else if let webDAV = dest as? WebDAVModuleStorage {
+                            _ = try await webDAV.writeModuleFile(
+                                type: type, fileName: fileInfo.filePath,
+                                data: data, matching: nil
+                            )
+                        } else {
+                            throw SyncError.notConfigured
+                        }
+                    }
+                )
 
                 result.successCount += 1
-                print("[Migration] Copied \(type)/\(fileInfo.filePath)")
+                print("[Migration] Prepared \(type)/\(fileInfo.filePath)")
             } catch {
                 result.failedFiles.append(MigrationFailure(
                     type: type,
@@ -476,6 +624,17 @@ struct MigrationResult {
 
     var isFullySuccessful: Bool {
         failedFiles.isEmpty
+    }
+}
+
+enum MigrationError: LocalizedError {
+    case incomplete(MigrationResult)
+
+    var errorDescription: String? {
+        switch self {
+        case .incomplete(let result):
+            "Migration could not copy \(result.failedFiles.count) file(s). The sync backend was not changed."
+        }
     }
 }
 

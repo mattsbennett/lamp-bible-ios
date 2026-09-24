@@ -1367,10 +1367,160 @@ class ModuleDatabase {
                 """)
         }
 
+        // This record is local to the module database so the wipe can remove
+        // it in the same transaction as the syncable content.
+        migrator.registerMigration("v24_backend_transition") { db in
+            try db.create(table: "sync_backend_transition") { t in
+                t.column("id", .integer).primaryKey()
+                t.column("previous_settings_json", .text).notNull()
+            }
+        }
+
+        migrator.registerMigration("v25_pending_module_conflicts") { db in
+            try db.create(table: "sync_pending_module_conflicts") { t in
+                t.column("module_id", .text).notNull()
+                t.column("type", .text).notNull()
+                t.column("entry_key", .text).notNull()
+                t.column("payload", .blob).notNull()
+                t.primaryKey(["module_id", "type", "entry_key"])
+            }
+            // Older builds could acknowledge a remote hash while keeping its
+            // equal-timestamp conflict only in memory. Re-read editable
+            // modules once so those conflicts can enter the durable table.
+            try db.execute(sql: """
+                UPDATE modules SET file_hash = NULL, last_synced = NULL
+                WHERE type IN ('notes', 'devotional')
+                """)
+        }
+
+        migrator.registerMigration("v26_pending_module_publications") { db in
+            try db.create(table: "sync_pending_module_publications") { t in
+                t.column("module_id", .text).primaryKey()
+                t.column("type", .text).notNull()
+            }
+        }
+
         return migrator
     }
 
     // MARK: - Module CRUD
+
+    func replacePendingModuleConflicts<T: Encodable>(
+        moduleId: String,
+        type: ModuleType,
+        conflicts: [T],
+        key: (T) -> String
+    ) throws {
+        let encoded = try conflicts.map { (key($0), try JSONEncoder().encode($0)) }
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM sync_pending_module_conflicts WHERE module_id = ? AND type = ?",
+                arguments: [moduleId, type.rawValue]
+            )
+            for (entryKey, payload) in encoded {
+                try db.execute(
+                    sql: "INSERT INTO sync_pending_module_conflicts (module_id, type, entry_key, payload) VALUES (?, ?, ?, ?)",
+                    arguments: [moduleId, type.rawValue, entryKey, payload]
+                )
+            }
+        }
+    }
+
+    func firstPendingModuleConflicts<T: Decodable>(
+        type: ModuleType,
+        as _: T.Type
+    ) throws -> (moduleId: String, conflicts: [T])? {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT module_id, payload FROM sync_pending_module_conflicts WHERE type = ? ORDER BY module_id, entry_key",
+                arguments: [type.rawValue]
+            )
+            guard let first = rows.first else { return nil }
+            let moduleId: String = first["module_id"]
+            let conflicts = try rows
+                .filter { (row: Row) in (row["module_id"] as String) == moduleId }
+                .map { (row: Row) in
+                    try JSONDecoder().decode(T.self, from: row["payload"] as Data)
+                }
+            return (moduleId, conflicts)
+        }
+    }
+
+    func hasPendingModuleConflicts(moduleId: String) throws -> Bool {
+        try dbQueue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sync_pending_module_conflicts WHERE module_id = ? LIMIT 1",
+                arguments: [moduleId]
+            ) != nil
+        }
+    }
+
+    func pendingModuleConflictExists(moduleId: String, type: ModuleType, key: String) throws -> Bool {
+        try dbQueue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sync_pending_module_conflicts WHERE module_id = ? AND type = ? AND entry_key = ? LIMIT 1",
+                arguments: [moduleId, type.rawValue, key]
+            ) != nil
+        }
+    }
+
+    func markPendingModulePublication(moduleId: String, type: ModuleType) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "INSERT OR REPLACE INTO sync_pending_module_publications (module_id, type) VALUES (?, ?)",
+                arguments: [moduleId, type.rawValue]
+            )
+        }
+    }
+
+    func pendingModulePublications(type: ModuleType) throws -> [String] {
+        try dbQueue.read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT module_id FROM sync_pending_module_publications WHERE type = ? ORDER BY module_id",
+                arguments: [type.rawValue]
+            )
+        }
+    }
+
+    func clearPendingModulePublication(moduleId: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM sync_pending_module_publications WHERE module_id = ?",
+                arguments: [moduleId]
+            )
+        }
+    }
+
+    func removePendingModuleConflict(moduleId: String, type: ModuleType, key: String) throws -> Bool {
+        try dbQueue.write { db in
+            let exists = try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sync_pending_module_conflicts WHERE module_id = ? AND type = ? AND entry_key = ? LIMIT 1",
+                arguments: [moduleId, type.rawValue, key]
+            ) != nil
+            guard exists else { throw SyncError.conflictDetected }
+            try db.execute(
+                sql: "DELETE FROM sync_pending_module_conflicts WHERE module_id = ? AND type = ? AND entry_key = ?",
+                arguments: [moduleId, type.rawValue, key]
+            )
+            let hasMore = try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sync_pending_module_conflicts WHERE module_id = ? LIMIT 1",
+                arguments: [moduleId]
+            ) != nil
+            if !hasMore {
+                try db.execute(
+                    sql: "INSERT OR REPLACE INTO sync_pending_module_publications (module_id, type) VALUES (?, ?)",
+                    arguments: [moduleId, type.rawValue]
+                )
+            }
+            return hasMore
+        }
+    }
 
     func saveModule(_ module: Module) throws {
         try dbQueue.write { db in
@@ -1380,6 +1530,14 @@ class ModuleDatabase {
 
     func deleteModule(id: String) throws {
         try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM sync_pending_module_conflicts WHERE module_id = ?",
+                arguments: [id]
+            )
+            try db.execute(
+                sql: "DELETE FROM sync_pending_module_publications WHERE module_id = ?",
+                arguments: [id]
+            )
             _ = try Module.deleteOne(db, key: id)
         }
     }
@@ -1935,20 +2093,23 @@ class ModuleDatabase {
 
     func deleteAllEntriesForModule(moduleId: String) throws {
         try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM dictionary_entries WHERE module_id = ?", arguments: [moduleId])
-            try db.execute(sql: "DELETE FROM commentary_units WHERE module_id = ?", arguments: [moduleId])
-            try db.execute(sql: "DELETE FROM commentary_books WHERE module_id = ?", arguments: [moduleId])
-            try db.execute(sql: "DELETE FROM devotional_entries WHERE module_id = ?", arguments: [moduleId])
-            try db.execute(sql: "DELETE FROM note_entries WHERE module_id = ?", arguments: [moduleId])
-            try db.execute(sql: "DELETE FROM book_sections WHERE module_id = ?", arguments: [moduleId])
-            try db.execute(sql: "DELETE FROM book_modules WHERE id = ?", arguments: [moduleId])
-            // Delete highlights (must delete highlights before highlight_sets due to FK)
-            try db.execute(sql: "DELETE FROM highlights WHERE set_id IN (SELECT id FROM highlight_sets WHERE module_id = ?)", arguments: [moduleId])
-            try db.execute(sql: "DELETE FROM highlight_sets WHERE module_id = ?", arguments: [moduleId])
-            // Delete quiz data
-            try db.execute(sql: "DELETE FROM quiz_questions WHERE quiz_module_id = ?", arguments: [moduleId])
-            try db.execute(sql: "DELETE FROM quiz_modules WHERE id = ?", arguments: [moduleId])
+            try Self.deleteAllEntriesForModule(moduleId: moduleId, in: db)
         }
+    }
+
+    static func deleteAllEntriesForModule(moduleId: String, in db: Database) throws {
+        try db.execute(sql: "DELETE FROM dictionary_entries WHERE module_id = ?", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM commentary_units WHERE module_id = ?", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM commentary_books WHERE module_id = ?", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM devotional_entries WHERE module_id = ?", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM note_entries WHERE module_id = ?", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM book_sections WHERE module_id = ?", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM book_modules WHERE id = ?", arguments: [moduleId])
+        // Delete highlights before their sets because of the foreign key.
+        try db.execute(sql: "DELETE FROM highlights WHERE set_id IN (SELECT id FROM highlight_sets WHERE module_id = ?)", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM highlight_sets WHERE module_id = ?", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM quiz_questions WHERE quiz_module_id = ?", arguments: [moduleId])
+        try db.execute(sql: "DELETE FROM quiz_modules WHERE id = ?", arguments: [moduleId])
     }
 
     func importDictionaryEntries(_ entries: [DictionaryEntry]) throws {
@@ -1974,14 +2135,6 @@ class ModuleDatabase {
     }
 
     func importDevotionalEntries(_ entries: [DevotionalEntry]) throws {
-        try dbQueue.write { db in
-            for entry in entries {
-                try entry.save(db)
-            }
-        }
-    }
-
-    func importNoteEntries(_ entries: [NoteEntry]) throws {
         try dbQueue.write { db in
             for entry in entries {
                 try entry.save(db)
@@ -2451,38 +2604,6 @@ class ModuleDatabase {
 
     // MARK: - Translation Bulk Operations
 
-    func deleteAllTranslationContent(translationId: String) throws {
-        try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM translation_headings WHERE translation_id = ?", arguments: [translationId])
-            try db.execute(sql: "DELETE FROM translation_verses WHERE translation_id = ?", arguments: [translationId])
-            try db.execute(sql: "DELETE FROM translation_books WHERE translation_id = ?", arguments: [translationId])
-        }
-    }
-
-    func importTranslationBooks(_ books: [TranslationBook]) throws {
-        try dbQueue.write { db in
-            for book in books {
-                try book.save(db)
-            }
-        }
-    }
-
-    func importTranslationVerses(_ verses: [TranslationVerse]) throws {
-        try dbQueue.write { db in
-            for verse in verses {
-                try verse.save(db)
-            }
-        }
-    }
-
-    func importTranslationHeadings(_ headings: [TranslationHeading]) throws {
-        try dbQueue.write { db in
-            for heading in headings {
-                try heading.save(db)
-            }
-        }
-    }
-
     /// Import a complete translation with batched inserts for performance
     func importTranslation(
         _ translation: TranslationModule,
@@ -2491,25 +2612,39 @@ class ModuleDatabase {
         headings: [TranslationHeading]
     ) throws {
         try dbQueue.write { db in
-            // Save translation metadata
-            try translation.save(db)
+            // Retire the previous translation in the same transaction as its
+            // replacement. A failed child insert restores metadata and rows.
+            try db.execute(
+                sql: "DELETE FROM translation_headings WHERE translation_id = ?",
+                arguments: [translation.id]
+            )
+            try db.execute(
+                sql: "DELETE FROM translation_verses WHERE translation_id = ?",
+                arguments: [translation.id]
+            )
+            try db.execute(
+                sql: "DELETE FROM translation_books WHERE translation_id = ?",
+                arguments: [translation.id]
+            )
+            try db.execute(sql: "DELETE FROM translations WHERE id = ?", arguments: [translation.id])
+            try translation.insert(db)
 
             // Batch insert books
             for book in books {
-                try book.save(db)
+                try book.insert(db)
             }
 
             // Batch insert verses (in chunks for memory efficiency)
             let verseChunkSize = 1000
             for chunk in verses.chunked(into: verseChunkSize) {
                 for verse in chunk {
-                    try verse.save(db)
+                    try verse.insert(db)
                 }
             }
 
             // Batch insert headings
             for heading in headings {
-                try heading.save(db)
+                try heading.insert(db)
             }
         }
         // Plan metadata is keyed by translation id, which can't see content changes
@@ -2972,11 +3107,42 @@ class ModuleDatabase {
 
     // MARK: - Wipe All Syncable Data
 
+    func prepareBackendTransition(previousSettings: SyncSettings) throws {
+        let json = try JSONEncoder().encode(previousSettings)
+        guard let value = String(data: json, encoding: .utf8) else {
+            throw DatabaseError(message: "Failed to encode previous sync settings")
+        }
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "INSERT INTO sync_backend_transition (id, previous_settings_json) VALUES (1, ?)",
+                arguments: [value]
+            )
+        }
+    }
+
+    func pendingBackendTransition() throws -> SyncSettings? {
+        try dbQueue.read { db in
+            guard let value = try String.fetchOne(
+                db,
+                sql: "SELECT previous_settings_json FROM sync_backend_transition WHERE id = 1"
+            ) else { return nil }
+            return try JSONDecoder().decode(SyncSettings.self, from: Data(value.utf8))
+        }
+    }
+
+    func clearPendingBackendTransition() throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM sync_backend_transition WHERE id = 1")
+        }
+    }
+
     /// Wipe all user-syncable data from the local database.
     /// This includes notes, devotionals, and highlights.
     /// Used when switching sync backends to start fresh.
     func wipeAllSyncableData() throws {
         try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM sync_pending_module_conflicts")
+            try db.execute(sql: "DELETE FROM sync_pending_module_publications")
             // Delete all notes
             try db.execute(sql: "DELETE FROM note_entries")
 
@@ -2987,6 +3153,16 @@ class ModuleDatabase {
             try db.execute(sql: "DELETE FROM highlights")
             try db.execute(sql: "DELETE FROM highlight_themes")
             try db.execute(sql: "DELETE FROM highlight_sets")
+
+            // The rows no longer match these module snapshots. Force the next
+            // provider import even when its file has the old provider's hash.
+            try db.execute(sql: """
+                UPDATE modules SET file_hash = NULL, last_synced = NULL
+                WHERE type IN ('notes', 'devotional', 'highlights')
+                """)
+
+            // A committed wipe makes the new provider choice safe to use.
+            try db.execute(sql: "DELETE FROM sync_backend_transition WHERE id = 1")
 
             print("[ModuleDatabase] Wiped all syncable data (notes, devotionals, highlights, themes)")
         }

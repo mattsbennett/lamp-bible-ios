@@ -180,9 +180,16 @@ class UserDatabase {
         notifyDatabaseChange()
     }
 
+    /// Refresh readers after a merged pull without claiming that its pending
+    /// publish has already succeeded.
+    func notifySyncChange() {
+        invalidateSettingsCache()
+        notifyDatabaseChange()
+    }
+
     /// Mark that local changes have been exported
-    func clearUnsyncedChanges() {
-        UserDefaults.standard.set(Date(), forKey: Self.lastExportedAtKey)
+    func clearUnsyncedChanges(through exportedAt: Date = Date()) {
+        UserDefaults.standard.set(exportedAt, forKey: Self.lastExportedAtKey)
     }
 
     /// Close the database connection and stop file monitoring.
@@ -433,7 +440,7 @@ class UserDatabase {
             let reading = CompletedReading(id: id)
             try reading.insert(db)
             // Bump updated_at so sync detects the change
-            try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
+            try db.execute(sql: "UPDATE user_settings SET updated_at = ? WHERE id = 1", arguments: [Date()])
         }
 
         // updated_at moved, so the memoised settings are stale
@@ -451,7 +458,7 @@ class UserDatabase {
         try dbQueue.write { db in
             _ = try CompletedReading.deleteOne(db, key: id)
             // Bump updated_at so sync detects the change
-            try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
+            try db.execute(sql: "UPDATE user_settings SET updated_at = ? WHERE id = 1", arguments: [Date()])
         }
 
         // updated_at moved, so the memoised settings are stale
@@ -469,7 +476,7 @@ class UserDatabase {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM completed_readings WHERE plan_id = ?", arguments: [planId])
             // Bump updated_at so sync detects the change
-            try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
+            try db.execute(sql: "UPDATE user_settings SET updated_at = ? WHERE id = 1", arguments: [Date()])
         }
 
         // updated_at moved, so the memoised settings are stale
@@ -480,6 +487,16 @@ class UserDatabase {
 
     // MARK: - Sync Support
 
+    func syncSnapshot() throws -> (settings: UserSettings, readings: [CompletedReading]) {
+        guard let dbQueue else { throw DatabaseError(message: "Database not initialized") }
+        return try dbQueue.read { db in
+            guard let settings = try UserSettings.fetchOne(db, key: 1) else {
+                throw DatabaseError(message: "User settings are missing")
+            }
+            return (settings, try CompletedReading.fetchAll(db))
+        }
+    }
+
     /// Force a WAL checkpoint to ensure all changes are written to the main database file
     /// Call this before syncing to ensure all data is written
     func checkpointForSync() throws {
@@ -487,38 +504,53 @@ class UserDatabase {
             throw DatabaseError(message: "Database not initialized")
         }
 
-        try dbQueue.writeWithoutTransaction { db in
+        _ = try dbQueue.writeWithoutTransaction { db in
             try db.checkpoint(.truncate)
         }
     }
 
     // MARK: - Merge Support
 
-    /// Sync completed readings with remote: adds remote-only rows, removes local-only rows.
-    /// Callers must export local changes first so deletions reach remote before this runs.
-    /// Returns true if anything changed.
+    /// Apply the reading rows selected by the three-way sync planner, including
+    /// deletions and changed completion dates.
+    /// Returns true if anything changed. A failed database write must abort sync.
     @discardableResult
-    func syncCompletedReadings(with remoteReadings: [CompletedReading]) -> Bool {
-        guard let dbQueue = dbQueue else { return false }
+    func syncCompletedReadings(with remoteReadings: [CompletedReading]) throws -> Bool {
+        guard let dbQueue else { throw DatabaseError(message: "Database not initialized") }
 
         // The write below bumps updated_at when anything changes
         defer { invalidateSettingsCache() }
 
-        do {
-            return try dbQueue.write { db in
-                let localIds = Set(try String.fetchAll(db, sql: "SELECT id FROM completed_readings"))
-                let remoteIds = Set(remoteReadings.map(\.id))
+        return try dbQueue.write { db in
+                let localRows = Dictionary(uniqueKeysWithValues:
+                    try CompletedReading.fetchAll(db).map { ($0.id, $0) }
+                )
+                let remoteRows = Dictionary(uniqueKeysWithValues:
+                    remoteReadings.map { ($0.id, $0) }
+                )
+                let localIds = Set(localRows.keys)
+                let remoteIds = Set(remoteRows.keys)
 
-                // Nothing to do if sets are identical
-                guard localIds != remoteIds else { return false }
+                guard localRows != remoteRows else { return false }
 
-                // Add readings present in remote but not local
-                let toAdd = remoteReadings.filter { !localIds.contains($0.id) }
-                for reading in toAdd {
-                    try db.execute(sql: """
-                        INSERT OR IGNORE INTO completed_readings (id, plan_id, year, completed_at)
-                        VALUES (?, ?, ?, ?)
-                        """, arguments: [reading.id, reading.planId, reading.year, reading.completedAt])
+                for reading in remoteReadings {
+                    if let current = localRows[reading.id] {
+                        guard current != reading else { continue }
+                        try db.execute(sql: """
+                            UPDATE completed_readings
+                            SET plan_id = ?, year = ?, completed_at = ?
+                            WHERE id = ?
+                            """, arguments: [
+                                reading.planId, reading.year, reading.completedAt, reading.id
+                            ])
+                    } else {
+                        try db.execute(sql: """
+                            INSERT INTO completed_readings (id, plan_id, year, completed_at)
+                            VALUES (?, ?, ?, ?)
+                            """, arguments: [
+                                reading.id, reading.planId, reading.year, reading.completedAt
+                            ])
+                    }
                 }
 
                 // Remove readings present locally but not in remote (propagate deletions)
@@ -532,28 +564,24 @@ class UserDatabase {
                 }
 
                 // Bump updated_at so observers know data changed
-                try db.execute(sql: "UPDATE user_settings SET updated_at = datetime('now') WHERE id = 1")
+                try db.execute(sql: "UPDATE user_settings SET updated_at = ? WHERE id = 1", arguments: [Date()])
                 return true
-            }
-        } catch {
-            print("[UserDB] Failed to sync completed readings: \(error)")
-            return false
         }
     }
 
-    /// Merge settings from a remote UserSettings using last-writer-wins by updatedAt.
+    /// Apply remote settings, optionally bypassing the legacy timestamp rule
+    /// after a three-way comparison has chosen the remote value.
     /// Preserves local sync_settings_json so device credentials are not overwritten.
     /// Returns true if local settings were updated.
     @discardableResult
-    func mergeSettings(from remote: UserSettings) -> Bool {
-        guard let dbQueue = dbQueue else { return false }
+    func mergeSettings(from remote: UserSettings, force: Bool = false) throws -> Bool {
+        guard let dbQueue else { throw DatabaseError(message: "Database not initialized") }
 
         defer { invalidateSettingsCache() }
 
-        do {
-            return try dbQueue.write { db in
+        return try dbQueue.write { db in
                 guard let local = try UserSettings.fetchOne(db, key: 1) else { return false }
-                guard remote.updatedAt > local.updatedAt else {
+                guard force || remote.updatedAt > local.updatedAt else {
                     print("[UserDB] mergeSettings skipped: remote \(remote.updatedAt) not newer than local \(local.updatedAt)")
                     return false
                 }
@@ -614,10 +642,6 @@ class UserDatabase {
                         remote.updatedAt
                     ])
                 return true
-            }
-        } catch {
-            print("[UserDB] Failed to merge settings: \(error)")
-            return false
         }
     }
 
@@ -647,6 +671,28 @@ class UserDatabase {
         }
     }
 
+    /// Restore the device's provider configuration after importing a portable
+    /// remote database without changing the shared settings timestamp.
+    func restoreLocalSyncSettings(_ settings: SyncSettings?) throws {
+        guard let dbQueue else { throw DatabaseError(message: "Database not initialized") }
+        let jsonString: String?
+        if let settings {
+            let data = try JSONEncoder().encode(settings)
+            jsonString = String(data: data, encoding: .utf8)
+            guard jsonString != nil else {
+                throw DatabaseError(message: "Failed to encode sync settings")
+            }
+        } else {
+            jsonString = nil
+        }
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE user_settings SET sync_settings_json = ? WHERE id = 1",
+                arguments: [jsonString]
+            )
+        }
+    }
+
     /// Save sync settings to the database
     func saveSyncSettings(_ settings: SyncSettings) throws {
         guard let dbQueue = dbQueue else {
@@ -659,9 +705,10 @@ class UserDatabase {
         }
 
         try dbQueue.write { db in
-            try db.execute(sql: """
-                UPDATE user_settings SET sync_settings_json = ?, updated_at = datetime('now') WHERE id = 1
-                """, arguments: [jsonString])
+            try db.execute(
+                sql: "UPDATE user_settings SET sync_settings_json = ? WHERE id = 1",
+                arguments: [jsonString]
+            )
         }
 
         invalidateSettingsCache()

@@ -146,7 +146,7 @@ struct LampBibleApp: App {
                 WidgetDataService.shared.refreshWidgetImmediately()
                 // Stop debounce + polling
                 UserSettingsSyncManager.shared.stopSync()
-                // Final conditional export if there are unsynced local changes
+                // Final reconciliation if there are unsynced local changes
                 guard UserDatabase.shared.hasUnsyncedChanges else { return }
                 let app = UIApplication.shared
                 var bgTaskId: UIBackgroundTaskIdentifier = .invalid
@@ -161,7 +161,7 @@ struct LampBibleApp: App {
                         }
                     }
                     if let storage = await SyncCoordinator.shared.activeStorage {
-                        try? await UserSettingsSyncManager.shared.exportToRemote(storage: storage)
+                        try? await UserSettingsSyncManager.shared.reconcileWithRemote(storage: storage)
                     }
                 }
             }

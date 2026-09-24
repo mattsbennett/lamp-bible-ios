@@ -6,36 +6,14 @@
 //
 
 import Foundation
-import CryptoKit
+import LampModuleKit
 
 // MARK: - WebDAV Module Storage
 
 /// ModuleStorage implementation for WebDAV servers (Nextcloud, ownCloud, etc.)
-class WebDAVModuleStorage: ModuleStorage {
+class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
     private let client: WebDAVClient
-
-    /// Cache of ETags for change detection (thread-safe access via lock)
-    private var _etagCache: [String: String] = [:]
-    private let etagCacheLock = NSLock()
-
-    /// Thread-safe access to etag cache
-    private func getEtagFromCache(_ key: String) -> String? {
-        etagCacheLock.lock()
-        defer { etagCacheLock.unlock() }
-        return _etagCache[key]
-    }
-
-    private func setEtagInCache(_ key: String, _ value: String) {
-        etagCacheLock.lock()
-        defer { etagCacheLock.unlock() }
-        _etagCache[key] = value
-    }
-
-    private func removeEtagFromCache(_ key: String) {
-        etagCacheLock.lock()
-        defer { etagCacheLock.unlock() }
-        _etagCache.removeValue(forKey: key)
-    }
+    let syncSourceIdentifier: String
 
     /// Initialize with WebDAV client
     /// - Parameters:
@@ -44,6 +22,7 @@ class WebDAVModuleStorage: ModuleStorage {
     ///   - password: Password for authentication
     init(baseURL: URL, username: String?, password: String?) {
         self.client = WebDAVClient(baseURL: baseURL, username: username, password: password)
+        self.syncSourceIdentifier = "webdav:\(baseURL.absoluteString)|\(username ?? "")"
     }
 
     // MARK: - ModuleStorage Protocol
@@ -64,27 +43,21 @@ class WebDAVModuleStorage: ModuleStorage {
             // Ensure directory exists first
             try await ensureDirectoryExists(type: type)
 
-            let items = try await client.listDirectory(dirPath)
+            let items = try await LampSyncModuleFolder.list(
+                in: self, directory: dirPath
+            )
 
             return items.compactMap { item -> ModuleFileInfo? in
-                // Skip directories
-                guard !item.isDirectory else { return nil }
-
-                // Extract module ID from filename
-                let id = extractModuleId(from: item.name)
-
-                // Cache ETag
-                if let etag = item.etag {
-                    let cacheKey = "\(type.rawValue)/\(item.name)"
-                    setEtagInCache(cacheKey, etag)
-                }
+                guard let id = LampSyncModuleFiles.moduleID(from: item.name) else { return nil }
 
                 return ModuleFileInfo(
                     id: id,
                     type: type,
                     filePath: item.name,
-                    fileHash: item.etag,
-                    modificationDate: item.lastModified
+                    fileHash: item.revision.flatMap {
+                        LampWebDAVStorage.isStrongETag($0) ? $0 : nil
+                    },
+                    modificationDate: item.modifiedAt
                 )
             }
         } catch WebDAVError.notFound {
@@ -96,29 +69,40 @@ class WebDAVModuleStorage: ModuleStorage {
     }
 
     func readModuleFile(type: ModuleType, fileName: String) async throws -> Data {
-        let filePath = "\(directoryName(for: type))/\(fileName)"
+        try await readModuleSnapshot(type: type, fileName: fileName).data
+    }
 
-        do {
-            return try await client.download(filePath)
-        } catch WebDAVError.notFound {
+    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile {
+        let filePath = "\(directoryName(for: type))/\(fileName)"
+        guard let remote = try await client.read(path: filePath) else {
             throw ModuleStorageError.fileNotFound(fileName)
-        } catch {
-            throw error
         }
+        return LampSyncModuleRead.webDAV(remote)
     }
 
     func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws {
+        _ = try await writeModuleFile(
+            type: type, fileName: fileName, data: data, matching: nil
+        )
+    }
+
+    @discardableResult
+    func writeModuleFile(
+        type: ModuleType,
+        fileName: String,
+        data: Data,
+        matching base: String?,
+        supersededBy archiveFile: LampCompatibilityManifest.File? = nil
+    ) async throws -> String {
         // Ensure directory structure exists
         try await ensureDirectoryExists(type: type)
 
         let filePath = "\(directoryName(for: type))/\(fileName)"
-        try await client.upload(data, to: filePath)
-
-        // Update ETag cache
-        if let etag = try? await client.getETag(filePath) {
-            let cacheKey = "\(type.rawValue)/\(fileName)"
-            setEtagInCache(cacheKey, etag)
-        }
+        let revision = try await LampSyncObservedWrite.publish(
+            data, to: filePath, in: self,
+            matching: base, supersededBy: archiveFile
+        )
+        return revision
     }
 
     func deleteModuleFile(type: ModuleType, fileName: String) async throws {
@@ -126,10 +110,6 @@ class WebDAVModuleStorage: ModuleStorage {
 
         do {
             try await client.delete(filePath)
-
-            // Remove from cache
-            let cacheKey = "\(type.rawValue)/\(fileName)"
-            removeEtagFromCache(cacheKey)
         } catch WebDAVError.notFound {
             // Already deleted - ignore
         } catch {
@@ -138,30 +118,17 @@ class WebDAVModuleStorage: ModuleStorage {
     }
 
     func getFileHash(type: ModuleType, fileName: String) async throws -> String? {
-        let cacheKey = "\(type.rawValue)/\(fileName)"
-
-        // Return cached ETag if available
-        if let cached = getEtagFromCache(cacheKey) {
-            return cached
-        }
-
-        // Fetch from server
         let filePath = "\(directoryName(for: type))/\(fileName)"
-        let etag = try await client.getETag(filePath)
-
-        if let etag = etag {
-            setEtagInCache(cacheKey, etag)
-        }
-
-        return etag
+        let revision = try await client.revision(path: filePath)
+        return revision.flatMap { LampWebDAVStorage.isStrongETag($0) ? $0 : nil }
     }
 
     func getModificationDate(type: ModuleType, fileName: String) async throws -> Date? {
         let dirPath = "\(directoryName(for: type))/"
 
         do {
-            let items = try await client.listDirectory(dirPath)
-            return items.first { $0.name == fileName }?.lastModified
+            let items = try await list(directory: dirPath) ?? []
+            return items.first { $0.name == fileName }?.modifiedAt
         } catch {
             return nil
         }
@@ -198,17 +165,8 @@ class WebDAVModuleStorage: ModuleStorage {
     // MARK: - Change Token
 
     func getChangeToken(path: String) async -> String? {
-        guard let etag = try? await client.getETag(path) else { return nil }
-        // Normalize: strip weak-validator prefix and surrounding quotes
-        // so W/"abc" and "abc" compare as equal.
-        var normalized = etag
-        if normalized.hasPrefix("W/") {
-            normalized = String(normalized.dropFirst(2))
-        }
-        if normalized.hasPrefix("\"") && normalized.hasSuffix("\"") {
-            normalized = String(normalized.dropFirst().dropLast())
-        }
-        return normalized
+        let revision = try? await client.revision(path: path)
+        return LampSyncConditionalWrite.strongToken(for: revision)
     }
 
     // MARK: - Generic File Access
@@ -223,51 +181,53 @@ class WebDAVModuleStorage: ModuleStorage {
         }
     }
 
+    func read(path: String) async throws -> LampSyncRemoteFile? {
+        try await client.read(path: path)
+    }
+
+    func list(directory: String) async throws -> [LampSyncRemoteEntry]? {
+        try await client.list(directory: directory)
+    }
+
+    func revision(path: String) async throws -> String? {
+        try await client.revision(path: path)
+    }
+
+    func write(
+        _ data: Data,
+        to path: String,
+        condition: LampSyncWriteCondition
+    ) async throws -> String? {
+        try await ensureParentDirectories(for: path)
+        return try await client.write(data, to: path, condition: condition)
+    }
+
     func writeFile(path: String, data: Data) async throws {
-        // Create parent directories recursively if needed
-        let components = path.components(separatedBy: "/")
-        if components.count > 1 {
-            // Create each directory level
-            var currentPath = ""
-            for component in components.dropLast() {
-                if currentPath.isEmpty {
-                    currentPath = component
-                } else {
-                    currentPath += "/\(component)"
-                }
-                do {
-                    try await client.createDirectory(currentPath)
-                } catch WebDAVError.httpError(405, _) {
-                    // Directory exists
-                } catch WebDAVError.conflict {
-                    // Directory already exists
-                } catch {
-                    // Log but continue - directory might exist
-                    print("[WebDAV] Could not create directory \(currentPath): \(error)")
-                }
+        try await ensureParentDirectories(for: path)
+        _ = try await LampSyncObservedWrite.publish(
+            data, to: path, in: self, matching: nil
+        )
+    }
+
+    private func ensureParentDirectories(for path: String) async throws {
+        _ = try await LampSyncRemoteDirectories.prepareParents(for: path) { directory in
+            do {
+                try await client.createDirectory(directory)
+            } catch WebDAVError.httpError(405, _) {
+                // Directory exists on servers that reject a repeated MKCOL.
+            } catch WebDAVError.conflict {
+                // Continue to the write; some servers report this for an
+                // existing directory, and the write checks the actual result.
+            } catch {
+                // A directory may already exist even if MKCOL is unsupported.
+                print("[WebDAV] Could not create directory \(directory): \(error)")
             }
         }
-
-        try await client.upload(data, to: path)
     }
 
     // MARK: - Helpers
 
     /// Extract module ID from filename (remove extension)
-    private func extractModuleId(from fileName: String) -> String {
-        var id = fileName
-
-        // Remove common extensions in order
-        let extensions = [".lamp", ".db.zlib", ".db", ".json"]
-        for ext in extensions {
-            if id.hasSuffix(ext) {
-                id = String(id.dropLast(ext.count))
-                break
-            }
-        }
-
-        return id
-    }
 }
 
 // MARK: - Keychain Helper

@@ -6,15 +6,90 @@
 //
 
 import Foundation
-import CryptoKit
+import LampModuleKit
 
 class ICloudModuleStorage: ModuleStorage {
     static let shared = ICloudModuleStorage()
 
     private let containerIdentifier = "iCloud.com.neus.lamp-bible"
-    private let fileManager = FileManager.default
+    private let fileManager: FileManager
+    private let documentsURLOverride: URL?
+    private let downloadItem: (URL) throws -> Void
 
-    private init() {}
+    init(
+        documentsURL: URL? = nil,
+        fileManager: FileManager = .default,
+        downloadItem: ((URL) throws -> Void)? = nil
+    ) {
+        documentsURLOverride = documentsURL
+        self.fileManager = fileManager
+        self.downloadItem = downloadItem ?? {
+            try fileManager.startDownloadingUbiquitousItem(at: $0)
+        }
+    }
+
+    private static func canonicalModuleFilename(_ name: String) -> String? {
+        if name.hasPrefix("."), name.hasSuffix(".icloud") {
+            return String(name.dropFirst().dropLast(".icloud".count))
+        }
+        return name.hasPrefix(".") ? nil : name
+    }
+
+    private func placeholderURL(for fileURL: URL) -> URL {
+        fileURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(fileURL.lastPathComponent).icloud")
+    }
+
+    private func downloadIfPlaceholder(at fileURL: URL) async throws {
+        if fileManager.fileExists(atPath: fileURL.path) { return }
+        guard fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) else {
+            throw ModuleStorageError.fileNotFound(fileURL.lastPathComponent)
+        }
+        try downloadItem(fileURL)
+        for _ in 0..<60 {
+            if fileManager.fileExists(atPath: fileURL.path) { return }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+        throw ModuleStorageError.notAvailable
+    }
+
+    private func ensureNoUnresolvedVersions(at url: URL) throws {
+        if NSFileVersion.unresolvedConflictVersionsOfItem(at: url)?.isEmpty == false {
+            throw ModuleStorageError.unresolvedVersions
+        }
+    }
+
+    private func coordinatedRead(at fileURL: URL) throws -> Data {
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var result: Result<Data, Error>?
+        coordinator.coordinate(readingItemAt: fileURL, options: [], error: &coordinationError) { url in
+            result = Result {
+                try ensureNoUnresolvedVersions(at: url)
+                return try Data(contentsOf: url)
+            }
+        }
+        if let result { return try result.get() }
+        throw (coordinationError as Error?) ?? ModuleStorageError.fileCoordinationFailed
+    }
+
+    private func coordinatedWrite(
+        at fileURL: URL,
+        options: NSFileCoordinator.WritingOptions,
+        _ body: (URL) throws -> Void
+    ) throws {
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var result: Result<Void, Error>?
+        coordinator.coordinate(writingItemAt: fileURL, options: options, error: &coordinationError) { url in
+            result = Result {
+                try ensureNoUnresolvedVersions(at: url)
+                try body(url)
+            }
+        }
+        if let result { return try result.get() }
+        throw (coordinationError as Error?) ?? ModuleStorageError.fileCoordinationFailed
+    }
 
     // MARK: - Container Access
 
@@ -23,6 +98,7 @@ class ICloudModuleStorage: ModuleStorage {
     }
 
     private var documentsURL: URL? {
+        if let documentsURLOverride { return documentsURLOverride }
         guard let container = containerURL else { return nil }
         return container.appendingPathComponent("Documents")
     }
@@ -156,41 +232,27 @@ class ICloudModuleStorage: ModuleStorage {
         // Ensure directory exists
         try await ensureDirectoryExists(type: type)
 
-        let contents: [URL]
-        do {
-            contents = try fileManager.contentsOfDirectory(
-                at: dirURL,
-                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )
-        } catch {
-            return []
-        }
+        let contents = try fileManager.contentsOfDirectory(
+            at: dirURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: []
+        )
 
         var moduleFiles: [ModuleFileInfo] = []
+        var listedNames = Set<String>()
 
-        for fileURL in contents {
-            let fileName = fileURL.lastPathComponent
-            let fileExtension = fileURL.pathExtension.lowercased()
-
-            // Support .lamp (new), .db.zlib (legacy), .db, and .json files
-            let isLamp = fileName.hasSuffix(".lamp")
-            let isDbZlib = fileName.hasSuffix(".db.zlib")
-            guard fileExtension == "json" || fileExtension == "db" || fileExtension == "lamp" || isDbZlib else { continue }
-
-            let id: String
-            if fileExtension == "json" {
-                id = String(fileName.dropLast(5)) // Remove .json
-            } else if isLamp {
-                id = String(fileName.dropLast(5)) // Remove .lamp
-            } else if isDbZlib {
-                id = String(fileName.dropLast(8)) // Remove .db.zlib
-            } else {
-                id = String(fileName.dropLast(3)) // Remove .db
+        for itemURL in contents {
+            guard try itemURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                continue
             }
+            guard let fileName = Self.canonicalModuleFilename(itemURL.lastPathComponent),
+                  listedNames.insert(fileName).inserted else { continue }
+            guard let id = LampSyncModuleFiles.moduleID(from: fileName) else { continue }
 
+            let fileURL = dirURL.appendingPathComponent(fileName)
+            try await downloadIfPlaceholder(at: fileURL)
             let modDate = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            let hash = try? await calculateHash(at: fileURL)
+            let hash = try await calculateHash(at: fileURL)
 
             moduleFiles.append(ModuleFileInfo(
                 id: id,
@@ -213,32 +275,47 @@ class ICloudModuleStorage: ModuleStorage {
 
         let fileURL = dirURL.appendingPathComponent(fileName)
 
-        guard fileManager.fileExists(atPath: fileURL.path) else {
-            throw ModuleStorageError.fileNotFound(fileName)
-        }
+        try await downloadIfPlaceholder(at: fileURL)
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let coordinator = NSFileCoordinator()
-            var error: NSError?
+        return try coordinatedRead(at: fileURL)
+    }
 
-            coordinator.coordinate(readingItemAt: fileURL, options: [], error: &error) { url in
-                do {
-                    let data = try Data(contentsOf: url)
-                    continuation.resume(returning: data)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-
-            if let error = error {
-                continuation.resume(throwing: error)
-            }
-        }
+    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile {
+        LampSyncModuleRead.content(
+            try await readModuleFile(type: type, fileName: fileName)
+        )
     }
 
     // MARK: - Write Module File
 
     func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws {
+        try await writeModuleFile(
+            type: type, fileName: fileName, data: data,
+            matching: nil, enforceMatch: false
+        )
+    }
+
+    /// Rechecks the observed body inside the coordinated write callback.
+    /// Another device can still upload a version after local coordination.
+    func writeModuleFile(
+        type: ModuleType,
+        fileName: String,
+        data: Data,
+        matching expectedDigest: String?
+    ) async throws {
+        try await writeModuleFile(
+            type: type, fileName: fileName, data: data,
+            matching: expectedDigest, enforceMatch: true
+        )
+    }
+
+    private func writeModuleFile(
+        type: ModuleType,
+        fileName: String,
+        data: Data,
+        matching expectedDigest: String?,
+        enforceMatch: Bool
+    ) async throws {
         guard let dirURL = directoryURL(for: type) else {
             throw ModuleStorageError.notAvailable
         }
@@ -248,38 +325,38 @@ class ICloudModuleStorage: ModuleStorage {
 
         let fileURL = dirURL.appendingPathComponent(fileName)
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let coordinator = NSFileCoordinator()
-            var error: NSError?
-
-            if fileManager.fileExists(atPath: fileURL.path) {
-                // Update existing file
-                coordinator.coordinate(writingItemAt: fileURL, options: .forReplacing, error: &error) { url in
-                    do {
-                        try data.write(to: url)
-                        continuation.resume()
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
+        if fileManager.fileExists(atPath: fileURL.path)
+            || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) {
+            try await downloadIfPlaceholder(at: fileURL)
+            try coordinatedWrite(at: fileURL, options: []) { url in
+                if enforceMatch {
+                    let observed = try Data(contentsOf: url)
+                    guard LampSyncContentRevision.matchesDigest(
+                        expectedDigest, observed: observed
+                    ) else { throw SyncError.conflictDetected }
                 }
-            } else {
-                // New file - write to temp then move to iCloud
-                let fileExtension = (fileName as NSString).pathExtension
-                let tempURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".\(fileExtension)")
-
-                do {
-                    try data.write(to: tempURL)
-                    try fileManager.setUbiquitous(true, itemAt: tempURL, destinationURL: fileURL)
-                    continuation.resume()
-                } catch {
-                    // Clean up temp file if it exists
-                    try? fileManager.removeItem(at: tempURL)
-                    continuation.resume(throwing: error)
-                }
+                try data.write(to: url)
             }
-
-            if let error = error {
-                continuation.resume(throwing: ModuleStorageError.fileCoordinationFailed)
+        } else {
+            guard !enforceMatch || expectedDigest == nil else {
+                throw SyncError.conflictDetected
+            }
+            // New ubiquitous files must be moved from a local temporary URL.
+            let fileExtension = (fileName as NSString).pathExtension
+            let tempURL = fileManager.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".\(fileExtension)")
+            do {
+                try data.write(to: tempURL)
+                if enforceMatch && (
+                    fileManager.fileExists(atPath: fileURL.path)
+                        || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path)
+                ) {
+                    throw SyncError.conflictDetected
+                }
+                try fileManager.setUbiquitous(true, itemAt: tempURL, destinationURL: fileURL)
+            } catch {
+                try? fileManager.removeItem(at: tempURL)
+                throw error
             }
         }
     }
@@ -293,26 +370,14 @@ class ICloudModuleStorage: ModuleStorage {
 
         let fileURL = dirURL.appendingPathComponent(fileName)
 
-        guard fileManager.fileExists(atPath: fileURL.path) else {
+        guard fileManager.fileExists(atPath: fileURL.path)
+            || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) else {
             return // Already deleted
         }
+        try await downloadIfPlaceholder(at: fileURL)
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let coordinator = NSFileCoordinator()
-            var error: NSError?
-
-            coordinator.coordinate(writingItemAt: fileURL, options: .forDeleting, error: &error) { url in
-                do {
-                    try self.fileManager.removeItem(at: url)
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-
-            if let error = error {
-                continuation.resume(throwing: ModuleStorageError.fileCoordinationFailed)
-            }
+        try coordinatedWrite(at: fileURL, options: .forDeleting) { url in
+            try fileManager.removeItem(at: url)
         }
     }
 
@@ -325,33 +390,18 @@ class ICloudModuleStorage: ModuleStorage {
 
         let fileURL = dirURL.appendingPathComponent(fileName)
 
-        guard fileManager.fileExists(atPath: fileURL.path) else {
+        guard fileManager.fileExists(atPath: fileURL.path)
+            || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) else {
             return nil
         }
+        try await downloadIfPlaceholder(at: fileURL)
 
         return try await calculateHash(at: fileURL)
     }
 
     private func calculateHash(at url: URL) async throws -> String {
-        return try await withCheckedThrowingContinuation { continuation in
-            let coordinator = NSFileCoordinator()
-            var error: NSError?
-
-            coordinator.coordinate(readingItemAt: url, options: [], error: &error) { url in
-                do {
-                    let data = try Data(contentsOf: url)
-                    let hash = SHA256.hash(data: data)
-                    let hashString = hash.compactMap { String(format: "%02x", $0) }.joined()
-                    continuation.resume(returning: hashString)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-
-            if let error = error {
-                continuation.resume(throwing: ModuleStorageError.hashCalculationFailed)
-            }
-        }
+        let data = try coordinatedRead(at: url)
+        return LampSyncContentRevision.digest(for: data)
     }
 
     // MARK: - Modification Date
@@ -363,9 +413,11 @@ class ICloudModuleStorage: ModuleStorage {
 
         let fileURL = dirURL.appendingPathComponent(fileName)
 
-        guard fileManager.fileExists(atPath: fileURL.path) else {
+        guard fileManager.fileExists(atPath: fileURL.path)
+            || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) else {
             return nil
         }
+        try await downloadIfPlaceholder(at: fileURL)
 
         // Clear cached values to get fresh data
         var url = fileURL
@@ -412,18 +464,8 @@ class ICloudModuleStorage: ModuleStorage {
     // MARK: - Change Token
 
     func getChangeToken(path: String) async -> String? {
-        guard let docsURL = documentsURL else { return nil }
-        let fileURL = docsURL.appendingPathComponent(path)
-        guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
-
-        var url = fileURL
-        try? url.removeAllCachedResourceValues()
-
-        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-              let modDate = values.contentModificationDate else {
-            return nil
-        }
-        return String(modDate.timeIntervalSince1970)
+        guard let data = try? await readFile(path: path) else { return nil }
+        return LampSyncContentRevision.token(for: data)
     }
 
     // MARK: - Generic File Access
@@ -435,52 +477,43 @@ class ICloudModuleStorage: ModuleStorage {
 
         let fileURL = docsURL.appendingPathComponent(path)
 
-        // Check if file exists - for iCloud, also check for placeholder (.icloud) files
-        var isPlaceholder = false
-        if !fileManager.fileExists(atPath: fileURL.path) {
-            // Check for iCloud placeholder file (.filename.icloud)
-            let placeholderName = ".\(fileURL.lastPathComponent).icloud"
-            let placeholderURL = fileURL.deletingLastPathComponent().appendingPathComponent(placeholderName)
-            if fileManager.fileExists(atPath: placeholderURL.path) {
-                isPlaceholder = true
-            } else {
-                throw ModuleStorageError.fileNotFound(path)
-            }
-        }
+        try await downloadIfPlaceholder(at: fileURL)
 
-        // Trigger download if file is a placeholder (not yet downloaded from iCloud)
-        if isPlaceholder {
-            try fileManager.startDownloadingUbiquitousItem(at: fileURL)
-            // Wait for download to complete
-            for _ in 0..<60 {
-                try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
-                if fileManager.fileExists(atPath: fileURL.path) { break }
-            }
-            guard fileManager.fileExists(atPath: fileURL.path) else {
-                throw ModuleStorageError.fileNotFound(path)
-            }
-        }
-
-        return try await withCheckedThrowingContinuation { continuation in
-            let coordinator = NSFileCoordinator()
-            var error: NSError?
-
-            coordinator.coordinate(readingItemAt: fileURL, options: [], error: &error) { url in
-                do {
-                    let data = try Data(contentsOf: url)
-                    continuation.resume(returning: data)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-
-            if let error = error {
-                continuation.resume(throwing: error)
-            }
-        }
+        return try coordinatedRead(at: fileURL)
     }
 
     func writeFile(path: String, data: Data) async throws {
+        try await writeFile(path: path, data: data, matching: nil, enforceMatch: false)
+    }
+
+    func writeFile(path: String, data: Data, matching expectedToken: String?) async throws {
+        try await writeFile(
+            path: path, data: data, matching: expectedToken, enforceMatch: true
+        )
+    }
+
+    func writeFileIfAbsentOrUnchanged(path: String, data: Data) async throws {
+        let observed: Data?
+        do {
+            observed = try await readFile(path: path)
+        } catch ModuleStorageError.fileNotFound {
+            observed = nil
+        }
+        guard LampSyncContentRevision.allowsUnbasedWrite(data, over: observed) else {
+            throw SyncError.conflictDetected
+        }
+        try await writeFile(
+            path: path, data: data,
+            matching: observed.map(LampSyncContentRevision.token(for:))
+        )
+    }
+
+    private func writeFile(
+        path: String,
+        data: Data,
+        matching expectedToken: String?,
+        enforceMatch: Bool
+    ) async throws {
         guard let docsURL = documentsURL else {
             throw ModuleStorageError.notAvailable
         }
@@ -491,22 +524,18 @@ class ICloudModuleStorage: ModuleStorage {
         let parentDir = fileURL.deletingLastPathComponent()
         try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let coordinator = NSFileCoordinator()
-            var error: NSError?
-
-            coordinator.coordinate(writingItemAt: fileURL, options: .forReplacing, error: &error) { url in
-                do {
-                    try data.write(to: url, options: .atomic)
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
+        try coordinatedWrite(at: fileURL, options: .forReplacing) { url in
+            if enforceMatch {
+                guard !fileManager.fileExists(atPath: placeholderURL(for: url).path) else {
+                    throw SyncError.conflictDetected
                 }
+                let observed = fileManager.fileExists(atPath: url.path)
+                    ? try Data(contentsOf: url) : nil
+                guard LampSyncContentRevision.matchesToken(
+                    expectedToken, observed: observed
+                ) else { throw SyncError.conflictDetected }
             }
-
-            if let error = error {
-                continuation.resume(throwing: error)
-            }
+            try data.write(to: url, options: .atomic)
         }
     }
 }

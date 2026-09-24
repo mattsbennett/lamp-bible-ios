@@ -8,6 +8,7 @@
 import Foundation
 import GRDB
 import Compression
+import LampModuleKit
 
 /// Manages import/export of highlight sets as .lamp files (zlib-compressed SQLite)
 class HighlightImportExportManager {
@@ -58,7 +59,7 @@ class HighlightImportExportManager {
         // Update module file_path
         if var module = try ModuleDatabase.shared.getModule(id: highlightSet.moduleId) {
             module.filePath = "\(highlightSet.id).lamp"
-            module.fileHash = compressedData.sha256Hash
+            module.fileHash = LampSyncContentRevision.digest(for: compressedData)
             module.lastSynced = Int(Date().timeIntervalSince1970)
             try ModuleDatabase.shared.saveModule(module)
         }
@@ -222,7 +223,7 @@ class HighlightImportExportManager {
             author: nil,
             version: nil,
             filePath: url.lastPathComponent,
-            fileHash: compressedData.sha256Hash,
+            fileHash: LampSyncContentRevision.digest(for: compressedData),
             lastSynced: now,
             isEditable: true,
             keyType: nil,
@@ -418,18 +419,3 @@ enum HighlightImportError: LocalizedError {
         }
     }
 }
-
-// MARK: - Data Extension
-
-private extension Data {
-    var sha256Hash: String {
-        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        self.withUnsafeBytes { buffer in
-            _ = CC_SHA256(buffer.baseAddress, CC_LONG(self.count), &hash)
-        }
-        return hash.map { String(format: "%02x", $0) }.joined()
-    }
-}
-
-// CommonCrypto import for SHA256
-import CommonCrypto

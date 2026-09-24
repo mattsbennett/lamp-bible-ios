@@ -10,7 +10,7 @@ import GRDB
 
 // MARK: - UserSettings
 
-struct UserSettings: Codable, FetchableRecord, PersistableRecord, Identifiable {
+struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Identifiable {
     static let databaseTableName = "user_settings"
 
     var id: Int = 1
@@ -123,7 +123,7 @@ struct UserSettings: Codable, FetchableRecord, PersistableRecord, Identifiable {
 
 // MARK: - CompletedReading
 
-struct CompletedReading: Codable, FetchableRecord, PersistableRecord, Identifiable {
+struct CompletedReading: Codable, Equatable, FetchableRecord, PersistableRecord, Identifiable {
     static let databaseTableName = "completed_readings"
 
     var id: String  // Format: "{planId}_{dayIndex}_r{readingIndex}_{year}"

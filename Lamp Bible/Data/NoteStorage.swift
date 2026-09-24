@@ -71,7 +71,7 @@ enum SaveState: Equatable {
 // MARK: - Note Sync Conflict
 
 /// Represents a conflict between local and cloud versions of a note entry
-struct NoteConflict: Identifiable {
+struct NoteConflict: Codable, Identifiable {
     let id: String  // verseId as string
     let verseId: Int
     let localEntry: NoteEntry

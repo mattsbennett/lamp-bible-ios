@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampModuleKit
 
 // MARK: - Devotional Category
 
@@ -192,10 +193,7 @@ struct DevotionalTableData: Codable, Equatable {
 
 // MARK: - Media Types
 
-enum DevotionalMediaType: String, Codable {
-    case image
-    case audio
-}
+typealias DevotionalMediaType = LampDevotionalMediaType
 
 enum ImageAlignment: String, Codable {
     case left
@@ -204,49 +202,8 @@ enum ImageAlignment: String, Codable {
     case full
 }
 
-/// Media reference for image/audio files embedded in devotionals
-struct DevotionalMediaReference: Codable, Identifiable, Equatable {
-    let id: String
-    var type: DevotionalMediaType
-    var filename: String
-    var mimeType: String
-    var size: Int?
-    var width: Int?                     // Images only
-    var height: Int?                    // Images only
-    var duration: Double?               // Audio only (seconds)
-    var waveform: [Float]?              // Audio only (0-1 normalized samples)
-    var transcription: String?          // Audio only (speech-to-text)
-    var alt: String?                    // Images only (accessibility)
-    var created: Int?
-
-    init(
-        id: String = UUID().uuidString,
-        type: DevotionalMediaType,
-        filename: String,
-        mimeType: String,
-        size: Int? = nil,
-        width: Int? = nil,
-        height: Int? = nil,
-        duration: Double? = nil,
-        waveform: [Float]? = nil,
-        transcription: String? = nil,
-        alt: String? = nil,
-        created: Int? = nil
-    ) {
-        self.id = id
-        self.type = type
-        self.filename = filename
-        self.mimeType = mimeType
-        self.size = size
-        self.width = width
-        self.height = height
-        self.duration = duration
-        self.waveform = waveform
-        self.transcription = transcription
-        self.alt = alt
-        self.created = created ?? Int(Date().timeIntervalSince1970)
-    }
-}
+/// Shared with Mac and the portable sync format.
+typealias DevotionalMediaReference = LampDevotionalMediaReference
 
 enum DevotionalListType: String, Codable {
     case bullet
@@ -765,24 +722,25 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
 
     /// Convert to Devotional model
     func toDevotional() -> Devotional? {
-        // Check if contentJson is markdown (doesn't start with '[' or '{') or JSON
-        let trimmed = contentJson.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isJson = trimmed.hasPrefix("[") || trimmed.hasPrefix("{")
-
         let content: DevotionalContent
         var markdownContent: String? = nil
+        let contentData = Data(contentJson.utf8)
+        let jsonValue = try? JSONSerialization.jsonObject(with: contentData)
+        let hasBlockSchema = jsonValue is [[String: Any]]
+            || (jsonValue as? [String: Any]).map { object in
+                object["introduction"] != nil || object["sections"] != nil
+                    || object["conclusion"] != nil
+            } == true
 
-        if isJson {
-            // Legacy: JSON-encoded blocks
-            guard let contentData = contentJson.data(using: .utf8),
-                  let decoded = try? JSONDecoder().decode(DevotionalContent.self, from: contentData) else {
-                return nil
-            }
+        if hasBlockSchema, let decoded = try? JSONDecoder().decode(
+            DevotionalContent.self, from: contentData
+        ) {
             content = decoded
         } else {
-            // New: Direct markdown storage
+            // Markdown can begin with a link or a JSON example. Decode the
+            // actual block schema before choosing its storage representation.
             markdownContent = contentJson
-            content = .blocks([])  // Empty blocks, markdown is the source of truth
+            content = .blocks([])
         }
 
         let keyScriptures: [DevotionalKeyScripture]? = keyScripturesJson.flatMap { json in
@@ -938,7 +896,7 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
 
 // MARK: - Conflict Model
 
-struct DevotionalConflict: Identifiable {
+struct DevotionalConflict: Codable, Identifiable {
     let id: String
     let localEntry: Devotional
     let cloudEntry: Devotional
@@ -1244,4 +1202,3 @@ struct SubscriptionSyncResult {
         return parts.isEmpty ? "No changes" : parts.joined(separator: ", ")
     }
 }
-

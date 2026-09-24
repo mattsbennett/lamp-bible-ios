@@ -22,6 +22,8 @@ struct SettingsView: View {
     @State var iCloudAvailable: Bool = false
     @State var moduleSyncInProgress: Bool = false
     @State var moduleCount: Int? = nil
+    @State private var manualSyncError: String? = nil
+    @State private var showingManualSyncError: Bool = false
     @State private var syncBackend: SyncBackend = .none
     @State private var webdavURL: String = ""
     @State private var webdavUsername: String = ""
@@ -294,10 +296,15 @@ struct SettingsView: View {
                         Button {
                             Task {
                                 moduleSyncInProgress = true
-                                await ModuleSyncManager.shared.syncAll()
-                                let modules = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
-                                let translations = (try? TranslationDatabase.shared.getAllTranslations().count) ?? 0
-                                moduleCount = modules + translations
+                                do {
+                                    try await syncCoordinator.syncAll()
+                                    let modules = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
+                                    let translations = (try? TranslationDatabase.shared.getAllTranslations().count) ?? 0
+                                    moduleCount = modules + translations
+                                } catch {
+                                    manualSyncError = error.localizedDescription
+                                    showingManualSyncError = true
+                                }
                                 moduleSyncInProgress = false
                             }
                         } label: {
@@ -308,6 +315,11 @@ struct SettingsView: View {
                             }
                         }
                         .disabled(moduleSyncInProgress)
+                        .alert("Sync failed", isPresented: $showingManualSyncError) {
+                            Button("OK", role: .cancel) { manualSyncError = nil }
+                        } message: {
+                            Text(manualSyncError ?? "Sync could not be completed.")
+                        }
                     }
                 } header: {
                     Text("Sync")
@@ -664,14 +676,15 @@ struct SettingsView: View {
             // This handles the migration and switches to the new backend
             try await SyncCoordinator.shared.switchBackend(to: newBackend, migrateData: true)
 
-            // Get migration result from coordinator (it tracks this during migrateStorage)
-            // For now, report success
+            // The coordinator commits the backend only after all stages succeed.
             migrationResult = MigrationResult(successCount: 1, failedFiles: [])
 
             syncBackend = newBackend
             previousBackend = newBackend
             iCloudAvailable = await SyncCoordinator.shared.isAvailable
 
+        } catch MigrationError.incomplete(let result) {
+            migrationResult = result
         } catch {
             migrationResult = MigrationResult(
                 successCount: 0,

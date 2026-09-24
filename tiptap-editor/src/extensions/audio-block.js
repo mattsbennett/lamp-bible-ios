@@ -24,7 +24,8 @@ export const AudioBlock = Node.create({
         serialize(state, node) {
           const caption = node.attrs.caption || 'Audio'
           const mediaId = node.attrs.mediaId || ''
-          state.write(`[${caption}](media/${mediaId})`)
+          const path = mediaId.startsWith('lamp-media://') ? mediaId : `media/${mediaId}`
+          state.write(`[${caption}](${path})`)
           state.closeBlock(node)
         },
         parse: {
