@@ -156,6 +156,10 @@ class ModuleSyncManager: ObservableObject {
                 } catch {
                     throw firstPullError ?? error
                 }
+                await pullPresentationDecks(
+                    using: storage,
+                    observedArchive: observedArchive?.archive
+                )
             },
             publish: {
                 guard await UserSettingsSyncManager.shared.performFullSync(using: storage) else {
@@ -180,6 +184,31 @@ class ModuleSyncManager: ObservableObject {
             },
             complete: complete
         )
+    }
+
+    /// Mirror the Mac's published decks onto this device.
+    ///
+    /// Decks are read-only here, so a deck failure never fails the sync: the
+    /// worst case is that the viewer shows the decks it already had. WebDAV
+    /// takes them from the archive this pass already decoded; every other
+    /// backend reads the same relative paths as loose files.
+    private func pullPresentationDecks(
+        using storage: ModuleStorage,
+        observedArchive: LampSyncArchive?
+    ) async {
+        do {
+            if storage is any LampSyncRemoteStore {
+                // The archive carries the decks. If it failed to load, that
+                // failure is already reported; don't also probe for loose files
+                // this backend never publishes.
+                guard let observedArchive else { return }
+                try PresentationDeckSync.pull(from: observedArchive)
+            } else {
+                try await PresentationDeckSync.pull(from: storage)
+            }
+        } catch {
+            print("Failed to sync presentation decks: \(error)")
+        }
     }
 
     /// Pull every module type before publishing any pending module. An earlier

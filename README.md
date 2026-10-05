@@ -6,6 +6,21 @@ A Bible reading companion app.
 
 Keep `lamp-bible-core` beside this repository, add the latest `{version}.realm` to `./Lamp Bible`, and build in Xcode.
 
+## Slide Decks
+
+Decks are authored in Slide Studio on a Mac; iPhone and iPad read them. The plan screen's presentation menu opens the deck library, which lists every deck on the device and shows it full screen with swipe navigation, a slide grid, and presenter notes. Hidden slides are skipped, and slides render through the same `LampPresentationUI` canvas the Mac presents with, so a deck looks the same in the room and in your hand.
+
+A widescreen slide wastes over half an upright phone screen, so the viewer takes landscape while it is open and gives the orientation back when it closes. iPad keeps whichever orientation it is in, since it has the room and may be sharing the screen with another app.
+
+Decks arrive two ways:
+
+- **Sync.** A Mac publishes decks to `Workspaces/Presentations` in its portable backup. That path is identical in a compressed `.lampsync` archive and in an expanded sync folder, so the WebDAV backend takes decks from the archive it already downloads, and the iCloud backend reads the same relative paths as loose files. For iCloud, point the Mac's folder sync at the app's container — `~/Library/Mobile Documents/iCloud~com~neus~lamp-bible/Documents`, which Files shows as "Lamp Bible" in iCloud Drive.
+- **Import.** Opening a `.lampdeck` from Files, Mail, or AirDrop keeps it on the device, listed as "On this device".
+
+Synced decks are a read-only mirror: the Mac owns them, including deletions, which travel in `deleted-decks.json`. Only imported decks can be removed here. iOS never publishes a deck, so it carries no deck merge or deletion bookkeeping of its own.
+
+Image blocks render as a placeholder on every platform — deck assets are not yet resolved or synced anywhere, including in Slide Studio.
+
 ## Presentation Remote
 
 The plan screen's presentation button discovers a running Lamp Bible Mac presenter over Bonjour. Select the nearby Mac, then scan its pairing QR code or enter the 16-character fallback code. Pairing is bound to a fresh connection challenge, and all pairing proofs, slide content, notes, and controls travel in authenticated encrypted frames. After pairing, iPhone and iPad display the current and next semantic slides, presenter notes, elapsed time, a slide chooser, previous/next controls, and audience blackout state. The remote requires Local Network permission and does not receive deck content until pairing succeeds; QR scanning also requires Camera permission.

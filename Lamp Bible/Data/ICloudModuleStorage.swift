@@ -482,6 +482,41 @@ class ICloudModuleStorage: ModuleStorage {
         return try coordinatedRead(at: fileURL)
     }
 
+    /// Placeholders are listed under their real name and downloaded here, so a
+    /// caller that reads what it lists never races the download.
+    func listFiles(path: String) async throws -> [StoredFileListing] {
+        guard let docsURL = documentsURL else {
+            throw ModuleStorageError.notAvailable
+        }
+
+        let directoryURL = docsURL.appendingPathComponent(path)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return [] }
+
+        let contents = try fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: []
+        )
+
+        var listings: [StoredFileListing] = []
+        var listedNames = Set<String>()
+        for itemURL in contents {
+            guard try itemURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true,
+                  let fileName = Self.canonicalModuleFilename(itemURL.lastPathComponent),
+                  listedNames.insert(fileName).inserted else { continue }
+
+            let fileURL = directoryURL.appendingPathComponent(fileName)
+            try await downloadIfPlaceholder(at: fileURL)
+            let modified = try? fileURL
+                .resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate
+            listings.append(StoredFileListing(name: fileName, modificationDate: modified))
+        }
+        return listings
+    }
+
     func writeFile(path: String, data: Data) async throws {
         try await writeFile(path: path, data: data, matching: nil, enforceMatch: false)
     }

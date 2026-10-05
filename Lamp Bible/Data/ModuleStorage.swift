@@ -55,6 +55,15 @@ struct ModuleFileInfo {
     let modificationDate: Date?
 }
 
+// MARK: - Stored File Listing
+
+/// One regular file inside a listed directory. Used for content the app reads
+/// by path rather than by module type, such as published presentation decks.
+struct StoredFileListing {
+    let name: String
+    let modificationDate: Date?
+}
+
 // MARK: - Sync Status
 
 /// Status of a file's sync state with the cloud backend
@@ -104,6 +113,11 @@ protocol ModuleStorage {
     /// Read file at arbitrary path (relative to base storage)
     func readFile(path: String) async throws -> Data
 
+    /// Regular files directly inside `path`, relative to base storage.
+    /// A directory that does not exist lists as empty rather than throwing, so
+    /// optional shared content can be polled without a probe first.
+    func listFiles(path: String) async throws -> [StoredFileListing]
+
     /// Write file at arbitrary path (relative to base storage)
     func writeFile(path: String, data: Data) async throws
 
@@ -116,6 +130,11 @@ protocol ModuleStorage {
 
 extension ModuleStorage {
     func getChangeToken(path: String) async -> String? { nil }
+
+    /// Backends that only serve module directories list nothing here. The two
+    /// shipping backends both override this; the default keeps fixtures and
+    /// future partial backends from having to care about shared content.
+    func listFiles(path: String) async throws -> [StoredFileListing] { [] }
 }
 
 // MARK: - Module Storage Extensions

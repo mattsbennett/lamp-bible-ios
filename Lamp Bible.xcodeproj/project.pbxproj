@@ -104,6 +104,7 @@
 		B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229942F12032700A58F81 /* NotesImportExportManager.swift */; };
 		B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229962F16A00000A58F81 /* NoteConflictView.swift */; };
 		B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */; };
+		C1A1000B2FE1000000000001 /* PresentationDeckSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100182FE1000000000001 /* PresentationDeckSyncTests.swift */; };
 		B8932D9E2AEE056E008B1444 /* Resource Files in Resources */ = {isa = PBXBuildFile; fileRef = B8932D9D2AEE056E008B1444 /* Resource Files */; };
 		B8EF6E44301EF91700ACF12D /* bundled_modules.db.zlib in Resources */ = {isa = PBXBuildFile; fileRef = B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */; };
 		B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8FC333D2B3E2CAF009C544D /* DataModel.swift */; };
@@ -114,6 +115,11 @@
 		C1A100042FE1000000000001 /* PresentationPairingScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100132FE1000000000001 /* PresentationPairingScanner.swift */; };
 		C1A100032FE1000000000001 /* LampCore in Frameworks */ = {isa = PBXBuildFile; productRef = C1A100312FE1000000000001 /* LampCore */; };
 		C1A100052FE1000000000001 /* LampModuleKit in Frameworks */ = {isa = PBXBuildFile; productRef = C1A100322FE1000000000001 /* LampModuleKit */; };
+		C1A100062FE1000000000001 /* LampPresentationUI in Frameworks */ = {isa = PBXBuildFile; productRef = C1A100332FE1000000000001 /* LampPresentationUI */; };
+		C1A100072FE1000000000001 /* PresentationDeckStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100142FE1000000000001 /* PresentationDeckStorage.swift */; };
+		C1A100082FE1000000000001 /* PresentationDeckSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100152FE1000000000001 /* PresentationDeckSync.swift */; };
+		C1A100092FE1000000000001 /* DeckLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100162FE1000000000001 /* DeckLibraryView.swift */; };
+		C1A1000A2FE1000000000001 /* DeckViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100172FE1000000000001 /* DeckViewerView.swift */; };
 		CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95873C478D642C9B5444C02 /* TipTapEditorView.swift */; };
 /* End PBXBuildFile section */
 
@@ -266,6 +272,7 @@
 		B89229942F12032700A58F81 /* NotesImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesImportExportManager.swift; sourceTree = "<group>"; };
 		B89229962F16A00000A58F81 /* NoteConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteConflictView.swift; sourceTree = "<group>"; };
 		B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalSharingTests.swift; sourceTree = "<group>"; };
+		C1A100182FE1000000000001 /* PresentationDeckSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationDeckSyncTests.swift; sourceTree = "<group>"; };
 		B8932D9D2AEE056E008B1444 /* Resource Files */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Resource Files"; sourceTree = "<group>"; };
 		B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */ = {isa = PBXFileReference; lastKnownFileType = file; name = bundled_modules.db.zlib; path = "../lamp-bible-modules/modules_db/bundled_modules.db.zlib"; sourceTree = SOURCE_ROOT; };
 		B8FC333D2B3E2CAF009C544D /* DataModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataModel.swift; sourceTree = "<group>"; };
@@ -274,6 +281,10 @@
 		C1A100112FE1000000000001 /* PresentationRemoteClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationRemoteClient.swift; sourceTree = "<group>"; };
 		C1A100122FE1000000000001 /* PresentationRemoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationRemoteView.swift; sourceTree = "<group>"; };
 		C1A100132FE1000000000001 /* PresentationPairingScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationPairingScanner.swift; sourceTree = "<group>"; };
+		C1A100142FE1000000000001 /* PresentationDeckStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationDeckStorage.swift; sourceTree = "<group>"; };
+		C1A100152FE1000000000001 /* PresentationDeckSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationDeckSync.swift; sourceTree = "<group>"; };
+		C1A100162FE1000000000001 /* DeckLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeckLibraryView.swift; sourceTree = "<group>"; };
+		C1A100172FE1000000000001 /* DeckViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeckViewerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -306,6 +317,7 @@
 			files = (
 				C1A100032FE1000000000001 /* LampCore in Frameworks */,
 				C1A100052FE1000000000001 /* LampModuleKit in Frameworks */,
+				C1A100062FE1000000000001 /* LampPresentationUI in Frameworks */,
 				8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */,
 				115D622AA82F562690671C60 /* RealmSwift in Frameworks */,
 			);
@@ -393,6 +405,8 @@
 			children = (
 				C1A100112FE1000000000001 /* PresentationRemoteClient.swift */,
 				C1A100132FE1000000000001 /* PresentationPairingScanner.swift */,
+				C1A100142FE1000000000001 /* PresentationDeckStorage.swift */,
+				C1A100152FE1000000000001 /* PresentationDeckSync.swift */,
 			);
 			path = Presentation;
 			sourceTree = "<group>";
@@ -401,6 +415,8 @@
 			isa = PBXGroup;
 			children = (
 				C1A100122FE1000000000001 /* PresentationRemoteView.swift */,
+				C1A100162FE1000000000001 /* DeckLibraryView.swift */,
+				C1A100172FE1000000000001 /* DeckViewerView.swift */,
 				B0B000012FE0000000000001 /* BookModuleView.swift */,
 				B85B89B42F1F2A20004B4F61 /* AudioBlockView.swift */,
 				B85B89B52F1F2A20004B4F61 /* AudioRecorderSheet.swift */,
@@ -525,6 +541,7 @@
 				B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */,
 				B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */,
 				B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */,
+				C1A100182FE1000000000001 /* PresentationDeckSyncTests.swift */,
 				63E97884C32E4D3D92C1CA62 /* RealmMigrationTests.swift */,
 			);
 			path = "Lamp BibleTests";
@@ -583,6 +600,7 @@
 				42E72CDD647A5E4E99060E4D /* RealmSwift */,
 				C1A100312FE1000000000001 /* LampCore */,
 				C1A100322FE1000000000001 /* LampModuleKit */,
+				C1A100332FE1000000000001 /* LampPresentationUI */,
 			);
 			productName = "Lamp Bible";
 			productReference = B885E4132ADB47E40066F0A0 /* Lamp Bible.app */;
@@ -732,6 +750,10 @@
 				C1A100012FE1000000000001 /* PresentationRemoteClient.swift in Sources */,
 				C1A100022FE1000000000001 /* PresentationRemoteView.swift in Sources */,
 				C1A100042FE1000000000001 /* PresentationPairingScanner.swift in Sources */,
+				C1A100072FE1000000000001 /* PresentationDeckStorage.swift in Sources */,
+				C1A100082FE1000000000001 /* PresentationDeckSync.swift in Sources */,
+				C1A100092FE1000000000001 /* DeckLibraryView.swift in Sources */,
+				C1A1000A2FE1000000000001 /* DeckViewerView.swift in Sources */,
 				B0B000022FE0000000000001 /* BookModuleView.swift in Sources */,
 				B851FFD12B79D1AA00C74C1D /* ConditionalStack.swift in Sources */,
 				B82BBB842B4CCEC5002248CC /* ReaderNavigationToolbarView.swift in Sources */,
@@ -824,6 +846,7 @@
 			files = (
 				B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */,
 				B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */,
+				C1A1000B2FE1000000000001 /* PresentationDeckSyncTests.swift in Sources */,
 				B885E4282ADB47ED0066F0A0 /* Lamp_BibleTests.swift in Sources */,
 				76D1ED02B3D86B929A895CBB /* RealmMigrationTests.swift in Sources */,
 			);
@@ -1289,6 +1312,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C1A100302FE1000000000001 /* XCLocalSwiftPackageReference "../lamp-bible-core" */;
 			productName = LampModuleKit;
+		};
+		C1A100332FE1000000000001 /* LampPresentationUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C1A100302FE1000000000001 /* XCLocalSwiftPackageReference "../lamp-bible-core" */;
+			productName = LampPresentationUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -1,4 +1,5 @@
 import LampCore
+import LampPresentationUI
 import SwiftUI
 
 struct PresentationRemoteView: View {
@@ -304,26 +305,26 @@ struct PresentationRemoteView: View {
     }
 
     private func slideColumn(_ state: LampPresentationRemoteState) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        // The same renderer the Mac presents with, so what the remote shows is
+        // what the room sees rather than an approximation of it.
+        let style = LampPresentationSlideStyle(
+            theme: state.theme,
+            aspectRatio: state.aspectRatio
+        )
+        return VStack(alignment: .leading, spacing: 12) {
             if let slide = state.currentSlide {
-                RemoteSemanticSlideView(
-                    slide: slide,
-                    theme: state.theme,
-                    aspectRatio: state.aspectRatio,
-                    isCompact: false
-                )
-                .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
+                LampPresentationSlideCanvas(slide: slide, style: style)
+                    .aspectRatio(state.aspectRatio.ratio, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
             }
 
             if let next = state.nextSlide {
                 HStack(spacing: 12) {
-                    RemoteSemanticSlideView(
-                        slide: next,
-                        theme: state.theme,
-                        aspectRatio: state.aspectRatio,
-                        isCompact: true
-                    )
-                    .frame(width: 132)
+                    LampPresentationSlideCanvas(slide: next, style: style, compact: true)
+                        .aspectRatio(state.aspectRatio.ratio, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                        .frame(width: 132)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("UP NEXT")
                             .font(.caption2.bold())
@@ -421,72 +422,5 @@ struct PresentationRemoteView: View {
             return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
         }
         return String(format: "%02d:%02d", minutes, remainingSeconds)
-    }
-}
-
-private struct RemoteSemanticSlideView: View {
-    let slide: LampPresentationSlide
-    let theme: LampPresentationTheme
-    let aspectRatio: LampPresentationAspectRatio
-    let isCompact: Bool
-
-    private var background: Color { Color(hex: theme.backgroundColor) ?? .black }
-    private var foreground: Color { Color(hex: theme.foregroundColor) ?? .white }
-    private var accent: Color { Color(hex: theme.accentColor) ?? .orange }
-
-    var body: some View {
-        VStack(alignment: slide.layout == .title || slide.layout == .closing ? .center : .leading,
-               spacing: isCompact ? 3 : 10) {
-            Spacer(minLength: 0)
-            ForEach(slide.blocks) { block in
-                blockView(block)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(isCompact ? 8 : 24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .foregroundStyle(foreground)
-        .background(background)
-        .aspectRatio(aspectRatio.ratio, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: isCompact ? 7 : 14))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(slide.displayTitle)
-    }
-
-    @ViewBuilder
-    private func blockView(_ block: LampPresentationBlock) -> some View {
-        switch block.kind {
-        case .title:
-            Text(block.text)
-                .font(isCompact ? .caption.bold() : .title2.bold())
-                .multilineTextAlignment(slide.layout == .title || slide.layout == .closing ? .center : .leading)
-                .minimumScaleFactor(0.6)
-        case .subtitle:
-            Text(block.text)
-                .font(isCompact ? .caption2 : .headline)
-                .foregroundStyle(accent)
-                .multilineTextAlignment(.center)
-        case .scripture, .quotation:
-            Text(block.text)
-                .font(isCompact ? .caption2 : .title3)
-                .italic()
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-                .minimumScaleFactor(0.6)
-        case .citation, .caption:
-            Text(block.text)
-                .font(isCompact ? .system(size: 6) : .caption)
-                .foregroundStyle(accent)
-        case .image:
-            Image(systemName: "photo")
-                .font(isCompact ? .caption : .title)
-                .foregroundStyle(accent)
-                .frame(maxWidth: .infinity)
-        case .body:
-            Text(block.text)
-                .font(isCompact ? .system(size: 7) : .body)
-                .lineLimit(isCompact ? 3 : nil)
-                .minimumScaleFactor(0.65)
-        }
     }
 }

@@ -27,6 +27,8 @@ struct PlanView: View {
     @State private var isLoaded = false
     @State private var metaDataInputs: PlanMetaDataInputs?
     @State private var showingPresentationRemote = false
+    @State private var showingDeckLibrary = false
+    @State private var deckImportError: String?
     @Environment(\.colorScheme) var colorScheme
 
     /// The app target deploys to iOS 18, so this is a live branch: only the glass
@@ -80,12 +82,20 @@ struct PlanView: View {
                     }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                showingPresentationRemote = true
+                            Menu {
+                                Button("Slide Decks", systemImage: "rectangle.on.rectangle") {
+                                    showingDeckLibrary = true
+                                }
+                                Button(
+                                    "Presentation Remote",
+                                    systemImage: "appletvremote.gen4"
+                                ) {
+                                    showingPresentationRemote = true
+                                }
                             } label: {
                                 Image(systemName: "play.rectangle.on.rectangle")
                             }
-                            .accessibilityLabel("Presentation Remote")
+                            .accessibilityLabel("Presentations")
                         }
                     }
                     .toolbar {
@@ -151,6 +161,37 @@ struct PlanView: View {
                     .sheet(isPresented: $showingPresentationRemote) {
                         PresentationRemoteView()
                             .presentationDetents([.large])
+                    }
+                    .sheet(isPresented: $showingDeckLibrary) {
+                        DeckLibraryView()
+                            .presentationDetents([.large])
+                    }
+                    // A .lampdeck opened from Files, Mail, or AirDrop lands in
+                    // the deck library rather than the module importer.
+                    .onChange(of: deepLinkManager.pendingDeckImportURL) { _, url in
+                        guard let url else { return }
+                        deepLinkManager.clearPendingDeckImport()
+                        do {
+                            try PresentationDeckStorage.shared.importDeck(from: url)
+                            NotificationCenter.default.post(
+                                name: .presentationDecksDidChange,
+                                object: nil
+                            )
+                            showingDeckLibrary = true
+                        } catch {
+                            deckImportError = error.localizedDescription
+                        }
+                    }
+                    .alert(
+                        "Deck Unavailable",
+                        isPresented: Binding(
+                            get: { deckImportError != nil },
+                            set: { if !$0 { deckImportError = nil } }
+                        )
+                    ) {
+                        Button("OK", role: .cancel) { deckImportError = nil }
+                    } message: {
+                        Text(deckImportError ?? "")
                     }
             }
         }

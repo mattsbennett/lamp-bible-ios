@@ -189,6 +189,13 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
         try await client.list(directory: directory)
     }
 
+    func listFiles(path: String) async throws -> [StoredFileListing] {
+        guard let entries = try await client.list(directory: path) else { return [] }
+        return entries
+            .filter { !$0.isDirectory }
+            .map { StoredFileListing(name: $0.name, modificationDate: $0.modifiedAt) }
+    }
+
     func revision(path: String) async throws -> String? {
         try await client.revision(path: path)
     }

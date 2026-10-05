@@ -52,6 +52,18 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>Lamp Presentation Deck</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.neus.lamp-bible.presentation-deck</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>Lamp Book JSON</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
@@ -86,6 +98,25 @@
 				</array>
 				<key>public.mime-type</key>
 				<string>application/octet-stream</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Lamp Presentation Deck</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.neus.lamp-bible.presentation-deck</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>lampdeck</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.lamp-bible.presentation+json</string>
 			</dict>
 		</dict>
 	</array>

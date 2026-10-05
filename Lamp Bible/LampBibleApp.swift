@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 import WidgetKit
 
 // MARK: - Deep Link Types
@@ -28,10 +29,18 @@ class DeepLinkManager: ObservableObject {
     @Published var pendingTranslationId: String? = nil
     @Published var pendingPlanMode: Bool = false
     @Published var pendingFileImportURL: URL? = nil
+    @Published var pendingDeckImportURL: URL? = nil
 
     private init() {}
 
     func handleURL(_ url: URL) {
+        // A deck is read, not installed, so it takes its own route rather than
+        // the module importer's.
+        if url.isFileURL && url.pathExtension.lowercased() == "lampdeck" {
+            pendingDeckImportURL = url
+            return
+        }
+
         // Handle .lamp file imports from external sources
         if url.isFileURL && ["lamp", "json"].contains(url.pathExtension.lowercased()) {
             pendingFileImportURL = url
@@ -75,6 +84,10 @@ class DeepLinkManager: ObservableObject {
         pendingPlanMode = false
     }
 
+    func clearPendingDeckImport() {
+        pendingDeckImportURL = nil
+    }
+
     private func openInExternalApp(sv: Int, ev: Int) {
         let settings = UserDatabase.shared.getSettings()
         guard let appName = settings.planExternalBible,
@@ -114,8 +127,24 @@ private struct ContentBootstrapView: View {
     }
 }
 
+/// Exists only so a screen can hold the interface orientation for as long as it
+/// needs it. UIKit re-evaluates orientation against the app's supported set, so
+/// a geometry request alone is undone the moment it is made; the deck viewer
+/// narrows this mask while it is open and widens it again on the way out.
+final class LampBibleAppDelegate: NSObject, UIApplicationDelegate {
+    nonisolated(unsafe) static var supportedOrientations: UIInterfaceOrientationMask = .allButUpsideDown
+
+    func application(
+        _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        Self.supportedOrientations
+    }
+}
+
 @main
 struct LampBibleApp: App {
+    @UIApplicationDelegateAdaptor(LampBibleAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
