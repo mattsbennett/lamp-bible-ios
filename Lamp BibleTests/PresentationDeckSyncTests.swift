@@ -198,6 +198,156 @@ final class PresentationDeckSyncTests: XCTestCase {
         XCTAssertFalse(changed)
     }
 
+    // MARK: - Assets
+
+    private func imageDeck(id: String, assetName: String?) -> LampPresentationDeck {
+        var deck = self.deck(id: id, title: "Pictures")
+        if let assetName {
+            deck.slides.append(
+                LampPresentationSlide(
+                    layout: .image,
+                    blocks: [
+                        LampPresentationBlock(
+                            kind: .image,
+                            assetPath: "\(LampPresentationDeckStore.assetsDirectoryName)/\(assetName)",
+                            altText: "A picture"
+                        ),
+                    ]
+                )
+            )
+        }
+        return deck
+    }
+
+    private func assetEntry(
+        _ name: String,
+        _ contents: String,
+        modifiedAt: Date
+    ) -> LampSyncArchive.Entry {
+        LampSyncArchive.Entry(
+            path: "\(LampPresentationDeckPortableLayout.assetsDirectoryPath)/\(name)",
+            data: Data(contents.utf8),
+            modifiedAt: modifiedAt
+        )
+    }
+
+    private func storedAsset(_ name: String) -> String? {
+        let url = decks.syncedStore.assetsDirectoryURL.appendingPathComponent(name)
+        return (try? Data(contentsOf: url)).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    func testArchivePullStoresImagesBesideTheirDecks() throws {
+        let archive = LampSyncArchive(entries: [
+            try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
+            assetEntry("photo.jpg", "image bytes", modifiedAt: .init(timeIntervalSince1970: 100)),
+        ])
+
+        XCTAssertTrue(try PresentationDeckSync.pull(from: archive, into: decks))
+        XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
+
+        let block = decks.entries().first?.deck.slides.last?.blocks.first
+        XCTAssertNotNil(block)
+        XCTAssertNotNil(decks.syncedStore.assetURL(for: block!))
+    }
+
+    func testImagesNoDeckReferencesAreRemoved() throws {
+        let withImage = LampSyncArchive(entries: [
+            try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
+            assetEntry("photo.jpg", "image bytes", modifiedAt: .init(timeIntervalSince1970: 100)),
+        ])
+        try PresentationDeckSync.pull(from: withImage, into: decks)
+        XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
+
+        // The deck is revised to drop its picture.
+        let withoutImage = LampSyncArchive(entries: [
+            try deckEntry(imageDeck(id: "a", assetName: nil), modifiedAt: .init(timeIntervalSince1970: 900)),
+        ])
+        try PresentationDeckSync.pull(from: withoutImage, into: decks)
+
+        XCTAssertNil(storedAsset("photo.jpg"))
+    }
+
+    func testAnImageSharedByTwoDecksSurvivesOneBeingDeleted() throws {
+        var second = imageDeck(id: "b", assetName: "photo.jpg")
+        second.title = "Also Pictures"
+        let archive = LampSyncArchive(entries: [
+            try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
+            try deckEntry(second, modifiedAt: .init(timeIntervalSince1970: 100)),
+            assetEntry("photo.jpg", "image bytes", modifiedAt: .init(timeIntervalSince1970: 100)),
+        ])
+        try PresentationDeckSync.pull(from: archive, into: decks)
+
+        var ledger = LampPresentationDeckDeletionLedger()
+        ledger.record("a", at: Date(timeIntervalSince1970: 500))
+        try PresentationDeckSync.pull(
+            from: LampSyncArchive(entries: [try ledgerEntry(ledger, modifiedAt: .init(timeIntervalSince1970: 500))]),
+            into: decks
+        )
+
+        XCTAssertEqual(decks.entries().count, 1)
+        XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
+    }
+
+    func testANewerPublishedImageReplacesTheStoredOne() throws {
+        try PresentationDeckSync.pull(
+            from: LampSyncArchive(entries: [
+                try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
+                assetEntry("photo.jpg", "first", modifiedAt: .init(timeIntervalSince1970: 100)),
+            ]),
+            into: decks
+        )
+
+        try PresentationDeckSync.pull(
+            from: LampSyncArchive(entries: [
+                try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
+                assetEntry("photo.jpg", "second", modifiedAt: .init(timeIntervalSince1970: 900)),
+            ]),
+            into: decks
+        )
+
+        XCTAssertEqual(storedAsset("photo.jpg"), "second")
+    }
+
+    func testLooseFilePullCarriesImages() async throws {
+        try writeDeckFile(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100))
+        let assetsDirectory = root
+            .appendingPathComponent(LampPresentationDeckPortableLayout.assetsDirectoryPath)
+        try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
+        try Data("image bytes".utf8).write(to: assetsDirectory.appendingPathComponent("photo.jpg"))
+
+        let storage = FolderBackedStorage(root: root)
+        let changed = try await PresentationDeckSync.pull(from: storage, into: decks)
+        XCTAssertTrue(changed)
+        XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
+    }
+
+    func testADeckNamingAFileOutsideTheLibraryIsRejected() throws {
+        var deck = self.deck(id: "evil", title: "Nasty")
+        deck.slides.append(
+            LampPresentationSlide(
+                layout: .image,
+                blocks: [
+                    LampPresentationBlock(
+                        kind: .image,
+                        assetPath: "../../../../../../etc/passwd",
+                        altText: "Nothing good"
+                    ),
+                ]
+            )
+        )
+        let data = try JSONEncoder().encode(deck)
+        let archive = LampSyncArchive(entries: [
+            LampSyncArchive.Entry(
+                path: "\(LampPresentationDeckPortableLayout.directoryPath)/evil.lampdeck",
+                data: data,
+                modifiedAt: Date(timeIntervalSince1970: 100)
+            ),
+        ])
+
+        XCTAssertFalse(try PresentationDeckSync.pull(from: archive, into: decks))
+        XCTAssertTrue(decks.entries().isEmpty)
+    }
+
     // MARK: - Local import
 
     func testImportKeepsADeckOnThisDevice() throws {

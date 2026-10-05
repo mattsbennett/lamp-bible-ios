@@ -47,6 +47,13 @@ struct PresentationDeckStorage: Sendable {
         )
     }
 
+    /// The store a deck's images resolve against. A deck imported on this
+    /// device arrived as a single file with no images beside it, so its image
+    /// blocks resolve in the imported directory and simply find nothing there.
+    func store(for entry: PresentationDeckEntry) -> LampPresentationDeckStore {
+        entry.origin == .synced ? syncedStore : importedStore
+    }
+
     // MARK: - Reading
 
     /// Every deck this device can show, newest-looking name order, with a
@@ -149,6 +156,43 @@ struct PresentationDeckStorage: Sendable {
         }
         for id in plan.deckIDsToDelete {
             try syncedStore.delete(id: id)
+        }
+    }
+
+    /// Mirrors the images published alongside the decks.
+    ///
+    /// Written newest-wins like the decks themselves, then anything no synced
+    /// deck references is removed. Images carry no deletion ledger, so
+    /// reachability is what keeps this directory from growing forever — and
+    /// because decks and their images arrive in the same pull, an image is only
+    /// unreferenced once no deck wants it.
+    func applySyncedAssets(_ assets: [LampPresentationAssetRevision]) throws {
+        let fileManager = FileManager.default
+        let directory = syncedStore.assetsDirectoryURL
+
+        if !assets.isEmpty {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        for asset in assets {
+            let url = directory.appendingPathComponent(asset.name)
+            let existing = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate
+            if let existing, existing >= asset.modifiedAt { continue }
+            try asset.data.write(to: url, options: [.atomic])
+            try? fileManager.setAttributes(
+                [.modificationDate: asset.modifiedAt],
+                ofItemAtPath: url.path
+            )
+        }
+
+        guard fileManager.fileExists(atPath: directory.path) else { return }
+        let referenced = revisions(in: syncedStore).map(\.deck).referencedAssetNames
+        for url in (try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? [] where !referenced.contains(url.lastPathComponent) {
+            try? fileManager.removeItem(at: url)
         }
     }
 }

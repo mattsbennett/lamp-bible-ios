@@ -98,7 +98,7 @@ struct DeckLibraryView: View {
             )
         ) {
             if let entry = entries.first(where: { $0.id == pendingDeckID }) {
-                DeckViewerView(deck: entry.deck)
+                DeckViewerView(deck: entry.deck, store: PresentationDeckStorage.shared.store(for: entry))
             }
         }
     }
@@ -160,7 +160,12 @@ private struct DeckLibraryRow: View {
     var body: some View {
         HStack(spacing: 14) {
             if let slide = entry.visibleSlides.first {
-                LampPresentationSlideCanvas(slide: slide, deck: entry.deck, compact: true)
+                LampPresentationSlideCanvas(
+                    slide: slide,
+                    deck: entry.deck,
+                    store: PresentationDeckStorage.shared.store(for: entry),
+                    compact: true
+                )
                     .aspectRatio(entry.deck.aspectRatio.ratio, contentMode: .fit)
                     .frame(width: 86)
                     .clipShape(RoundedRectangle(cornerRadius: 6))

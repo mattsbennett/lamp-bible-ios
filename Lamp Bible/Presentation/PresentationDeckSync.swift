@@ -22,6 +22,7 @@ enum PresentationDeckSync {
         try apply(
             incoming: archive.presentationDeckRevisions(),
             deletions: archive.presentationDeckDeletions(),
+            assets: archive.presentationAssetRevisions(),
             into: decks
         )
     }
@@ -62,7 +63,28 @@ enum PresentationDeckSync {
             deletions = LampPresentationDeckDeletionLedger.decoded(from: data)
         }
 
-        return try apply(incoming: incoming, deletions: deletions, into: decks)
+        var assets: [LampPresentationAssetRevision] = []
+        let assetsDirectory = LampPresentationDeckPortableLayout.assetsDirectoryPath
+        for listing in (try? await storage.listFiles(path: assetsDirectory)) ?? [] {
+            let path = "\(assetsDirectory)/\(listing.name)"
+            guard LampPresentationDeckPortableLayout.isAssetPath(path),
+                  let data = try? await storage.readFile(path: path)
+            else { continue }
+            assets.append(
+                LampPresentationAssetRevision(
+                    name: listing.name,
+                    data: data,
+                    modifiedAt: listing.modificationDate ?? .distantPast
+                )
+            )
+        }
+
+        return try apply(
+            incoming: incoming,
+            deletions: deletions,
+            assets: assets,
+            into: decks
+        )
     }
 
     // MARK: - Applying
@@ -71,6 +93,7 @@ enum PresentationDeckSync {
     private static func apply(
         incoming: [LampPresentationDeckRevision],
         deletions: LampPresentationDeckDeletionLedger,
+        assets: [LampPresentationAssetRevision],
         into decks: PresentationDeckStorage
     ) throws -> Bool {
         let plan = LampPresentationDeckPortablePull.plan(
@@ -78,9 +101,12 @@ enum PresentationDeckSync {
             deletions: deletions,
             local: decks.revisions(in: decks.syncedStore)
         )
-        guard !plan.isEmpty else { return false }
+        guard !plan.isEmpty || !assets.isEmpty else { return false }
 
+        // Decks first: the images are kept only for as long as a stored deck
+        // references them, so they must be written against the new decks.
         try decks.applySyncPlan(plan)
+        try decks.applySyncedAssets(assets)
         NotificationCenter.default.post(name: .presentationDecksDidChange, object: nil)
         return true
     }

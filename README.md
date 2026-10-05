@@ -10,7 +10,7 @@ Keep `lamp-bible-core` beside this repository, add the latest `{version}.realm` 
 
 Decks are authored in Slide Studio on a Mac; iPhone and iPad read them. The plan screen's presentation menu opens the deck library, which lists every deck on the device and shows it full screen with swipe navigation, a slide grid, and presenter notes. Hidden slides are skipped, and slides render through the same `LampPresentationUI` canvas the Mac presents with, so a deck looks the same in the room and in your hand.
 
-A widescreen slide wastes over half an upright phone screen, so the viewer takes landscape while it is open and gives the orientation back when it closes. iPad keeps whichever orientation it is in, since it has the room and may be sharing the screen with another app.
+A widescreen slide wastes over half an upright phone screen, so the viewer takes landscape while it is open and gives the orientation back when it closes. The slide controls inset the slide rather than floating over it: in landscape a widescreen slide fills the height, so a floating bar would hide the slide's own title. iPad keeps whichever orientation it is in, since it has the room and may be sharing the screen with another app.
 
 Decks arrive two ways:
 
@@ -19,7 +19,7 @@ Decks arrive two ways:
 
 Synced decks are a read-only mirror: the Mac owns them, including deletions, which travel in `deleted-decks.json`. Only imported decks can be removed here. iOS never publishes a deck, so it carries no deck merge or deletion bookkeeping of its own.
 
-Image blocks render as a placeholder on every platform — deck assets are not yet resolved or synced anywhere, including in Slide Studio.
+Image slides show their picture. Images live beside the decks in `Presentations/Assets` under generated filenames, travel with them over sync, and are kept for as long as some deck references one; an image a deck names but that has not arrived yet draws a labelled placeholder rather than an empty frame. A deck may only name files inside its own folder, so an `assetPath` that is absolute or climbs out with `..` fails validation and the deck is refused. The presentation remote still shows placeholders for image slides, since it receives slides over the wire without their files.
 
 ## Presentation Remote
 

@@ -49,6 +49,7 @@ private enum DeckViewerOrientation {
 /// like the deck, not like a web page.
 struct DeckViewerView: View {
     let deck: LampPresentationDeck
+    var store: LampPresentationDeckStore = PresentationDeckStorage.shared.syncedStore
 
     @Environment(\.dismiss) private var dismiss
 
@@ -82,12 +83,15 @@ struct DeckViewerView: View {
                 )
                 .foregroundStyle(.white)
             } else {
+                // The bar insets the slide rather than floating over it. A
+                // widescreen slide fills the height in landscape, so an overlay
+                // hides the one line most worth reading — the slide's title.
                 slidePager
-            }
-
-            if showsChrome {
-                chrome
-                    .transition(.opacity)
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if showsChrome {
+                            chromeBar.transition(.opacity)
+                        }
+                    }
             }
         }
         .statusBarHidden(!showsChrome)
@@ -103,14 +107,13 @@ struct DeckViewerView: View {
     private var slidePager: some View {
         TabView(selection: $index) {
             ForEach(Array(slides.enumerated()), id: \.element.id) { position, slide in
-                LampPresentationSlideCanvas(slide: slide, deck: deck)
+                LampPresentationSlideCanvas(slide: slide, deck: deck, store: store)
                     .aspectRatio(deck.aspectRatio.ratio, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .tag(position)
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
-        .ignoresSafeArea()
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) { showsChrome.toggle() }
@@ -119,12 +122,11 @@ struct DeckViewerView: View {
 
     // MARK: - Chrome
 
-    private var chrome: some View {
-        VStack {
-            HStack(spacing: 14) {
-                Button {
-                    dismiss()
-                } label: {
+    private var chromeBar: some View {
+        HStack(spacing: 14) {
+            Button {
+                dismiss()
+            } label: {
                     Image(systemName: "xmark")
                         .font(.headline)
                         .frame(width: 34, height: 34)
@@ -165,12 +167,9 @@ struct DeckViewerView: View {
                 .accessibilityLabel("Choose slide")
                 .disabled(slides.isEmpty)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial)
-
-            Spacer()
-        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
     }
 
     // MARK: - Sheets
@@ -211,6 +210,7 @@ struct DeckViewerView: View {
                                 LampPresentationSlideCanvas(
                                     slide: slide,
                                     deck: deck,
+                                    store: store,
                                     compact: true
                                 )
                                 .aspectRatio(deck.aspectRatio.ratio, contentMode: .fit)
