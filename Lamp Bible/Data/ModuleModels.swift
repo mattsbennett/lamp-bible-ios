@@ -2237,8 +2237,22 @@ struct VerseRangeStats {
     let chapterVerseCounts: [Int]
     /// Book number of the first verse in the range, if any.
     let firstBook: Int?
+    /// Whether these numbers came from a database that could actually be read.
+    ///
+    /// A range can legitimately hold no verses — the chosen translation may not
+    /// cover it — and that is indistinguishable from a translation database
+    /// that was not ready yet unless the two are kept apart. Callers that cache
+    /// or display these numbers must not treat an unresolved zero as an answer.
+    let isResolved: Bool
 
-    static let empty = VerseRangeStats(wordCount: 0, chapterVerseCounts: [], firstBook: nil)
+    /// No answer: the database could not be read. Distinct from a resolved
+    /// range that holds no verses, which reports `isResolved == true`.
+    static let unresolved = VerseRangeStats(
+        wordCount: 0,
+        chapterVerseCounts: [],
+        firstBook: nil,
+        isResolved: false
+    )
 
     var verseCount: Int { chapterVerseCounts.reduce(0, +) }
 
@@ -2278,7 +2292,8 @@ struct VerseRangeStats {
         return VerseRangeStats(
             wordCount: wordCount,
             chapterVerseCounts: chapterVerseCounts,
-            firstBook: firstBook
+            firstBook: firstBook,
+            isResolved: true
         )
     }
 }

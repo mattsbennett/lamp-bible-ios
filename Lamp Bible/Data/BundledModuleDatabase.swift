@@ -18,6 +18,10 @@ class BundledModuleDatabase {
     private var dbQueue: DatabaseQueue?
     private var isAvailable: Bool = false
 
+    /// Whether the bundled database opened. Callers that cache what they read
+    /// need this to tell "nothing there" from "could not look".
+    var isReady: Bool { isAvailable }
+
     /// Cached set of bundled translation ids — see `isTranslationBundled`.
     private var bundledTranslationIds: Set<String>?
     private let bundledTranslationIdsLock = NSLock()
@@ -276,7 +280,7 @@ class BundledModuleDatabase {
     /// averages ~2 KB against ~120 bytes of actual text), so the full-row fetch is
     /// wildly wasteful when all the caller wants is a word count and verse tallies.
     func getVerseRangeStats(translationId: String, startRef: Int, endRef: Int) throws -> VerseRangeStats {
-        guard isAvailable else { return .empty }
+        guard isAvailable else { return .unresolved }
         return try read { db in
             try VerseRangeStats.fetch(db, translationId: translationId, startRef: startRef, endRef: endRef)
         }
@@ -1559,12 +1563,26 @@ class TranslationDatabase {
     }
 
     /// Summary statistics for a verse range, without loading the full rows.
+    ///
+    /// A tally of zero only means "this reading has no verses" when the
+    /// translation it was counted from actually exists. Otherwise the zero is
+    /// an unknown — the module may not be installed yet, or the bundled
+    /// database may not have opened, in which case `isTranslationBundled`
+    /// reports false and the lookup lands here. Returning `.unresolved` keeps
+    /// callers from caching or displaying that as an answer.
     func getVerseRangeStats(translationId: String, startRef: Int, endRef: Int) throws -> VerseRangeStats {
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getVerseRangeStats(translationId: translationId, startRef: startRef, endRef: endRef)
-        } else {
-            return try userDb.getVerseRangeStats(translationId: translationId, startRef: startRef, endRef: endRef)
         }
+        let stats = try userDb.getVerseRangeStats(
+            translationId: translationId,
+            startRef: startRef,
+            endRef: endRef
+        )
+        // The existence check costs a query, so it is only paid when there was
+        // nothing to count.
+        guard stats.verseCount == 0 else { return stats }
+        return try userDb.getTranslation(id: translationId) == nil ? .unresolved : stats
     }
 
     // MARK: - Unified Search

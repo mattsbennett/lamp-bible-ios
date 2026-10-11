@@ -77,6 +77,7 @@ struct ReadingsView: View {
                         Spacer()
                         ReaderSplitControl(
                             chapterVerseCounts: readingMetaData.chapterVerseCounts,
+                            isResolved: readingMetaData.isResolved,
                             readerCount: $readerCount
                         )
                         Spacer()
@@ -127,11 +128,17 @@ struct ReadingsView: View {
 
 struct ReaderSplitControl: View {
     let chapterVerseCounts: [Int]
+    /// False while the translation database could not be read, so the counts
+    /// are unknown rather than zero.
+    var isResolved: Bool = true
     @Binding var readerCount: Int
 
     private var totalVerses: Int { chapterVerseCounts.reduce(0, +) }
 
     private var labelContent: Text {
+        // Showing "0v" for a tally nobody could read states something false;
+        // say nothing is known instead.
+        guard isResolved else { return Text("—") }
         // A reading can legitimately resolve to no verses (e.g. the selected
         // translation doesn't cover the range), so never index into the counts.
         guard readerCount > 1, let firstCount = chapterVerseCounts.first else {

@@ -208,6 +208,11 @@ class UserDatabase {
         dbQueue = nil
         setupDatabase()
         startFileMonitoring()
+        // While the database was shut, every `getSettings()` handed out
+        // defaults. Readers that built something from those need to know it is
+        // readable again — the caller's own notification only covers the path
+        // where the replacement succeeded.
+        notifyDatabaseChange()
     }
 
     // MARK: - Migrations

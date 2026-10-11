@@ -540,9 +540,9 @@ struct PlanInfoPopover: View {
                     .font(.headline)
 
                 HStack(spacing: 8) {
-                    Text("\(reading.verseCount) verses")
+                    Text(reading.isResolved ? "\(reading.verseCount) verses" : "— verses")
                     Text("·")
-                    Text("~\(reading.readingTime) min")
+                    Text(reading.isResolved ? "~\(reading.readingTime) min" : "~— min")
                     Text("·")
                     Text(reading.genre)
                 }
@@ -551,6 +551,7 @@ struct PlanInfoPopover: View {
 
                 ReaderSplitControl(
                     chapterVerseCounts: reading.chapterVerseCounts,
+                    isResolved: reading.isResolved,
                     readerCount: $readerCount
                 )
             }

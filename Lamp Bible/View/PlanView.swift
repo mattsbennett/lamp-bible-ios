@@ -25,7 +25,12 @@ struct PlanView: View {
     @State private var plansMetaData: PlansMetaData = PlansMetaData(plans: [], date: Date.now, userSettings: UserSettings())
     @State private var plans: [Plan] = []
     @State private var isLoaded = false
+    /// Inputs whose metadata was built from readable databases. Recorded only
+    /// on success, so a build that raced a database opening is retried.
     @State private var metaDataInputs: PlanMetaDataInputs?
+    /// Inputs currently being built, so concurrent refreshes don't duplicate work.
+    @State private var buildingMetaDataInputs: PlanMetaDataInputs?
+    @State private var metaDataRetryCount = 0
     @State private var showingPresentationRemote = false
     @State private var showingDeckLibrary = false
     @State private var deckImportError: String?
@@ -216,17 +221,41 @@ struct PlanView: View {
             date: date
         )
 
-        guard inputs != metaDataInputs else { return }
-        metaDataInputs = inputs
+        guard inputs != metaDataInputs, inputs != buildingMetaDataInputs else { return }
+        buildingMetaDataInputs = inputs
 
         let buildDate = date
         DispatchQueue.global(qos: .userInitiated).async {
             let built = PlansMetaData(plans: selectedPlans, date: buildDate, userSettings: settings)
             DispatchQueue.main.async {
                 // Drop the result if a newer refresh has superseded this one
-                guard inputs == metaDataInputs else { return }
+                guard inputs == buildingMetaDataInputs else { return }
+                buildingMetaDataInputs = nil
                 plansMetaData = built
+                guard built.isFullyResolved else {
+                    // The verse and word tallies came back from a database that
+                    // wasn't readable yet, so they are zeroes rather than
+                    // answers. Recording these inputs would make every later
+                    // refresh short-circuit on them for the rest of the
+                    // session, which is why this used to need a relaunch.
+                    metaDataInputs = nil
+                    scheduleMetaDataRetry()
+                    return
+                }
+                metaDataInputs = inputs
+                metaDataRetryCount = 0
             }
+        }
+    }
+
+    /// Tries again shortly after an unresolved build. Nothing is guaranteed to
+    /// announce a database finishing its open — `reopenDatabase()` is silent on
+    /// its failure path — so the view asks again rather than waiting to be told.
+    private func scheduleMetaDataRetry() {
+        guard metaDataRetryCount < 10 else { return }
+        metaDataRetryCount += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            refreshMetaData()
         }
     }
 

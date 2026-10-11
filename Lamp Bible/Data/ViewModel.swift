@@ -14,6 +14,10 @@ class PlanMetaData {
     let description: String
     let readingTime: Int
     var readingMetaData: [ReadingMetaData] = []
+    /// Whether every reading's numbers came from a readable database. A build
+    /// made while one was still opening is all zeroes, and must not be cached
+    /// or shown as though it were the answer.
+    let isFullyResolved: Bool
 
     convenience init(id: String, plan: Plan, date: Date) {
         self.init(id: id, plan: plan, date: date, userSettings: UserDatabase.shared.getSettings())
@@ -22,6 +26,7 @@ class PlanMetaData {
     init(id: String, plan: Plan, date: Date, userSettings: UserSettings) {
         var readingTimeAcc: Int = 0
         var readingMetaDataInit: [ReadingMetaData] = []
+        var allResolved = true
         self.id = id
         self.plan = plan
         self.date = date
@@ -31,6 +36,9 @@ class PlanMetaData {
         guard let planDay = try? BundledModuleDatabase.shared.getPlanDay(planId: plan.id, day: dayNum) else {
             self.description = ""
             self.readingTime = 0
+            // A plan can legitimately lack this day; a database that has not
+            // opened yet cannot say either way.
+            self.isFullyResolved = BundledModuleDatabase.shared.isReady
             return
         }
 
@@ -46,12 +54,16 @@ class PlanMetaData {
 
             // Only the word count and verse tallies are needed here, so avoid
             // pulling the full verse rows (annotations/footnotes/poetry JSON).
+            // A throw here means the translation database could not be read,
+            // not that the reading is empty: `.unresolved` keeps the two apart
+            // so neither the cards nor `PlanView`'s cache mistake it for zero.
             let stats = (try? TranslationDatabase.shared.getVerseRangeStats(
                 translationId: translationId,
                 startRef: sv,
                 endRef: ev
-            )) ?? .empty
+            )) ?? .unresolved
 
+            allResolved = allResolved && stats.isResolved
             let readingTimeReading = Int(ceil(Double(stats.wordCount) / userSettings.planWpm))
             let book = try? BundledModuleDatabase.shared.getBook(id: stats.firstBook ?? 1)
             let genre = (try? BundledModuleDatabase.shared.getGenre(id: book?.genre ?? 1))?.name ?? "General"
@@ -69,13 +81,15 @@ class PlanMetaData {
                     genre: genre,
                     sv: sv,
                     ev: ev,
-                    chapterVerseCounts: chapterVerseCounts
+                    chapterVerseCounts: chapterVerseCounts,
+                    isResolved: stats.isResolved
                 )
             )
         }
 
         self.readingMetaData = readingMetaDataInit
         self.readingTime = readingTimeAcc
+        self.isFullyResolved = allResolved
     }
 }
 
@@ -91,10 +105,13 @@ class ReadingMetaData {
     let sv: Int
     let ev: Int
     let chapterVerseCounts: [Int]
+    /// False when the translation database could not be read, so the zeroes
+    /// below mean "unknown" rather than "none".
+    let isResolved: Bool
 
     var verseCount: Int { chapterVerseCounts.reduce(0, +) }
 
-    init(id: String, index: Int, readingTime: Int, description: String, genre: String, sv: Int, ev: Int, chapterVerseCounts: [Int]) {
+    init(id: String, index: Int, readingTime: Int, description: String, genre: String, sv: Int, ev: Int, chapterVerseCounts: [Int], isResolved: Bool = true) {
         self.id = id
         self.index = index
         self.readingTime = readingTime
@@ -103,6 +120,7 @@ class ReadingMetaData {
         self.sv = sv
         self.ev = ev
         self.chapterVerseCounts = chapterVerseCounts
+        self.isResolved = isResolved
     }
 }
 
@@ -110,6 +128,11 @@ class PlansMetaData {
     let plans: [Plan]
     let date: Date
     var planMetaData: [PlanMetaData] = []
+
+    /// Whether every plan built from readable databases. `PlanView` keys its
+    /// rebuild decision on this, so a launch that raced a database opening
+    /// recovers instead of showing zeroes until the app is relaunched.
+    var isFullyResolved: Bool { planMetaData.allSatisfy(\.isFullyResolved) }
 
     convenience init(plans: [Plan]? = nil, date: Date) {
         self.init(plans: plans, date: date, userSettings: UserDatabase.shared.getSettings())
@@ -174,6 +197,11 @@ final class PlanMetaDataCache {
         // Built outside the lock: this is the expensive part, and building the
         // same entry twice is harmless.
         let built = PlanMetaData(id: plan.id, plan: plan, date: date, userSettings: userSettings)
+
+        // Never memoise a build whose databases could not be read: the key
+        // cannot change afterwards, so a cached failure would survive every
+        // rebuild for the rest of the session.
+        guard built.isFullyResolved else { return built }
 
         lock.lock()
         if entries[key] == nil {
