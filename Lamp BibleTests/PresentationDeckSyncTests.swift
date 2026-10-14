@@ -250,6 +250,22 @@ final class PresentationDeckSyncTests: XCTestCase {
         XCTAssertNotNil(decks.syncedStore.assetURL(for: block!))
     }
 
+    func testTiedImageEditsUseTheSharedMergeRule() throws {
+        let date = Date(timeIntervalSince1970: 100)
+        let original = LampSyncArchive(entries: [
+            try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: date),
+            assetEntry("photo.jpg", "alpha", modifiedAt: date),
+        ])
+        try PresentationDeckSync.pull(from: original, into: decks)
+        let revised = LampSyncArchive(entries: [
+            assetEntry("photo.jpg", "zeta", modifiedAt: date),
+        ])
+        try PresentationDeckSync.pull(from: revised, into: decks)
+        XCTAssertEqual(storedAsset("photo.jpg"), "zeta")
+        try PresentationDeckSync.pull(from: original, into: decks)
+        XCTAssertEqual(storedAsset("photo.jpg"), "zeta")
+    }
+
     func testImagesNoDeckReferencesAreRemoved() throws {
         let withImage = LampSyncArchive(entries: [
             try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),

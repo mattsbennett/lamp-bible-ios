@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import LampCore
 import GRDB
 
 struct ModuleSettingsView: View {
@@ -201,7 +202,7 @@ struct TranslationList: View {
     }
 
     private var hiddenIds: Set<String> {
-        Set(hiddenString.split(separator: ",").map { String($0) })
+        Set(LampModuleSelection.identifiers(in: hiddenString))
     }
 
     private var visibleTranslationsList: [TranslationModule] {
@@ -302,7 +303,7 @@ struct LexiconOrderListWithHiding: View {
     let keyType: String
 
     private var hiddenKeys: Set<String> {
-        Set(hiddenString.split(separator: ",").map { String($0) })
+        Set(LampModuleSelection.identifiers(in: hiddenString))
     }
 
     private var allLexicons: [(key: String, name: String)] {
@@ -321,26 +322,9 @@ struct LexiconOrderListWithHiding: View {
     }
 
     private var orderedLexicons: [(key: String, name: String)] {
-        let storedOrder = orderString.split(separator: ",").map { String($0) }
-        let available = allLexicons
-
-        var ordered: [(key: String, name: String)] = []
-
-        // First add items from stored order that still exist
-        for key in storedOrder {
-            if let item = available.first(where: { $0.key == key }) {
-                ordered.append(item)
-            }
-        }
-
-        // Then append any new items not in stored order
-        for item in available {
-            if !ordered.contains(where: { $0.key == item.key }) {
-                ordered.append(item)
-            }
-        }
-
-        return ordered
+        LampModuleSelection.ordered(
+            allLexicons, preferredIDs: LampModuleSelection.identifiers(in: orderString), id: { $0.key }
+        )
     }
 
     private var visibleLexicons: [(key: String, name: String)] {

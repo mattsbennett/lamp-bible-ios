@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import LampCore
 import GRDB
 
 enum SearchScope: String, CaseIterable {
@@ -1839,41 +1840,13 @@ struct SearchResultRow: View {
         }
 
         for annotation in annotations {
-            if let strongs = annotation.data?.strongs, strongsNumbersMatch(strongs, strongsNum) {
+            if let strongs = annotation.data?.strongs, LampStrongsKey.matches(strongs, strongsNum) {
                 return (annotation.start, annotation.end)
             }
         }
         return nil
     }
 
-    /// Compare Strong's numbers, normalizing leading zeros (H0216 matches H216)
-    private func strongsNumbersMatch(_ a: String, _ b: String) -> Bool {
-        // Extract prefix (H, G, TH) and numeric part
-        let pattern = "^(TH|H|G)(\\d+)$"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
-            return a == b
-        }
-
-        let aRange = NSRange(a.startIndex..., in: a)
-        let bRange = NSRange(b.startIndex..., in: b)
-
-        guard let aMatch = regex.firstMatch(in: a, range: aRange),
-              let bMatch = regex.firstMatch(in: b, range: bRange),
-              let aPrefixRange = Range(aMatch.range(at: 1), in: a),
-              let aNumRange = Range(aMatch.range(at: 2), in: a),
-              let bPrefixRange = Range(bMatch.range(at: 1), in: b),
-              let bNumRange = Range(bMatch.range(at: 2), in: b) else {
-            return a.uppercased() == b.uppercased()
-        }
-
-        // Compare prefix (case insensitive) and numeric value (ignoring leading zeros)
-        let aPrefix = a[aPrefixRange].uppercased()
-        let bPrefix = b[bPrefixRange].uppercased()
-        let aNum = Int(a[aNumRange]) ?? 0
-        let bNum = Int(b[bNumRange]) ?? 0
-
-        return aPrefix == bPrefix && aNum == bNum
-    }
 
     /// Build a snippet Text centered on the hit, with highlighting
     private func buildSnippetText(cleanedText: String, hitInfo: (start: Int, end: Int)?, targetLength: Int) -> Text {

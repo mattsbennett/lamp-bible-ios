@@ -7,6 +7,7 @@
 
 import SwiftUI
 import GRDB
+import LampCore
 
 // MARK: - First Match Scroll Offset
 
@@ -340,7 +341,7 @@ struct LexiconTextView: UIViewRepresentable {
 // MARK: - Linked Text Segment Parsing
 
 /// A segment of parsed text - either plain text, a Strong's reference, a verse reference, or a BDB cross-reference
-private enum LinkedTextSegment: Identifiable {
+enum LinkedTextSegment: Identifiable, Equatable {
     case text(String)
     case strongs(String)  // e.g., "H1234", "G5678"
     case verseRef(display: String, verseId: Int, endVerseId: Int? = nil, fullRef: String? = nil)  // parsed verse reference
@@ -432,150 +433,29 @@ private struct LexiconVerseRefContext {
 /// Parses a verse reference string into a verse ID, with optional context from previous reference
 /// Context allows parsing continuation references like "14" when previous was "Daniel (4:12"
 private func parseVerseReference(_ ref: String, context: LexiconVerseRefContext? = nil) -> LexiconVerseRefContext? {
-    // Clean up: remove outer parentheses but preserve internal ones
-    var cleaned = ref.trimmingCharacters(in: .whitespaces)
-    if cleaned.hasPrefix("(") && cleaned.hasSuffix(")") {
-        cleaned = String(cleaned.dropFirst().dropLast())
+    var source = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "(", with: "")
+        .replacingOccurrences(of: ")", with: "")
+    if source.rangeOfCharacter(from: .letters) == nil, let context {
+        let book = LampBibleReferenceFormatter.bookAbbreviation(context.bookId)
+        source = source.contains(":") ? "\(book) \(source)" : "\(book) \(context.chapter):\(source)"
     }
-    // Also handle trailing ) without leading (
-    cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: ")"))
-
-    // Pattern 1: Full reference - BookName (chapter:verse or BookName chapter:verse
-    // Allows optional ( between book and chapter for patterns like "Daniel (4:12"
-    let fullPattern = #"^([1-3]?\s*[A-Z][a-z]+\.?)\s*\(?\s*(\d+):(\d+)"#
-    if let regex = try? NSRegularExpression(pattern: fullPattern),
-       let match = regex.firstMatch(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned)),
-       let bookRange = Range(match.range(at: 1), in: cleaned),
-       let chapterRange = Range(match.range(at: 2), in: cleaned),
-       let verseRange = Range(match.range(at: 3), in: cleaned) {
-
-        let bookName = String(cleaned[bookRange]).trimmingCharacters(in: .whitespaces)
-        if let chapter = Int(cleaned[chapterRange]),
-           let verse = Int(cleaned[verseRange]),
-           let bookId = lookupBookId(from: bookName) {
-            let verseId = bookId * 1000000 + chapter * 1000 + verse
-            return LexiconVerseRefContext(verseId: verseId, bookId: bookId, chapter: chapter, verse: verse)
-        }
-    }
-
-    // Pattern 2: Chapter:verse only (uses book from context)
-    let chapterVersePattern = #"^(\d+):(\d+)$"#
-    if let ctx = context,
-       let regex = try? NSRegularExpression(pattern: chapterVersePattern),
-       let match = regex.firstMatch(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned)),
-       let chapterRange = Range(match.range(at: 1), in: cleaned),
-       let verseRange = Range(match.range(at: 2), in: cleaned),
-       let chapter = Int(cleaned[chapterRange]),
-       let verse = Int(cleaned[verseRange]) {
-        let verseId = ctx.bookId * 1000000 + chapter * 1000 + verse
-        return LexiconVerseRefContext(verseId: verseId, bookId: ctx.bookId, chapter: chapter, verse: verse)
-    }
-
-    // Pattern 3: Verse number only (uses book and chapter from context)
-    let verseOnlyPattern = #"^(\d+)(?:-\d+)?$"#  // Also handles ranges like "14-15"
-    if let ctx = context,
-       let regex = try? NSRegularExpression(pattern: verseOnlyPattern),
-       let match = regex.firstMatch(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned)),
-       let verseRange = Range(match.range(at: 1), in: cleaned),
-       let verse = Int(cleaned[verseRange]) {
-        let verseId = ctx.bookId * 1000000 + ctx.chapter * 1000 + verse
-        return LexiconVerseRefContext(verseId: verseId, bookId: ctx.bookId, chapter: ctx.chapter, verse: verse)
-    }
-
-    return nil
+    guard let point = (try? LampReferenceParser.parse(source))?.start,
+          let verse = point.verse else { return nil }
+    return LexiconVerseRefContext(
+        verseId: point.book * 1_000_000 + point.chapter * 1_000 + verse,
+        bookId: point.book, chapter: point.chapter, verse: verse
+    )
 }
 
-/// Legacy wrapper for code that just needs the verse ID
-private func parseVerseReferenceId(_ ref: String) -> Int? {
-    return parseVerseReference(ref)?.verseId
-}
 
-/// Looks up a book ID from various name formats (full name, OSIS, abbreviation)
-private func lookupBookId(from name: String) -> Int? {
-    let normalizedName = name.lowercased().replacingOccurrences(of: ".", with: "")
-    let allBooks = (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
-
-    // Try exact match on various fields (case insensitive)
-    if let book = allBooks.first(where: {
-        $0.name.lowercased() == name.lowercased() ||
-        $0.osisId.lowercased() == name.lowercased() ||
-        $0.osisParatextAbbreviation.lowercased() == name.lowercased()
-    }) {
-        return book.id
-    }
-
-    // Try partial/fuzzy match for common abbreviations
-    let abbreviationMap: [String: String] = [
-        "gen": "Gen", "exod": "Exod", "exo": "Exod", "lev": "Lev", "num": "Num", "deut": "Deut",
-        "josh": "Josh", "judg": "Judg", "ruth": "Ruth", "1sam": "1Sam", "2sam": "2Sam",
-        "1kgs": "1Kgs", "2kgs": "2Kgs", "1chr": "1Chr", "2chr": "2Chr",
-        "ezra": "Ezra", "neh": "Neh", "esth": "Esth", "job": "Job",
-        "ps": "Ps", "psa": "Ps", "prov": "Prov", "eccl": "Eccl", "eccles": "Eccl",
-        "song": "Song", "isa": "Isa", "jer": "Jer", "lam": "Lam",
-        "ezek": "Ezek", "eze": "Ezek", "dan": "Dan", "hos": "Hos", "joel": "Joel",
-        "amos": "Amos", "obad": "Obad", "jonah": "Jonah", "mic": "Mic",
-        "nah": "Nah", "hab": "Hab", "zeph": "Zeph", "zep": "Zeph",
-        "hag": "Hag", "zech": "Zech", "zec": "Zech", "mal": "Mal",
-        "matt": "Matt", "mark": "Mark", "luke": "Luke", "john": "John",
-        "acts": "Acts", "rom": "Rom", "1cor": "1Cor", "2cor": "2Cor",
-        "gal": "Gal", "eph": "Eph", "phil": "Phil", "col": "Col",
-        "1thess": "1Thess", "2thess": "2Thess", "1tim": "1Tim", "2tim": "2Tim",
-        "titus": "Titus", "phlm": "Phlm", "heb": "Heb",
-        "jas": "Jas", "1pet": "1Pet", "2pet": "2Pet",
-        "1john": "1John", "2john": "2John", "3john": "3John",
-        "jude": "Jude", "rev": "Rev",
-        // Full names
-        "genesis": "Gen", "exodus": "Exod", "leviticus": "Lev", "numbers": "Num",
-        "deuteronomy": "Deut", "joshua": "Josh", "judges": "Judg",
-        "samuel": "1Sam", "kings": "1Kgs", "chronicles": "1Chr",
-        "nehemiah": "Neh", "esther": "Esth", "psalms": "Ps", "proverbs": "Prov",
-        "ecclesiastes": "Eccl", "isaiah": "Isa", "jeremiah": "Jer",
-        "lamentations": "Lam", "ezekiel": "Ezek", "daniel": "Dan",
-        "hosea": "Hos", "obadiah": "Obad", "micah": "Mic", "nahum": "Nah",
-        "habakkuk": "Hab", "zephaniah": "Zeph", "haggai": "Hag",
-        "zechariah": "Zech", "malachi": "Mal", "matthew": "Matt",
-        "romans": "Rom", "corinthians": "1Cor", "galatians": "Gal",
-        "ephesians": "Eph", "philippians": "Phil", "colossians": "Col",
-        "thessalonians": "1Thess", "timothy": "1Tim", "philemon": "Phlm",
-        "hebrews": "Heb", "james": "Jas", "peter": "1Pet",
-        "revelation": "Rev"
-    ]
-
-    if let osisId = abbreviationMap[normalizedName],
-       let book = allBooks.first(where: { $0.osisId == osisId }) {
-        return book.id
-    }
-
-    return nil
-}
 
 // MARK: - Enhanced Reference Parsing for User Dictionaries
 
 /// Constructs a full reference string from a verse ID (e.g., 45007012 -> "Rom. 7:12")
 private func formatVerseReference(verseId: Int) -> String {
-    let bookId = verseId / 1000000
-    let chapter = (verseId % 1000000) / 1000
-    let verse = verseId % 1000
-
-    // Look up book abbreviation
-    let bookName: String
-    if let book = try? BundledModuleDatabase.shared.getBook(id: bookId) {
-        // Capitalize properly: "ROM" -> "Rom", "1SAM" -> "1Sam"
-        let raw = book.osisId
-        if let firstLetter = raw.first(where: { $0.isLetter }) {
-            let idx = raw.firstIndex(of: firstLetter)!
-            let prefix = raw[..<idx]  // e.g., "1" or ""
-            let rest = raw[idx...]    // e.g., "SAM" or "ROM"
-            let capitalized = rest.prefix(1).uppercased() + rest.dropFirst().lowercased()
-            bookName = String(prefix) + capitalized
-        } else {
-            bookName = raw
-        }
-    } else {
-        bookName = "?"
-    }
-
-    return "\(bookName). \(chapter):\(verse)"
+    let components = LampBibleReferenceFormatter.components(of: verseId)
+    return "\(LampBibleReferenceFormatter.bookAbbreviation(components.book)). \(components.chapter):\(components.verse)"
 }
 
 /// Splits verse reference display text into optional prefix text and button display
@@ -614,15 +494,15 @@ private func splitVerseRefDisplay(_ rawText: String, verseId: Int) -> (prefix: S
 ///   - Strong's refs: ⟨G932⟩
 ///   - BDB cross-refs: ⦃BDB871⦄
 /// The markers are stripped for display.
-private func parseLinkedTextWithReferences(_ text: String, references: [VerseRef]?) -> [LinkedTextSegment] {
+func parseLinkedTextWithReferences(_ text: String, references: [VerseRef]?) -> [LinkedTextSegment] {
     var segments: [LinkedTextSegment] = []
     var refIndex = 0
     let refs = references ?? []
+    var previousReference: LexiconVerseRefContext?
 
     // Combined pattern for annotated references
     // ⟦...⟧ = Bible reference, ⟨...⟩ = Strong's reference, ⦃...⦄ = BDB cross-reference
-    // Using non-greedy .+? instead of negated character class for better Unicode handling
-    let pattern = #"⟦(.+?)⟧|⟨([GH]\d+)⟩|⦃(BDB\d+)⦄"#
+    let pattern = #"⟦([^⟧]+)⟧|⟨([GH]\d+)⟩|⦃(BDB\d+)⦄"#
 
     guard let regex = try? NSRegularExpression(pattern: pattern) else {
         return [.text(text)]
@@ -650,6 +530,10 @@ private func parseLinkedTextWithReferences(_ text: String, references: [VerseRef
                 let ref = refs[refIndex]
                 let verseId = ref.sv
                 let endVerseId = ref.ev
+                let last = LampBibleReferenceFormatter.components(of: ref.ev ?? ref.sv)
+                previousReference = LexiconVerseRefContext(
+                    verseId: ref.ev ?? ref.sv, bookId: last.book, chapter: last.chapter, verse: last.verse
+                )
 
                 // Split into optional prefix text and button display
                 let (prefix, buttonDisplay, fullRef) = splitVerseRefDisplay(rawDisplayText, verseId: verseId)
@@ -663,7 +547,8 @@ private func parseLinkedTextWithReferences(_ text: String, references: [VerseRef
                 refIndex += 1
             } else {
                 // Fallback: try to parse the reference text directly
-                if let parsed = parseVerseReference(rawDisplayText) {
+                if let parsed = parseVerseReference(rawDisplayText, context: previousReference) {
+                    previousReference = parsed
                     let (prefix, buttonDisplay, fullRef) = splitVerseRefDisplay(rawDisplayText, verseId: parsed.verseId)
                     if let prefix = prefix {
                         segments.append(.text(prefix))
@@ -2862,17 +2747,10 @@ struct LexiconLookup {
 
     /// Returns entries sorted by user's preferred order
     static func sortedEntries(for num: String, orderString: String) -> [LexiconEntry] {
-        let entries = allEntries(for: num)
-        let preferredOrder = orderString.split(separator: ",").map { String($0) }
-
-        return entries.sorted { e1, e2 in
-            let idx1 = preferredOrder.firstIndex(of: e1.lexiconKey) ?? Int.max
-            let idx2 = preferredOrder.firstIndex(of: e2.lexiconKey) ?? Int.max
-            if idx1 != idx2 {
-                return idx1 < idx2
-            }
-            return e1.lexiconKey < e2.lexiconKey
-        }
+        LampModuleSelection.ordered(
+            allEntries(for: num).sorted { $0.lexiconKey < $1.lexiconKey },
+            preferredIDs: LampModuleSelection.identifiers(in: orderString), id: \.lexiconKey
+        )
     }
 
     /// Look up a BDB entry directly by its BDB ID (for cross-references like ⦃BDB871⦄)
@@ -3587,16 +3465,10 @@ class LexiconLoader: ObservableObject {
         }
 
         let orderString = isHebrew ? hebrewLexiconOrder : greekLexiconOrder
-        let preferredOrder = orderString.split(separator: ",").map { String($0) }
-
-        return lexicons.sorted { l1, l2 in
-            let idx1 = preferredOrder.firstIndex(of: l1) ?? Int.max
-            let idx2 = preferredOrder.firstIndex(of: l2) ?? Int.max
-            if idx1 != idx2 {
-                return idx1 < idx2
-            }
-            return l1 < l2
-        }
+        return LampModuleSelection.ordered(
+            lexicons.sorted(), preferredIDs: LampModuleSelection.identifiers(in: orderString),
+            id: { $0 }
+        )
     }
 
     private func computeEntries(for lexiconKey: String, strongs: [String]) -> [LexiconEntry] {

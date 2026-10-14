@@ -46,17 +46,9 @@ class BookOsisCache {
 
 // MARK: - Module Type
 
-enum ModuleType: String, Codable, CaseIterable {
-    case translation
-    case dictionary
-    case commentary
-    case book
-    case devotional
-    case notes
-    case plan
-    case highlights
-    case quiz
+typealias ModuleType = LampModuleKind
 
+extension LampModuleKind {
     /// Module types that are searchable in the module search UI
     /// Excludes plan and quiz (have dedicated UI)
     static var searchableTypes: [ModuleType] {

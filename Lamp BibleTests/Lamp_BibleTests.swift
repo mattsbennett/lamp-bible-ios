@@ -87,6 +87,69 @@ final class Lamp_BibleTests: XCTestCase {
             "An explanatory footnote.")
     }
 
+    func testNotesMarkdownRoundTripKeepsIntroductionsRangesAndRepeatedFootnotes() throws {
+        let source = """
+        ---
+        bookNumber: 43
+        ---
+        ## Chapter 1
+        ### Introduction
+        Opening[^intro].
+        ### 1:1-2:3
+        🌿 First[^7], repeated[^7].
+        > [!footnote] 7
+        > A verse footnote.
+        ---
+        [^intro]: A chapter footnote.
+        """
+        let manager = NotesImportExportManager.shared
+        let book = try manager.parseMarkdownToNotes(content: source, filename: "untitled.md")
+        let chapter = try XCTUnwrap(book.chapter(1))
+        XCTAssertEqual(book.bookNumber, 43)
+        XCTAssertEqual(chapter.introduction?.plainText, "Opening[^1].")
+        XCTAssertEqual(chapter.footnotes?.first?.plainText, "A chapter footnote.")
+        let note = try XCTUnwrap(chapter.verses?.first)
+        XCTAssertEqual(note.ev, 43_002_003)
+        XCTAssertEqual(note.commentary.plainText, "🌿 First[^1], repeated[^1].")
+        XCTAssertEqual(note.footnotes?.count, 1)
+        let restored = try manager.parseMarkdownToNotes(
+            content: manager.generateMarkdown(from: book), filename: "John.md"
+        )
+        XCTAssertEqual(restored.chapter(1)?.introduction?.plainText, chapter.introduction?.plainText)
+        XCTAssertEqual(restored.chapter(1)?.verses?.first?.commentary.plainText, note.commentary.plainText)
+        XCTAssertEqual(restored.chapter(1)?.verses?.first?.footnotes?.first?.plainText, "A verse footnote.")
+    }
+
+    func testInvalidNotesMarkdownCannotOverwriteAnEarlierValidNote() async throws {
+        let database = ModuleDatabase.shared
+        let moduleID = "invalid-markdown-\(UUID().uuidString)"
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: moduleID)
+            try? database.deleteModule(id: moduleID)
+        }
+        try database.saveModule(Module(id: moduleID, type: .notes,
+            name: "Notes fixture", filePath: "fixture.lamp", isEditable: true))
+        let original = NoteEntry(moduleId: moduleID, verseId: 43_001_001, content: "Keep this note.")
+        try database.saveNoteEntry(original)
+        do {
+            _ = try await NotesImportExportManager.shared.importNotesFromMarkdownString("""
+            ## John 1:1
+            Replacement.
+            ### 1:1000
+            Invalid later note.
+            """, moduleId: moduleID)
+            XCTFail("An invalid reference must reject the whole import")
+        } catch let error as LampLibraryError {
+            guard case .invalidPersonalContent = error else {
+                return XCTFail("Unexpected import error: \(error)")
+            }
+        } catch {
+            return XCTFail("Unexpected import error: \(error)")
+        }
+        XCTAssertEqual(try database.getNoteEntry(id: original.id)?.content, "Keep this note.")
+        XCTAssertEqual(try database.getNotesForVerse(moduleId: moduleID, verseId: 43_001_001).count, 1)
+    }
+
     func testMultiBookNotesMarkdownAcceptsCrossChapterRanges() async throws {
         let moduleID = "markdown-ranges-\(UUID().uuidString)"
         defer {
@@ -116,6 +179,26 @@ final class Lamp_BibleTests: XCTestCase {
         ).first)
         XCTAssertEqual(note.verseRefs, [43_002_003])
         XCTAssertEqual(note.footnotes?.first?.plainText, "An explanatory footnote.")
+    }
+
+    func testNotesMarkdownImportsReferenceHeadingsAcrossBooksWithoutATitle() async throws {
+        let database = ModuleDatabase.shared
+        let moduleID = "reference-headings-\(UUID().uuidString)"
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: moduleID)
+            try? database.deleteModule(id: moduleID)
+        }
+        let count = try await NotesImportExportManager.shared.importNotesFromMarkdownString("""
+        ## John 1:1
+        A note on John.
+        ## Genesis 1:1
+        A note on Genesis.
+        """, moduleId: moduleID)
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(try database.getNotesForVerse(moduleId: moduleID, verseId: 43_001_001).first?.content,
+            "A note on John.")
+        XCTAssertEqual(try database.getNotesForVerse(moduleId: moduleID, verseId: 1_001_001).first?.content,
+            "A note on Genesis.")
     }
 
     func testDevotionalMarkdownUsesSharedRichContentProjection() throws {

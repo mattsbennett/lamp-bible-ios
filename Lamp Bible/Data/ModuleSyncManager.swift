@@ -418,9 +418,7 @@ class ModuleSyncManager: ObservableObject {
             let descriptor = try LampPortableModuleInspector.inspect(
                 compressedData: entry.data, requireImportSchema: true
             )
-            guard let type = ModuleType(rawValue: descriptor.kind.rawValue) else {
-                throw ModuleSyncError.importFailed("Unsupported portable module type: \(descriptor.kind.rawValue)")
-            }
+            let type = descriptor.kind
             let info = ModuleFileInfo(
                 id: descriptor.id,
                 type: type,
@@ -631,11 +629,7 @@ class ModuleSyncManager: ObservableObject {
                         let available = Set(try String.fetchAll(
                             db, sql: "SELECT name FROM \(sourceAlias).sqlite_master WHERE type = 'table'"
                         ))
-                        guard let kind = LampModuleKind(rawValue: info.type.rawValue) else {
-                            throw ModuleSyncError.importFailed(
-                                "Unsupported archive module type: \(info.type.rawValue)"
-                            )
-                        }
+                        let kind = info.type
                         let tables = LampPortableModuleInspector
                             .archiveImportSourceTables(for: kind)
                             .filter { available.contains($0) }
@@ -1130,9 +1124,7 @@ class ModuleSyncManager: ObservableObject {
         type: ModuleType,
         data: Data
     ) throws {
-        guard let kind = LampModuleKind(rawValue: type.rawValue) else {
-            throw ModuleSyncError.importFailed("Unsupported module type \(type.rawValue)")
-        }
+        let kind = type
         let descriptor = try LampPortableModuleInspector.inspectRemote(
             data: data, filename: fileInfo.filePath,
             fallbackID: fileInfo.id, expectedKind: kind
@@ -1171,9 +1163,7 @@ class ModuleSyncManager: ObservableObject {
             try? FileManager.default.removeItem(at: tempURL)
         }
 
-        guard let portableKind = LampModuleKind(rawValue: type.rawValue) else {
-            throw ModuleSyncError.importFailed("Unsupported SQLite module type: \(type.rawValue)")
-        }
+        let portableKind = type
         try LampPortableModuleInspector.validateOwnership(
             databaseURL: tempURL, expectedID: fileInfo.id, kind: portableKind
         )

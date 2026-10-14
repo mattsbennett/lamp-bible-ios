@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import LampCore
 
 class PlanMetaData {
     let id: String
@@ -64,7 +65,9 @@ class PlanMetaData {
             )) ?? .unresolved
 
             allResolved = allResolved && stats.isResolved
-            let readingTimeReading = Int(ceil(Double(stats.wordCount) / userSettings.planWpm))
+            let readingTimeReading = LampReadingTimeEstimator.minutes(
+                wordCount: stats.wordCount, wordsPerMinute: userSettings.planWpm
+            )
             let book = try? BundledModuleDatabase.shared.getBook(id: stats.firstBook ?? 1)
             let genre = (try? BundledModuleDatabase.shared.getGenre(id: book?.genre ?? 1))?.name ?? "General"
             let chapterVerseCounts = stats.chapterVerseCounts

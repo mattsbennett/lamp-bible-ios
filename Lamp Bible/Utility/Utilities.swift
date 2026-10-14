@@ -10,10 +10,7 @@ import GRDB
 import LampCore
 
 func countWords(source: String) -> Int {
-    let components = source.components(separatedBy: .whitespacesAndNewlines)
-    let wordCount = components.filter { !$0.isEmpty }.count
-
-    return wordCount
+    LampReadingTimeEstimator.wordCount(in: source)
 }
 
 func splitVerseId(_ number: Int) -> (Int, Int, Int) {
@@ -43,42 +40,21 @@ func buildVerseURL(verseId: Int, endVerseId: Int? = nil, translationId: String? 
 
 /// Parses a comma-separated string of hidden translation IDs into a Set (String IDs for GRDB)
 func parseHiddenTranslationIds(_ hiddenString: String) -> Set<String> {
-    Set(hiddenString.split(separator: ",").map { String($0) })
+    Set(LampModuleSelection.identifiers(in: hiddenString))
 }
 
 /// Parses a comma-separated string of hidden lexicon keys into a Set
 func parseHiddenLexiconKeys(_ hiddenString: String) -> Set<String> {
-    Set(hiddenString.split(separator: ",").map { String($0) })
+    Set(LampModuleSelection.identifiers(in: hiddenString))
 }
 
 /// Returns visible translations (excluding hidden ones), optionally ordered - uses GRDB
 func visibleTranslations(hiddenString: String, orderString: String? = nil) -> [TranslationModule] {
-    let hiddenIds = parseHiddenTranslationIds(hiddenString)
-    let all = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
-    let visible = all.filter { !hiddenIds.contains($0.id) }
-
-    guard let orderString = orderString, !orderString.isEmpty else {
-        return visible
-    }
-
-    let storedOrder = orderString.split(separator: ",").map { String($0) }
-    var ordered: [TranslationModule] = []
-
-    // First add items from stored order that still exist and are visible
-    for id in storedOrder {
-        if let translation = visible.first(where: { $0.id == id }) {
-            ordered.append(translation)
-        }
-    }
-
-    // Then append any visible items not in stored order
-    for translation in visible {
-        if !ordered.contains(where: { $0.id == translation.id }) {
-            ordered.append(translation)
-        }
-    }
-
-    return ordered
+    LampModuleSelection.visible(
+        (try? TranslationDatabase.shared.getAllTranslations()) ?? [],
+        hiddenIDs: parseHiddenTranslationIds(hiddenString),
+        preferredIDs: LampModuleSelection.identifiers(in: orderString ?? ""), id: \.id
+    )
 }
 
 /// Returns visible lexicon entries for a Strong's number, filtered by hidden keys and ordered

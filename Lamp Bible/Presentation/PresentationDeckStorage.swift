@@ -167,33 +167,8 @@ struct PresentationDeckStorage: Sendable {
     /// because decks and their images arrive in the same pull, an image is only
     /// unreferenced once no deck wants it.
     func applySyncedAssets(_ assets: [LampPresentationAssetRevision]) throws {
-        let fileManager = FileManager.default
-        let directory = syncedStore.assetsDirectoryURL
-
-        if !assets.isEmpty {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        }
-        for asset in assets {
-            let url = directory.appendingPathComponent(asset.name)
-            let existing = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate
-            if let existing, existing >= asset.modifiedAt { continue }
-            try asset.data.write(to: url, options: [.atomic])
-            try? fileManager.setAttributes(
-                [.modificationDate: asset.modifiedAt],
-                ofItemAtPath: url.path
-            )
-        }
-
-        guard fileManager.fileExists(atPath: directory.path) else { return }
-        let referenced = revisions(in: syncedStore).map(\.deck).referencedAssetNames
-        for url in (try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )) ?? [] where !referenced.contains(url.lastPathComponent) {
-            try? fileManager.removeItem(at: url)
-        }
+        try LampPresentationAssetFiles.merge(assets, into: syncedStore.assetsDirectoryURL)
+        try syncedStore.pruneUnreferencedAssets()
     }
 }
 

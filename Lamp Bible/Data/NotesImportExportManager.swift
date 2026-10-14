@@ -45,88 +45,12 @@ class NotesImportExportManager {
 
     // MARK: - Book Name Mappings
 
-    /// Book name/abbreviation to number mapping (lowercase keys)
-    private let bookNumbers: [String: Int] = [
-        "genesis": 1, "gen": 1, "exodus": 2, "exod": 2, "exo": 2,
-        "leviticus": 3, "lev": 3, "numbers": 4, "num": 4,
-        "deuteronomy": 5, "deut": 5, "deu": 5, "joshua": 6, "josh": 6, "jos": 6,
-        "judges": 7, "judg": 7, "jdg": 7, "ruth": 8, "rut": 8,
-        "1 samuel": 9, "1samuel": 9, "1sam": 9, "1sa": 9,
-        "2 samuel": 10, "2samuel": 10, "2sam": 10, "2sa": 10,
-        "1 kings": 11, "1kings": 11, "1kgs": 11, "1ki": 11,
-        "2 kings": 12, "2kings": 12, "2kgs": 12, "2ki": 12,
-        "1 chronicles": 13, "1chronicles": 13, "1chr": 13, "1ch": 13,
-        "2 chronicles": 14, "2chronicles": 14, "2chr": 14, "2ch": 14,
-        "ezra": 15, "ezr": 15, "nehemiah": 16, "neh": 16,
-        "esther": 17, "esth": 17, "est": 17, "job": 18,
-        "psalms": 19, "psalm": 19, "ps": 19, "psa": 19,
-        "proverbs": 20, "prov": 20, "pro": 20,
-        "ecclesiastes": 21, "eccl": 21, "ecc": 21,
-        "song of solomon": 22, "song": 22, "sos": 22, "sng": 22,
-        "isaiah": 23, "isa": 23, "jeremiah": 24, "jer": 24,
-        "lamentations": 25, "lam": 25, "ezekiel": 26, "ezek": 26, "eze": 26,
-        "daniel": 27, "dan": 27, "hosea": 28, "hos": 28, "joel": 29, "joe": 29,
-        "amos": 30, "amo": 30, "obadiah": 31, "obad": 31, "oba": 31,
-        "jonah": 32, "jon": 32, "micah": 33, "mic": 33, "nahum": 34, "nah": 34,
-        "habakkuk": 35, "hab": 35, "zephaniah": 36, "zeph": 36, "zep": 36,
-        "haggai": 37, "hag": 37, "zechariah": 38, "zech": 38, "zec": 38,
-        "malachi": 39, "mal": 39,
-        "matthew": 40, "matt": 40, "mat": 40, "mt": 40,
-        "mark": 41, "mrk": 41, "mk": 41, "mar": 41,
-        "luke": 42, "luk": 42, "lk": 42, "john": 43, "joh": 43, "jhn": 43, "jn": 43,
-        "acts": 44, "act": 44, "romans": 45, "rom": 45,
-        "1 corinthians": 46, "1corinthians": 46, "1cor": 46, "1co": 46,
-        "2 corinthians": 47, "2corinthians": 47, "2cor": 47, "2co": 47,
-        "galatians": 48, "gal": 48, "ephesians": 49, "eph": 49,
-        "philippians": 50, "phil": 50, "php": 50, "colossians": 51, "col": 51,
-        "1 thessalonians": 52, "1thessalonians": 52, "1thess": 52, "1th": 52,
-        "2 thessalonians": 53, "2thessalonians": 53, "2thess": 53, "2th": 53,
-        "1 timothy": 54, "1timothy": 54, "1tim": 54, "1ti": 54,
-        "2 timothy": 55, "2timothy": 55, "2tim": 55, "2ti": 55,
-        "titus": 56, "tit": 56, "philemon": 57, "phlm": 57, "phm": 57,
-        "hebrews": 58, "heb": 58, "james": 59, "jas": 59, "jam": 59,
-        "1 peter": 60, "1peter": 60, "1pet": 60, "1pe": 60,
-        "2 peter": 61, "2peter": 61, "2pet": 61, "2pe": 61,
-        "1 john": 62, "1john": 62, "1jn": 62, "1jo": 62,
-        "2 john": 63, "2john": 63, "2jn": 63, "2jo": 63,
-        "3 john": 64, "3john": 64, "3jn": 64, "3jo": 64,
-        "jude": 65, "jud": 65, "revelation": 66, "rev": 66, "revelations": 66
-    ]
-
-    /// Book number to full name
-    private let bookNames: [Int: String] = [
-        1: "Genesis", 2: "Exodus", 3: "Leviticus", 4: "Numbers", 5: "Deuteronomy",
-        6: "Joshua", 7: "Judges", 8: "Ruth", 9: "1 Samuel", 10: "2 Samuel",
-        11: "1 Kings", 12: "2 Kings", 13: "1 Chronicles", 14: "2 Chronicles",
-        15: "Ezra", 16: "Nehemiah", 17: "Esther", 18: "Job", 19: "Psalms",
-        20: "Proverbs", 21: "Ecclesiastes", 22: "Song of Solomon", 23: "Isaiah",
-        24: "Jeremiah", 25: "Lamentations", 26: "Ezekiel", 27: "Daniel",
-        28: "Hosea", 29: "Joel", 30: "Amos", 31: "Obadiah", 32: "Jonah",
-        33: "Micah", 34: "Nahum", 35: "Habakkuk", 36: "Zephaniah", 37: "Haggai",
-        38: "Zechariah", 39: "Malachi",
-        40: "Matthew", 41: "Mark", 42: "Luke", 43: "John", 44: "Acts",
-        45: "Romans", 46: "1 Corinthians", 47: "2 Corinthians", 48: "Galatians",
-        49: "Ephesians", 50: "Philippians", 51: "Colossians",
-        52: "1 Thessalonians", 53: "2 Thessalonians", 54: "1 Timothy",
-        55: "2 Timothy", 56: "Titus", 57: "Philemon", 58: "Hebrews",
-        59: "James", 60: "1 Peter", 61: "2 Peter", 62: "1 John", 63: "2 John",
-        64: "3 John", 65: "Jude", 66: "Revelation"
-    ]
-
-    /// Book number to abbreviation (for export filenames)
-    private let bookAbbrevs: [Int: String] = [
-        1: "Gen", 2: "Exod", 3: "Lev", 4: "Num", 5: "Deut", 6: "Josh", 7: "Judg",
-        8: "Ruth", 9: "1Sam", 10: "2Sam", 11: "1Kgs", 12: "2Kgs", 13: "1Chr",
-        14: "2Chr", 15: "Ezra", 16: "Neh", 17: "Esth", 18: "Job", 19: "Ps",
-        20: "Prov", 21: "Eccl", 22: "Song", 23: "Isa", 24: "Jer", 25: "Lam",
-        26: "Ezek", 27: "Dan", 28: "Hos", 29: "Joel", 30: "Amos", 31: "Obad",
-        32: "Jonah", 33: "Mic", 34: "Nah", 35: "Hab", 36: "Zeph", 37: "Hag",
-        38: "Zech", 39: "Mal", 40: "Matt", 41: "Mark", 42: "Luke", 43: "John",
-        44: "Acts", 45: "Rom", 46: "1Cor", 47: "2Cor", 48: "Gal", 49: "Eph",
-        50: "Phil", 51: "Col", 52: "1Thess", 53: "2Thess", 54: "1Tim", 55: "2Tim",
-        56: "Titus", 57: "Phlm", 58: "Heb", 59: "Jas", 60: "1Pet", 61: "2Pet",
-        62: "1John", 63: "2John", 64: "3John", 65: "Jude", 66: "Rev"
-    ]
+    private let bookNames = Dictionary(uniqueKeysWithValues: (1...66).map {
+        ($0, LampBibleReferenceFormatter.bookName($0))
+    })
+    private let bookAbbrevs = Dictionary(uniqueKeysWithValues: (1...66).map {
+        ($0, LampBibleReferenceFormatter.bookAbbreviation($0))
+    })
 
     // MARK: - Import
 
@@ -203,743 +127,84 @@ class NotesImportExportManager {
     /// Import a single markdown file (can contain one book or multiple books)
     private func importMarkdownFile(at url: URL) async throws -> ImportResult {
         let content = try String(contentsOf: url, encoding: .utf8)
-
-        // Check if this is a multi-book file (has ## Book Name headers)
-        if isMultiBookFile(content) {
-            // Parse as multi-book file
-            let books = try parseMultiBookMarkdown(content: content)
-
-            var totalChapters = 0
-            var totalVerses = 0
-            var bookNames: [String] = []
-
-            for notesBook in books {
-                try await saveNotesToDatabase(notesBook)
-                totalChapters += notesBook.chapters.count
-                totalVerses += notesBook.chapters.reduce(0) { $0 + ($1.verses?.count ?? 0) }
-                bookNames.append(notesBook.book)
-            }
-
-            return ImportResult(
-                fileName: url.lastPathComponent,
-                bookName: "\(books.count) books",
-                bookNumber: 0,
-                chapterCount: totalChapters,
-                verseCount: totalVerses,
-                success: true,
-                error: nil
-            )
-        } else {
-            // Parse as single-book file
-            let notesBook = try parseMarkdownToNotes(content: content, filename: url.lastPathComponent)
-
-            // Save to database
-            try await saveNotesToDatabase(notesBook)
-
-            // Count for result
-            let verseCount = notesBook.chapters.reduce(0) { $0 + ($1.verses?.count ?? 0) }
-
-            return ImportResult(
-                fileName: url.lastPathComponent,
-                bookName: notesBook.book,
-                bookNumber: notesBook.bookNumber,
-                chapterCount: notesBook.chapters.count,
-                verseCount: verseCount,
-                success: true,
-                error: nil
-            )
-        }
+        let books = try parsedMarkdownBooks(
+            content: content, filename: url.deletingPathExtension().lastPathComponent
+        )
+        for book in books { try await saveNotesToDatabase(book) }
+        return importResult(for: books, filename: url.lastPathComponent)
     }
 
-    /// Check if content contains multiple books (## Book Name headers after # Title)
-    private func isMultiBookFile(_ content: String) -> Bool {
-        let lines = content.components(separatedBy: "\n")
-        var foundTitle = false
-        var bookHeaderCount = 0
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // Skip frontmatter
-            if trimmed == "---" { continue }
-
-            // Found main title
-            if trimmed.hasPrefix("# ") && !trimmed.hasPrefix("## ") {
-                foundTitle = true
-                continue
-            }
-
-            // Count ## headers that look like book names (not "## Chapter N")
-            if foundTitle && trimmed.hasPrefix("## ") && !trimmed.hasPrefix("### ") {
-                let headerText = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                if !headerText.lowercased().hasPrefix("chapter") {
-                    // Check if it's a known book name
-                    if bookNumbers[headerText.lowercased()] != nil ||
-                       bookNumbers[headerText.lowercased().replacingOccurrences(of: " ", with: "")] != nil {
-                        bookHeaderCount += 1
-                    }
-                }
-            }
-        }
-
-        return bookHeaderCount >= 1
+    private func importResult(for books: [UserNotesBook], filename: String) -> ImportResult {
+        ImportResult(
+            fileName: filename,
+            bookName: books.count == 1 ? books[0].book : "\(books.count) books",
+            bookNumber: books.count == 1 ? books[0].bookNumber : 0,
+            chapterCount: books.reduce(0) { $0 + $1.chapters.count },
+            verseCount: books.flatMap(\.chapters).reduce(0) { $0 + ($1.verses?.count ?? 0) },
+            success: true, error: nil
+        )
     }
 
-    /// Parse a multi-book markdown file into multiple UserNotesBook objects
-    private func parseMultiBookMarkdown(content: String) throws -> [UserNotesBook] {
-        // First extract footnote definitions from end of document
-        let (bodyWithoutFootnotes, allFootnoteDefinitions) = extractAllFootnoteDefinitions(from: content)
-
-        // Parse frontmatter for shared metadata
-        let (metadata, body) = parseFrontmatter(content: bodyWithoutFootnotes)
-
-        var books: [UserNotesBook] = []
-        var currentBookName: String? = nil
-        var currentBookNumber: Int? = nil
-        var currentBookContent: [String] = []
-
-        let lines = body.components(separatedBy: "\n")
-
-        func flushBook() throws {
-            guard let bookName = currentBookName,
-                  let bookNumber = currentBookNumber,
-                  !currentBookContent.isEmpty else {
-                return
-            }
-
-            let bookBody = currentBookContent.joined(separator: "\n")
-            let chapters = parseChaptersWithFootnotes(body: bookBody, bookNumber: bookNumber, footnoteDefinitions: allFootnoteDefinitions)
-
-            guard !chapters.isEmpty else {
-                return
-            }
-
-            let meta = UserNotesMeta(
-                id: metadata["id"] ?? "notes",
-                name: metadata["name"],
-                author: metadata["author"]
-            )
-
-            let notesBook = UserNotesBook(
-                meta: meta,
-                book: bookName,
-                bookNumber: bookNumber,
-                chapters: chapters
-            )
-            books.append(notesBook)
-            currentBookContent = []
-        }
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // Skip main title (# My Notes)
-            if trimmed.hasPrefix("# ") && !trimmed.hasPrefix("## ") {
-                continue
-            }
-
-            // Check for book header (## Genesis, ## Matthew, etc.)
-            if trimmed.hasPrefix("## ") && !trimmed.hasPrefix("### ") {
-                let headerText = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-
-                // Check if it's a book name (not "Chapter N")
-                if !headerText.lowercased().hasPrefix("chapter") {
-                    let lookupName = headerText.lowercased().replacingOccurrences(of: " ", with: "")
-                    if let bookNum = bookNumbers[headerText.lowercased()] ?? bookNumbers[lookupName] {
-                        // Flush previous book
-                        try flushBook()
-
-                        // Start new book
-                        currentBookName = headerText
-                        currentBookNumber = bookNum
-                        continue
-                    }
-                }
-            }
-
-            // Accumulate content for current book
-            if currentBookNumber != nil {
-                currentBookContent.append(line)
-            }
-        }
-
-        // Flush last book
-        try flushBook()
-
-        return books
-    }
-
-    /// Parse chapters with pre-extracted footnote definitions (for multi-book parsing)
-    private func parseChaptersWithFootnotes(body: String, bookNumber: Int, footnoteDefinitions: [String: String]) -> [UserNotesChapter] {
-        var chapters: [UserNotesChapter] = []
-        var currentChapter: Int? = nil
-        var currentChapterData: (intro: String?, verses: [UserNotesVerse], footnotes: [UserNotesFootnote])? = nil
-        var currentSection: String? = nil
-        var currentVerseData: (sv: Int, ev: Int?, content: [String])? = nil
-        var sectionContent: [String] = []
-
-        let lines = body.components(separatedBy: "\n")
-
-        // Match exporter format: ### Chapter N
-        let chapterRegex = try! NSRegularExpression(pattern: #"^###\s+Chapter\s+(\d+)\s*$"#, options: .caseInsensitive)
-        // Match exporter format: #### Introduction
-        let introRegex = try! NSRegularExpression(pattern: #"^####\s+Introduction\s*$"#, options: .caseInsensitive)
-        // Match exporter format: #### 1:1 or #### 1:1-5 (chapter:verse format)
-        let verseRegex = try! NSRegularExpression(pattern: #"^####\s+(\d+:\d+(?:-\d+(?::\d+)?)?)\s*$"#)
-
-        func flushSection() {
-            guard !sectionContent.isEmpty else { return }
-            let rawContent = sectionContent.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !rawContent.isEmpty else {
-                sectionContent = []
-                return
-            }
-
-            let (remainingContent, inlineFootnotes) = parseFootnoteCallouts(content: rawContent)
-
-            let markerPattern = #"\[\^([^\]]+)\]"#
-            guard let markerRegex = try? NSRegularExpression(pattern: markerPattern) else {
-                sectionContent = []
-                return
-            }
-
-            let text = remainingContent.trimmingCharacters(in: .whitespacesAndNewlines)
-            let matches = markerRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-
-            var footnotes: [UserNotesFootnote] = []
-            var cleanText = ""
-            var lastEnd = text.startIndex
-            var footnoteCounter = 1
-
-            for match in matches {
-                guard let matchRange = Range(match.range, in: text),
-                      let idRange = Range(match.range(at: 1), in: text) else {
-                    continue
-                }
-
-                cleanText += text[lastEnd..<matchRange.lowerBound]
-
-                let originalId = String(text[idRange])
-                print("[Import] Looking up footnote '\(originalId)' in definitions (count=\(footnoteDefinitions.count))")
-
-                var footnoteContent: String? = nil
-                if let content = footnoteDefinitions[originalId] {
-                    print("[Import]   Found in definitions: \(content.prefix(30))")
-                    footnoteContent = content
-                } else if let inlineFn = inlineFootnotes.first(where: { $0.id == originalId }) {
-                    print("[Import]   Found in inline footnotes")
-                    footnoteContent = inlineFn.content.plainText
-                } else {
-                    print("[Import]   NOT FOUND. Available keys: \(Array(footnoteDefinitions.keys).prefix(5))")
-                }
-
-                if let content = footnoteContent {
-                    cleanText += "[^\(footnoteCounter)]"
-                    footnotes.append(UserNotesFootnote(id: String(footnoteCounter), content: .text(content)))
-                    footnoteCounter += 1
-                } else {
-                    // Footnote not found - preserve original marker
-                    cleanText += "[^\(originalId)]"
-                }
-
-                lastEnd = matchRange.upperBound
-            }
-
-            cleanText += text[lastEnd...]
-
-            if footnotes.isEmpty && !inlineFootnotes.isEmpty {
-                footnotes = inlineFootnotes
-            }
-
-            let contentWithMarkers = cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            print("[Import] flushSection: section=\(currentSection ?? "nil"), footnotes=\(footnotes.count), content=\(contentWithMarkers.prefix(30))")
-
-            if currentSection == "introduction", currentChapterData != nil {
-                currentChapterData?.intro = contentWithMarkers
-                if !footnotes.isEmpty {
-                    currentChapterData?.footnotes.append(contentsOf: footnotes)
-                }
-            } else if currentSection == "verse", let verseData = currentVerseData, currentChapterData != nil {
-                print("[Import] Creating verse \(verseData.sv) with \(footnotes.count) footnotes")
-                let verse = UserNotesVerse(
-                    sv: verseData.sv,
-                    ev: verseData.ev,
-                    commentary: .text(contentWithMarkers),
-                    footnotes: footnotes.isEmpty ? nil : footnotes,
-                    lastModified: Int(Date().timeIntervalSince1970)
-                )
-                currentChapterData?.verses.append(verse)
-                currentVerseData = nil
-            }
-
-            sectionContent = []
-        }
-
-        func flushChapter() {
-            flushSection()
-            if let chapter = currentChapter, let data = currentChapterData {
-                let chapterNotes = UserNotesChapter(
-                    chapter: chapter,
-                    introduction: data.intro.map { .text($0) },
-                    verses: data.verses.isEmpty ? nil : data.verses,
-                    footnotes: data.footnotes.isEmpty ? nil : data.footnotes
-                )
-                chapters.append(chapterNotes)
-            }
-            currentChapterData = nil
-        }
-
-        for line in lines {
-            // Trim carriage returns that might come from Windows line endings
-            let cleanLine = line.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
-            let cleanLineRange = NSRange(cleanLine.startIndex..., in: cleanLine)
-
-            if let match = chapterRegex.firstMatch(in: cleanLine, range: cleanLineRange),
-               let chapterRange = Range(match.range(at: 1), in: cleanLine),
-               let chapterNum = Int(cleanLine[chapterRange]) {
-                flushChapter()
-                currentChapter = chapterNum
-                currentChapterData = (nil, [], [])
-                currentSection = nil
-                continue
-            }
-
-            if introRegex.firstMatch(in: cleanLine, range: cleanLineRange) != nil {
-                flushSection()
-                currentSection = "introduction"
-                continue
-            }
-
-            if let match = verseRegex.firstMatch(in: cleanLine, range: cleanLineRange),
-               let verseRefRange = Range(match.range(at: 1), in: cleanLine),
-               let chapter = currentChapter {
-                flushSection()
-                let verseRef = String(cleanLine[verseRefRange])
-                let (sv, ev) = parseVerseRef(ref: verseRef, bookNumber: bookNumber, defaultChapter: chapter)
-                currentVerseData = (sv, ev, [])
-                currentSection = "verse"
-                continue
-            }
-
-            if cleanLine.hasPrefix("# ") { continue }
-
-            sectionContent.append(line)
-        }
-
-        flushChapter()
-        return chapters
-    }
-
-    // MARK: - Markdown Parsing
-
-    /// Parse markdown content into UserNotesBook structure
     func parseMarkdownToNotes(content: String, filename: String) throws -> UserNotesBook {
-        // Parse frontmatter
-        let (metadata, body) = parseFrontmatter(content: content)
-
-        // Get book info
-        let book = metadata["book"] ?? String(filename.dropLast(3))  // Remove .md
-        var bookNumber = 0
-        if let numStr = metadata["bookNumber"], let num = Int(numStr) {
-            bookNumber = num
-        } else {
-            // Try to determine from book name
-            let bookLower = book.lowercased().replacingOccurrences(of: " ", with: "")
-            bookNumber = bookNumbers[bookLower] ?? 0
-        }
-
-        guard bookNumber > 0 else {
-            throw ImportError.unknownBook(book)
-        }
-
-        // Build metadata
-        let meta = UserNotesMeta(
-            id: metadata["id"] ?? "notes",
-            name: metadata["name"],
-            author: metadata["author"]
+        let books = try parsedMarkdownBooks(
+            content: content,
+            filename: URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
         )
-
-        // Parse chapters
-        let chapters = parseChapters(body: body, bookNumber: bookNumber)
-
-        return UserNotesBook(
-            meta: meta,
-            book: book,
-            bookNumber: bookNumber,
-            chapters: chapters
-        )
-    }
-
-    /// Parse YAML frontmatter from markdown
-    private func parseFrontmatter(content: String) -> (metadata: [String: String], body: String) {
-        LampPersonalMarkdownDocument.frontmatter(in: content)
-    }
-
-    /// Extract all footnote definitions from the end of the document (after ---)
-    /// Returns the body without the footnotes section and a dictionary of complex ID to content
-    private func extractAllFootnoteDefinitions(from body: String) -> (bodyWithoutFootnotes: String, definitions: [String: String]) {
-        let extracted = LampPersonalMarkdownDocument.extractFootnoteDefinitions(in: body)
-        return (extracted.body, extracted.definitions)
-    }
-
-    /// Parse chapter content from markdown body
-    private func parseChapters(body: String, bookNumber: Int) -> [UserNotesChapter] {
-        // First pass: extract all footnote definitions from the end of the document
-        let (bodyWithoutFootnotes, allFootnoteDefinitions) = extractAllFootnoteDefinitions(from: body)
-
-        var chapters: [UserNotesChapter] = []
-        var currentChapter: Int? = nil
-        var currentChapterData: (intro: String?, verses: [UserNotesVerse], footnotes: [UserNotesFootnote])? = nil
-        var currentSection: String? = nil  // "introduction" or "verse"
-        var currentVerseData: (sv: Int, ev: Int?, content: [String])? = nil
-        var sectionContent: [String] = []
-
-        let lines = bodyWithoutFootnotes.components(separatedBy: "\n")
-
-        // Chapter regex: ## Chapter N
-        let chapterRegex = try! NSRegularExpression(pattern: #"^##\s+Chapter\s+(\d+)\s*$"#, options: .caseInsensitive)
-        // Introduction regex: ### Introduction
-        let introRegex = try! NSRegularExpression(pattern: #"^###\s+Introduction\s*$"#, options: .caseInsensitive)
-        // Verse regex: ### 1:1 or ### 1:2-5
-        let verseRegex = try! NSRegularExpression(pattern: #"^###\s+(\d+:\d+(?:-\d+(?::\d+)?)?)\s*$"#)
-
-        func flushSection() {
-            guard !sectionContent.isEmpty else { return }
-            let rawContent = sectionContent.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !rawContent.isEmpty else {
-                sectionContent = []
-                return
-            }
-
-            // Extract any inline footnotes (legacy format with definitions inline)
-            let (remainingContent, inlineFootnotes) = parseFootnoteCallouts(content: rawContent)
-
-            // Find all footnote markers in the text (e.g., [^1] or [^Gen-1:5-1])
-            let markerPattern = #"\[\^([^\]]+)\]"#
-            guard let markerRegex = try? NSRegularExpression(pattern: markerPattern) else {
-                sectionContent = []
-                return
-            }
-
-            let text = remainingContent.trimmingCharacters(in: .whitespacesAndNewlines)
-            let matches = markerRegex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-
-            // Build list of footnotes by looking up definitions
-            var footnotes: [UserNotesFootnote] = []
-            var cleanText = ""
-            var lastEnd = text.startIndex
-            var footnoteCounter = 1
-
-            for match in matches {
-                guard let matchRange = Range(match.range, in: text),
-                      let idRange = Range(match.range(at: 1), in: text) else {
-                    continue
-                }
-
-                // Add text before marker
-                cleanText += text[lastEnd..<matchRange.lowerBound]
-
-                let originalId = String(text[idRange])
-
-                // Look up footnote content - first in allFootnoteDefinitions, then inline
-                var footnoteContent: String? = nil
-                if let content = allFootnoteDefinitions[originalId] {
-                    footnoteContent = content
-                } else if let inlineFn = inlineFootnotes.first(where: { $0.id == originalId }) {
-                    footnoteContent = inlineFn.content.plainText
-                }
-
-                if let content = footnoteContent {
-                    // Add marker with sequential ID
-                    cleanText += "[^\(footnoteCounter)]"
-                    footnotes.append(UserNotesFootnote(id: String(footnoteCounter), content: .text(content)))
-                    footnoteCounter += 1
-                } else {
-                    // Footnote not found - preserve original marker
-                    cleanText += "[^\(originalId)]"
-                }
-
-                lastEnd = matchRange.upperBound
-            }
-
-            // Add remaining text
-            cleanText += text[lastEnd...]
-
-            // If no markers but inline footnotes exist, add them
-            if footnotes.isEmpty && !inlineFootnotes.isEmpty {
-                footnotes = inlineFootnotes
-            }
-
-            let contentWithMarkers = cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if currentSection == "introduction", currentChapterData != nil {
-                currentChapterData?.intro = contentWithMarkers
-                if !footnotes.isEmpty {
-                    currentChapterData?.footnotes.append(contentsOf: footnotes)
-                }
-            } else if currentSection == "verse", let verseData = currentVerseData, currentChapterData != nil {
-                let verse = UserNotesVerse(
-                    sv: verseData.sv,
-                    ev: verseData.ev,
-                    commentary: .text(contentWithMarkers),
-                    footnotes: footnotes.isEmpty ? nil : footnotes,
-                    lastModified: Int(Date().timeIntervalSince1970)
-                )
-                currentChapterData?.verses.append(verse)
-                currentVerseData = nil
-            }
-
-            sectionContent = []
+        guard books.count == 1, let book = books.first else {
+            throw ImportError.parseError("Expected notes for one book")
         }
+        return book
+    }
 
-        func flushVerse() {
-            flushSection()
-        }
-
-        func flushChapter() {
-            flushVerse()
-
-            if let chapter = currentChapter, let data = currentChapterData {
-                let chapterNotes = UserNotesChapter(
+    /// Core owns headings, ranges and footnotes; this adapter builds the iOS
+    /// book/chapter records used by its database and media importer.
+    private func parsedMarkdownBooks(content: String, filename: String) throws -> [UserNotesBook] {
+        let metadata = LampPersonalMarkdownDocument.frontmatter(in: content).metadata
+        let drafts = try LampPersonalMarkdownParser.notes(from: content, filename: filename)
+            .map { $0.withNumberedFootnotes() }
+        let groups = Dictionary(grouping: drafts) { $0.reference / 1_000_000 }
+        var seen = Set<Int>()
+        let bookNumbers = drafts.map { $0.reference / 1_000_000 }.filter { seen.insert($0).inserted }
+        let modified = Int(Date().timeIntervalSince1970)
+        return bookNumbers.map { bookNumber in
+            let chapters = Dictionary(grouping: groups[bookNumber] ?? []) {
+                ($0.reference / 1_000) % 1_000
+            }.sorted { $0.key < $1.key }.map { chapter, drafts in
+                let introduction = drafts.first { $0.reference % 1_000 == 0 }
+                let verses = drafts.filter { $0.reference % 1_000 != 0 }.map { draft in
+                    // iOS's portable note model carries titles in the body.
+                    let body = draft.title.map { "**Title:** \($0)\n\n" } ?? ""
+                    let end = draft.verseReferences.last.flatMap { $0 == draft.reference ? nil : $0 }
+                    return UserNotesVerse(
+                        sv: draft.reference, ev: end,
+                        commentary: .text(body + draft.content),
+                        footnotes: draft.footnotes.isEmpty ? nil : draft.footnotes.map {
+                            UserNotesFootnote(id: $0.id, content: .text($0.content))
+                        }, lastModified: modified
+                    )
+                }
+                return UserNotesChapter(
                     chapter: chapter,
-                    introduction: data.intro.map { .text($0) },
-                    verses: data.verses.isEmpty ? nil : data.verses,
-                    footnotes: data.footnotes.isEmpty ? nil : data.footnotes
+                    introduction: introduction.map { .text($0.content) },
+                    verses: verses.isEmpty ? nil : verses,
+                    footnotes: introduction.flatMap { draft in
+                        draft.footnotes.isEmpty ? nil : draft.footnotes.map {
+                            UserNotesFootnote(id: $0.id, content: .text($0.content))
+                        }
+                    }
                 )
-                chapters.append(chapterNotes)
             }
-            currentChapterData = nil
+            return UserNotesBook(
+                meta: UserNotesMeta(id: metadata["id"] ?? "notes", name: metadata["name"], author: metadata["author"]),
+                book: bookName(bookNumber, metadata: metadata, isSingleBook: groups.count == 1),
+                bookNumber: bookNumber, chapters: chapters
+            )
         }
-
-        for line in lines {
-            let lineRange = NSRange(line.startIndex..., in: line)
-
-            // Check for ## Chapter N
-            if let match = chapterRegex.firstMatch(in: line, range: lineRange),
-               let chapterRange = Range(match.range(at: 1), in: line),
-               let chapterNum = Int(line[chapterRange]) {
-                flushChapter()
-                currentChapter = chapterNum
-                currentChapterData = (nil, [], [])
-                currentSection = nil
-                continue
-            }
-
-            // Check for ### Introduction
-            if introRegex.firstMatch(in: line, range: lineRange) != nil {
-                flushVerse()
-                currentSection = "introduction"
-                continue
-            }
-
-            // Check for ### 1:1 or ### 1:2-5
-            if let match = verseRegex.firstMatch(in: line, range: lineRange),
-               let verseRefRange = Range(match.range(at: 1), in: line),
-               let chapter = currentChapter {
-                flushVerse()
-                let verseRef = String(line[verseRefRange])
-                let (sv, ev) = parseVerseRef(ref: verseRef, bookNumber: bookNumber, defaultChapter: chapter)
-                currentVerseData = (sv, ev, [])
-                currentSection = "verse"
-                continue
-            }
-
-            // Skip book title heading (# Book Name)
-            if line.hasPrefix("# ") {
-                continue
-            }
-
-            // Accumulate content
-            sectionContent.append(line)
-        }
-
-        // Flush final content
-        flushChapter()
-
-        return chapters
     }
 
-    /// Parse verse reference like "1:1" or "1:2-5" or "1:1-2:3"
-    private func parseVerseRef(ref: String, bookNumber: Int, defaultChapter: Int) -> (sv: Int, ev: Int?) {
-        // Pattern: chapter:verse or chapter:verse-verse or chapter:verse-chapter:verse
-        let pattern = #"(\d+):(\d+)(?:-(\d+)(?::(\d+))?)?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: ref, range: NSRange(ref.startIndex..., in: ref)) else {
-            return (0, nil)
-        }
-
-        func intAt(_ index: Int) -> Int? {
-            guard let range = Range(match.range(at: index), in: ref) else { return nil }
-            return Int(ref[range])
-        }
-
-        guard let chapter = intAt(1), let startVerse = intAt(2) else {
-            return (0, nil)
-        }
-
-        let sv = bookNumber * 1_000_000 + chapter * 1000 + startVerse
-
-        if let endNum = intAt(3) {
-            if let endVerse = intAt(4) {
-                // Cross-chapter: 1:1-2:3
-                let ev = bookNumber * 1_000_000 + endNum * 1000 + endVerse
-                return (sv, ev)
-            } else {
-                // Same chapter: 1:2-5
-                let ev = bookNumber * 1_000_000 + chapter * 1000 + endNum
-                return (sv, ev)
-            }
-        }
-
-        return (sv, nil)
-    }
-
-    /// Extract footnote markers from text - handles both simple [^1] and complex [^Gen-1:5-1] formats
-    /// Returns clean text with markers removed and renumbered refs starting from 1
-    private func extractFootnoteMarkers(text: String) -> (cleanText: String, refs: [FootnoteRef]) {
-        var refs: [FootnoteRef] = []
-        var cleanText = ""
-        var pos = text.startIndex
-
-        // Match both simple [^1] and complex [^Gen-1:5-1] or [^1:5-1] formats
-        let pattern = #"\[\^([^\]]+)\]"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return (text, [])
-        }
-
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-
-        var footnoteCounter = 1
-        for match in matches {
-            guard let matchRange = Range(match.range, in: text),
-                  let idRange = Range(match.range(at: 1), in: text) else {
-                continue
-            }
-
-            // Add text before this marker
-            cleanText += text[pos..<matchRange.lowerBound]
-
-            // Use sequential numbering for internal storage (1, 2, 3...)
-            // The original complex ID is preserved in footnote definitions
-            refs.append(FootnoteRef(id: String(footnoteCounter), offset: cleanText.count))
-            footnoteCounter += 1
-
-            pos = matchRange.upperBound
-        }
-
-        // Add remaining text
-        cleanText += text[pos...]
-
-        return (cleanText, refs)
-    }
-
-    /// Extract the simple footnote number from a complex ID like "Gen-1:5-1" or "1:5-1"
-    /// Returns the last component after the final hyphen (the actual footnote number)
-    private func extractSimpleFootnoteId(from complexId: String) -> String {
-        // Complex IDs are like "Gen-1:5-1" or "1:5-1", we want the last "-N" part
-        if let lastHyphenIndex = complexId.lastIndex(of: "-") {
-            let afterHyphen = complexId[complexId.index(after: lastHyphenIndex)...]
-            if Int(afterHyphen) != nil {
-                return String(afterHyphen)
-            }
-        }
-        // If no hyphen or not a number after hyphen, return as-is
-        return complexId
-    }
-
-    /// Extract footnotes from content - supports both formats:
-    /// - Standard markdown: [^1]: content or [^Gen-1:5-1]: content
-    /// - Callout format: > [!footnote] 1
-    /// Renumbers footnotes sequentially (1, 2, 3...) for internal storage
-    private func parseFootnoteCallouts(content: String) -> (remaining: String, footnotes: [UserNotesFootnote]) {
-        var footnotes: [UserNotesFootnote] = []
-        var remainingLines: [String] = []
-        let lines = content.components(separatedBy: "\n")
-
-        // Pattern for callout format: > [!footnote] N
-        let calloutPattern = #"^>\s*\[!footnote\]\s*(\S+)\s*"#
-        // Pattern for standard markdown footnote: [^ID]: content (ID can be complex like Gen-1:5-1)
-        let standardPattern = #"^\[\^([^\]]+)\]:\s*(.*)$"#
-
-        guard let calloutRegex = try? NSRegularExpression(pattern: calloutPattern),
-              let standardRegex = try? NSRegularExpression(pattern: standardPattern) else {
-            return (content, [])
-        }
-
-        var footnoteCounter = 1
-        var i = 0
-        while i < lines.count {
-            let line = lines[i]
-            let lineRange = NSRange(line.startIndex..., in: line)
-
-            // Try callout format first: > [!footnote] N
-            if let match = calloutRegex.firstMatch(in: line, range: lineRange),
-               let idRange = Range(match.range(at: 1), in: line) {
-                var fnLines: [String] = []
-
-                // Collect continuation lines (lines starting with >)
-                i += 1
-                while i < lines.count && lines[i].hasPrefix(">") {
-                    var fnLine = lines[i]
-                    // Remove > prefix
-                    if fnLine.hasPrefix("> ") {
-                        fnLine = String(fnLine.dropFirst(2))
-                    } else if fnLine.hasPrefix(">") {
-                        fnLine = String(fnLine.dropFirst(1))
-                    }
-                    fnLines.append(fnLine)
-                    i += 1
-                }
-
-                let fnContent = fnLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                // Use sequential numbering for internal storage
-                footnotes.append(UserNotesFootnote(id: String(footnoteCounter), content: .text(fnContent)))
-                footnoteCounter += 1
-            }
-            // Try standard markdown format: [^ID]: content
-            else if let match = standardRegex.firstMatch(in: line, range: lineRange),
-                    let idRange = Range(match.range(at: 1), in: line),
-                    let contentRange = Range(match.range(at: 2), in: line) {
-                var fnLines = [String(line[contentRange])]
-
-                // Collect continuation lines (lines starting with 4 spaces or tab)
-                i += 1
-                while i < lines.count {
-                    let nextLine = lines[i]
-                    if nextLine.hasPrefix("    ") {
-                        fnLines.append(String(nextLine.dropFirst(4)))
-                        i += 1
-                    } else if nextLine.hasPrefix("\t") {
-                        fnLines.append(String(nextLine.dropFirst(1)))
-                        i += 1
-                    } else if nextLine.trimmingCharacters(in: .whitespaces).isEmpty {
-                        // Empty line might be part of multi-line footnote, check next
-                        i += 1
-                    } else {
-                        break
-                    }
-                }
-
-                let fnContent = fnLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                // Use sequential numbering for internal storage
-                footnotes.append(UserNotesFootnote(id: String(footnoteCounter), content: .text(fnContent)))
-                footnoteCounter += 1
-            } else {
-                remainingLines.append(line)
-                i += 1
-            }
-        }
-
-        return (remainingLines.joined(separator: "\n"), footnotes)
-    }
-
-    /// Build AnnotatedTextField from text and footnote refs
-    private func buildAnnotatedField(text: String, footnoteRefs: [FootnoteRef]) -> AnnotatedTextField {
-        if footnoteRefs.isEmpty {
-            return .text(text)
-        }
-        return .annotated(AnnotatedText(text: text, annotations: nil, footnoteRefs: footnoteRefs))
+    private func bookName(_ number: Int, metadata: [String: String], isSingleBook: Bool) -> String {
+        isSingleBook ? metadata["book"] ?? LampBibleReferenceFormatter.bookName(number)
+            : LampBibleReferenceFormatter.bookName(number)
     }
 
     // MARK: - Export
@@ -1061,43 +326,17 @@ class NotesImportExportManager {
         footnotes: [UserNotesFootnote]?,
         allFootnotes: inout [(uniqueId: String, content: String)]
     ) -> String {
-        var text = content.plainText
-
-        guard let footnotes = footnotes, !footnotes.isEmpty else {
-            return text
-        }
-
-        // Replace each [^N] with [^prefix-N] and collect definitions
-        for fn in footnotes {
-            let localMarker = "[^\(fn.id)]"
-            let uniqueId = "\(prefix)-\(fn.id)"
-            let uniqueMarker = "[^\(uniqueId)]"
-
-            text = text.replacingOccurrences(of: localMarker, with: uniqueMarker)
-            allFootnotes.append((uniqueId: uniqueId, content: fn.content.plainText))
-        }
-
-        return text
+        let rewritten = LampPersonalMarkdownWriter.rewritingFootnoteMarkers(
+            in: content.plainText, prefix: prefix,
+            footnotes: (footnotes ?? []).map { (id: $0.id, content: $0.content.plainText) }
+        )
+        allFootnotes += rewritten.definitions.map { (uniqueId: $0.id, content: $0.content) }
+        return rewritten.content
     }
 
     /// Convert BBCCCVVV verse reference to string like "1:1" or "1:2-5"
     private func verseRefToString(sv: Int, ev: Int?) -> String {
-        let chapter = (sv / 1000) % 1000
-        let startVerse = sv % 1000
-
-        guard let ev = ev, ev != sv else {
-            return "\(chapter):\(startVerse)"
-        }
-
-        let endVerse = ev % 1000
-        let endChapter = (ev / 1000) % 1000
-
-        if endChapter != chapter {
-            // Cross-chapter range
-            return "\(chapter):\(startVerse)-\(endChapter):\(endVerse)"
-        } else {
-            return "\(chapter):\(startVerse)-\(endVerse)"
-        }
+        LampPersonalMarkdownWriter.noteHeading(reference: sv, endReference: ev)
     }
 
     // MARK: - Public Import from String
@@ -1105,24 +344,11 @@ class NotesImportExportManager {
     /// Import notes from markdown string (used by MarkdownConverter and other importers)
     /// Returns count of imported entries
     func importNotesFromMarkdownString(_ content: String, moduleId: String) async throws -> Int {
-        var totalVerses = 0
-
-        if isMultiBookFile(content) {
-            let books = try parseMultiBookMarkdown(content: content)
-            for notesBook in books {
-                try await saveNotesToDatabase(notesBook, moduleId: moduleId)
-                totalVerses += notesBook.chapters.reduce(0) { $0 + ($1.verses?.count ?? 0) }
-                // Count intros too
-                totalVerses += notesBook.chapters.filter { $0.introduction != nil }.count
-            }
-        } else {
-            let notesBook = try parseMarkdownToNotes(content: content, filename: "import.md")
-            try await saveNotesToDatabase(notesBook, moduleId: moduleId)
-            totalVerses = notesBook.chapters.reduce(0) { $0 + ($1.verses?.count ?? 0) }
-            totalVerses += notesBook.chapters.filter { $0.introduction != nil }.count
+        let books = try parsedMarkdownBooks(content: content, filename: "import")
+        for book in books { try await saveNotesToDatabase(book, moduleId: moduleId) }
+        return books.flatMap(\.chapters).reduce(0) {
+            $0 + ($1.verses?.count ?? 0) + ($1.introduction == nil ? 0 : 1)
         }
-
-        return totalVerses
     }
 
     // MARK: - Database Integration
@@ -1365,22 +591,10 @@ class NotesImportExportManager {
         footnotes: [UserNotesFootnote]?,
         allFootnotes: inout [(uniqueId: String, content: String)]
     ) -> String {
-        var text = content.plainText
-
-        guard let footnotes = footnotes, !footnotes.isEmpty else {
-            return text
-        }
-
-        for fn in footnotes {
-            let localMarker = "[^\(fn.id)]"
-            let uniqueId = "\(bookAbbrev)-\(chapter):\(verse)-\(fn.id)"
-            let uniqueMarker = "[^\(uniqueId)]"
-
-            text = text.replacingOccurrences(of: localMarker, with: uniqueMarker)
-            allFootnotes.append((uniqueId: uniqueId, content: fn.content.plainText))
-        }
-
-        return text
+        replaceFootnoteMarkers(
+            content: content, prefix: "\(bookAbbrev)-\(chapter):\(verse)",
+            footnotes: footnotes, allFootnotes: &allFootnotes
+        )
     }
 
     /// Load notes from database and convert to UserNotesBook format
@@ -1776,61 +990,14 @@ class NotesImportExportManager {
     /// Import a single markdown file with media support
     private func importMarkdownFileWithMedia(at url: URL, mediaDir: URL) async throws -> ImportResult {
         let content = try String(contentsOf: url, encoding: .utf8)
-        let moduleId = "notes"
-
-        // Check if this is a multi-book file
-        if isMultiBookFile(content) {
-            var books = try parseMultiBookMarkdown(content: content)
-
-            var totalChapters = 0
-            var totalVerses = 0
-
-            for i in 0..<books.count {
-                // Import media references for each book
-                books[i] = try await importMediaReferences(
-                    for: books[i],
-                    from: mediaDir,
-                    moduleId: moduleId
-                )
-                try await saveNotesToDatabase(books[i])
-                totalChapters += books[i].chapters.count
-                totalVerses += books[i].chapters.reduce(0) { $0 + ($1.verses?.count ?? 0) }
-            }
-
-            return ImportResult(
-                fileName: url.lastPathComponent,
-                bookName: "\(books.count) books",
-                bookNumber: 0,
-                chapterCount: totalChapters,
-                verseCount: totalVerses,
-                success: true,
-                error: nil
-            )
-        } else {
-            var notesBook = try parseMarkdownToNotes(content: content, filename: url.lastPathComponent)
-
-            // Import media references
-            notesBook = try await importMediaReferences(
-                for: notesBook,
-                from: mediaDir,
-                moduleId: moduleId
-            )
-
-            // Save to database
-            try await saveNotesToDatabase(notesBook)
-
-            let verseCount = notesBook.chapters.reduce(0) { $0 + ($1.verses?.count ?? 0) }
-
-            return ImportResult(
-                fileName: url.lastPathComponent,
-                bookName: notesBook.book,
-                bookNumber: notesBook.bookNumber,
-                chapterCount: notesBook.chapters.count,
-                verseCount: verseCount,
-                success: true,
-                error: nil
-            )
+        var books = try parsedMarkdownBooks(
+            content: content, filename: url.deletingPathExtension().lastPathComponent
+        )
+        for index in books.indices {
+            books[index] = try await importMediaReferences(for: books[index], from: mediaDir, moduleId: "notes")
+            try await saveNotesToDatabase(books[index])
         }
+        return importResult(for: books, filename: url.lastPathComponent)
     }
 
     // MARK: - Errors

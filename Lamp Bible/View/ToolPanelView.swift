@@ -8,6 +8,7 @@
 import Foundation
 import GRDB
 import SwiftUI
+import LampCore
 import UIKit
 
 // MARK: - Scroll Sync Coordinator
@@ -4356,7 +4357,7 @@ struct VerseSheetContent: View {
            let data = json.data(using: .utf8),
            let annotations = try? JSONDecoder().decode([VerseAnnotation].self, from: data) {
             for annotation in annotations {
-                if let strongs = annotation.data?.strongs, strongsNumbersMatch(strongs, strongsNum) {
+                if let strongs = annotation.data?.strongs, LampStrongsKey.matches(strongs, strongsNum) {
                     highlightRanges.append((annotation.start, annotation.end))
                 }
             }
@@ -4412,32 +4413,6 @@ struct VerseSheetContent: View {
         return result
     }
 
-    /// Compare Strong's numbers, normalizing leading zeros (H0216 matches H216)
-    private func strongsNumbersMatch(_ a: String, _ b: String) -> Bool {
-        let pattern = "^(TH|H|G)(\\d+)$"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
-            return a.uppercased() == b.uppercased()
-        }
-
-        let aRange = NSRange(a.startIndex..., in: a)
-        let bRange = NSRange(b.startIndex..., in: b)
-
-        guard let aMatch = regex.firstMatch(in: a, range: aRange),
-              let bMatch = regex.firstMatch(in: b, range: bRange),
-              let aPrefixRange = Range(aMatch.range(at: 1), in: a),
-              let aNumRange = Range(aMatch.range(at: 2), in: a),
-              let bPrefixRange = Range(bMatch.range(at: 1), in: b),
-              let bNumRange = Range(bMatch.range(at: 2), in: b) else {
-            return a.uppercased() == b.uppercased()
-        }
-
-        let aPrefix = a[aPrefixRange].uppercased()
-        let bPrefix = b[bPrefixRange].uppercased()
-        let aNum = Int(a[aNumRange]) ?? 0
-        let bNum = Int(b[bNumRange]) ?? 0
-
-        return aPrefix == bPrefix && aNum == bNum
-    }
 
     /// Get the translation name for display
     private var translationName: String? {

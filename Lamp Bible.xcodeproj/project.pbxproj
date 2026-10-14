@@ -88,8 +88,6 @@
 		B885E41E2ADB47ED0066F0A0 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B885E41D2ADB47ED0066F0A0 /* Preview Assets.xcassets */; };
 		B885E4282ADB47ED0066F0A0 /* Lamp_BibleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */; };
 		B885E4322ADB47ED0066F0A0 /* Lamp_BibleUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */; };
-		B885E4342ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */; };
-		B89229552F05FE1900A58F81 /* DevotionalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229542F05FE1900A58F81 /* DevotionalView.swift */; };
 		B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229562F05FE2100A58F81 /* ModuleManagerView.swift */; };
 		B89229592F05FE3100A58F81 /* MarkdownConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229582F05FE3100A58F81 /* MarkdownConverter.swift */; };
 		B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */; };
@@ -257,9 +255,7 @@
 		B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lamp_BibleTests.swift; sourceTree = "<group>"; };
 		B885E42D2ADB47ED0066F0A0 /* Lamp BibleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Lamp BibleUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lamp_BibleUITests.swift; sourceTree = "<group>"; };
-		B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lamp_BibleUITestsLaunchTests.swift; sourceTree = "<group>"; };
 		B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Lamp-Bible-Info.plist"; sourceTree = SOURCE_ROOT; };
-		B89229542F05FE1900A58F81 /* DevotionalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalView.swift; sourceTree = "<group>"; };
 		B89229562F05FE2100A58F81 /* ModuleManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleManagerView.swift; sourceTree = "<group>"; };
 		B89229582F05FE3100A58F81 /* MarkdownConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownConverter.swift; sourceTree = "<group>"; };
 		B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudModuleStorage.swift; sourceTree = "<group>"; };
@@ -437,7 +433,6 @@
 				B8210A9A2B549ED7008341F0 /* ChapterListView.swift */,
 				B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */,
 				B885E4182ADB47E50066F0A0 /* ContentView.swift */,
-				B89229542F05FE1900A58F81 /* DevotionalView.swift */,
 				B89229562F05FE2100A58F81 /* ModuleManagerView.swift */,
 				B85B89A82F1F11E1004B4F61 /* WaveformView.swift */,
 				B89229962F16A00000A58F81 /* NoteConflictView.swift */,
@@ -557,7 +552,6 @@
 			isa = PBXGroup;
 			children = (
 				B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */,
-				B885E4332ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift */,
 			);
 			path = "Lamp BibleUITests";
 			sourceTree = "<group>";
@@ -814,7 +808,6 @@
 				B85B89B62F1F2A20004B4F61 /* AudioRecorderSheet.swift in Sources */,
 				B884321B2F4A7F0F00A699B9 /* WidgetSharedModels.swift in Sources */,
 				B85B89B72F1F2A20004B4F61 /* AudioBlockView.swift in Sources */,
-				B89229552F05FE1900A58F81 /* DevotionalView.swift in Sources */,
 				B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */,
 				B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */,
 				B85B89C02F21E000004B4F61 /* HighlightModels.swift in Sources */,
@@ -865,7 +858,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				B885E4322ADB47ED0066F0A0 /* Lamp_BibleUITests.swift in Sources */,
-				B885E4342ADB47ED0066F0A0 /* Lamp_BibleUITestsLaunchTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
