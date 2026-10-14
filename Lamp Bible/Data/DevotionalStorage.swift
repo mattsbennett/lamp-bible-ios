@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampCore
 
 // MARK: - Devotional Storage
 
@@ -394,21 +395,10 @@ extension ModuleDatabase {
         }
     }
 
+    /// Devotionals answer the same grammar as verses.
+    /// See `ModuleDatabase.prepareFTSQuery`.
     private func prepareFTSQueryForDevotionals(_ query: String) -> String {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-
-        // Escape FTS5 special characters
-        let escaped = trimmed
-            .replacingOccurrences(of: "\"", with: "\"\"")
-            .replacingOccurrences(of: "*", with: "")
-            .replacingOccurrences(of: "-", with: " ")
-            .replacingOccurrences(of: "^", with: "")
-            .replacingOccurrences(of: ":", with: "")
-            .replacingOccurrences(of: "(", with: "")
-            .replacingOccurrences(of: ")", with: "")
-
-        return "\"\(escaped)\"*"
+        LampSearchQuery(query).fts5Query
     }
 
     /// Get all devotional entries for a module

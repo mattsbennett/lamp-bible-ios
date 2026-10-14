@@ -2470,81 +2470,23 @@ class ModuleDatabase {
         guard !ftsQuery.isEmpty else { return [] }
 
         return try dbQueue.read { db in
-            var conditions = ["translation_verses_fts MATCH ?"]
-            var arguments: [DatabaseValueConvertible] = [ftsQuery]
-
-            // Translation filter
-            if let ids = translationIds, !ids.isEmpty {
-                let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
-                conditions.append("v.translation_id IN (\(placeholders))")
-                for id in ids {
-                    arguments.append(id)
-                }
-            }
-
-            // Book range filter (OT/NT or specific books)
-            if let range = bookRange {
-                conditions.append("v.book BETWEEN ? AND ?")
-                arguments.append(range.lowerBound)
-                arguments.append(range.upperBound)
-            }
-
-            let whereClause = conditions.joined(separator: " AND ")
-
-            let sql = """
-                SELECT
-                    v.id,
-                    v.translation_id,
-                    t.name as translation_name,
-                    t.abbreviation as translation_abbrev,
-                    v.ref,
-                    v.book,
-                    v.chapter,
-                    v.verse,
-                    bm25(translation_verses_fts) as rank,
-                    snippet(translation_verses_fts, 0, '<mark>', '</mark>', '...', 32) as snippet
-                FROM translation_verses_fts f
-                JOIN translation_verses v ON f.rowid = v.id
-                JOIN translations t ON v.translation_id = t.id
-                WHERE \(whereClause)
-                ORDER BY rank
-                LIMIT ?
-            """
-            arguments.append(limit)
-
-            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                TranslationSearchResult(
-                    id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
-                    translationId: row["translation_id"],
-                    translationName: row["translation_name"],
-                    translationAbbrev: row["translation_abbrev"],
-                    ref: row["ref"],
-                    book: row["book"],
-                    chapter: row["chapter"],
-                    verse: row["verse"],
-                    snippet: row["snippet"] ?? "",
-                    rank: -(row["rank"] as Double)
-                )
-            }
+            try TranslationVerseSearch.results(
+                in: db,
+                ftsQuery: ftsQuery,
+                translationIds: translationIds,
+                bookRange: bookRange,
+                limit: limit
+            )
         }
     }
 
+    /// The one search grammar, shared with Mac search and the unified module
+    /// search: each word matches as a prefix and all words must appear, while a
+    /// quoted run stays a phrase. Escaping it here instead would make a verse
+    /// search of two words a phrase search, so "faith works" would miss
+    /// "faith without works".
     private func prepareFTSQuery(_ query: String) -> String {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-
-        // Escape FTS5 special characters
-        let escaped = trimmed
-            .replacingOccurrences(of: "\"", with: "\"\"")
-            .replacingOccurrences(of: "*", with: "")
-            .replacingOccurrences(of: "-", with: " ")
-            .replacingOccurrences(of: "^", with: "")
-            .replacingOccurrences(of: ":", with: "")
-            .replacingOccurrences(of: "(", with: "")
-            .replacingOccurrences(of: ")", with: "")
-
-        // Add prefix wildcard for partial matching
-        return "\"\(escaped)\"*"
+        LampSearchQuery(query).fts5Query
     }
 
     // MARK: - Translation Bulk Operations
@@ -3120,6 +3062,83 @@ private extension Array {
     func chunked(into size: Int) -> [[Element]] {
         stride(from: 0, to: count, by: size).map {
             Array(self[$0..<Swift.min($0 + size, count)])
+        }
+    }
+}
+
+// MARK: - Translation verse search
+
+/// The one verse-search query, used against whichever translation database
+/// holds the translation being searched.
+///
+/// Bundled translations and installed ones live in two databases with the same
+/// schema, and each used to carry its own copy of this SQL and its own row
+/// mapping. They agreed only by having been written at the same time: a change
+/// to the ranking, or to the `<mark>` snippet the results list renders, would
+/// have made a bundled translation's results look and sort differently from an
+/// installed one's.
+enum TranslationVerseSearch {
+    /// `translationIds` nil or empty searches every translation in `db`.
+    static func results(
+        in db: Database,
+        ftsQuery: String,
+        translationIds: Set<String>?,
+        bookRange: ClosedRange<Int>?,
+        limit: Int
+    ) throws -> [TranslationSearchResult] {
+        var conditions = ["translation_verses_fts MATCH ?"]
+        var arguments: [DatabaseValueConvertible] = [ftsQuery]
+
+        if let ids = translationIds, !ids.isEmpty {
+            let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
+            conditions.append("v.translation_id IN (\(placeholders))")
+            for id in ids { arguments.append(id) }
+        }
+
+        // OT, NT, or a chosen span of books.
+        if let bookRange {
+            conditions.append("v.book BETWEEN ? AND ?")
+            arguments.append(bookRange.lowerBound)
+            arguments.append(bookRange.upperBound)
+        }
+
+        arguments.append(limit)
+
+        let sql = """
+            SELECT
+                v.id,
+                v.translation_id,
+                t.name as translation_name,
+                t.abbreviation as translation_abbrev,
+                v.ref,
+                v.book,
+                v.chapter,
+                v.verse,
+                bm25(translation_verses_fts) as rank,
+                snippet(translation_verses_fts, 0, '<mark>', '</mark>', '...', 32) as snippet
+            FROM translation_verses_fts f
+            JOIN translation_verses v ON f.rowid = v.id
+            JOIN translations t ON v.translation_id = t.id
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY rank
+            LIMIT ?
+        """
+
+        return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
+            TranslationSearchResult(
+                id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
+                translationId: row["translation_id"],
+                translationName: row["translation_name"],
+                translationAbbrev: row["translation_abbrev"],
+                ref: row["ref"],
+                book: row["book"],
+                chapter: row["chapter"],
+                verse: row["verse"],
+                snippet: row["snippet"] ?? "",
+                // bm25 scores better matches more negatively; the results list
+                // sorts on rank descending.
+                rank: -(row["rank"] as Double)
+            )
         }
     }
 }

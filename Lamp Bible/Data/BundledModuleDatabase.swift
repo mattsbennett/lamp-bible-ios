@@ -484,9 +484,10 @@ class BundledModuleDatabase {
     ) throws -> [TranslationSearchResult] {
         guard isAvailable else { return [] }
 
-        let availableTranslationIds = Set(
-            try getAllTranslations().map(\.id)
-        )
+        // Only the translations this database actually holds: the caller may
+        // name installed ones too, and an unfiltered search here would answer
+        // for translations it was not asked about.
+        let availableTranslationIds = Set(try getAllTranslations().map(\.id))
         let searchableTranslationIds = translationIds.map {
             $0.intersection(availableTranslationIds)
         } ?? availableTranslationIds
@@ -496,77 +497,20 @@ class BundledModuleDatabase {
         guard !ftsQuery.isEmpty else { return [] }
 
         return try read { db in
-            var conditions = ["translation_verses_fts MATCH ?"]
-            var arguments: [DatabaseValueConvertible] = [ftsQuery]
-
-            // Translation filter
-            let placeholders = searchableTranslationIds.map { _ in "?" }.joined(separator: ", ")
-            conditions.append("v.translation_id IN (\(placeholders))")
-            for id in searchableTranslationIds {
-                arguments.append(id)
-            }
-
-            // Book range filter
-            if let range = bookRange {
-                conditions.append("v.book BETWEEN ? AND ?")
-                arguments.append(range.lowerBound)
-                arguments.append(range.upperBound)
-            }
-
-            let whereClause = conditions.joined(separator: " AND ")
-
-            let sql = """
-                SELECT
-                    v.id,
-                    v.translation_id,
-                    t.name as translation_name,
-                    t.abbreviation as translation_abbrev,
-                    v.ref,
-                    v.book,
-                    v.chapter,
-                    v.verse,
-                    bm25(translation_verses_fts) as rank,
-                    snippet(translation_verses_fts, 0, '<mark>', '</mark>', '...', 32) as snippet
-                FROM translation_verses_fts f
-                JOIN translation_verses v ON f.rowid = v.id
-                JOIN translations t ON v.translation_id = t.id
-                WHERE \(whereClause)
-                ORDER BY rank
-                LIMIT ?
-            """
-            arguments.append(limit)
-
-            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                TranslationSearchResult(
-                    id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
-                    translationId: row["translation_id"],
-                    translationName: row["translation_name"],
-                    translationAbbrev: row["translation_abbrev"],
-                    ref: row["ref"],
-                    book: row["book"],
-                    chapter: row["chapter"],
-                    verse: row["verse"],
-                    snippet: row["snippet"] ?? "",
-                    rank: -(row["rank"] as Double)
-                )
-            }
+            try TranslationVerseSearch.results(
+                in: db,
+                ftsQuery: ftsQuery,
+                translationIds: searchableTranslationIds,
+                bookRange: bookRange,
+                limit: limit
+            )
         }
     }
 
+    /// Bundled translations answer the same grammar as installed ones.
+    /// See `ModuleDatabase.prepareFTSQuery`.
     private func prepareFTSQuery(_ query: String) -> String {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-
-        let escaped = trimmed
-            .replacingOccurrences(of: "\"", with: "\"\"")
-            .replacingOccurrences(of: "*", with: "")
-            .replacingOccurrences(of: "-", with: " ")
-            .replacingOccurrences(of: "^", with: "")
-            .replacingOccurrences(of: ":", with: "")
-            .replacingOccurrences(of: "(", with: "")
-            .replacingOccurrences(of: ")", with: "")
-
-        return "\"\(escaped)\"*"
+        LampSearchQuery(query).fts5Query
     }
 
     // MARK: - Lexicon (Dictionary) Queries

@@ -321,7 +321,7 @@ class ModuleSearch {
 
         if filter.types.contains(.translation) {
             if hasTextQuery {
-                results.append(contentsOf: try searchTranslations(ftsQuery: ftsQuery, filter: filter, limit: limit))
+                results.append(contentsOf: try searchTranslations(query: query, filter: filter, limit: limit))
             } else if hasKeyFilter {
                 // Strong's key search for translations with Strong's support
                 results.append(contentsOf: try searchTranslationsByStrongs(filter: filter, limit: limit))
@@ -1091,7 +1091,11 @@ class ModuleSearch {
         }
     }
 
-    private func searchTranslations(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+    /// Takes the query as typed, not the prepared FTS one: the translation
+    /// searchers build their own from the same core grammar. Unpicking a
+    /// prepared query to hand it on was what made a two-word verse search
+    /// behave as a phrase search while every other kind of result ANDed.
+    private func searchTranslations(query: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         // Search both bundled and user translations via TranslationDatabase
         let translationDb = TranslationDatabase.shared
 
@@ -1105,7 +1109,7 @@ class ModuleSearch {
 
         // Perform search
         let searchResults = try translationDb.searchAllTranslations(
-            query: ftsQuery.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "*", with: ""),
+            query: query,
             translationIds: translationIds,
             bookRange: filter.bookRange,
             limit: limit
@@ -1211,6 +1215,9 @@ class ModuleSearch {
 
     // MARK: - FTS Query Preparation
 
+    /// The one search grammar. Every searcher below is handed the result of
+    /// this, except the translation searchers, which take the raw query and
+    /// apply the same grammar themselves.
     private func prepareFTSQuery(_ query: String) -> String {
         LampSearchQuery(query).fts5Query
     }

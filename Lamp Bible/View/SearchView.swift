@@ -1427,10 +1427,11 @@ struct SearchView: View {
                 return SearchResult(searchResult: result, bookName: bookName)
             }
         } else {
-            // Text search using GRDB FTS5
-            let cleanQuery = getRealmSearchString(from: query)
+            // Text search using GRDB FTS5. The query goes in as typed: the
+            // searcher applies the shared grammar, and `getRealmSearchString`
+            // would strip the quotes that mark a phrase before it got there.
             let results = (try? TranslationDatabase.shared.searchAllTranslations(
-                query: cleanQuery,
+                query: query,
                 translationIds: [translationId],
                 bookRange: nil,
                 limit: 10000  // High limit to get total count
