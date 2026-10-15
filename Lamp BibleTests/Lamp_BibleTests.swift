@@ -5176,3 +5176,80 @@ private struct ChangedSettingsStorage: ModuleStorage, LampSyncRemoteStore {
     func directoryURL(for type: ModuleType) -> URL? { nil }
     func getSyncStatus(type: ModuleType, fileName: String) async -> ModuleSyncStatus { .notAvailable }
 }
+
+// MARK: - Toolbar collapse
+
+/// A scroll view the reader is moving by hand. A real one only reports
+/// dragging during a touch, and the tracker deliberately ignores everything
+/// else as programmatic scrolling.
+private final class HandScrolledView: UIScrollView {
+    var isUnderHand = true
+    override var isDragging: Bool { isUnderHand }
+    override var isTracking: Bool { isUnderHand }
+}
+
+final class ToolbarCollapseTrackerTests: XCTestCase {
+    private var scrollView: HandScrolledView!
+    private var tracker: ToolbarCollapseTracker!
+
+    override func setUp() {
+        super.setUp()
+        scrollView = HandScrolledView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        scrollView.contentSize = CGSize(width: 400, height: 5_000)
+        tracker = ToolbarCollapseTracker()
+        // Arrive part way down a chapter the way a jump does — programmatically
+        // — so the tests start with the toolbars showing and no travel counted.
+        scrollView.isUnderHand = false
+        scroll(to: 500)
+        scrollView.isUnderHand = true
+    }
+
+    @discardableResult
+    private func scroll(to offset: CGFloat) -> Bool? {
+        scrollView.contentOffset = CGPoint(x: 0, y: offset)
+        return tracker.update(scrollView: scrollView)
+    }
+
+    func testScrollingDownCollapses() {
+        XCTAssertNil(scroll(to: 600))
+        XCTAssertEqual(scroll(to: 700), true)
+    }
+
+    func testScrollingBackUpNeverRevealsTheToolbars() {
+        scroll(to: 700)
+        XCTAssertNil(scroll(to: 650))
+        XCTAssertNil(scroll(to: 300))
+        XCTAssertNil(scroll(to: 50))
+    }
+
+    func testReachingTheTopDoesNotRevealTheToolbars() {
+        scroll(to: 700)
+        XCTAssertNil(scroll(to: 0))
+    }
+
+    func testOnlyARevealFromOutsideBringsThemBack() {
+        scroll(to: 700)
+        // A tap on the collapsed header reports back through sync.
+        tracker.sync(false)
+        XCTAssertNil(scroll(to: 600), "scrolling up after a reveal must not report anything")
+        XCTAssertNil(scroll(to: 700))
+        XCTAssertEqual(scroll(to: 800), true, "scrolling down collapses again")
+    }
+
+    func testANudgeBackWhileReadingKeepsTheDistanceScrolled() {
+        XCTAssertNil(scroll(to: 600))  // 100 down
+        XCTAssertNil(scroll(to: 580))  // 20 back up, net 80
+        XCTAssertEqual(scroll(to: 650), true)  // 70 more, net 150
+    }
+
+    func testProgrammaticScrollingNeverCollapses() {
+        scrollView.isUnderHand = false
+        XCTAssertNil(scroll(to: 3_000))
+    }
+
+    func testContentThatFitsNeverCollapses() {
+        scrollView.contentSize = CGSize(width: 400, height: 900)
+        XCTAssertNil(scroll(to: 50))
+        XCTAssertNil(scroll(to: 100))
+    }
+}

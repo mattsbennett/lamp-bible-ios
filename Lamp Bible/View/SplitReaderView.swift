@@ -285,8 +285,12 @@ struct SplitReaderView: View {
                 }
             }
             .safeAreaInset(edge: .top) {
-                // Full-width collapsed header for horizontal split mode
-                if toolbarsHidden && effectiveOrientation == "right" {
+                // Full-width collapsed header for horizontal split mode. The
+                // reader and the tool panel both drop their own collapsed
+                // headers in this layout, so this is the only thing to tap to
+                // bring the toolbars back — scrolling never does.
+                if (toolbarsHidden && effectiveOrientation == "right")
+                    || (toolbarsCollapsed && isHorizontalSplit) {
                     horizontalSplitCollapsedHeader
                 }
             }
@@ -305,8 +309,10 @@ struct SplitReaderView: View {
                 Text("\(abbreviation) · \(book?.name ?? "") \(currentChapter)")
                 Text("· \(currentToolDisplayName)")
             }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
+            // As legible as the reader's own collapsed header: it is the only
+            // way back to the toolbars in this layout.
+            .font(.caption)
+            .foregroundStyle(.primary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
             .background(Color(UIColor.systemBackground).ignoresSafeArea(edges: .top))

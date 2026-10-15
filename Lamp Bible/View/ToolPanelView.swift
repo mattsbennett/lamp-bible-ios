@@ -197,21 +197,22 @@ protocol ToolPanelScrollable: AnyObject {
 
 // MARK: - Toolbar Collapse Tracking
 
-/// Scroll-direction tracking for collapsing the headers on scroll.
+/// Collapses the headers when the reader scrolls down.
+///
+/// Scrolling only ever collapses. Bringing the toolbars back is a tap on the
+/// collapsed header and nothing else: revealing on any upward drag meant the
+/// small corrections a reader makes to find their place kept throwing the
+/// controls back over the text.
 ///
 /// Shared by the reader and the tool panel so both panes collapse on the same
-/// gesture and by the same thresholds — in split view they show one combined
+/// gesture and by the same threshold — in split view they show one combined
 /// header, and it would read as broken if one pane collapsed without the other.
 final class ToolbarCollapseTracker {
     private var lastOffset: CGFloat = 0
     private var downwardTravel: CGFloat = 0
-    private var upwardTravel: CGFloat = 0
     private var isCollapsed = false
 
-    /// Reveal is deliberately easier to trigger than collapse: reaching for a
-    /// control shouldn't require a deliberate swipe.
     private let collapseThreshold: CGFloat = 140
-    private let revealThreshold: CGFloat = 24
 
     /// Adopt a state decided elsewhere — the other pane, a tap on the collapsed
     /// header, leaving immersive mode — so the next scroll is measured against
@@ -220,14 +221,14 @@ final class ToolbarCollapseTracker {
         guard isCollapsed != collapsed else { return }
         isCollapsed = collapsed
         downwardTravel = 0
-        upwardTravel = 0
     }
 
-    /// The new collapse state when it should change, otherwise `nil`.
+    /// `true` when the headers should collapse now, otherwise `nil`. Never
+    /// `false`: revealing is the collapsed header's job, not the scroll's.
     ///
-    /// Travel is accumulated per direction rather than measured from a fixed
-    /// anchor, so a reversal takes effect from where it began instead of having to
-    /// unwind everything scrolled before it.
+    /// Travel is net downward distance since the headers last showed, so a
+    /// small nudge back up while reading only gives back what it moved rather
+    /// than wiping out everything scrolled so far.
     func update(scrollView: UIScrollView) -> Bool? {
         let offset = scrollView.contentOffset.y
         let topInset = scrollView.adjustedContentInset.top
@@ -236,45 +237,31 @@ final class ToolbarCollapseTracker {
         let delta = offset - lastOffset
         lastOffset = offset
 
-        func change(to collapsed: Bool) -> Bool? {
-            guard isCollapsed != collapsed else { return nil }
-            isCollapsed = collapsed
-            downwardTravel = 0
-            upwardTravel = 0
-            return collapsed
-        }
+        // Once collapsed there is nothing more for scrolling to do.
+        guard !isCollapsed else { return nil }
 
         // Nothing worth hiding for when the content already fits on screen.
-        guard scrollView.contentSize.height > viewport + collapseThreshold else {
-            return change(to: false)
-        }
+        guard scrollView.contentSize.height > viewport + collapseThreshold else { return nil }
 
-        // The top always shows its controls, and overscroll at either end belongs
-        // to pull-to-navigate, not to the toolbars.
-        if offset <= -topInset + 1 {
-            return change(to: false)
-        }
-        guard offset + viewport < scrollView.contentSize.height + bottomInset else { return nil }
+        // Overscroll at either end belongs to pull-to-navigate, not to the
+        // toolbars.
+        guard offset > -topInset + 1,
+              offset + viewport < scrollView.contentSize.height + bottomInset
+        else { return nil }
 
         // Only the reader's own hand moves the bars. Programmatic scrolling — the
         // read-aloud follow, chapter jumps, cross-pane scroll sync — sets none of
         // these flags, and must not disturb them.
         guard scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else {
             downwardTravel = 0
-            upwardTravel = 0
             return nil
         }
 
-        if delta > 0 {
-            downwardTravel += delta
-            upwardTravel = 0
-            if downwardTravel > collapseThreshold { return change(to: true) }
-        } else if delta < 0 {
-            upwardTravel -= delta
-            downwardTravel = 0
-            if upwardTravel > revealThreshold { return change(to: false) }
-        }
-        return nil
+        downwardTravel = max(0, downwardTravel + delta)
+        guard downwardTravel > collapseThreshold else { return nil }
+        isCollapsed = true
+        downwardTravel = 0
+        return true
     }
 }
 
