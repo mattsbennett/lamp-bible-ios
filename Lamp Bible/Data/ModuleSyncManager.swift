@@ -2463,9 +2463,15 @@ class ModuleSyncManager: ObservableObject {
             isEditable: file.isEditable ?? true
         )
 
-        // Convert Devotional models to DevotionalEntry for database storage
+        // Convert Devotional models to DevotionalEntry for database storage.
+        // Authored Markdown arrives wrapped in one paragraph; stored as blocks
+        // it loses its images and tables the next time Markdown is derived
+        // from it, and starts disagreeing with the copy it came from.
         let cloudEntries = file.entries.map { devotional in
-            DevotionalEntry(from: devotional, moduleId: file.id)
+            DevotionalEntry(
+                from: MarkdownDevotionalConverter.unwrappingAuthoredMarkdown(devotional),
+                moduleId: file.id
+            )
         }
 
         let mergeResult = try database.write { db in

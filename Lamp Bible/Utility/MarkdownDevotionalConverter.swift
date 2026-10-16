@@ -89,6 +89,31 @@ struct MarkdownDevotionalConverter {
         return blocks
     }
 
+    /// A writing with no blocks of its own crosses in the portable format as a
+    /// single paragraph holding the authored Markdown, because that format has
+    /// nowhere else to put it.
+    ///
+    /// Taken at face value it becomes a block tree, and the next time Markdown
+    /// is derived from those blocks the images and tables in it are gone — an
+    /// image link comes back as three stray lines. Worse, the body then
+    /// differs from the copy the other device still holds while both carry the
+    /// same change time, which is a disagreement nobody can settle because
+    /// nobody made it. Put the authored text back where authored text lives
+    /// before anything stores it.
+    ///
+    /// The `.lamp` path already does this when it prepares an archived entry;
+    /// this is the same step for a module that arrives as JSON.
+    static func unwrappingAuthoredMarkdown(_ devotional: Devotional) -> Devotional {
+        guard devotional.markdownContent == nil,
+              let data = try? JSONEncoder().encode(devotional.content),
+              let markdown = LampPortableDevotionalMedia.plainMarkdown(
+                from: String(decoding: data, as: UTF8.self)
+              ) else { return devotional }
+        var unwrapped = devotional
+        unwrapped.markdownContent = markdown
+        return unwrapped
+    }
+
     static func shouldRetainContentJSON(_ devotional: Devotional) -> Bool {
         guard devotional.markdownContent == nil,
               let data = try? JSONEncoder().encode(devotional.content) else { return false }
