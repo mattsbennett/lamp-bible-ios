@@ -358,6 +358,7 @@ struct ChapterTextView: UIViewRepresentable {
         }
 
         context.coordinator.textView = textView
+        ScrollSyncCoordinator.shared.readerTextView = textView
         return textView
     }
 
@@ -567,6 +568,9 @@ struct ChapterTextView: UIViewRepresentable {
 
         // Add verses
         for (index, verse) in verses.enumerated() {
+            // Where the titles and headings leading into this verse begin
+            let leadInStart = result.length
+
             // Detect chapter change and insert chapter heading
             if verse.chapter != currentChapter {
                 // Only show chapter heading if not the first verse (first chapter title is shown separately)
@@ -590,8 +594,6 @@ struct ChapterTextView: UIViewRepresentable {
                     result.append(headingText)
                 }
             }
-
-            let verseStart = result.length
 
             let verseParagraphStyle = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
             if let poetry = verse.poetry, poetry.stanzaBreak == true {
@@ -850,8 +852,10 @@ struct ChapterTextView: UIViewRepresentable {
             let verseTextLength = result.length - verseTextStart
             coordinator.verseTextRanges[verse.ref] = NSRange(location: verseTextStart, length: verseTextLength)
 
-            // Store verse range for scrolling
-            coordinator.verseRanges[verse.ref] = NSRange(location: verseStart, length: result.length - verseStart)
+            // Store verse range for scrolling. It takes in the headings above the
+            // verse: a heading at the top of the screen opens the verse below it,
+            // and a jump to the verse should show the heading too.
+            coordinator.verseRanges[verse.ref] = NSRange(location: leadInStart, length: result.length - leadInStart)
 
             // Add appropriate spacing between verses
             if index < verses.count - 1 {
@@ -2315,8 +2319,9 @@ struct ReaderView: View {
         // Testing the start alone leaves a verse that begins just above the bottom
         // edge sitting there with its body off-screen, which is the state this is
         // supposed to prevent. The next verse's start is where this one ends.
-        let verseTop = y
-        let verseBottom = positionTracker.positions.values.filter { $0 > y }.min()
+        let textTop = ScrollSyncCoordinator.shared.readerTextTop
+        let verseTop = y + textTop
+        let verseBottom = positionTracker.positions.values.filter { $0 > y }.min().map { $0 + textTop }
 
         let trigger: CGFloat = 24
         let needsScroll: Bool
@@ -2332,7 +2337,16 @@ struct ReaderView: View {
         animateScroll = true
         // `scrollTo(anchor: .top)` lands at the safe-area top, which already
         // accounts for the navigation bar; this is the reading lead below it.
-        scrollTargetY = max(0, y - 80)
+        scrollTargetY = max(0, verseTop - 80)
+    }
+
+    /// The `scrollTargetY` that brings a verse to the top of the reader. Verse
+    /// positions count from the top of the text, which sits below the
+    /// previous-chapter button; and the top is where linked scrolling reads the
+    /// current verse from, so the tool panel follows to the verse asked for
+    /// rather than the one before it.
+    private func scrollTarget(forVerseAt y: CGFloat) -> CGFloat {
+        max(0, y + ScrollSyncCoordinator.shared.readerTextTop)
     }
 
     static func noVoiceMessage(for languageCode: String?) -> String {
@@ -2683,7 +2697,7 @@ struct ReaderView: View {
                             // Same chapter, just scroll
                             var didScroll = false
                             if let yPos = positionTracker.positions[verseId] {
-                                scrollTargetY = max(0, yPos + 1 - 20)
+                                scrollTargetY = scrollTarget(forVerseAt: yPos)
                                 didScroll = true
                             } else {
                                 // Fallback: try to find nearest verse position
@@ -2694,7 +2708,7 @@ struct ReaderView: View {
                                     let sortedVerses = positions.keys.sorted()
                                     if let closestId = sortedVerses.last(where: { ($0 % 1000) <= targetVerse }) ?? sortedVerses.first,
                                        let yPos = positions[closestId] {
-                                        scrollTargetY = max(0, yPos + 1 - 20)
+                                        scrollTargetY = scrollTarget(forVerseAt: yPos)
                                         didScroll = true
                                     }
                                 }
@@ -2753,7 +2767,7 @@ struct ReaderView: View {
                     if let yPos = positions[targetId] {
                         // Exact match found
                         pendingScrollVerseId = nil
-                        scrollTargetY = max(0, yPos + 1 - 20)
+                        scrollTargetY = scrollTarget(forVerseAt: yPos)
                     } else if !positions.isEmpty {
                         // No exact match - find closest verse at or before target
                         let targetVerse = targetId % 1000
@@ -2765,7 +2779,7 @@ struct ReaderView: View {
                             .filter({ ($0.key % 1000) <= targetVerse })
                             .max(by: { $0.key < $1.key }) {
                             pendingScrollVerseId = nil
-                            scrollTargetY = max(0, closestEntry.value + 1 - 20)
+                            scrollTargetY = scrollTarget(forVerseAt: closestEntry.value)
                         }
                     }
                 }
@@ -3180,7 +3194,7 @@ struct ReaderView: View {
         // Final fallback - try SwiftUI scroll target
         if let yPos = positions[targetId] {
             pendingScrollVerseId = nil
-            scrollTargetY = max(0, yPos + 1 - 20)
+            scrollTargetY = scrollTarget(forVerseAt: yPos)
         } else {
             // Try to find closest verse
             let targetVerse = targetId % 1000
@@ -3190,7 +3204,7 @@ struct ReaderView: View {
                 .filter({ ($0.key % 1000) <= targetVerse })
                 .max(by: { $0.key < $1.key }) {
                 pendingScrollVerseId = nil
-                scrollTargetY = max(0, closestEntry.value + 1 - 20)
+                scrollTargetY = scrollTarget(forVerseAt: closestEntry.value)
             }
         }
     }

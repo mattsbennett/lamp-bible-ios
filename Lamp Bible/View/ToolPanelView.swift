@@ -22,10 +22,17 @@ class ScrollSyncCoordinator {
 
     // Direct reader scroll view reference for UIKit-based scrolling
     weak var readerScrollView: UIScrollView?
+    /// The reader's text view. Verse positions are measured from its top, and
+    /// it sits below whatever the reader stacks above the text — the
+    /// previous-chapter button among them.
+    weak var readerTextView: UIView?
     // Full verseId (BBCCCVVV) -> yPosition (set by ReaderScrollSpyView)
     private var readerVersePositions: [Int: CGFloat] = [:]
     // Sorted full verseIds for closest-preceding binary search
     private var sortedReaderVerseIds: [Int] = []
+    // Verses top to bottom, for finding the one at the reading line. Sorted once
+    // per update — positions can be large, so never during a scroll.
+    private var readerVersesByPosition: [(verseId: Int, yPos: CGFloat)] = []
 
     // Current state
     private(set) var currentVerse: Int = 1
@@ -35,8 +42,12 @@ class ScrollSyncCoordinator {
     /// Temporarily pause scroll sync (e.g., during keyboard display)
     var isPaused: Bool = false
 
-    /// Whether toolbars are hidden (affects scroll offset calculation)
-    var toolbarsHidden: Bool = false
+    /// How far below the top of the visible text a verse has to come before it
+    /// is the one being read. Both panes use the same line, so the verse one
+    /// pane brings to the top is the verse the other reads back. Under half a
+    /// line, so the panel moves on as a verse arrives at the top rather than
+    /// while it is still on its way up.
+    static let readingLineInset: CGFloat = 16
 
     // Throttle reader scrolling driven by tool panel (avoids hammering setContentOffset)
     private var lastReaderScrollTime: CFTimeInterval = 0
@@ -62,6 +73,9 @@ class ScrollSyncCoordinator {
     func updateReaderVersePositions(_ positions: [Int: CGFloat]) {
         readerVersePositions = positions
         sortedReaderVerseIds = positions.keys.sorted()
+        readerVersesByPosition = positions
+            .map { (verseId: $0.key, yPos: $0.value) }
+            .sorted { $0.yPos < $1.yPos }
     }
 
     func registerToolPanel(_ controller: any ToolPanelScrollable) {
@@ -125,13 +139,7 @@ class ScrollSyncCoordinator {
         }
 
         if let y = targetY {
-            // Account for safe area (notch) plus SwiftUI navigation toolbar when visible
-            let toolbarHeight: CGFloat = toolbarsHidden ? 0 : 44
-            let topOffset = scrollView.safeAreaInsets.top + toolbarHeight
-            let adjustedY = y - topOffset
-
-            let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
-            let clampedY = min(max(0, adjustedY), maxY)
+            let clampedY = readerOffset(bringingToTop: y, in: scrollView)
 
             // Skip tiny adjustments to avoid churn.
             if abs(scrollView.contentOffset.y - clampedY) > 0.5 {
@@ -164,15 +172,51 @@ class ScrollSyncCoordinator {
 
         guard let y = targetY else { return false }
 
-        // Account for safe area plus navigation toolbar
-        let topOffset = scrollView.safeAreaInsets.top + 44
-        let adjustedY = y - topOffset
-
-        let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
-        let clampedY = min(max(0, adjustedY), maxY)
-
+        let clampedY = readerOffset(bringingToTop: y, in: scrollView)
         scrollView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: false)
         return true
+    }
+
+    /// The verse being read: the last one to reach the reading line, just below
+    /// the top of the reader's visible text.
+    func readerVerseAtReadingLine(in scrollView: UIScrollView) -> Int? {
+        // Verse positions count from the top of the text, not of the scroll
+        // content, so move the line into the same terms.
+        let line = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+            + Self.readingLineInset - readerTextTop
+
+        var low = 0
+        var high = readerVersesByPosition.count - 1
+        var best: Int?
+        while low <= high {
+            let mid = (low + high) / 2
+            if readerVersesByPosition[mid].yPos <= line {
+                best = readerVersesByPosition[mid].verseId
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return best
+    }
+
+    /// Where the reader's text starts in its scroll content: add it to a verse
+    /// position to place the verse in the scroll view.
+    var readerTextTop: CGFloat {
+        guard let scrollView = readerScrollView,
+              let textView = readerTextView,
+              textView.isDescendant(of: scrollView) else { return 0 }
+        return textView.convert(CGPoint.zero, to: scrollView).y
+    }
+
+    /// The content offset that puts a verse at the top of the reader's visible
+    /// area, just under whichever header is showing. `adjustedContentInset`
+    /// already tracks the header as it shows, collapses and hides.
+    private func readerOffset(bringingToTop verseY: CGFloat, in scrollView: UIScrollView) -> CGFloat {
+        let insets = scrollView.adjustedContentInset
+        let minY = -insets.top
+        let maxY = max(minY, scrollView.contentSize.height + insets.bottom - scrollView.bounds.height)
+        return min(max(minY, verseY + readerTextTop - insets.top), maxY)
     }
 
     /// Called when drag ends to reset active scroller
@@ -273,13 +317,9 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
     private var originalDelegate: UIScrollViewDelegate?
     private let coordinator = ScrollSyncCoordinator.shared
     private var lastReportedVerseId: Int = 0
-    private var lastProcessedOffset: CGFloat = 0
     private var isReady: Bool = false // Prevents sync during initial load
     private var isUserScrolling: Bool = false // Track if user is actively scrolling
     private var isPullNavigationTriggered: Bool = false // Suppress progress after navigation triggers
-
-    // Cached sorted positions for fast lookup during scrolling
-    private var sortedVersePositions: [(verseId: Int, yPos: CGFloat)] = []
 
     // Optional callback for SwiftUI to observe verse changes without doing expensive geometry tracking
     var onVerseIdChange: ((Int) -> Void)?
@@ -312,10 +352,6 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
     var versePositions: [Int: CGFloat] = [:] {
         didSet {
             coordinator.updateReaderVersePositions(versePositions)
-            // Pre-sort once when positions update (positions can be large; don't sort during scroll)
-            sortedVersePositions = versePositions
-                .map { (verseId: $0.key, yPos: $0.value) }
-                .sorted { $0.yPos < $1.yPos }
         }
     }
 
@@ -367,14 +403,10 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         // Skip if tool panel is in control
         guard coordinator.activeScroller != .toolPanel else { return }
 
-        // Calculate which verse is at the top of the visible area
-        let offset = scrollView.contentOffset.y + scrollView.safeAreaInsets.top
-
-        if let verseId = findVerseIdAtOffset(offset) {
+        if let verseId = coordinator.readerVerseAtReadingLine(in: scrollView) {
             // Use full verse ID for multi-chapter support
             if verseId != lastReportedVerseId {
                 lastReportedVerseId = verseId
-                lastProcessedOffset = offset
                 // Direct sync using full verse ID (handles multi-chapter readings)
                 coordinator.readerDidScrollToVerse(verseId)
             }
@@ -527,29 +559,6 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
 
     func scrollViewWillBeginDecelerating(_ scrollView: UIScrollView) {
         originalDelegate?.scrollViewWillBeginDecelerating?(scrollView)
-    }
-
-    private func findVerseIdAtOffset(_ offset: CGFloat) -> Int? {
-        guard !sortedVersePositions.isEmpty else { return nil }
-
-        // We want the last verse whose yPos <= offset + 50
-        let target = offset + 50
-        var low = 0
-        var high = sortedVersePositions.count - 1
-        var bestIndex: Int? = nil
-
-        while low <= high {
-            let mid = (low + high) / 2
-            if sortedVersePositions[mid].yPos <= target {
-                bestIndex = mid
-                low = mid + 1
-            } else {
-                high = mid - 1
-            }
-        }
-
-        guard let idx = bestIndex else { return nil }
-        return sortedVersePositions[idx].verseId
     }
 }
 
@@ -773,8 +782,8 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
 
         // Use contentOffset - position item at top of visible area
         if let layoutAttributes = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0)) {
-            // Account for safe area (notch) plus any additional offset (collapsed header)
-            let topInset = collectionView.safeAreaInsets.top + additionalTopOffset
+            // Account for the insets plus any additional offset (collapsed header)
+            let topInset = collectionView.adjustedContentInset.top + additionalTopOffset
             let targetY = layoutAttributes.frame.minY - topInset
             collectionView.setContentOffset(CGPoint(x: 0, y: targetY), animated: animated)
         } else {
@@ -796,8 +805,11 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
             onToolbarCollapseChange(collapsed)
         }
 
-        // Find visible verse from top visible cell
-        let visiblePoint = CGPoint(x: scrollView.bounds.midX, y: scrollView.contentOffset.y + 50)
+        // The verse being read is the one under the reading line, just below the
+        // top of the visible list — where `scrollToIndex` puts a verse.
+        let readingLine = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+            + additionalTopOffset + ScrollSyncCoordinator.readingLineInset
+        let visiblePoint = CGPoint(x: scrollView.bounds.midX, y: readingLine)
 
         if let indexPath = collectionView.indexPathForItem(at: visiblePoint),
            indexPath.item < items.count {

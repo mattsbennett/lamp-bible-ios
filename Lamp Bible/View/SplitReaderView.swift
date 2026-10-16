@@ -152,10 +152,6 @@ struct SplitReaderView: View {
             // Load available modules for tool selection in horizontal split toolbar
             await loadToolModules()
         }
-        .onChange(of: toolbarsHidden) { _, newValue in
-            // Sync toolbar visibility to scroll coordinator for offset calculation
-            ScrollSyncCoordinator.shared.toolbarsHidden = newValue
-        }
         // Note: Scroll sync is now handled entirely by UIKit via ReaderScrollSpy and ScrollSyncCoordinator
     }
 

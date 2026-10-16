@@ -5253,3 +5253,72 @@ final class ToolbarCollapseTrackerTests: XCTestCase {
         XCTAssertNil(scroll(to: 100))
     }
 }
+
+/// Linked scrolling reads the current verse from just under the reader's header,
+/// and brings a verse there when the panel leads. Verse positions count from
+/// the top of the reader's text, which sits below the previous-chapter button,
+/// while the header covers the top of the scroll view; missing either made the
+/// panel move on to a verse still well down the screen.
+final class ReaderReadingLineTests: XCTestCase {
+    private let coordinator = ScrollSyncCoordinator.shared
+    private var scrollView: UIScrollView!
+    private var textView: UIView!
+
+    private let headerHeight: CGFloat = 116
+    private let textTop: CGFloat = 71
+    // Genesis 1:1–5, a line apart.
+    private let positions: [Int: CGFloat] = [
+        1001001: 0, 1001002: 40, 1001003: 80, 1001004: 120, 1001005: 160,
+    ]
+
+    override func setUp() {
+        super.setUp()
+        scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.contentInset.top = headerHeight
+        scrollView.contentSize = CGSize(width: 400, height: 3_000)
+        textView = UIView(frame: CGRect(x: 0, y: textTop, width: 400, height: 2_000))
+        scrollView.addSubview(textView)
+        coordinator.readerScrollView = scrollView
+        coordinator.readerTextView = textView
+        coordinator.updateReaderVersePositions(positions)
+    }
+
+    override func tearDown() {
+        coordinator.readerScrollView = nil
+        coordinator.readerTextView = nil
+        coordinator.updateReaderVersePositions([:])
+        super.tearDown()
+    }
+
+    /// How far below the top of the scroll view a verse is drawn.
+    private func onScreenY(of verseId: Int) -> CGFloat {
+        textTop + positions[verseId]! - scrollView.contentOffset.y
+    }
+
+    func testAVerseBroughtToTheTopSitsJustUnderTheHeader() {
+        XCTAssertTrue(coordinator.scrollReaderToVerseId(1001003))
+        XCTAssertEqual(onScreenY(of: 1001003), headerHeight, accuracy: 0.5)
+    }
+
+    func testTheVerseBroughtToTheTopIsTheVerseReadBack() {
+        for verseId in positions.keys.sorted() {
+            coordinator.scrollReaderToVerseId(verseId)
+            XCTAssertEqual(coordinator.readerVerseAtReadingLine(in: scrollView), verseId)
+        }
+    }
+
+    func testTheNextVerseIsReadOnlyOnceItReachesTheTop() {
+        let inset = ScrollSyncCoordinator.readingLineInset
+        coordinator.scrollReaderToVerseId(1001002)
+
+        // Verse 3 coming up, but still short of the top.
+        scrollView.contentOffset.y += 40 - inset - 4
+        XCTAssertEqual(onScreenY(of: 1001003), headerHeight + inset + 4, accuracy: 0.5)
+        XCTAssertEqual(coordinator.readerVerseAtReadingLine(in: scrollView), 1001002)
+
+        // Now it has arrived.
+        scrollView.contentOffset.y += 8
+        XCTAssertEqual(coordinator.readerVerseAtReadingLine(in: scrollView), 1001003)
+    }
+}
