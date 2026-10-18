@@ -1863,40 +1863,64 @@ struct ReaderView: View {
         )
     }
 
-    @ViewBuilder
-    private var collapsedHeader: some View {
-        let (currentVerse, currentChapter, currentBook) = splitVerseId(currentVerseId)
-        let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
+    /// The toolbars are collapsed down to the title alone. Horizontal split
+    /// hides the header instead, behind the parent's full-width one.
+    private var isNavigationBarCompact: Bool {
+        (toolbarsHidden || toolbarsCollapsed) && !isHorizontalSplit
+    }
 
-        VStack(spacing: 0) {
-            HStack(spacing: 4) {
-                Text("\(translationAbbreviation) · \(book?.name ?? "") \(currentChapter)")
-                // Show active tool in split-right view
-                if isHorizontalSplit && !toolDisplayName.isEmpty {
-                    Text("· \(toolDisplayName)")
+    private var readerHeader: some View {
+        ReaderNavigationToolbarView(
+            userSettings: $userSettings,
+            readingMetaData: $readingMetaData,
+            translationId: $translationId,
+            translationAbbreviation: $translationAbbreviation,
+            currentVerseId: $currentVerseId,
+            showingBookPicker: $showingBookPicker,
+            showingOptionsMenu: $showingOptionsMenu,
+            readerDismiss: dismiss,
+            onHideToolbars: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    toolbarsHidden = true
                 }
+            },
+            isCompact: isNavigationBarCompact,
+            onExpand: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    toolbarsHidden = false
+                    toolbarsCollapsed = false
+                }
+            },
+            // Same glyph as the quiz sheet's control, so the two read-aloud
+            // surfaces look like one feature. Present for the whole of plan
+            // mode — disabled while the text is still building — so the
+            // ellipsis beside it never moves.
+            trailingAccessory: toolbarMode == .plan
+                ? AnyView(SpeechToolbarButton(
+                    request: planSpeechRequest,
+                    unavailableMessage: planSpeechUnavailableMessage,
+                    controller: planSpeech,
+                    onOpenTransport: { showingSpeechTransport = true }
+                ))
+                : nil,
+            // Horizontal split integration
+            isHorizontalSplit: isHorizontalSplit,
+            toolPanelMode: $toolPanelMode,
+            toolDisplayName: toolDisplayName,
+            isScrollLinked: $isScrollLinked,
+            toolFontSize: $toolFontSize,
+            onHideToolPanel: onHideToolPanel,
+            onToggleSplitOrientation: onToggleSplitOrientation,
+            notesModules: notesModules,
+            commentarySeries: commentarySeries,
+            devotionalsModules: devotionalsModules,
+            onEditTheme: { color, style, existing in
+                themeEditColor = color
+                themeEditStyle = style
+                themeEditExisting = existing
+                pendingThemeEdit = true
             }
-                .font(.caption)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(Color(UIColor.systemBackground).ignoresSafeArea(edges: .top))
-
-            // Gradient fade below the text
-            LinearGradient(
-                colors: [Color(UIColor.systemBackground), Color(UIColor.systemBackground).opacity(0)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 30)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                toolbarsHidden = false
-                toolbarsCollapsed = false
-            }
-        }
+        )
     }
 
     /// What to read for a given navigation. Resolving this is cheap; running it
@@ -2871,56 +2895,6 @@ struct ReaderView: View {
                     } : nil
                 )
             }
-            .toolbar {
-                ReaderNavigationToolbarView(
-                    userSettings: $userSettings,
-                    readingMetaData: $readingMetaData,
-                    translationId: $translationId,
-                    translationAbbreviation: $translationAbbreviation,
-                    currentVerseId: $currentVerseId,
-                    showingBookPicker: $showingBookPicker,
-                    showingOptionsMenu: $showingOptionsMenu,
-                    readerDismiss: dismiss,
-                    onHideToolbars: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            toolbarsHidden = true
-                        }
-                    },
-                    // Horizontal split integration
-                    isHorizontalSplit: isHorizontalSplit,
-                    toolPanelMode: $toolPanelMode,
-                    toolDisplayName: toolDisplayName,
-                    isScrollLinked: $isScrollLinked,
-                    toolFontSize: $toolFontSize,
-                    onHideToolPanel: onHideToolPanel,
-                    onToggleSplitOrientation: onToggleSplitOrientation,
-                    notesModules: notesModules,
-                    commentarySeries: commentarySeries,
-                    devotionalsModules: devotionalsModules,
-                    onEditTheme: { color, style, existing in
-                        themeEditColor = color
-                        themeEditStyle = style
-                        themeEditExisting = existing
-                        pendingThemeEdit = true
-                    }
-                )
-            }
-            .toolbar {
-                // Same placement and glyph as the quiz sheet's control, so the two
-                // read-aloud surfaces look like one feature. Present for the whole of
-                // plan mode — disabled while the text is still building — so the
-                // ellipsis beside it never moves.
-                if toolbarMode == .plan {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        SpeechToolbarButton(
-                            request: planSpeechRequest,
-                            unavailableMessage: planSpeechUnavailableMessage,
-                            controller: planSpeech,
-                            onOpenTransport: { showingSpeechTransport = true }
-                        )
-                    }
-                }
-            }
             .sheet(isPresented: $showingSpeechTransport) {
                 SpeechTransportSheet(controller: planSpeech, request: planSpeechRequest)
             }
@@ -2987,11 +2961,20 @@ struct ReaderView: View {
                     }
                 }
             }
-            // Two separate ideas share this modifier: `toolbarsHidden` is the
-            // tap-driven immersive mode, which also takes the status bar and swaps
-            // in the collapsed header; `toolbarsCollapsed` is the lighter
-            // scroll-driven one, which only moves the bars.
-            .toolbar(toolbarsHidden || toolbarsCollapsed ? .hidden : .visible, for: .navigationBar, .bottomBar)
+            // Two separate ideas share these modifiers: `toolbarsHidden` is the
+            // tap-driven immersive mode, which also takes the status bar;
+            // `toolbarsCollapsed` is the lighter scroll-driven one. Either way
+            // the bottom bar goes and the header shrinks to the title. The
+            // header is the reader's own, in place of the navigation bar.
+            .toolbar(toolbarsHidden || toolbarsCollapsed ? .hidden : .visible, for: .bottomBar)
+            .toolbar(.hidden, for: .navigationBar)
+            .readerHeaderBar {
+                // Horizontal split hides it behind the parent's full-width
+                // collapsed header.
+                if !(isHorizontalSplit && (toolbarsHidden || toolbarsCollapsed)) {
+                    readerHeader
+                }
+            }
             .statusBarHidden(toolbarsHidden)
             .onChange(of: showingOptionsMenu) { _, isShowing in
                 if !isShowing && pendingThemeEdit {
@@ -3001,12 +2984,6 @@ struct ReaderView: View {
                         try? await Task.sleep(for: .milliseconds(100))
                         showingThemeEditor = true
                     }
-                }
-            }
-            .safeAreaInset(edge: .top) {
-                // In horizontal split, parent (SplitReaderView) handles the full-width collapsed header
-                if (toolbarsHidden || toolbarsCollapsed) && !isHorizontalSplit {
-                    collapsedHeader
                 }
             }
         }

@@ -7,7 +7,7 @@
 
 import SwiftUI
 
-struct ReaderNavigationToolbarView: ToolbarContent {
+struct ReaderNavigationToolbarView: View {
     @Environment(\.dismiss) var dismiss
     @Binding var userSettings: UserSettings
     @Binding var readingMetaData: [ReadingMetaData]?
@@ -19,6 +19,14 @@ struct ReaderNavigationToolbarView: ToolbarContent {
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     let readerDismiss: DismissAction
     var onHideToolbars: (() -> Void)? = nil
+
+    /// The toolbars are collapsed: the bar keeps only the title, shrunk to one
+    /// line, and tapping it brings the rest back.
+    var isCompact: Bool = false
+    var onExpand: (() -> Void)? = nil
+    /// An extra control beside the options button, such as read-aloud in plan
+    /// mode. It goes with the other controls when the bar collapses.
+    var trailingAccessory: AnyView? = nil
 
     // Horizontal split integration
     var isHorizontalSplit: Bool = false
@@ -55,6 +63,9 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         showingOptionsMenu: Binding<Bool>,
         readerDismiss: DismissAction,
         onHideToolbars: (() -> Void)? = nil,
+        isCompact: Bool = false,
+        onExpand: (() -> Void)? = nil,
+        trailingAccessory: AnyView? = nil,
         isHorizontalSplit: Bool = false,
         toolPanelMode: Binding<ToolPanelMode> = .constant(.commentary),
         toolDisplayName: String = "",
@@ -76,6 +87,9 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         _showingOptionsMenu = showingOptionsMenu
         self.readerDismiss = readerDismiss
         self.onHideToolbars = onHideToolbars
+        self.isCompact = isCompact
+        self.onExpand = onExpand
+        self.trailingAccessory = trailingAccessory
         self.isHorizontalSplit = isHorizontalSplit
         _toolPanelMode = toolPanelMode
         self.toolDisplayName = toolDisplayName
@@ -89,130 +103,201 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         self.onEditTheme = onEditTheme
     }
 
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button {
-                readerDismiss()
-            } label: {
-                Image(systemName: "arrow.backward")
-            }
+    /// A system navigation bar can't get any shorter, so the reader draws its
+    /// own. Collapsed it is one slim line, and it changes shape in place between
+    /// the two rather than one header leaving and another arriving.
+    static let expandedHeight: CGFloat = 54
+    static let compactHeight: CGFloat = 38
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            // One container, so the controls' glass morphs as the bar collapses
+            // and expands rather than each piece appearing on its own.
+            GlassEffectContainer(spacing: 8) { bar }
+        } else {
+            bar
         }
-        ToolbarItem(placement: .principal) {
-            if isHorizontalSplit {
-                // Menu with Bible and Tool selection
-                Menu {
-                    // Bible section
-                    Section("Bible") {
-                        if readingMetaData == nil {
+    }
+
+    private var bar: some View {
+        ZStack {
+            HStack(spacing: 8) {
+                if !isCompact {
+                    Button {
+                        readerDismiss()
+                    } label: {
+                        headerIcon("arrow.backward")
+                    }
+                    .buttonStyle(.plain)
+                    .modifier(HeaderGlass(shape: Circle()))
+                }
+                Spacer(minLength: 0)
+                if !isCompact {
+                    if let trailingAccessory {
+                        trailingAccessory
+                            .buttonStyle(.plain)
+                            .frame(width: 44, height: 44)
+                            .modifier(HeaderGlass(shape: Circle()))
+                    }
+                    Button {
+                        showingOptionsMenu = true
+                    } label: {
+                        headerIcon("ellipsis")
+                    }
+                    .buttonStyle(.plain)
+                    .modifier(HeaderGlass(shape: Circle()))
+                    .popover(isPresented: $showingOptionsMenu) {
+                        optionsMenuContent
+                    }
+                }
+            }
+            title
+                // Clear of the buttons either side.
+                .padding(.horizontal, isCompact ? 0 : (trailingAccessory == nil ? 52 : 104))
+        }
+        .padding(.horizontal, 16)
+        .frame(height: isCompact ? Self.compactHeight : Self.expandedHeight)
+    }
+
+    private func headerIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(Color.primary)
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+    }
+
+    @ViewBuilder
+    private var title: some View {
+        let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
+        let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
+        let place = (book?.name ?? "") + " \(currentChapter)"
+
+        if isHorizontalSplit && !isCompact {
+            // Menu with Bible and Tool selection
+            Menu {
+                // Bible section
+                Section("Bible") {
+                    if readingMetaData == nil {
+                        Button {
+                            showingBookPicker = true
+                        } label: {
+                            Label("Change Book/Chapter", systemImage: "book")
+                        }
+                    }
+                }
+
+                // Tool section
+                Section("Tools") {
+                    // Notes modules
+                    if !notesModules.isEmpty {
+                        ForEach(notesModules, id: \.id) { module in
                             Button {
-                                showingBookPicker = true
+                                notesModuleId = module.id
+                                toolPanelMode = .notes
                             } label: {
-                                Label("Change Book/Chapter", systemImage: "book")
-                            }
-                        }
-                    }
-
-                    // Tool section
-                    Section("Tools") {
-                        // Notes modules
-                        if !notesModules.isEmpty {
-                            ForEach(notesModules, id: \.id) { module in
-                                Button {
-                                    notesModuleId = module.id
-                                    toolPanelMode = .notes
-                                } label: {
-                                    if toolPanelMode == .notes && notesModuleId == module.id {
-                                        Label(module.name, systemImage: "checkmark")
-                                    } else {
-                                        Text(module.name)
-                                    }
-                                }
-                            }
-                        }
-
-                        // Commentary series
-                        if !commentarySeries.isEmpty {
-                            Divider()
-                            ForEach(commentarySeries, id: \.self) { series in
-                                Button {
-                                    selectedCommentarySeries = series
-                                    toolPanelMode = .commentary
-                                } label: {
-                                    if toolPanelMode == .commentary && selectedCommentarySeries == series {
-                                        Label(series, systemImage: "checkmark")
-                                    } else {
-                                        Text(series)
-                                    }
-                                }
-                            }
-                        }
-
-                        // Devotionals modules
-                        if !devotionalsModules.isEmpty {
-                            Divider()
-                            ForEach(devotionalsModules, id: \.id) { module in
-                                Button {
-                                    devotionalsModuleId = module.id
-                                    toolPanelMode = .devotionals
-                                } label: {
-                                    if toolPanelMode == .devotionals && devotionalsModuleId == module.id {
-                                        Label(module.name, systemImage: "checkmark")
-                                    } else {
-                                        Text(module.name)
-                                    }
+                                if toolPanelMode == .notes && notesModuleId == module.id {
+                                    Label(module.name, systemImage: "checkmark")
+                                } else {
+                                    Text(module.name)
                                 }
                             }
                         }
                     }
-                } label: {
-                    // Combined view: Translation + Book | Tool
-                    let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
-                    let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
 
-                    HStack(spacing: 8) {
+                    // Commentary series
+                    if !commentarySeries.isEmpty {
+                        Divider()
+                        ForEach(commentarySeries, id: \.self) { series in
+                            Button {
+                                selectedCommentarySeries = series
+                                toolPanelMode = .commentary
+                            } label: {
+                                if toolPanelMode == .commentary && selectedCommentarySeries == series {
+                                    Label(series, systemImage: "checkmark")
+                                } else {
+                                    Text(series)
+                                }
+                            }
+                        }
+                    }
+
+                    // Devotionals modules
+                    if !devotionalsModules.isEmpty {
+                        Divider()
+                        ForEach(devotionalsModules, id: \.id) { module in
+                            Button {
+                                devotionalsModuleId = module.id
+                                toolPanelMode = .devotionals
+                            } label: {
+                                if toolPanelMode == .devotionals && devotionalsModuleId == module.id {
+                                    Label(module.name, systemImage: "checkmark")
+                                } else {
+                                    Text(module.name)
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                // Combined view: Translation + Book | Tool
+                HStack(spacing: 8) {
+                    VStack(spacing: 0) {
+                        Text(translationAbbreviation).bold().font(.system(size: 14))
+                        Text(place).font(.caption2)
+                    }
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.3))
+                        .frame(width: 1, height: 24)
+                    VStack(spacing: 0) {
+                        Text(toolPanelMode.rawValue).bold().font(.system(size: 14))
+                        Text(toolDisplayName).font(.caption2).lineLimit(1)
+                    }
+                }
+                .foregroundStyle(Color.primary)
+                .padding(.horizontal, 16)
+                .frame(height: 44)
+                .contentShape(Capsule())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .modifier(HeaderGlass(shape: Capsule()))
+        } else {
+            // Translation + Book - opens the book picker. Collapsed, the same
+            // button shrinks to one line and brings the toolbars back; staying
+            // one button lets its glass resize in place rather than swap for
+            // another.
+            Button {
+                if isCompact {
+                    onExpand?()
+                } else if readingMetaData == nil {
+                    showingBookPicker = true
+                }
+            } label: {
+                Group {
+                    if isCompact {
+                        HStack(spacing: 4) {
+                            Text(translationAbbreviation).bold()
+                            Text("· " + place)
+                        }
+                        .font(.caption)
+                    } else {
                         VStack(spacing: 0) {
                             Text(translationAbbreviation).bold().font(.system(size: 14))
-                            Text((book?.name ?? "") + " \(currentChapter)").font(.caption2).foregroundStyle(Color.primary)
-                        }
-                        Rectangle()
-                            .fill(Color.secondary.opacity(0.3))
-                            .frame(width: 1, height: 24)
-                        VStack(spacing: 0) {
-                            Text(toolPanelMode.rawValue).bold().font(.system(size: 14))
-                            Text(toolDisplayName).font(.caption2).foregroundStyle(Color.primary).lineLimit(1)
+                            Text(place).font(.caption2)
                         }
                     }
-                    .padding(.horizontal, 4)
                 }
-                .modifier(ConditionalGlassButtonStyle())
-            } else {
-                // Standard button: Translation + Book only - opens book picker
-                Button {
-                    if readingMetaData == nil {
-                        showingBookPicker = true
-                    }
-                } label: {
-                    VStack {
-                        let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
-                        let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
-                        Text(translationAbbreviation).bold().font(.system(size: 14))
-                        Text((book?.name ?? "") + " \(currentChapter)").font(.caption2).foregroundStyle(Color.primary)
-                    }
-                    .padding(.horizontal, 4)
-                }
-                .disabled(readingMetaData != nil)
-                .modifier(ConditionalGlassButtonStyle())
+                .foregroundStyle(Color.primary)
+                .lineLimit(1)
+                .padding(.horizontal, isCompact ? 12 : 16)
+                .frame(height: isCompact ? 30 : 44)
+                .contentShape(Capsule())
             }
-        }
-        ToolbarItem(placement: .confirmationAction) {
-            Button {
-                showingOptionsMenu = true
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .popover(isPresented: $showingOptionsMenu) {
-                optionsMenuContent
-            }
+            .buttonStyle(.plain)
+            .disabled(!isCompact && readingMetaData != nil)
+            .modifier(HeaderGlass(shape: Capsule()))
+            .accessibilityHint(isCompact ? "Shows the toolbars" : "")
         }
     }
 
@@ -477,3 +562,32 @@ struct ReaderNavigationToolbarView: ToolbarContent {
         .cornerRadius(14)
     }
 }
+
+/// Glass for the reader header's controls, or a material where the OS has no
+/// glass.
+private struct HeaderGlass<S: Shape>: ViewModifier {
+    let shape: S
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: shape)
+        } else {
+            content.background(.regularMaterial, in: shape)
+        }
+    }
+}
+
+extension View {
+    /// Pins the reader's header to the top, as a bar the text scrolls under.
+    @ViewBuilder
+    func readerHeaderBar<Header: View>(@ViewBuilder _ header: () -> Header) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: .top, content: header)
+        } else {
+            safeAreaInset(edge: .top) {
+                header().background(.bar)
+            }
+        }
+    }
+}
+
