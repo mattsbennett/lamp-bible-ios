@@ -196,6 +196,11 @@ class ModuleSyncManager: ObservableObject {
                     // those revisions settled.
                     print("[ModuleSync] archive: untouched, not read")
                 } else if let remoteStore = storage as? LampSyncRemoteStore {
+                    if settings.skippedUnchanged {
+                        // The settings pass needed nothing, so a read here is
+                        // the preference ledger's doing and nothing else's.
+                        print("[ModuleSync] archive: read for the preference ledger")
+                    }
                     // The shared-preference ledger lives in the archive and is
                     // merged against what is there now, so a body is needed
                     // here — but the settings pass immediately above may have

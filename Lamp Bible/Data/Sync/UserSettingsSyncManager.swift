@@ -1090,15 +1090,29 @@ enum SharedPreferenceArchiveSync {
         guard let previous = LampSyncPreferenceState.cached(
             for: source, in: defaults, key: baseKey
         ) else {
+            // Nothing recorded for this server yet, so there is no telling.
+            // Expected on the first pass that gets this far, and the reason
+            // it is worth saying out loud rather than inferring from a later
+            // archive read.
+            print("[SharedPreferences] pending: nothing recorded for this source yet")
             return true
         }
         let local = projectedValues(from: UserDatabase.shared.getSettings(), base: previous)
         guard let merged = try? LampSharedPreferenceLedger.merge(
             local: local, base: previous, remote: previous
         ) else {
+            print("[SharedPreferences] pending: the recorded ledger would not merge")
             return true
         }
-        return merged != previous
+        guard merged != previous else { return false }
+        // Name the fields rather than just the verdict: a field that never
+        // settles would otherwise look exactly like a field someone edited,
+        // and only one of those is worth chasing.
+        let moved = Set(merged.fields.keys).union(previous.fields.keys)
+            .filter { merged.fields[$0]?.value != previous.fields[$0]?.value }
+            .sorted()
+        print("[SharedPreferences] pending: \(moved.joined(separator: ", "))")
+        return true
     }
 
     private static func projectedValues(
