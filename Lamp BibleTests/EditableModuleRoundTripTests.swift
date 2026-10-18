@@ -42,6 +42,10 @@ final class EditableModuleRoundTripTests: XCTestCase {
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: type)
         try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        // Otherwise a suite that published nothing, and so read nothing back,
+        // would pass by having left everything alone.
+        let published = await shelf.names()
+        XCTAssertEqual(published, ["\(moduleId!).lamp"])
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
         try await ModuleSyncManager.shared.syncModuleType(type, using: storage)
         return shelf
