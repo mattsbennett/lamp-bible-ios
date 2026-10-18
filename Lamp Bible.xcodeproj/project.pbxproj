@@ -108,6 +108,7 @@
 		C1A1000D2FE1000000000003 /* XcodeProjectSourcesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A1001A2FE1000000000003 /* XcodeProjectSourcesTests.swift */; };
 		C1A1000E2FE1000000000003 /* DevotionalAuthoredMarkdownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A1001B2FE1000000000003 /* DevotionalAuthoredMarkdownTests.swift */; };
 		C1A1000F2FE1000000000004 /* DevotionalModuleRoundTripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A1001C2FE1000000000004 /* DevotionalModuleRoundTripTests.swift */; };
+		C1A100142FE1000000000009 /* ArchiveReadCountTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100212FE1000000000009 /* ArchiveReadCountTests.swift */; };
 		C1A100132FE1000000000008 /* PortableArchiveCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100202FE1000000000008 /* PortableArchiveCacheTests.swift */; };
 		C1A100122FE1000000000007 /* DevotionalFolderTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A1001F2FE1000000000007 /* DevotionalFolderTransferTests.swift */; };
 		C1A100112FE1000000000006 /* EditableModuleRoundTripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A1001E2FE1000000000006 /* EditableModuleRoundTripTests.swift */; };
@@ -283,6 +284,7 @@
 		C1A1001A2FE1000000000003 /* XcodeProjectSourcesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XcodeProjectSourcesTests.swift; sourceTree = "<group>"; };
 		C1A1001B2FE1000000000003 /* DevotionalAuthoredMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalAuthoredMarkdownTests.swift; sourceTree = "<group>"; };
 		C1A1001C2FE1000000000004 /* DevotionalModuleRoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalModuleRoundTripTests.swift; sourceTree = "<group>"; };
+		C1A100212FE1000000000009 /* ArchiveReadCountTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveReadCountTests.swift; sourceTree = "<group>"; };
 		C1A100202FE1000000000008 /* PortableArchiveCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortableArchiveCacheTests.swift; sourceTree = "<group>"; };
 		C1A1001F2FE1000000000007 /* DevotionalFolderTransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalFolderTransferTests.swift; sourceTree = "<group>"; };
 		C1A1001E2FE1000000000006 /* EditableModuleRoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditableModuleRoundTripTests.swift; sourceTree = "<group>"; };
@@ -560,6 +562,7 @@
 				C1A1001A2FE1000000000003 /* XcodeProjectSourcesTests.swift */,
 				C1A1001B2FE1000000000003 /* DevotionalAuthoredMarkdownTests.swift */,
 				C1A1001C2FE1000000000004 /* DevotionalModuleRoundTripTests.swift */,
+				C1A100212FE1000000000009 /* ArchiveReadCountTests.swift */,
 				C1A100202FE1000000000008 /* PortableArchiveCacheTests.swift */,
 				C1A1001F2FE1000000000007 /* DevotionalFolderTransferTests.swift */,
 				C1A1001E2FE1000000000006 /* EditableModuleRoundTripTests.swift */,
@@ -872,6 +875,7 @@
 				C1A1000D2FE1000000000003 /* XcodeProjectSourcesTests.swift in Sources */,
 				C1A1000E2FE1000000000003 /* DevotionalAuthoredMarkdownTests.swift in Sources */,
 				C1A1000F2FE1000000000004 /* DevotionalModuleRoundTripTests.swift in Sources */,
+				C1A100142FE1000000000009 /* ArchiveReadCountTests.swift in Sources */,
 				C1A100132FE1000000000008 /* PortableArchiveCacheTests.swift in Sources */,
 				C1A100122FE1000000000007 /* DevotionalFolderTransferTests.swift in Sources */,
 				C1A100112FE1000000000006 /* EditableModuleRoundTripTests.swift in Sources */,
