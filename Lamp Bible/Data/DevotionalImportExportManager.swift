@@ -60,7 +60,13 @@ class DevotionalImportExportManager {
             return []
         }
         print("[DevotionalImport] Import directory: \(importDir.path)")
+        return try await processImports(in: importDir, moduleId: moduleId)
+    }
 
+    /// The work itself, against a named directory. The public entry point
+    /// resolves the iCloud Documents folder and calls this; naming the
+    /// directory is what lets the behaviour be exercised anywhere else.
+    func processImports(in importDir: URL, moduleId: String) async throws -> [ImportResult] {
         // Create import directory if needed
         if !fileManager.fileExists(atPath: importDir.path) {
             try fileManager.createDirectory(at: importDir, withIntermediateDirectories: true)
@@ -244,7 +250,12 @@ class DevotionalImportExportManager {
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
+        return try exportDevotional(devotional, moduleId: moduleId, to: exportDir)
+    }
 
+    func exportDevotional(
+        _ devotional: Devotional, moduleId: String, to exportDir: URL
+    ) throws -> URL {
         // Create export directory if needed
         if !fileManager.fileExists(atPath: exportDir.path) {
             try fileManager.createDirectory(at: exportDir, withIntermediateDirectories: true)
@@ -274,13 +285,20 @@ class DevotionalImportExportManager {
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
+        return try exportAllDevotionals(
+            try DevotionalStorage.shared.getAllDevotionals(moduleId: moduleId),
+            moduleId: moduleId,
+            to: exportDir
+        )
+    }
 
+    func exportAllDevotionals(
+        _ devotionals: [Devotional], moduleId: String, to exportDir: URL
+    ) throws -> [URL] {
         // Create export directory if needed
         if !fileManager.fileExists(atPath: exportDir.path) {
             try fileManager.createDirectory(at: exportDir, withIntermediateDirectories: true)
         }
-
-        let devotionals = try DevotionalStorage.shared.getAllDevotionals(moduleId: moduleId)
 
         if devotionals.isEmpty {
             throw ExportError.noDevotionalsFound
@@ -381,21 +399,23 @@ class DevotionalImportExportManager {
         guard let exportDir = exportDirectoryURL else {
             throw ExportError.directoryNotAvailable
         }
+        return try exportAllToSingleFile(
+            try DevotionalStorage.shared.getAllDevotionals(moduleId: moduleId),
+            to: exportDir
+        )
+    }
 
+    func exportAllToSingleFile(_ devotionals: [Devotional], to exportDir: URL) throws -> URL {
         // Create export directory if needed
         if !fileManager.fileExists(atPath: exportDir.path) {
             try fileManager.createDirectory(at: exportDir, withIntermediateDirectories: true)
         }
 
-        let devotionals = try DevotionalStorage.shared.getAllDevotionals(moduleId: moduleId)
-
         if devotionals.isEmpty {
             throw ExportError.noDevotionalsFound
         }
 
-        let entries = devotionals.map(MarkdownConverter.devotionalEntryMarkdown)
-        let markdown = "# My Devotionals\n\n---\n\n"
-            + entries.joined(separator: "\n\n---\n\n") + "\n\n---\n"
+        let markdown = Self.combinedMarkdown(for: devotionals)
         let fileName = "All_Devotionals.md"
         let fileURL = exportDir.appendingPathComponent(fileName)
 
@@ -403,6 +423,14 @@ class DevotionalImportExportManager {
         print("[DevotionalExport] Exported all devotionals to \(fileName)")
 
         return fileURL
+    }
+
+    /// One document holding every writing, separated by rules — the shape
+    /// someone reads outside the app.
+    static func combinedMarkdown(for devotionals: [Devotional]) -> String {
+        let entries = devotionals.map(MarkdownConverter.devotionalEntryMarkdown)
+        return "# My Devotionals\n\n---\n\n"
+            + entries.joined(separator: "\n\n---\n\n") + "\n\n---\n"
     }
 
     // MARK: - Helper Methods
