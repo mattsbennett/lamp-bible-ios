@@ -9,6 +9,34 @@ import Foundation
 import GRDB
 import LampModuleKit
 
+/// Name a conflict in the log without changing what is thrown.
+///
+/// Nineteen places in this file raise `conflictDetected`, and the console
+/// showed only the symbol: enough to know a poll failed, not which check
+/// failed it. The difference decides what to do about it. A token or a
+/// revision that moved under the poll means something else wrote while this
+/// was working, and the next poll carries on; a concurrent settings or
+/// reading divergence repeats until it is merged.
+private nonisolated func settingsSyncConflict(
+    _ reason: String,
+    function: StaticString = #function,
+    line: UInt = #line
+) -> SyncError {
+    print("[UserSettingsSync] conflict: \(reason) (\(function):\(line))")
+    return .conflictDetected
+}
+
+/// The same, for the two places a sync declines to start because one is
+/// already under way. Which one it was says who is colliding with whom.
+private nonisolated func settingsSyncAlreadyRunning(
+    _ reason: String,
+    function: StaticString = #function,
+    line: UInt = #line
+) -> SyncError {
+    print("[UserSettingsSync] already running: \(reason) (\(function):\(line))")
+    return .alreadyRunning
+}
+
 /// Manages user-settings sync with debounced export, periodic polling, and merge-based conflict resolution.
 @MainActor
 class UserSettingsSyncManager {
@@ -309,7 +337,7 @@ class UserSettingsSyncManager {
         storage: ModuleStorage,
         requireRemote: Bool
     ) async throws {
-        guard !syncInProgress else { throw SyncError.alreadyRunning }
+        guard !syncInProgress else { throw settingsSyncAlreadyRunning("another settings sync is still running") }
         syncInProgress = true
         defer { syncInProgress = false }
         let observed = try await readRemoteSettings(from: storage)
@@ -368,7 +396,7 @@ class UserSettingsSyncManager {
             // Older installs have no saved membership baseline. Their first
             // pending upload remains guarded by the last observed token.
             guard remoteSnapshot.token == expectedStoredToken(for: remoteSnapshot.source) else {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("the remote token moved under a guarded first upload")
             }
             if remoteSnapshot.archiveSnapshot != nil && !remoteSnapshot.isLegacy {
                 try await exportArchiveToRemote(
@@ -380,7 +408,7 @@ class UserSettingsSyncManager {
                 )
             }
             guard let refreshed = try await readRemoteSettings(from: storage) else {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("the settings were gone from the server when re-read after writing")
             }
             remoteSnapshot = refreshed
         }
@@ -465,7 +493,7 @@ class UserSettingsSyncManager {
                     from: remoteStore
                 )
             } catch LampSyncSettingsArchive.SettingsArchiveError.changedLegacyFile {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("the legacy settings file changed while the archive was being read")
             }
             guard let resolved else { return nil }
             return RemoteSettingsSnapshot(
@@ -490,7 +518,7 @@ class UserSettingsSyncManager {
                         : nil
                 )
             } catch is LampSyncStableRead.ReadError {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("the server kept changing while the settings were being read")
             }
             return RemoteSettingsSnapshot(
                 data: observed.data,
@@ -558,9 +586,9 @@ class UserSettingsSyncManager {
                 )
             }
         } catch LampSyncSettingsPlanner.MergeError.concurrentSettings {
-            throw SyncError.conflictDetected
+            throw settingsSyncConflict("settings were edited on another device at the same time")
         } catch LampSyncSettingsPlanner.MergeError.concurrentReading {
-            throw SyncError.conflictDetected
+            throw settingsSyncConflict("a reading position moved on another device at the same time")
         }
         return SettingsMergePlan(
             applyRemoteSettings: corePlan.settingsDecision == .remote,
@@ -644,9 +672,9 @@ class UserSettingsSyncManager {
                 data, replacing: legacy, in: store
             )
         } catch WebDAVError.preconditionFailed {
-            throw SyncError.conflictDetected
+            throw settingsSyncConflict("the server refused the legacy mirror: it had changed first")
         } catch LampSyncConditionalWrite.WriteError.conflict {
-            throw SyncError.conflictDetected
+            throw settingsSyncConflict("the legacy mirror's base no longer matched")
         }
     }
 
@@ -662,7 +690,7 @@ class UserSettingsSyncManager {
         let legacy: LampSyncRemoteFile?
         if let observed {
             guard let archive = observed.archiveSnapshot else {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("the observed snapshot had no archive to replace")
             }
             archiveSnapshot = archive
             legacy = observed.legacyFile
@@ -670,7 +698,7 @@ class UserSettingsSyncManager {
             archiveSnapshot = try await LampSyncSettingsArchive.read(from: store)
             legacy = try await store.read(path: userSettingsPath)
             guard archiveSnapshot.data == nil, legacy == nil else {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("a first upload found an archive or legacy file already there")
             }
         }
 
@@ -685,9 +713,9 @@ class UserSettingsSyncManager {
                 in: store
             )
         } catch WebDAVError.preconditionFailed {
-            throw SyncError.conflictDetected
+            throw settingsSyncConflict("the server refused the archive write: it had changed first")
         } catch LampSyncConditionalWrite.WriteError.conflict {
-            throw SyncError.conflictDetected
+            throw settingsSyncConflict("the archive's base no longer matched")
         }
         let token = LampSyncConditionalWrite.token(for: revision)
         storedChangeToken = token
@@ -718,7 +746,7 @@ class UserSettingsSyncManager {
     /// Compatibility upload for iCloud and an older WebDAV installation's
     /// guarded first sync before it has an archive baseline.
     func exportLegacyToRemote(storage: ModuleStorage) async throws {
-        guard !syncInProgress else { throw SyncError.alreadyRunning }
+        guard !syncInProgress else { throw settingsSyncAlreadyRunning("another settings sync is still running") }
         syncInProgress = true
         defer { syncInProgress = false }
         try await exportLegacyToRemote(
@@ -743,7 +771,7 @@ class UserSettingsSyncManager {
                     matching: expectedToken
                 )
             } catch LampSyncConditionalWrite.WriteError.conflict {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("the legacy upload's base no longer matched")
             }
         } else {
             // iCloud has no server-side compare-and-write operation. Retain
@@ -751,15 +779,15 @@ class UserSettingsSyncManager {
             // preconditions on the write itself.
             if let remoteToken = await storage.getChangeToken(path: userSettingsPath) {
                 guard remoteToken == expectedToken else {
-                    throw SyncError.conflictDetected
+                    throw settingsSyncConflict("the legacy file's change token moved under the upload")
                 }
             } else {
                 do {
                     _ = try await storage.readFile(path: userSettingsPath)
-                    throw SyncError.conflictDetected
+                    throw settingsSyncConflict("a legacy file exists where the upload expected none")
                 } catch ModuleStorageError.fileNotFound {
                     guard expectedToken == nil else {
-                        throw SyncError.conflictDetected
+                        throw settingsSyncConflict("the legacy file is gone but a token was still expected")
                     }
                 }
             }
@@ -780,9 +808,9 @@ class UserSettingsSyncManager {
                 )
                 storedChangeToken = LampSyncConditionalWrite.token(for: confirmedRevision)
             } catch WebDAVError.preconditionFailed {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("the server refused the legacy upload: it had changed first")
             } catch LampSyncConditionalWrite.WriteError.conflict {
-                throw SyncError.conflictDetected
+                throw settingsSyncConflict("the legacy upload's base no longer matched")
             }
         } else {
             if let iCloud = storage as? ICloudModuleStorage {
@@ -949,7 +977,7 @@ enum SharedPreferenceArchiveSync {
         }
         if case .revision(let expected) = expectation,
            remoteArchive?.revision != expected {
-            throw SyncError.conflictDetected
+            throw settingsSyncConflict("the archive revision moved under the shared preference write")
         }
         guard let remoteArchive else {
             return
