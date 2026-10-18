@@ -36,8 +36,12 @@ final class ArchiveReadCountTests: XCTestCase {
 
     /// An archive holding one real compiled module, so a decode has something
     /// to inflate and the count being measured means something.
-    private func makeArchive() throws -> Data {
-        let source = temporaryDirectory.appendingPathComponent("Source", isDirectory: true)
+    private func makeArchive(body: String = "Archive content.") throws -> Data {
+        // A fresh staging directory per call, so an archive can be built more
+        // than once in a test without colliding with the last one.
+        let staging = temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = staging.appendingPathComponent("Source", isDirectory: true)
         let modules = source.appendingPathComponent(
             LampPortableBackupLayout.modulesDirectory, isDirectory: true
         )
@@ -47,10 +51,10 @@ final class ArchiveReadCountTests: XCTestCase {
           "meta": {"schemaVersion":"1.0", "id":"\(moduleID!)", "type":"book",
                    "title":"Archive Book", "language":"en"},
           "sections": [{"id":"chapter-1", "type":"chapter", "title":"Chapter One",
-            "content":[{"type":"paragraph", "content":{"text":"Archive content."}}]}]
+            "content":[{"type":"paragraph", "content":{"text":"\(body)"}}]}]
         }
         """
-        let compiledURL = temporaryDirectory.appendingPathComponent("\(moduleID!).lamp")
+        let compiledURL = staging.appendingPathComponent("\(moduleID!).lamp")
         _ = try LampModuleCompiler().compile(
             data: Data(json.utf8),
             sourceFilename: "\(moduleID!).json",
@@ -111,6 +115,43 @@ final class ArchiveReadCountTests: XCTestCase {
             "a quiet pass inflated the whole library \(bodyReads) times"
         )
     }
+
+    /// The other half: an archive that did change must still be read. A sync
+    /// that skips its way to being fast and stops noticing other devices is
+    /// worse than a slow one.
+    ///
+    /// Note what this does and does not cover. The read it observes comes
+    /// from the module import, which compares revisions of its own — so this
+    /// guards the module path and nothing else. It passed unchanged when the
+    /// settings pass was made to skip unconditionally, which is how that was
+    /// found out. Guarding the settings path needs an archive carrying
+    /// settings that differ from this device's, and an assertion that they
+    /// arrive; until that exists, the settings read stays where it is.
+    func testAChangedArchiveIsStillRead() async throws {
+        let server = ArchiveServer(archive: try makeArchive())
+        let storage = CountingArchiveStorage(server: server)
+        let source = "archive-reads-\(UUID().uuidString)"
+
+        for _ in 0..<6 {
+            await server.resetCounts()
+            _ = await ModuleSyncManager.shared.syncAll(
+                using: storage, backend: .webdav, archiveSource: source
+            )
+            if await server.writeCount() == 0 { break }
+        }
+
+        // Another device publishes: same path, new bytes, new revision.
+        await server.replaceArchive(try makeArchive(body: "Someone else's edit."))
+        await server.resetCounts()
+        _ = await ModuleSyncManager.shared.syncAll(
+            using: storage, backend: .webdav, archiveSource: source
+        )
+
+        let bodyReads = await server.bodyReadCount()
+        XCTAssertGreaterThanOrEqual(
+            bodyReads, 1, "a moved archive was never read"
+        )
+    }
 }
 
 /// The archive as a server holds it: bytes, a revision that moves on write,
@@ -155,6 +196,13 @@ private actor ArchiveServer {
     }
 
     func exists(_ path: String) -> Bool { files[path] != nil }
+
+    /// Another device's publish: new bytes under a revision nobody has seen.
+    func replaceArchive(_ data: Data) {
+        issued += 1
+        files[LampSyncLayout.archivePath] = data
+        revisions[LampSyncLayout.archivePath] = "\"revision-\(issued)\""
+    }
 }
 
 private struct CountingArchiveStorage: ModuleStorage, LampSyncRemoteStore {
