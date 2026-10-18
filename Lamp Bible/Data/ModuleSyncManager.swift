@@ -486,27 +486,41 @@ class ModuleSyncManager: ObservableObject {
         // module body in memory — to install nothing. The published index
         // names each entry's digest, so when the part this import would
         // install is the part already installed, there is nothing to fetch.
-        if usableCache, let previous, let fingerprint = previous.importableFingerprint,
-           previous.revision != liveRevision,
-           let index = await LampSyncArchiveIndex.current(
-               in: remoteStore, knownRevision: liveRevision
-           ),
-           index.importableFingerprint == fingerprint {
-            print("[ModuleSync] archive: moved, nothing installable changed")
-            // Move the record forward to the revision just vouched for.
-            // Without this the next pass would ask the index the same
-            // question again instead of recognising the archive outright, and
-            // would be back to a full fetch the moment the index went away.
-            var advanced = previous
-            advanced.revision = index.archiveRevision
-            if let encoded = try? JSONEncoder().encode(advanced) {
-                defaults.set(encoded, forKey: Self.portableArchiveImportStateKey)
-            }
-            return PortableArchiveImportResult(
-                compatibilityManifest: previous.compatibilityManifest,
-                snapshot: nil,
-                revision: index.archiveRevision
+        if usableCache, let previous, previous.revision != liveRevision {
+            // The revision moved. Whether that costs the whole library
+            // depends on the index, and when it does cost, saying why is the
+            // difference between a one-off and something to chase.
+            let availability = await LampSyncArchiveIndex.availability(
+                in: remoteStore, knownRevision: liveRevision
             )
+            switch (previous.importableFingerprint, availability.index) {
+            case (nil, _):
+                // Recorded before this device ever published a fingerprint,
+                // so there is nothing to compare an index against. Expected
+                // once, on the first full import after this shipped.
+                print("[ModuleSync] archive: moved, nothing recorded to compare yet")
+            case (_, nil):
+                print("[ModuleSync] archive: moved, \(availability.reason)")
+            case (let fingerprint?, let index?)
+                where index.importableFingerprint != fingerprint:
+                print("[ModuleSync] archive: moved, the index says content changed")
+            default:
+                print("[ModuleSync] archive: moved, nothing installable changed")
+                // Move the record forward to the revision just vouched for.
+                // Without this the next pass would ask the index the same
+                // question again instead of recognising the archive outright,
+                // and would be back to a full fetch if the index went away.
+                var advanced = previous
+                advanced.revision = liveRevision
+                if let encoded = try? JSONEncoder().encode(advanced) {
+                    defaults.set(encoded, forKey: Self.portableArchiveImportStateKey)
+                }
+                return PortableArchiveImportResult(
+                    compatibilityManifest: previous.compatibilityManifest,
+                    snapshot: nil,
+                    revision: liveRevision
+                )
+            }
         }
         let observation = try await LampSyncArchiveRemote.readIfChanged(
             from: remoteStore, knownRevision: cachedRevision
