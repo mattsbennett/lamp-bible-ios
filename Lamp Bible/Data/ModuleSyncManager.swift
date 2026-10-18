@@ -296,7 +296,10 @@ class ModuleSyncManager: ObservableObject {
 
     struct PortableArchiveImportState: Codable {
         let source: String
-        let revision: String
+        /// Only kept when the server gave a revision worth trusting to mean
+        /// "unchanged". Everything else here stays useful without one: the
+        /// module digests below come from the archive's own bytes.
+        let revision: String?
         let modules: [PortableArchiveModuleState]
         let compatibilityManifest: LampCompatibilityManifest?
         var mediaBridgeVersion: Int? = nil
@@ -372,7 +375,7 @@ class ModuleSyncManager: ObservableObject {
         let cachedRevision: String?
         if bridgeReady, !missingDevotionalMedia, previous?.source == source,
            try previous?.modules.allSatisfy({ try isInstalled($0) }) == true {
-            cachedRevision = previous?.revision
+            cachedRevision = previous?.revision ?? nil
         } else {
             cachedRevision = nil
         }
@@ -493,19 +496,28 @@ class ModuleSyncManager: ObservableObject {
             prepared, stagingURL: temporaryDirectory.appendingPathComponent("staging.sqlite")
         )
 
-        if let revision = snapshot.revision, LampWebDAVStorage.isStrongETag(revision) {
-            var state = PortableArchiveImportState(
-                source: source,
-                revision: revision,
-                modules: imported,
-                compatibilityManifest: compatibilityManifest
-            )
-            state.mediaBridgeVersion = 1
-            defaults.set(
-                try JSONEncoder().encode(state),
-                forKey: Self.portableArchiveImportStateKey
-            )
+        // Record what was installed whatever the server said. A revision is
+        // only kept when it is strong enough to skip the download next time,
+        // but the module digests are read from the archive itself, so they
+        // tell us what is already installed without trusting the server at
+        // all. Gating the whole record on a strong ETag meant a server that
+        // gives none — or gives a weak one — reinstalled every module in the
+        // archive on every launch, which on a large library is more work than
+        // iOS allows an app at startup.
+        let trustedRevision = snapshot.revision.flatMap {
+            LampWebDAVStorage.isStrongETag($0) ? $0 : nil
         }
+        var state = PortableArchiveImportState(
+            source: source,
+            revision: trustedRevision,
+            modules: imported,
+            compatibilityManifest: compatibilityManifest
+        )
+        state.mediaBridgeVersion = 1
+        defaults.set(
+            try JSONEncoder().encode(state),
+            forKey: Self.portableArchiveImportStateKey
+        )
         return PortableArchiveImportResult(
             compatibilityManifest: compatibilityManifest,
             snapshot: snapshot,
