@@ -49,6 +49,9 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
     override func tearDownWithError() throws {
         try? database.deleteAllEntriesForModule(moduleId: moduleId)
         try? database.deleteModule(id: moduleId)
+        try? FileManager.default.removeItem(
+            at: DevotionalMediaStorage.shared.mediaDirectory(moduleId: moduleId)
+        )
     }
 
     // MARK: - Helpers
@@ -57,6 +60,7 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
         id: String = "entry-1",
         title: String = "Cantata Narration",
         contentJson: String,
+        media: [DevotionalMediaReference]? = nil,
         lastModified: Int = 1_788_132_249
     ) throws {
         var entry = DevotionalEntry(
@@ -74,7 +78,8 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
                     lastModified: lastModified
                 ),
                 summary: .plain("What this one is about"),
-                footnotes: [DevotionalFootnote(id: "1", content: .plain("First"))]
+                footnotes: [DevotionalFootnote(id: "1", content: .plain("First"))],
+                media: media
             ),
             moduleId: moduleId
         )
@@ -102,7 +107,7 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
     /// seen, which is what makes sync read the file rather than skip it.
     private func publishAndPullBack() async throws {
         let shelf = ModuleShelf()
-        let storage = ShelfStorage(shelf: shelf, moduleID: moduleId)
+        let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .devotional)
         try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
         let writes = await shelf.writeCount()
         XCTAssertEqual(writes, 1, "the module should have been published once")
@@ -131,7 +136,7 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
         let before = try storedEntries()
 
         let shelf = ModuleShelf()
-        let storage = ShelfStorage(shelf: shelf, moduleID: moduleId)
+        let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .devotional)
         try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
         try database.deleteAllEntriesForModule(moduleId: moduleId)
         XCTAssertEqual(try storedEntries(), [])
@@ -197,7 +202,9 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
     func testAJSONModuleWithAnAuthoredBodyStoresItAsText() async throws {
         let shelf = ModuleShelf()
         let name = "\(moduleId!).json"
-        let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, fileName: name)
+        let storage = ShelfStorage(
+            shelf: shelf, moduleID: moduleId, moduleType: .devotional, fileName: name
+        )
         let file = DevotionalModuleFile(
             id: moduleId,
             name: "Round trip",
@@ -221,6 +228,37 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(stored.toDevotional()).markdownContent, authoredBody)
     }
 
+    /// An attachment is not in the module file at all — it travels beside it,
+    /// and a writing whose image did not make the trip is a writing with a
+    /// hole in it.
+    func testAnAttachmentTravelsBesideItsWriting() async throws {
+        let reference = DevotionalMediaReference(
+            id: "A1", type: .image, filename: "A1.png", mimeType: "image/png"
+        )
+        try saveEntry(contentJson: authoredBody, media: [reference])
+        let bytes = Data((0..<2048).map { UInt8($0 % 251) })
+        try DevotionalMediaStorage.shared.ensureMediaDirectory(
+            devotionalId: "entry-1", moduleId: moduleId
+        )
+        let localURL = DevotionalMediaStorage.shared.expectedMediaURL(
+            for: reference, devotionalId: "entry-1", moduleId: moduleId
+        )
+        try bytes.write(to: localURL)
+
+        let shelf = ModuleShelf()
+        let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .devotional)
+        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+
+        // The other device has the file; this one loses it.
+        try FileManager.default.removeItem(at: localURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localURL.path))
+        await shelf.reissueRevision(for: "\(moduleId!).lamp")
+
+        try await ModuleSyncManager.shared.syncModuleType(.devotional, using: storage)
+
+        XCTAssertEqual(try Data(contentsOf: localURL), bytes)
+    }
+
     /// The module record travels with its entries; losing its name or its
     /// editability would strand the writings in a module nobody can write to.
     func testTheModuleItselfComesBackWithItsNameAndEditability() async throws {
@@ -233,109 +271,5 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
         XCTAssertEqual(module.description, "A module that goes out and comes back")
         XCTAssertTrue(module.isEditable)
         XCTAssertEqual(module.filePath, "\(moduleId!).lamp")
-    }
-}
-
-// MARK: - Storage double
-
-/// Somewhere to put a published module and read it back. Revisions behave the
-/// way a real backend's do: a new one on every write, and `reissueRevision`
-/// for the case this suite cares about — the same bytes offered under a
-/// revision this device has not recorded.
-private actor ModuleShelf {
-    private var files: [String: Data] = [:]
-    private var revisions: [String: String] = [:]
-    private var issued = 0
-    private var writes = 0
-
-    func write(_ data: Data, named name: String) {
-        writes += 1
-        files[name] = data
-        revisions[name] = nextRevision()
-    }
-
-    func reissueRevision(for name: String) {
-        guard files[name] != nil else { return }
-        revisions[name] = nextRevision()
-    }
-
-    func data(named name: String) -> Data? { files[name] }
-    func revision(named name: String) -> String? { revisions[name] }
-    func names() -> [String] { files.keys.sorted() }
-    func writeCount() -> Int { writes }
-
-    private func nextRevision() -> String {
-        issued += 1
-        return "revision-\(issued)"
-    }
-}
-
-private struct ShelfStorage: ModuleStorage {
-    let shelf: ModuleShelf
-    let moduleID: String
-    /// The one file this backend offers. Publishing writes `<id>.lamp`, so a
-    /// test serving the legacy JSON form says so rather than having the
-    /// listing pick up whatever a publish left behind.
-    var fileName: String? = nil
-
-    func isAvailable() async -> Bool { true }
-
-    func listModuleFiles(type: ModuleType) async throws -> [ModuleFileInfo] {
-        guard type == .devotional else { return [] }
-        let name = fileName ?? "\(moduleID).lamp"
-        guard await shelf.data(named: name) != nil else { return [] }
-        return [ModuleFileInfo(
-            id: moduleID,
-            type: .devotional,
-            filePath: name,
-            fileHash: await shelf.revision(named: name),
-            modificationDate: nil
-        )]
-    }
-
-    func readModuleFile(type: ModuleType, fileName: String) async throws -> Data {
-        guard let data = await shelf.data(named: fileName) else {
-            throw ModuleStorageError.fileNotFound(fileName)
-        }
-        return data
-    }
-
-    func readModuleSnapshot(
-        type: ModuleType, fileName: String
-    ) async throws -> LampSyncRemoteFile {
-        LampSyncRemoteFile(
-            data: try await readModuleFile(type: type, fileName: fileName),
-            revision: await shelf.revision(named: fileName)
-        )
-    }
-
-    func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws {
-        await shelf.write(data, named: fileName)
-    }
-
-    func deleteModuleFile(type: ModuleType, fileName: String) async throws {
-        XCTFail("A round trip must not delete the module")
-    }
-
-    func getFileHash(type: ModuleType, fileName: String) async throws -> String? {
-        await shelf.revision(named: fileName)
-    }
-
-    func getModificationDate(type: ModuleType, fileName: String) async throws -> Date? { nil }
-    func ensureDirectoryExists(type: ModuleType) async throws {}
-    func directoryURL(for type: ModuleType) -> URL? { nil }
-    func getSyncStatus(type: ModuleType, fileName: String) async -> ModuleSyncStatus {
-        .notAvailable
-    }
-
-    func readFile(path: String) async throws -> Data {
-        guard let data = await shelf.data(named: path) else {
-            throw ModuleStorageError.fileNotFound(path)
-        }
-        return data
-    }
-
-    func writeFile(path: String, data: Data) async throws {
-        await shelf.write(data, named: path)
     }
 }

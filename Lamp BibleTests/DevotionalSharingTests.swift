@@ -6,6 +6,7 @@
 //  identity rules that keep an import from overwriting existing entries.
 //
 
+import GRDB
 import XCTest
 @testable import Lamp_Bible
 
@@ -13,6 +14,7 @@ final class DevotionalSharingTests: XCTestCase {
     private var manager: DevotionalSharingManager!
     private var createdFiles: [URL] = []
     private var createdMediaDirectories: [URL] = []
+    private var createdModules: [String] = []
 
     override func setUpWithError() throws {
         manager = DevotionalSharingManager.shared
@@ -28,6 +30,11 @@ final class DevotionalSharingTests: XCTestCase {
             try? FileManager.default.removeItem(at: directory)
         }
         createdMediaDirectories = []
+        for moduleId in createdModules {
+            try? ModuleDatabase.shared.deleteAllEntriesForModule(moduleId: moduleId)
+            try? ModuleDatabase.shared.deleteModule(id: moduleId)
+        }
+        createdModules = []
     }
 
     /// Write a real attachment where the exporter will look for it, and take it
@@ -71,6 +78,30 @@ final class DevotionalSharingTests: XCTestCase {
     private func track(_ url: URL) -> URL {
         createdFiles.append(url)
         return url
+    }
+
+    /// A module of this device's own to save imports into, torn down with the
+    /// test so nothing is left in the library.
+    private func makeModule() throws -> String {
+        let moduleId = "sharing-import-\(UUID().uuidString)"
+        try ModuleDatabase.shared.saveModule(Module(
+            id: moduleId,
+            type: .devotional,
+            name: "Imports",
+            filePath: "\(moduleId).lamp",
+            isEditable: true
+        ))
+        createdModules.append(moduleId)
+        return moduleId
+    }
+
+    private func storedEntries(in moduleId: String) throws -> [DevotionalEntry] {
+        try ModuleDatabase.shared.read { db in
+            try DevotionalEntry
+                .filter(Column("module_id") == moduleId)
+                .order(Column("title"))
+                .fetchAll(db)
+        }
     }
 
     /// Write a multi-entry collection file, the shape that used to lose everything
@@ -616,6 +647,59 @@ final class DevotionalSharingTests: XCTestCase {
         XCTAssertEqual(items["title"], devotional.meta.title)
         XCTAssertEqual(items["id"], devotional.meta.id)
         XCTAssertEqual(items["date"], devotional.meta.date)
+    }
+
+    // MARK: - Saving
+
+    /// `importAndSave` is the one the app actually calls: everything above it
+    /// is preparation, and nothing covered the step that writes the writing
+    /// into a module.
+    func testImportingAndSavingPutsTheWritingInTheChosenModule() async throws {
+        let moduleId = try makeModule()
+        let exported = try track(manager.exportForSharing(makeDevotional()))
+
+        let saved = try await manager.importAndSave(exported, moduleId: moduleId)
+
+        XCTAssertEqual(saved.count, 1)
+        let stored = try storedEntries(in: moduleId)
+        XCTAssertEqual(stored.map(\.title), ["Walking by Faith"])
+        XCTAssertEqual(stored.map(\.id), saved.map(\.meta.id))
+        XCTAssertEqual(stored.first?.moduleId, moduleId)
+    }
+
+    /// A collection saves every entry, not just the one the preview showed.
+    func testImportingAndSavingACollectionWritesEveryEntry() async throws {
+        let moduleId = try makeModule()
+        let url = try writeCollection(titles: ["One", "Two", "Three"])
+
+        let saved = try await manager.importAndSave(url, moduleId: moduleId)
+
+        XCTAssertEqual(saved.count, 3)
+        XCTAssertEqual(
+            Set(try storedEntries(in: moduleId).map(\.title)), ["One", "Two", "Three"]
+        )
+    }
+
+    /// Markdown goes in by the same door, and must land the same way.
+    func testImportingAndSavingAMarkdownFileAlsoLands() async throws {
+        let moduleId = try makeModule()
+        let exported = try track(manager.exportToMarkdown(makeDevotional()))
+
+        let saved = try await manager.importAndSave(exported, moduleId: moduleId)
+
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(try storedEntries(in: moduleId).map(\.title), ["Walking by Faith"])
+    }
+
+    /// A writing saved by an import must not land on top of one already there.
+    func testSavingTheSameFileTwiceKeepsBothWritings() async throws {
+        let moduleId = try makeModule()
+        let exported = try track(manager.exportForSharing(makeDevotional()))
+
+        _ = try await manager.importAndSave(exported, moduleId: moduleId)
+        _ = try await manager.importAndSave(exported, moduleId: moduleId)
+
+        XCTAssertEqual(try storedEntries(in: moduleId).count, 2)
     }
 
     // MARK: - Staging
