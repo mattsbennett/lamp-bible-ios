@@ -178,7 +178,8 @@ class ScrollSyncCoordinator {
     }
 
     /// The verse being read: the last one to reach the reading line, just below
-    /// the top of the reader's visible text.
+    /// the top of the reader's visible text. Above the first verse — among the
+    /// chapter's titles — that is the first verse: the reader is at its start.
     func readerVerseAtReadingLine(in scrollView: UIScrollView) -> Int? {
         // Verse positions count from the top of the text, not of the scroll
         // content, so move the line into the same terms.
@@ -197,7 +198,7 @@ class ScrollSyncCoordinator {
                 high = mid - 1
             }
         }
-        return best
+        return best ?? readerVersesByPosition.first?.verseId
     }
 
     /// Where the reader's text starts in its scroll content: add it to a verse
@@ -493,11 +494,7 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         if !decelerate {
             // Scroll stopped immediately - sync tool panel now
             isUserScrolling = false
-            coordinator.scrollEnded(from: .reader)
-            coordinator.readerDidScrollToVerse(lastReportedVerseId)
-            onUserScrollEndedAtVerseId?(lastReportedVerseId)
-            onScrollFullyStopped?()
-            onVerseIdChange?(lastReportedVerseId)
+            reportScrollEnded()
         }
     }
 
@@ -541,10 +538,19 @@ class ReaderScrollSpyView: UIView, UIScrollViewDelegate {
         originalDelegate?.scrollViewDidEndDecelerating?(scrollView)
         // Deceleration finished - sync tool panel now
         isUserScrolling = false
+        reportScrollEnded()
+    }
+
+    /// Sync the tool panel and commit the verse a scroll came to rest on. A
+    /// scroll that never read a verse — one begun before the reader was ready,
+    /// or before its positions were measured — has nothing to commit: its
+    /// placeholder of 0 would put the reader on chapter 0.
+    private func reportScrollEnded() {
         coordinator.scrollEnded(from: .reader)
+        onScrollFullyStopped?()
+        guard lastReportedVerseId != 0 else { return }
         coordinator.readerDidScrollToVerse(lastReportedVerseId)
         onUserScrollEndedAtVerseId?(lastReportedVerseId)
-        onScrollFullyStopped?()
         onVerseIdChange?(lastReportedVerseId)
     }
 

@@ -5324,4 +5324,13 @@ final class ReaderReadingLineTests: XCTestCase {
         scrollView.contentOffset.y += 8
         XCTAssertEqual(coordinator.readerVerseAtReadingLine(in: scrollView), 1001003)
     }
+
+    /// At the top of a chapter the reading line is among the titles above the
+    /// first verse. Reading nothing there left a scroll that ended in them to
+    /// commit its placeholder, and the reader showed chapter 0.
+    func testTheTopOfAChapterReadsAsItsFirstVerse() {
+        scrollView.contentOffset.y = -headerHeight
+        XCTAssertGreaterThan(onScreenY(of: 1001001), headerHeight + ScrollSyncCoordinator.readingLineInset)
+        XCTAssertEqual(coordinator.readerVerseAtReadingLine(in: scrollView), 1001001)
+    }
 }
