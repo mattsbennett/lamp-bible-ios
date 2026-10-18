@@ -308,18 +308,44 @@ class UserSettingsSyncManager {
 
     /// Called with the foreground pass's selected provider so settings and
     /// modules cannot resolve different backends during one sync.
-    func performFullSync(using storage: ModuleStorage) async -> Bool {
+    /// What a settings pass leaves behind for the caller that runs next.
+    ///
+    /// The archive is handed over rather than kept: the whole of it is decoded
+    /// in memory, so holding one on this singleton between passes would keep
+    /// every module body resident for the life of the app. The caller uses it
+    /// within the pass and lets it go.
+    struct FullSyncOutcome {
+        let succeeded: Bool
+        /// The archive this pass read. Whether it is still what the server
+        /// holds is for the caller to confirm, cheaply, by revision.
+        let observedArchive: LampSyncArchiveRemote.Snapshot?
+    }
+
+    func performFullSync(using storage: ModuleStorage) async -> FullSyncOutcome {
         guard await storage.isAvailable() else {
             print("[UserSettingsSync] Storage not available")
-            return false
+            return FullSyncOutcome(succeeded: false, observedArchive: nil)
         }
+        lastObservedArchive = nil
         do {
             try await syncWithRemote(storage: storage, requireRemote: false)
-            return true
+            return FullSyncOutcome(
+                succeeded: true, observedArchive: takeLastObservedArchive()
+            )
         } catch {
             print("[UserSettingsSync] Full sync failed: \(error)")
-            return false
+            return FullSyncOutcome(
+                succeeded: false, observedArchive: takeLastObservedArchive()
+            )
         }
+    }
+
+    /// Set while a pass reads the archive, and taken by whoever asks first.
+    private var lastObservedArchive: LampSyncArchiveRemote.Snapshot?
+
+    private func takeLastObservedArchive() -> LampSyncArchiveRemote.Snapshot? {
+        defer { lastObservedArchive = nil }
+        return lastObservedArchive
     }
 
     /// Download remote data and reconcile it with the last applied state.
@@ -341,6 +367,7 @@ class UserSettingsSyncManager {
         syncInProgress = true
         defer { syncInProgress = false }
         let observed = try await readRemoteSettings(from: storage)
+        lastObservedArchive = observed?.archiveSnapshot?.archive
         let hasBase = observed.flatMap { applicableBase(for: $0, storage: storage) } != nil
         let hasStoredToken = observed.flatMap { expectedStoredToken(for: $0.source) } != nil
         let action = LampSyncSettingsBootstrap.action(

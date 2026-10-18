@@ -178,14 +178,20 @@ class ModuleSyncManager: ObservableObject {
                 )
             },
             publish: {
-                guard await UserSettingsSyncManager.shared.performFullSync(using: storage) else {
+                let settings = await UserSettingsSyncManager.shared
+                    .performFullSync(using: storage)
+                guard settings.succeeded else {
                     throw SyncError.incomplete
                 }
                 if let remoteStore = storage as? LampSyncRemoteStore {
-                    // Still read here: the shared-preference ledger lives in
-                    // the archive and has to be merged against what is there
-                    // now, so this body is used rather than merely compared.
-                    let current = try await LampSyncArchiveRemote.read(from: remoteStore)
+                    // The shared-preference ledger lives in the archive and is
+                    // merged against what is there now, so a body is needed
+                    // here — but the settings pass immediately above has just
+                    // read the same one, and reading it again costs the whole
+                    // library twice in one pass.
+                    let current = try await currentArchive(
+                        from: remoteStore, reusing: settings.observedArchive
+                    )
                     if let observedArchive {
                         guard LampSyncSettingsArchive.preservesOtherContents(
                             from: observedArchive.archive, to: current?.archive
@@ -215,6 +221,27 @@ class ModuleSyncManager: ObservableObject {
             },
             complete: complete
         )
+    }
+
+    /// The archive as it stands, without fetching it again when the pass has
+    /// already got that very one.
+    ///
+    /// Reuse turns on the revision rather than on trusting the caller: if the
+    /// server still reports the revision this copy was read at, the bytes are
+    /// the same bytes, which is the assumption the whole engine's conditional
+    /// reads and writes already rest on. A revision costs a request header;
+    /// the body costs every module in the library, inflated at once.
+    private func currentArchive(
+        from store: any LampSyncRemoteStore,
+        reusing candidate: LampSyncArchiveRemote.Snapshot?
+    ) async throws -> LampSyncArchiveRemote.Snapshot? {
+        if let candidate, let revision = candidate.revision,
+           try await store.revision(path: LampSyncLayout.archivePath) == revision {
+            print("[ModuleSync] archive: reused the settings pass's copy")
+            return candidate
+        }
+        print("[ModuleSync] archive: read for publish")
+        return try await LampSyncArchiveRemote.read(from: store)
     }
 
     /// Mirror the Mac's published decks onto this device.
