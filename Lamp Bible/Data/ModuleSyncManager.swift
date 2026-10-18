@@ -214,6 +214,7 @@ class ModuleSyncManager: ObservableObject {
                         guard LampSyncSettingsArchive.preservesOtherContents(
                             from: observedArchive.archive, to: current?.archive
                         ) else {
+                            print("[ModuleSync] archive contents moved mid-pass")
                             throw SyncError.conflictDetected
                         }
                     } else {
@@ -223,7 +224,22 @@ class ModuleSyncManager: ObservableObject {
                         // Passing nil to that comparison would not do: it
                         // reads as "there was no archive" and refuses every
                         // library that has one.
-                        guard current?.revision == observedRevision else {
+                        //
+                        // As tokens, not as written. The pull's revision came
+                        // from a PROPFIND and this one from a GET, and a
+                        // server is free to spell the same ETag differently
+                        // between them — quoted in one, bare or weak in the
+                        // other. Compared literally, every pass looked like
+                        // the archive moving underneath it and died here,
+                        // before the preference ledger was ever reached.
+                        guard LampSyncConditionalWrite.namesSameRevision(
+                            current?.revision, observedRevision
+                        ) else {
+                            print(
+                                "[ModuleSync] archive moved mid-pass: pull "
+                                + "\(observedRevision ?? "nil"), publish "
+                                + "\(current?.revision ?? "nil")"
+                            )
                             throw SyncError.conflictDetected
                         }
                     }

@@ -146,6 +146,34 @@ final class ArchiveReadCountTests: XCTestCase {
         )
     }
 
+    /// A whole pass against a server that spells the same ETag differently
+    /// between a PROPFIND and a GET still reaches the preference ledger.
+    ///
+    /// Narrower than it looks, and worth saying so: a first pass reads the
+    /// archive, so it takes the contents comparison rather than the revision
+    /// one, and this still passed when that revision comparison was broken.
+    /// The comparison itself is guarded in core by
+    /// LampSyncConditionalWrite.namesSameRevision; this covers the pass
+    /// around it.
+    func testAPassAgainstADifferentlySpellingServerReachesTheLedger() async throws {
+        let server = ArchiveServer(archive: try makeArchive(), baresPropfind: true)
+        let storage = CountingArchiveStorage(server: server)
+        // A source with no recorded preference ledger, so the publish step
+        // has a reason to look at the archive and will reach the comparison.
+        let source = "archive-reads-\(UUID().uuidString)"
+
+        _ = await ModuleSyncManager.shared.syncAll(
+            using: storage, backend: .webdav, archiveSource: source
+        )
+
+        // Reaching the ledger at all is the point: it is the step beyond the
+        // comparison that was failing.
+        XCTAssertFalse(
+            SharedPreferenceArchiveSync.hasLocalChanges(source: source),
+            "the pass never got as far as recording a preference ledger"
+        )
+    }
+
     /// The other half: an archive that did change must still be read — a sync
     /// that skips its way to being fast and stops noticing other devices is
     /// worse than a slow one — and must be read exactly once. It is a single
@@ -205,7 +233,13 @@ private actor ArchiveServer {
     /// two fetches of the same bytes.
     private var readsBeforeFirstWrite: Int?
 
-    init(archive: Data) {
+    /// Some servers spell the same ETag differently depending on how it was
+    /// asked for: quoted in a GET's header, bare in a PROPFIND's property.
+    /// Both name the same body.
+    private let baresPropfind: Bool
+
+    init(archive: Data, baresPropfind: Bool = false) {
+        self.baresPropfind = baresPropfind
         files[LampSyncLayout.archivePath] = archive
         issued += 1
         revisions[LampSyncLayout.archivePath] = "\"revision-\(issued)\""
@@ -228,7 +262,11 @@ private actor ArchiveServer {
         return LampSyncRemoteFile(data: data, revision: revisions[path])
     }
 
-    func revision(_ path: String) -> String? { revisions[path] }
+    func revision(_ path: String) -> String? {
+        guard let revision = revisions[path] else { return nil }
+        guard baresPropfind else { return revision }
+        return LampSyncConditionalWrite.token(for: revision)
+    }
 
     func write(_ data: Data, to path: String) -> String? {
         if readsBeforeFirstWrite == nil { readsBeforeFirstWrite = bodyReads }
