@@ -971,8 +971,18 @@ class ModuleSyncManager: ObservableObject {
         let cloudFiles = try await storage.listModuleFiles(type: type)
         print("Found \(cloudFiles.count) \(type.rawValue) files: \(cloudFiles.map { $0.id })")
 
-        // Get registered modules from database
-        let registeredModules = try database.getAllModules(type: type)
+        // Get registered modules from database. Translations keep their path
+        // and revision on their own row rather than in the module registry,
+        // so read them from there: looked up in the registry, every
+        // translation was new on every pass and was imported again.
+        let registeredModules: [(id: String, filePath: String, fileHash: String?)] =
+            type == .translation
+                ? try database.getAllTranslations(bundledOnly: false).map {
+                    ($0.id, $0.filePath ?? "", $0.fileHash)
+                }
+                : try database.getAllModules(type: type).map {
+                    ($0.id, $0.filePath, $0.fileHash)
+                }
         let registeredIds = Set(registeredModules.map { $0.id })
         let pendingPublicationIDs = Set(try database.pendingModulePublications(type: type))
 
