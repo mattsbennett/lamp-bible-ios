@@ -323,6 +323,112 @@ final class DevotionalSharingTests: XCTestCase {
         XCTAssertEqual(imported.content.allBlocks.count, 2)
     }
 
+    // MARK: - Markdown
+
+    /// Sharing as Markdown is the plain-text way out of the app, and the way
+    /// back in for anything written elsewhere. What the file says must be what
+    /// comes back.
+    func testAWritingSharedAsMarkdownComesBackTheSame() throws {
+        var original = makeDevotional()
+        original.content = .blocks([
+            .heading("A heading", level: 2),
+            .paragraph("The journey of faith is not always easy."),
+        ])
+        let exported = try track(manager.exportToMarkdown(original))
+        XCTAssertEqual(exported.pathExtension, "md")
+
+        let imported = try manager.importFromMarkdown(exported)
+
+        XCTAssertEqual(imported.meta.title, original.meta.title)
+        XCTAssertEqual(imported.meta.subtitle, original.meta.subtitle)
+        XCTAssertEqual(imported.meta.author, original.meta.author)
+        XCTAssertEqual(imported.meta.date, original.meta.date)
+        XCTAssertEqual(imported.meta.tags, original.meta.tags)
+        XCTAssertEqual(imported.meta.category, original.meta.category)
+        XCTAssertEqual(
+            imported.content.allBlocks.compactMap { $0.content?.text },
+            ["A heading", "The journey of faith is not always easy."]
+        )
+    }
+
+    /// Importing a shared file must never overwrite an existing writing,
+    /// whichever door it came in by.
+    func testAMarkdownImportAlsoGetsAFreshIdentity() throws {
+        let original = makeDevotional()
+        let exported = try track(manager.exportToMarkdown(original))
+
+        let imported = try manager.importFromMarkdown(exported)
+
+        XCTAssertNotEqual(imported.meta.id, original.meta.id)
+    }
+
+    // MARK: - File shape
+
+    /// A `.lamp` file is either JSON or a ZIP bundle, and only its bytes say
+    /// which: the extension is the same either way.
+    func testAFileIsRecognisedByItsBytesNotItsName() throws {
+        let json = try track(manager.exportForSharing(makeDevotional()))
+        XCTAssertEqual(manager.detectFileFormat(json), .plainJSON)
+
+        let zipLike = track(
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".lamp")
+        )
+        try Data([0x50, 0x4B, 0x03, 0x04]).write(to: zipLike)
+        XCTAssertEqual(manager.detectFileFormat(zipLike), .bundle)
+    }
+
+    /// A writing with attachments has to travel as a bundle; shared as plain
+    /// JSON its images would be left behind.
+    func testAWritingWithMediaIsSharedAsABundle() throws {
+        var devotional = makeDevotional()
+        devotional.media = [
+            DevotionalMediaReference(
+                id: "32D89C7E", type: .image,
+                filename: "32D89C7E.png", mimeType: "image/png"
+            )
+        ]
+
+        let exported = try track(manager.exportForSharing(devotional, moduleId: "devotionals"))
+
+        XCTAssertEqual(manager.detectFileFormat(exported), .bundle)
+    }
+
+    /// Titles are written by people, and people use colons and slashes. The
+    /// export names the file after the title, so those have to come out.
+    func testATitleWithPathCharactersStillProducesOneFile() throws {
+        let awkward = "Psalm 23: The Lord/My Shepherd?"
+        let exported = try track(
+            manager.exportForSharing(makeDevotional(title: awkward))
+        )
+
+        let name = exported.lastPathComponent
+        XCTAssertFalse(name.contains("/"))
+        XCTAssertFalse(name.contains(":"))
+        XCTAssertEqual(exported.pathExtension, "lamp")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exported.path))
+        // The title itself is untouched; only the filename is cleaned up.
+        XCTAssertEqual(try XCTUnwrap(manager.importFromFile(exported).first).meta.title, awkward)
+    }
+
+    // MARK: - Deep links
+
+    func testADeepLinkCarriesTheTitleAndIdentity() throws {
+        let devotional = makeDevotional()
+
+        let url = try XCTUnwrap(manager.generateDeepLink(devotional))
+
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.scheme, "lampbible")
+        XCTAssertEqual(components.host, "devotional")
+        let items = Dictionary(
+            uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) }
+        )
+        XCTAssertEqual(items["title"], devotional.meta.title)
+        XCTAssertEqual(items["id"], devotional.meta.id)
+        XCTAssertEqual(items["date"], devotional.meta.date)
+    }
+
     // MARK: - Staging
 
     /// Staging exists so an import can outlive the security-scoped access of the
