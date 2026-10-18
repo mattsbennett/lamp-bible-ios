@@ -178,8 +178,11 @@ class ModuleSyncManager: ObservableObject {
                 )
             },
             publish: {
+                // The pull may already have fetched the archive to import
+                // modules from it. If so the settings entry came with it, and
+                // the settings pass has no reason to fetch the library again.
                 let settings = await UserSettingsSyncManager.shared
-                    .performFullSync(using: storage)
+                    .performFullSync(using: storage, reusing: observedArchive)
                 guard settings.succeeded else {
                     throw SyncError.incomplete
                 }

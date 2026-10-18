@@ -324,7 +324,10 @@ class UserSettingsSyncManager {
         let skippedUnchanged: Bool
     }
 
-    func performFullSync(using storage: ModuleStorage) async -> FullSyncOutcome {
+    func performFullSync(
+        using storage: ModuleStorage,
+        reusing candidate: LampSyncArchiveRemote.Snapshot? = nil
+    ) async -> FullSyncOutcome {
         guard await storage.isAvailable() else {
             print("[UserSettingsSync] Storage not available")
             return FullSyncOutcome(
@@ -343,7 +346,9 @@ class UserSettingsSyncManager {
         }
         lastObservedArchive = nil
         do {
-            try await syncWithRemote(storage: storage, requireRemote: false)
+            try await syncWithRemote(
+                storage: storage, requireRemote: false, reusing: candidate
+            )
             return FullSyncOutcome(
                 succeeded: true, observedArchive: takeLastObservedArchive(),
                 skippedUnchanged: false
@@ -378,12 +383,13 @@ class UserSettingsSyncManager {
 
     private func syncWithRemote(
         storage: ModuleStorage,
-        requireRemote: Bool
+        requireRemote: Bool,
+        reusing candidate: LampSyncArchiveRemote.Snapshot? = nil
     ) async throws {
         guard !syncInProgress else { throw settingsSyncAlreadyRunning("another settings sync is still running") }
         syncInProgress = true
         defer { syncInProgress = false }
-        let observed = try await readRemoteSettings(from: storage)
+        let observed = try await readRemoteSettings(from: storage, reusing: candidate)
         lastObservedArchive = observed?.archiveSnapshot?.archive
         let hasBase = observed.flatMap { applicableBase(for: $0, storage: storage) } != nil
         let hasStoredToken = observed.flatMap { expectedStoredToken(for: $0.source) } != nil
@@ -540,12 +546,15 @@ class UserSettingsSyncManager {
         return legacyBase
     }
 
-    func readRemoteSettings(from storage: ModuleStorage) async throws -> RemoteSettingsSnapshot? {
+    func readRemoteSettings(
+        from storage: ModuleStorage,
+        reusing candidate: LampSyncArchiveRemote.Snapshot? = nil
+    ) async throws -> RemoteSettingsSnapshot? {
         if let remoteStore = storage as? any LampSyncRemoteStore {
             let resolved: LampSyncSettingsArchive.ResolvedRemoteSnapshot?
             do {
                 resolved = try await LampSyncSettingsArchive.readWithLegacy(
-                    from: remoteStore
+                    from: remoteStore, reusing: candidate
                 )
             } catch LampSyncSettingsArchive.SettingsArchiveError.changedLegacyFile {
                 throw settingsSyncConflict("the legacy settings file changed while the archive was being read")

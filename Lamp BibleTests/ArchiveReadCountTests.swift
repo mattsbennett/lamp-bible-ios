@@ -146,9 +146,12 @@ final class ArchiveReadCountTests: XCTestCase {
         )
     }
 
-    /// The other half: an archive that did change must still be read. A sync
+    /// The other half: an archive that did change must still be read — a sync
     /// that skips its way to being fast and stops noticing other devices is
-    /// worse than a slow one.
+    /// worse than a slow one — and must be read exactly once. It is a single
+    /// object holding every module body, so the module import, the settings
+    /// entry and the preference ledger all want the same megabytes, and each
+    /// one that fetches them separately pays for the whole library again.
     ///
     /// Note what this does and does not cover. The read it observes comes
     /// from the module import, which compares revisions of its own — so this
@@ -177,9 +180,14 @@ final class ArchiveReadCountTests: XCTestCase {
             using: storage, backend: .webdav, archiveSource: source
         )
 
-        let bodyReads = await server.bodyReadCount()
-        XCTAssertGreaterThanOrEqual(
-            bodyReads, 1, "a moved archive was never read"
+        // Counted up to the first write: everything that wants to look inside
+        // the archive before this device changes anything — the module
+        // import, the settings entry, the preference ledger — must share one
+        // fetch. A read after our own write is the archive having moved.
+        let beforeWriting = await server.readsBeforeWriting()
+        XCTAssertEqual(
+            beforeWriting, 1,
+            "one pass fetched the library \(beforeWriting) times before writing"
         )
     }
 }
@@ -192,6 +200,10 @@ private actor ArchiveServer {
     private var issued = 0
     private var bodyReads = 0
     private var writes = 0
+    /// Reads taken before this pass wrote anything. A read after our own
+    /// write is the archive having genuinely moved; before it, two reads are
+    /// two fetches of the same bytes.
+    private var readsBeforeFirstWrite: Int?
 
     init(archive: Data) {
         files[LampSyncLayout.archivePath] = archive
@@ -202,10 +214,12 @@ private actor ArchiveServer {
     func resetCounts() {
         bodyReads = 0
         writes = 0
+        readsBeforeFirstWrite = nil
     }
 
     func bodyReadCount() -> Int { bodyReads }
     func writeCount() -> Int { writes }
+    func readsBeforeWriting() -> Int { readsBeforeFirstWrite ?? bodyReads }
 
     func read(_ path: String) -> LampSyncRemoteFile? {
         guard let data = files[path] else { return nil }
@@ -217,6 +231,7 @@ private actor ArchiveServer {
     func revision(_ path: String) -> String? { revisions[path] }
 
     func write(_ data: Data, to path: String) -> String? {
+        if readsBeforeFirstWrite == nil { readsBeforeFirstWrite = bodyReads }
         writes += 1
         issued += 1
         files[path] = data
