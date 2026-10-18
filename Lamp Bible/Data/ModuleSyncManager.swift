@@ -365,11 +365,16 @@ class ModuleSyncManager: ObservableObject {
     }
 
     struct PortableArchiveImportState: Codable {
+        /// One value standing for every archive entry this import installs,
+        /// as it was when it ran. Compared against the published index, it
+        /// answers "has anything I would install changed?" without fetching
+        /// the library. Absent in records written before the index existed.
+        var importableFingerprint: String? = nil
         let source: String
         /// Only kept when the server gave a revision worth trusting to mean
         /// "unchanged". Everything else here stays useful without one: the
         /// module digests below come from the archive's own bytes.
-        let revision: String?
+        var revision: String?
         let modules: [PortableArchiveModuleState]
         let compatibilityManifest: LampCompatibilityManifest?
         var mediaBridgeVersion: Int? = nil
@@ -442,12 +447,44 @@ class ModuleSyncManager: ObservableObject {
                 try devotionalMediaItems(moduleId: module.id, forExport: false)
                     .contains { !FileManager.default.fileExists(atPath: $0.localURL.path) }
             } ?? false
-        let cachedRevision: String?
-        if bridgeReady, !missingDevotionalMedia, previous?.source == source,
-           try previous?.modules.allSatisfy({ try isInstalled($0) }) == true {
-            cachedRevision = previous?.revision ?? nil
-        } else {
-            cachedRevision = nil
+        // Everything recorded last time is still true of this device: the
+        // media bridge has run, no attachment has gone missing, the record
+        // belongs to this server, and every module it lists is still
+        // installed. Only then is any of it worth believing.
+        let everyModuleInstalled = try previous?.modules
+            .allSatisfy { try isInstalled($0) } == true
+        let usableCache = bridgeReady && !missingDevotionalMedia
+            && previous?.source == source && everyModuleInstalled
+        let cachedRevision: String? = usableCache ? (previous?.revision ?? nil) : nil
+        // Ask once what the server holds, then decide what that costs.
+        let liveRevision = try? await remoteStore.revision(path: LampSyncLayout.archivePath)
+        // A settings edit on another device moves the archive's revision
+        // without touching a single module. Taken at face value that costs
+        // this device the whole library — downloaded and inflated, every
+        // module body in memory — to install nothing. The published index
+        // names each entry's digest, so when the part this import would
+        // install is the part already installed, there is nothing to fetch.
+        if usableCache, let previous, let fingerprint = previous.importableFingerprint,
+           previous.revision != liveRevision,
+           let index = await LampSyncArchiveIndex.current(
+               in: remoteStore, knownRevision: liveRevision
+           ),
+           index.importableFingerprint == fingerprint {
+            print("[ModuleSync] archive: moved, nothing installable changed")
+            // Move the record forward to the revision just vouched for.
+            // Without this the next pass would ask the index the same
+            // question again instead of recognising the archive outright, and
+            // would be back to a full fetch the moment the index went away.
+            var advanced = previous
+            advanced.revision = index.archiveRevision
+            if let encoded = try? JSONEncoder().encode(advanced) {
+                defaults.set(encoded, forKey: Self.portableArchiveImportStateKey)
+            }
+            return PortableArchiveImportResult(
+                compatibilityManifest: previous.compatibilityManifest,
+                snapshot: nil,
+                revision: index.archiveRevision
+            )
         }
         let observation = try await LampSyncArchiveRemote.readIfChanged(
             from: remoteStore, knownRevision: cachedRevision
@@ -597,6 +634,14 @@ class ModuleSyncManager: ObservableObject {
             compatibilityManifest: compatibilityManifest
         )
         state.mediaBridgeVersion = 1
+        // Taken from the archive in hand rather than from the published
+        // index, so it describes what was actually installed even if the
+        // index is missing or was written by an older client.
+        if let revision = snapshot.revision {
+            state.importableFingerprint = LampSyncArchiveIndex(
+                describing: snapshot.archive, at: revision
+            ).importableFingerprint
+        }
         defaults.set(
             try JSONEncoder().encode(state),
             forKey: Self.portableArchiveImportStateKey

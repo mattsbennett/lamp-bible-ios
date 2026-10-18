@@ -41,8 +41,26 @@ final class PortableArchiveCacheTests: XCTestCase {
 
     /// One compiled book module in a portable archive, the smallest thing a
     /// launch sync can be asked to import.
-    private func makeArchive(body: String = "Archive content.") throws -> Data {
-        let source = temporaryDirectory.appendingPathComponent("Source", isDirectory: true)
+    private func makeArchive(
+        body: String = "Archive content.",
+        settings: String? = nil
+    ) throws -> Data {
+        try makeArchiveValue(body: body, settings: settings).compressedData()
+    }
+
+    /// The archive itself, so a test can derive a variant from these exact
+    /// bytes. Compiling the module twice does not produce identical bytes, so
+    /// "the same library with one entry changed" has to be built by changing
+    /// one entry, not by building a second library.
+    private func makeArchiveValue(
+        body: String = "Archive content.",
+        settings: String? = nil
+    ) throws -> LampSyncArchive {
+        // A fresh staging directory per call, so a test can build more than
+        // one archive without the second colliding with the first.
+        let staging = temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = staging.appendingPathComponent("Source", isDirectory: true)
         let modules = source.appendingPathComponent(
             LampPortableBackupLayout.modulesDirectory, isDirectory: true
         )
@@ -55,7 +73,7 @@ final class PortableArchiveCacheTests: XCTestCase {
             "content":[{"type":"paragraph", "content":{"text":"\(body)"}}]}]
         }
         """
-        let compiledURL = temporaryDirectory.appendingPathComponent("\(moduleID!).lamp")
+        let compiledURL = staging.appendingPathComponent("\(moduleID!).lamp")
         _ = try LampModuleCompiler().compile(
             data: Data(json.utf8),
             sourceFilename: "\(moduleID!).json",
@@ -78,7 +96,17 @@ final class PortableArchiveCacheTests: XCTestCase {
         try encoder.encode(manifest).write(
             to: source.appendingPathComponent(LampPortableBackupLayout.manifestPath)
         )
-        return try LampSyncArchive.create(from: source).compressedData()
+        var archive = try LampSyncArchive.create(from: source)
+        if let settings {
+            // Stands in for the settings entry a real archive carries: not
+            // content, and not something a module import installs.
+            archive = try archive.replacingEntry(
+                at: LampSyncLayout.userSettingsPath,
+                with: Data(settings.utf8),
+                modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+        }
+        return archive
     }
 
     private func storedState() throws -> ModuleSyncManager.PortableArchiveImportState? {
@@ -155,6 +183,52 @@ final class PortableArchiveCacheTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(try storedState()).revision, "\"archive-revision\"")
     }
 
+    /// The structural win: a settings edit on another device moves the
+    /// archive's revision without touching a module. The published index says
+    /// so, entry by entry, and the import believes it rather than downloading
+    /// and inflating the whole library to install nothing.
+    func testASettingsOnlyChangeCostsNoLibraryFetch() async throws {
+        let original = try makeArchiveValue(settings: "these settings")
+        let remote = CountingArchiveStore(
+            data: try original.compressedData(), revision: "\"revision-1\""
+        )
+        _ = try await ModuleSyncManager.shared.importPortableArchiveModules(
+            from: remote, source: suiteName, defaults: defaults
+        )
+        let afterFirstImport = await remote.readCount()
+
+        // Another device edits settings: the very same module bytes, one
+        // different entry, a new revision, and an index saying as much.
+        let settingsOnly = try original.replacingEntry(
+            at: LampSyncLayout.userSettingsPath,
+            with: Data("someone else's settings".utf8),
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_001)
+        )
+        await remote.replace(
+            data: try settingsOnly.compressedData(), revision: "\"revision-2\""
+        )
+        await remote.permitWrites()
+        try await LampSyncArchiveIndex.publish(
+            describing: settingsOnly, at: "\"revision-2\"", in: remote
+        )
+
+        _ = try await ModuleSyncManager.shared.importPortableArchiveModules(
+            from: remote, source: suiteName, defaults: defaults
+        )
+
+        let reads = await remote.readCount()
+        XCTAssertEqual(
+            reads, afterFirstImport,
+            "a settings-only change fetched the library \(reads - afterFirstImport) times"
+        )
+        // And it recorded where the server has got to, so the pass after this
+        // recognises the archive outright instead of asking the index again.
+        XCTAssertEqual(try XCTUnwrap(try storedState()).revision, "\"revision-2\"")
+        XCTAssertEqual(
+            try ModuleDatabase.shared.getBookModule(id: moduleID)?.title, "Archive Book"
+        )
+    }
+
     /// A different archive is still imported: recognising what is installed
     /// must not mean ignoring what changed.
     func testAChangedArchiveIsStillImported() async throws {
@@ -166,11 +240,6 @@ final class PortableArchiveCacheTests: XCTestCase {
         )
         let firstDigest = try XCTUnwrap(try storedState()).modules.first?.digest
 
-        // The same module, genuinely rewritten.
-        try FileManager.default.removeItem(at: temporaryDirectory)
-        try FileManager.default.createDirectory(
-            at: temporaryDirectory, withIntermediateDirectories: true
-        )
         await remote.replace(data: try makeArchive(body: "Revised archive content."))
 
         _ = try await ModuleSyncManager.shared.importPortableArchiveModules(
@@ -185,8 +254,10 @@ final class PortableArchiveCacheTests: XCTestCase {
 /// An archive on a server that counts how often it is actually fetched.
 private actor CountingArchiveStore: LampSyncRemoteStore {
     private var data: Data
-    private let revisionValue: String
+    private var revisionValue: String
     private var reads = 0
+    private var sidecars: [String: Data] = [:]
+    private var allowsWrites = false
 
     init(data: Data, revision: String) {
         self.data = data
@@ -196,10 +267,26 @@ private actor CountingArchiveStore: LampSyncRemoteStore {
     func readCount() -> Int { reads }
     func replace(data: Data) { self.data = data }
 
+    /// Another device publishes: new bytes under a revision nobody has seen.
+    func replace(data: Data, revision: String) {
+        self.data = data
+        self.revisionValue = revision
+    }
+
+    func permitWrites() { allowsWrites = true }
+
     func list(directory: String) async throws -> [LampSyncRemoteEntry]? { [] }
-    func revision(path: String) async throws -> String? { revisionValue }
+
+    func revision(path: String) async throws -> String? {
+        path == LampSyncLayout.archivePath ? revisionValue : "\"\(path)\""
+    }
 
     func read(path: String) async throws -> LampSyncRemoteFile? {
+        if path != LampSyncLayout.archivePath {
+            guard let sidecar = sidecars[path] else { return nil }
+            return LampSyncRemoteFile(data: sidecar, revision: "\"\(path)\"")
+        }
+        // Only the archive is the whole library; only it is worth counting.
         reads += 1
         return LampSyncRemoteFile(data: data, revision: revisionValue)
     }
@@ -209,7 +296,11 @@ private actor CountingArchiveStore: LampSyncRemoteStore {
         to path: String,
         condition: LampSyncWriteCondition
     ) async throws -> String? {
-        XCTFail("Importing an archive must not write to the server")
-        return nil
+        guard allowsWrites, path != LampSyncLayout.archivePath else {
+            XCTFail("Importing an archive must not write to the server")
+            return nil
+        }
+        sidecars[path] = data
+        return "\"\(path)\""
     }
 }
