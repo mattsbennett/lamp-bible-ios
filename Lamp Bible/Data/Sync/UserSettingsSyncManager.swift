@@ -593,7 +593,8 @@ class UserSettingsSyncManager {
                     ),
                     remoteSettings: comparableSettings(remoteSettings),
                     remoteRevision: remoteSettings.updatedAt,
-                    remoteReadings: remoteRows
+                    remoteReadings: remoteRows,
+                    revision: \.completedAt
                 )
             }
         } catch LampSyncSettingsPlanner.MergeError.concurrentSettings {

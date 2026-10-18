@@ -3012,7 +3012,7 @@ final class Lamp_BibleTests: XCTestCase {
     }
 
     @MainActor
-    func testSettingsPlanWithoutBaseRejectsUnexplainedReadingChanges() throws {
+    func testSettingsPlanWithoutBaseKeepsRowsFromBothSides() throws {
         var localSettings = UserSettings()
         localSettings.updatedAt = Date(timeIntervalSince1970: 200)
         localSettings.planWpm = 240
@@ -3020,18 +3020,21 @@ final class Lamp_BibleTests: XCTestCase {
         remoteSettings.updatedAt = Date(timeIntervalSince1970: 100)
         let remoteReading = CompletedReading(id: "remote-reading")
 
-        do {
-            _ = try UserSettingsSyncManager.shared.planSettingsMerge(
-                localSettings: localSettings,
-                localReadings: [CompletedReading(id: "local-reading")],
-                remoteSettings: remoteSettings,
-                remoteReadings: [remoteReading],
-                base: nil
-            )
-            XCTFail("Without a baseline, neither side can identify the deletion")
-        } catch SyncError.conflictDetected {
-            // A different reading set needs an explicit resolution.
-        }
+        // Without a baseline a row only one side holds is either an addition
+        // here or a deletion there. Refusing the merge settled neither, and
+        // left the device unable to record the baseline that would tell them
+        // apart, so both rows are kept and the deletion is the thing given up.
+        let bootstrapped = try UserSettingsSyncManager.shared.planSettingsMerge(
+            localSettings: localSettings,
+            localReadings: [CompletedReading(id: "local-reading")],
+            remoteSettings: remoteSettings,
+            remoteReadings: [remoteReading],
+            base: nil
+        )
+        XCTAssertEqual(
+            Set(bootstrapped.readings.map(\.id)), ["local-reading", "remote-reading"]
+        )
+        XCTAssertTrue(bootstrapped.needsPublish)
 
         let plan = try UserSettingsSyncManager.shared.planSettingsMerge(
             localSettings: localSettings,
