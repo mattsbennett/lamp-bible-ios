@@ -392,12 +392,23 @@ class UserSettingsSyncManager {
             return
         }
 
-        if action == .guardedFirstUpload {
-            // Older installs have no saved membership baseline. Their first
-            // pending upload remains guarded by the last observed token.
-            guard remoteSnapshot.token == expectedStoredToken(for: remoteSnapshot.source) else {
-                throw settingsSyncConflict("the remote token moved under a guarded first upload")
-            }
+        // Older installs have no saved membership baseline. Their first
+        // pending upload is guarded by the last observed token: send it only
+        // while the server still holds what this device last saw.
+        //
+        // When it does not, the upload is skipped and the merge below runs
+        // instead. Refusing the whole sync here settled nothing: the inputs
+        // were unchanged by the refusal, so the next poll took the same
+        // branch and failed the same way, every thirty seconds, for good. A
+        // device in that state could never upload its settings nor earn the
+        // base that would get it out. It is also not a rare corner — on an
+        // archive source with no base recorded for it, expectedStoredToken is
+        // nil, so the comparison can never hold, and any write to the shared
+        // archive moves the token besides. The merge is what the guard was
+        // protecting anyway: with no base it reconciles through
+        // planWithoutBase rather than overwriting what it has not seen.
+        if action == .guardedFirstUpload,
+           remoteSnapshot.token == expectedStoredToken(for: remoteSnapshot.source) {
             if remoteSnapshot.archiveSnapshot != nil && !remoteSnapshot.isLegacy {
                 try await exportArchiveToRemote(
                     storage: storage, replacing: remoteSnapshot
