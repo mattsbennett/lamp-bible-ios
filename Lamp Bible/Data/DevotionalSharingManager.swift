@@ -268,12 +268,13 @@ class DevotionalSharingManager {
         try extractZipArchive(from: fileURL, to: tempDir)
 
         // Read devotional.json
-        let devotionalURL = tempDir.appendingPathComponent("devotional.json")
+        let root = bundleRoot(in: tempDir)
+        let devotionalURL = root.appendingPathComponent("devotional.json")
         let data = try Data(contentsOf: devotionalURL)
         let shareData = try JSONDecoder().decode(DevotionalShareData.self, from: data)
 
         // Count media files
-        let mediaDir = tempDir.appendingPathComponent("media")
+        let mediaDir = root.appendingPathComponent("media")
         var mediaCount = 0
         if fileManager.fileExists(atPath: mediaDir.path),
            let contents = try? fileManager.contentsOfDirectory(atPath: mediaDir.path) {
@@ -368,14 +369,15 @@ class DevotionalSharingManager {
         try extractZipArchive(from: fileURL, to: tempDir)
 
         // Read devotional.json
-        let devotionalURL = tempDir.appendingPathComponent("devotional.json")
+        let root = bundleRoot(in: tempDir)
+        let devotionalURL = root.appendingPathComponent("devotional.json")
         let data = try Data(contentsOf: devotionalURL)
         let shareData = try JSONDecoder().decode(DevotionalShareData.self, from: data)
         let devotional = imported(shareData.devotional)
         let newId = devotional.meta.id
 
         // Import media files
-        let sourceMediaDir = tempDir.appendingPathComponent("media")
+        let sourceMediaDir = root.appendingPathComponent("media")
         if fileManager.fileExists(atPath: sourceMediaDir.path), let media = devotional.media {
             try DevotionalMediaStorage.shared.ensureMediaDirectory(devotionalId: newId, moduleId: moduleId)
             let destMediaDir = DevotionalMediaStorage.shared.mediaDirectory(devotionalId: newId, moduleId: moduleId)
@@ -528,139 +530,259 @@ class DevotionalSharingManager {
         return top
     }
 
+    /// Where a bundle's contents actually are once extracted. This app writes
+    /// them at the root; an archive made by zipping a folder nests everything
+    /// one level down, and those were shared before this app could read them
+    /// back at all.
+    private func bundleRoot(in directory: URL) -> URL {
+        let manifest = "devotional.json"
+        if fileManager.fileExists(
+            atPath: directory.appendingPathComponent(manifest).path
+        ) {
+            return directory
+        }
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        )) ?? []
+        return contents.first {
+            fileManager.fileExists(atPath: $0.appendingPathComponent(manifest).path)
+        } ?? directory
+    }
+
     // MARK: - ZIP Archive Helpers
 
-    /// Create a ZIP archive from a directory using Process and the zip command
+    /// Write a ZIP holding every file under `sourceDir`, named relative to it.
+    ///
+    /// Written by hand rather than handed to `NSFileCoordinator(.forUploading)`,
+    /// which produces an archive this app cannot read back: it names entries
+    /// after the directory it was given, and leaves their sizes at zero in the
+    /// header to put them in a descriptor after the data. A writing shared with
+    /// an image came back as "the file format is not recognized" because of it.
+    ///
+    /// Entries are stored rather than deflated. A bundle is a little JSON
+    /// beside media that is already compressed, so there is nothing to gain.
     private func createZipArchive(from sourceDir: URL, to destinationURL: URL) throws {
-        // Use NSFileCoordinator-based approach for creating ZIP
-        let coordinator = NSFileCoordinator()
-        var error: NSError?
+        var archive = Data()
+        var centralDirectory = Data()
+        var entryCount: UInt16 = 0
 
-        coordinator.coordinate(readingItemAt: sourceDir, options: [.forUploading], error: &error) { zipURL in
-            do {
-                // The system creates a temporary ZIP at zipURL, copy it to destination
-                if fileManager.fileExists(atPath: destinationURL.path) {
-                    try fileManager.removeItem(at: destinationURL)
-                }
-                try fileManager.copyItem(at: zipURL, to: destinationURL)
-            } catch {
-                print("[DevotionalSharingManager] Failed to create ZIP: \(error)")
+        for path in try archivablePaths(in: sourceDir) {
+            let data = try Data(contentsOf: sourceDir.appendingPathComponent(path))
+            let name = Array(path.utf8)
+            let crc = CRC32.checksum(data)
+            let size = UInt32(data.count)
+            let localHeaderOffset = UInt32(archive.count)
+
+            archive.appendLittleEndian(UInt32(0x0403_4B50))
+            archive.appendLittleEndian(UInt16(20))  // version needed
+            archive.appendLittleEndian(UInt16(0))   // flags
+            archive.appendLittleEndian(UInt16(0))   // stored
+            archive.appendLittleEndian(UInt16(0))   // modification time
+            archive.appendLittleEndian(UInt16(0))   // modification date
+            archive.appendLittleEndian(crc)
+            archive.appendLittleEndian(size)
+            archive.appendLittleEndian(size)
+            archive.appendLittleEndian(UInt16(name.count))
+            archive.appendLittleEndian(UInt16(0))   // extra field
+            archive.append(contentsOf: name)
+            archive.append(data)
+
+            centralDirectory.appendLittleEndian(UInt32(0x0201_4B50))
+            centralDirectory.appendLittleEndian(UInt16(20))  // version made by
+            centralDirectory.appendLittleEndian(UInt16(20))  // version needed
+            centralDirectory.appendLittleEndian(UInt16(0))   // flags
+            centralDirectory.appendLittleEndian(UInt16(0))   // stored
+            centralDirectory.appendLittleEndian(UInt16(0))   // modification time
+            centralDirectory.appendLittleEndian(UInt16(0))   // modification date
+            centralDirectory.appendLittleEndian(crc)
+            centralDirectory.appendLittleEndian(size)
+            centralDirectory.appendLittleEndian(size)
+            centralDirectory.appendLittleEndian(UInt16(name.count))
+            centralDirectory.appendLittleEndian(UInt16(0))   // extra field
+            centralDirectory.appendLittleEndian(UInt16(0))   // comment
+            centralDirectory.appendLittleEndian(UInt16(0))   // disk number
+            centralDirectory.appendLittleEndian(UInt16(0))   // internal attributes
+            centralDirectory.appendLittleEndian(UInt32(0))   // external attributes
+            centralDirectory.appendLittleEndian(localHeaderOffset)
+            centralDirectory.append(contentsOf: name)
+
+            entryCount += 1
+        }
+
+        let centralDirectoryOffset = UInt32(archive.count)
+        archive.append(centralDirectory)
+        archive.appendLittleEndian(UInt32(0x0605_4B50))
+        archive.appendLittleEndian(UInt16(0))  // this disk
+        archive.appendLittleEndian(UInt16(0))  // disk holding the central directory
+        archive.appendLittleEndian(entryCount)
+        archive.appendLittleEndian(entryCount)
+        archive.appendLittleEndian(UInt32(centralDirectory.count))
+        archive.appendLittleEndian(centralDirectoryOffset)
+        archive.appendLittleEndian(UInt16(0))  // comment
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try archive.write(to: destinationURL)
+    }
+
+    /// Every file under `sourceDir`, as paths relative to it, in a fixed order
+    /// so the same bundle produces the same bytes twice.
+    private func archivablePaths(in sourceDir: URL) throws -> [String] {
+        let base = sourceDir.standardizedFileURL.pathComponents
+        guard let walker = fileManager.enumerator(
+            at: sourceDir, includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return [] }
+        var paths: [String] = []
+        for case let url as URL in walker {
+            guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
+            else { continue }
+            let parts = url.standardizedFileURL.pathComponents
+            guard parts.count > base.count, Array(parts.prefix(base.count)) == base else {
+                continue
             }
+            paths.append(parts.dropFirst(base.count).joined(separator: "/"))
         }
-
-        if let error = error {
-            throw error
-        }
+        return paths.sorted()
     }
 
     /// Extract a ZIP archive to a directory
     private func extractZipArchive(from zipURL: URL, to destinationDir: URL) throws {
-        // Use NSFileCoordinator for unzipping
-        let coordinator = NSFileCoordinator()
-        var coordinatorError: NSError?
-
-        // First, copy to a .zip extension file (required for NSFileCoordinator to recognize it)
-        let tempZipURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".zip")
-        try fileManager.copyItem(at: zipURL, to: tempZipURL)
-
-        defer {
-            try? fileManager.removeItem(at: tempZipURL)
-        }
-
-        coordinator.coordinate(readingItemAt: tempZipURL, options: [.forUploading], error: &coordinatorError) { _ in
-            // This doesn't actually help us extract - we need a different approach
-        }
-
-        // Use a manual approach: read the ZIP file and extract using Foundation
-        // For iOS 16+, we can use the built-in Archive handling
-        if #available(iOS 16.0, *) {
-            try extractUsingFileManager(from: tempZipURL, to: destinationDir)
-        } else {
-            // Fallback for older iOS - use a simpler approach
-            try extractUsingFileManager(from: tempZipURL, to: destinationDir)
-        }
+        try extractZipData(try Data(contentsOf: zipURL), to: destinationDir)
     }
 
-    /// Extract ZIP using FileManager's built-in capabilities (requires copying from iCloud or similar)
-    private func extractUsingFileManager(from zipURL: URL, to destinationDir: URL) throws {
-        // Unfortunately, iOS doesn't have a built-in ZIP extraction API in Foundation
-        // We'll use a minimal ZIP extraction implementation
-
-        let data = try Data(contentsOf: zipURL)
-        try extractZipData(data, to: destinationDir)
-    }
-
-    /// Minimal ZIP extraction - extracts files from ZIP data
-    /// Supports basic ZIP format (no compression or DEFLATE)
+    /// Extract through the central directory rather than by walking local
+    /// headers from the front.
+    ///
+    /// A writer is allowed to leave the sizes in a local header at zero and
+    /// write them in a descriptor after the data, which is what the system
+    /// writer does; the central directory always carries the real ones. Reading
+    /// it is what makes an archive written elsewhere readable here.
     private func extractZipData(_ data: Data, to destinationDir: URL) throws {
-        var offset = 0
+        for entry in try zipEntries(in: data) {
+            let payload = try payload(for: entry, in: data)
+            let fileURL = destinationDir.appendingPathComponent(entry.name)
+            try fileManager.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try payload.write(to: fileURL)
+        }
+    }
 
-        while offset < data.count - 4 {
-            // Look for local file header signature (PK\x03\x04)
-            guard data[offset] == 0x50, data[offset + 1] == 0x4B,
-                  data[offset + 2] == 0x03, data[offset + 3] == 0x04 else {
-                // Not a local file header, might be central directory
-                break
-            }
+    private struct ZipEntry {
+        let name: String
+        let compressionMethod: UInt16
+        let compressedSize: Int
+        let uncompressedSize: Int
+        let localHeaderOffset: Int
+    }
 
-            // Parse local file header
-            let compressionMethod = UInt16(data[offset + 8]) | (UInt16(data[offset + 9]) << 8)
-            let compressedSize = UInt32(data[offset + 18]) | (UInt32(data[offset + 19]) << 8) |
-                                (UInt32(data[offset + 20]) << 16) | (UInt32(data[offset + 21]) << 24)
-            let uncompressedSize = UInt32(data[offset + 22]) | (UInt32(data[offset + 23]) << 8) |
-                                  (UInt32(data[offset + 24]) << 16) | (UInt32(data[offset + 25]) << 24)
-            let fileNameLength = Int(UInt16(data[offset + 26]) | (UInt16(data[offset + 27]) << 8))
-            let extraFieldLength = Int(UInt16(data[offset + 28]) | (UInt16(data[offset + 29]) << 8))
-
-            // Get filename
-            let fileNameStart = offset + 30
-            let fileNameData = data[fileNameStart..<(fileNameStart + fileNameLength)]
-            guard let fileName = String(data: fileNameData, encoding: .utf8) else {
-                offset += 30 + fileNameLength + extraFieldLength + Int(compressedSize)
-                continue
-            }
-
-            // Skip directories (end with /)
-            if fileName.hasSuffix("/") {
-                let dirURL = destinationDir.appendingPathComponent(fileName)
-                try fileManager.createDirectory(at: dirURL, withIntermediateDirectories: true)
-                offset += 30 + fileNameLength + extraFieldLength + Int(compressedSize)
-                continue
-            }
-
-            // Get file data
-            let fileDataStart = fileNameStart + fileNameLength + extraFieldLength
-            let fileDataEnd = fileDataStart + Int(compressedSize)
-
-            guard fileDataEnd <= data.count else {
+    private func zipEntries(in data: Data) throws -> [ZipEntry] {
+        guard let directory = endOfCentralDirectory(in: data) else {
+            throw ImportError.invalidFormat
+        }
+        var offset = directory.offset
+        var entries: [ZipEntry] = []
+        for _ in 0..<directory.entryCount {
+            guard offset + 46 <= data.count,
+                  readUInt32(data, at: offset) == 0x0201_4B50 else {
                 throw ImportError.invalidFormat
             }
-
-            var fileData = data[fileDataStart..<fileDataEnd]
-
-            // Handle compression
-            if compressionMethod == 8 {
-                // DEFLATE compression - decompress using zlib
-                fileData = try decompressDeflate(Data(fileData), expectedSize: Int(uncompressedSize))
-            } else if compressionMethod != 0 {
-                // Unsupported compression method
-                print("[DevotionalSharingManager] Unsupported compression method: \(compressionMethod) for \(fileName)")
-                offset = fileDataEnd
-                continue
+            let method = readUInt16(data, at: offset + 10)
+            let compressedSize = Int(readUInt32(data, at: offset + 20))
+            let uncompressedSize = Int(readUInt32(data, at: offset + 24))
+            let nameLength = Int(readUInt16(data, at: offset + 28))
+            let extraLength = Int(readUInt16(data, at: offset + 30))
+            let commentLength = Int(readUInt16(data, at: offset + 32))
+            let headerOffset = Int(readUInt32(data, at: offset + 42))
+            guard offset + 46 + nameLength <= data.count else {
+                throw ImportError.invalidFormat
             }
-
-            // Write file
-            let fileURL = destinationDir.appendingPathComponent(fileName)
-            let parentDir = fileURL.deletingLastPathComponent()
-            try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
-            try fileData.write(to: fileURL)
-
-            offset = fileDataEnd
+            let start = data.startIndex + offset + 46
+            let name = String(decoding: data[start..<(start + nameLength)], as: UTF8.self)
+            offset += 46 + nameLength + extraLength + commentLength
+            // Directory entries carry no payload, and nothing is written
+            // outside the directory being extracted into.
+            guard !name.hasSuffix("/"), isSafeArchivePath(name) else { continue }
+            entries.append(ZipEntry(
+                name: name,
+                compressionMethod: method,
+                compressedSize: compressedSize,
+                uncompressedSize: uncompressedSize,
+                localHeaderOffset: headerOffset
+            ))
         }
+        return entries
+    }
+
+    private func payload(for entry: ZipEntry, in data: Data) throws -> Data {
+        let header = entry.localHeaderOffset
+        guard header + 30 <= data.count,
+              readUInt32(data, at: header) == 0x0403_4B50 else {
+            throw ImportError.invalidFormat
+        }
+        let nameLength = Int(readUInt16(data, at: header + 26))
+        let extraLength = Int(readUInt16(data, at: header + 28))
+        let start = header + 30 + nameLength + extraLength
+        let end = start + entry.compressedSize
+        guard start <= end, end <= data.count else { throw ImportError.invalidFormat }
+        let stored = data[(data.startIndex + start)..<(data.startIndex + end)]
+
+        switch entry.compressionMethod {
+        case 0:
+            return Data(stored)
+        case 8:
+            return try decompressDeflate(Data(stored), expectedSize: entry.uncompressedSize)
+        default:
+            throw ImportError.invalidFormat
+        }
+    }
+
+    private func endOfCentralDirectory(
+        in data: Data
+    ) -> (entryCount: Int, offset: Int)? {
+        guard data.count >= 22 else { return nil }
+        let earliest = max(0, data.count - 22 - 0xFFFF)
+        var offset = data.count - 22
+        while offset >= earliest {
+            if readUInt32(data, at: offset) == 0x0605_4B50 {
+                return (
+                    Int(readUInt16(data, at: offset + 10)),
+                    Int(readUInt32(data, at: offset + 16))
+                )
+            }
+            offset -= 1
+        }
+        return nil
+    }
+
+    /// Nothing absolute, and nothing that climbs out of the directory it is
+    /// being written into.
+    private func isSafeArchivePath(_ path: String) -> Bool {
+        !path.isEmpty && !path.hasPrefix("/") && !path.contains("\0")
+            && !path.split(separator: "/").contains("..")
+    }
+
+    private func readByte(_ data: Data, at index: Int) -> UInt32 {
+        UInt32(data[data.startIndex + index])
+    }
+
+    private func readUInt16(_ data: Data, at index: Int) -> UInt16 {
+        UInt16(readByte(data, at: index) | (readByte(data, at: index + 1) << 8))
+    }
+
+    private func readUInt32(_ data: Data, at index: Int) -> UInt32 {
+        readByte(data, at: index)
+            | (readByte(data, at: index + 1) << 8)
+            | (readByte(data, at: index + 2) << 16)
+            | (readByte(data, at: index + 3) << 24)
     }
 
     /// Decompress DEFLATE data using Compression framework
     private func decompressDeflate(_ compressedData: Data, expectedSize: Int) throws -> Data {
+        guard expectedSize > 0 else { return Data() }
+
         // Use Compression framework
         let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: expectedSize)
         defer { destinationBuffer.deallocate() }
@@ -683,6 +805,7 @@ class DevotionalSharingManager {
 
         return Data(bytes: destinationBuffer, count: decompressedSize)
     }
+
 
     // MARK: - Errors
 
@@ -838,6 +961,38 @@ struct LampFilePreview {
 }
 
 // MARK: - UTType for .lamp files
+
+// MARK: - ZIP primitives
+
+/// The checksum every ZIP entry carries. Written so an archive from this app
+/// is a real ZIP that other tools accept, not only one this app can read.
+private enum CRC32 {
+    private static let table: [UInt32] = (0..<256).map { index in
+        (0..<8).reduce(UInt32(index)) { value, _ in
+            value & 1 == 1 ? 0xEDB8_8320 ^ (value >> 1) : value >> 1
+        }
+    }
+
+    static func checksum(_ data: Data) -> UInt32 {
+        var value: UInt32 = 0xFFFF_FFFF
+        for byte in data {
+            value = table[Int((value ^ UInt32(byte)) & 0xFF)] ^ (value >> 8)
+        }
+        return value ^ 0xFFFF_FFFF
+    }
+}
+
+private extension Data {
+    mutating func appendLittleEndian(_ value: UInt16) {
+        append(UInt8(truncatingIfNeeded: value))
+        append(UInt8(truncatingIfNeeded: value >> 8))
+    }
+
+    mutating func appendLittleEndian(_ value: UInt32) {
+        appendLittleEndian(UInt16(truncatingIfNeeded: value))
+        appendLittleEndian(UInt16(truncatingIfNeeded: value >> 16))
+    }
+}
 
 extension UTType {
     static var lampFile: UTType {

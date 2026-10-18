@@ -506,6 +506,50 @@ struct Devotional: Codable, Identifiable, Equatable, Hashable {
         self.markdownContent = markdownContent
     }
 
+    /// Decode leniently where producers disagree about footnotes.
+    ///
+    /// This app keeps footnotes as `[{id, content}]`. The Mac keeps them as one
+    /// block of Markdown definitions and sends it as an array holding that one
+    /// string, which has nothing to do with the rest of the document — but a
+    /// strict decode of that one key fails the whole writing, so a writing with
+    /// footnotes shared from the Mac could not be opened at all. The definitions
+    /// are the same `[^id]: text` the Markdown importer already reads, so parse
+    /// them rather than storing the blob under a made-up id.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        meta = try container.decode(DevotionalMeta.self, forKey: .meta)
+        summary = try container.decodeIfPresent(DevotionalTextField.self, forKey: .summary)
+        content = try container.decode(DevotionalContent.self, forKey: .content)
+        footnotes = try Devotional.decodeFootnotes(from: container)
+        relatedDevotionals = try container.decodeIfPresent(
+            [String].self, forKey: .relatedDevotionals
+        )
+        media = try container.decodeIfPresent(
+            [DevotionalMediaReference].self, forKey: .media
+        )
+        markdownContent = try container.decodeIfPresent(String.self, forKey: .markdownContent)
+    }
+
+    private static func decodeFootnotes(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> [DevotionalFootnote]? {
+        if let footnotes = try? container.decodeIfPresent(
+            [DevotionalFootnote].self, forKey: .footnotes
+        ) {
+            return footnotes
+        }
+        guard let blocks = try? container.decode([String].self, forKey: .footnotes) else {
+            // Not a shape this version understands. A writing is worth more than
+            // its footnotes, so it still opens — without them.
+            return nil
+        }
+        let parsed = blocks.enumerated().flatMap { index, block in
+            MarkdownDevotionalConverter.parseFootnotes(from: block)
+                ?? [DevotionalFootnote(id: "\(index + 1)", content: .plain(block))]
+        }
+        return parsed.isEmpty ? nil : parsed
+    }
+
     /// Create a new empty devotional
     static func newEmpty(title: String = "Untitled") -> Devotional {
         Devotional(

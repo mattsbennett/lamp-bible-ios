@@ -12,6 +12,7 @@ import XCTest
 final class DevotionalSharingTests: XCTestCase {
     private var manager: DevotionalSharingManager!
     private var createdFiles: [URL] = []
+    private var createdMediaDirectories: [URL] = []
 
     override func setUpWithError() throws {
         manager = DevotionalSharingManager.shared
@@ -23,6 +24,28 @@ final class DevotionalSharingTests: XCTestCase {
             try? FileManager.default.removeItem(at: url)
         }
         createdFiles = []
+        for directory in createdMediaDirectories {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        createdMediaDirectories = []
+    }
+
+    /// Write a real attachment where the exporter will look for it, and take it
+    /// away again afterwards.
+    private func stageMedia(
+        _ reference: DevotionalMediaReference,
+        devotionalId: String,
+        moduleId: String,
+        bytes: Data
+    ) throws {
+        try DevotionalMediaStorage.shared.ensureMediaDirectory(
+            devotionalId: devotionalId, moduleId: moduleId
+        )
+        let directory = DevotionalMediaStorage.shared.mediaDirectory(
+            devotionalId: devotionalId, moduleId: moduleId
+        )
+        createdMediaDirectories.append(directory)
+        try bytes.write(to: directory.appendingPathComponent(reference.filename))
     }
 
     // MARK: - Helpers
@@ -231,9 +254,9 @@ final class DevotionalSharingTests: XCTestCase {
     /// because the portable format has nowhere else to put it — and it carries
     /// no `markdownContent` key to say so.
     private func writeMacDocument(
-        body: String, title: String = "Cantata Narration"
+        body: String, title: String = "Cantata Narration", footnotes: [String]? = nil
     ) throws -> URL {
-        let root: [String: Any] = [
+        var root: [String: Any] = [
             "meta": [
                 "schemaVersion": "1.1",
                 "id": "B7FAA5A6",
@@ -246,6 +269,9 @@ final class DevotionalSharingTests: XCTestCase {
             ],
             "content": [["type": "paragraph", "content": ["text": body]]],
         ]
+        // The Mac keeps footnotes as one block of Markdown definitions and
+        // sends it as an array holding that single string.
+        if let footnotes { root["footnotes"] = footnotes }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".lamp")
         try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
@@ -321,6 +347,169 @@ final class DevotionalSharingTests: XCTestCase {
 
         XCTAssertNil(imported.markdownContent)
         XCTAssertEqual(imported.content.allBlocks.count, 2)
+    }
+
+    // MARK: - Bundles
+
+    /// A writing with an attachment travels as a ZIP holding the writing and
+    /// its media. This is the whole trip: out and back, with the image.
+    func testASharedBundleComesBackWithItsWritingAndItsImage() throws {
+        let moduleId = "devotionals"
+        var devotional = makeDevotional(id: "bundle-source-0001")
+        devotional.content = .blocks([.paragraph(Self.authoredBody)])
+        let reference = DevotionalMediaReference(
+            id: "32D89C7E", type: .image,
+            filename: "32D89C7E.png", mimeType: "image/png"
+        )
+        devotional.media = [reference]
+        let bytes = Data("not really a png, but these exact bytes".utf8)
+        try stageMedia(
+            reference, devotionalId: devotional.meta.id, moduleId: moduleId, bytes: bytes
+        )
+
+        let exported = try track(manager.exportForSharing(devotional, moduleId: moduleId))
+        XCTAssertEqual(manager.detectFileFormat(exported), .bundle)
+
+        let imported = try XCTUnwrap(
+            manager.importFromFile(exported, moduleId: moduleId).first
+        )
+
+        XCTAssertEqual(imported.meta.title, devotional.meta.title)
+        XCTAssertEqual(imported.markdownContent, Self.authoredBody)
+        XCTAssertEqual(imported.media?.map(\.filename), [reference.filename])
+
+        // The attachment itself landed where the new writing will look for it.
+        createdMediaDirectories.append(
+            DevotionalMediaStorage.shared.mediaDirectory(
+                devotionalId: imported.meta.id, moduleId: moduleId
+            )
+        )
+        let landed = try XCTUnwrap(DevotionalMediaStorage.shared.getMediaURL(
+            for: reference, devotionalId: imported.meta.id, moduleId: moduleId
+        ))
+        XCTAssertEqual(try Data(contentsOf: landed), bytes)
+    }
+
+    /// Previewing a bundle must report it without unpacking it into the library.
+    func testABundleCanBePreviewedBeforeImporting() throws {
+        let moduleId = "devotionals"
+        var devotional = makeDevotional(id: "bundle-preview-0001")
+        let reference = DevotionalMediaReference(
+            id: "A1", type: .image, filename: "A1.png", mimeType: "image/png"
+        )
+        devotional.media = [reference]
+        try stageMedia(
+            reference, devotionalId: devotional.meta.id, moduleId: moduleId,
+            bytes: Data("bytes".utf8)
+        )
+        let exported = try track(manager.exportForSharing(devotional, moduleId: moduleId))
+
+        let preview = try manager.previewFile(exported)
+
+        XCTAssertEqual(preview.type, .devotionalBundle)
+        XCTAssertEqual(preview.title, devotional.meta.title)
+        XCTAssertEqual(preview.mediaCount, 1)
+        XCTAssertTrue(preview.hasMedia)
+        // Previewing reports; it does not rename what it read.
+        XCTAssertEqual(preview.devotional?.meta.id, devotional.meta.id)
+    }
+
+    /// The archive is a real ZIP, not merely one this app can read: other
+    /// tools have to be able to open what someone shares.
+    func testABundleIsAnArchiveOtherToolsCanRead() throws {
+        let moduleId = "devotionals"
+        var devotional = makeDevotional(id: "bundle-shape-0001")
+        let reference = DevotionalMediaReference(
+            id: "A1", type: .image, filename: "A1.png", mimeType: "image/png"
+        )
+        devotional.media = [reference]
+        try stageMedia(
+            reference, devotionalId: devotional.meta.id, moduleId: moduleId,
+            bytes: Data("bytes".utf8)
+        )
+        let exported = try track(manager.exportForSharing(devotional, moduleId: moduleId))
+        let data = try Data(contentsOf: exported)
+
+        // Local header, then an end-of-central-directory record to find the
+        // entries by, which is what a reader that is not this one starts from.
+        XCTAssertEqual(Array(data.prefix(4)), [0x50, 0x4B, 0x03, 0x04])
+        let endSignature: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
+        let tail = Array(data.suffix(22))
+        XCTAssertEqual(Array(tail.prefix(4)), endSignature)
+        // Three entries: the manifest, the writing, and the one attachment.
+        XCTAssertEqual(Int(tail[10]) | (Int(tail[11]) << 8), 3)
+    }
+
+    /// An entry naming its way out of the extraction directory is not written.
+    func testABundleCannotWriteOutsideItsOwnDirectory() throws {
+        let escape = "../escaped.json"
+        let url = track(
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".lamp")
+        )
+        try ZipFixture.archive(
+            entries: [(escape, Data("nope".utf8))]
+        ).write(to: url)
+
+        // Nothing to import, rather than something written where it was told.
+        XCTAssertThrowsError(try manager.importFromFile(url))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: FileManager.default.temporaryDirectory
+                .appendingPathComponent("escaped.json").path
+        ))
+    }
+
+    // MARK: - Footnotes
+
+    /// A writing shared from the Mac with footnotes used to fail to import at
+    /// all: its footnote shape failed the decode, which failed the whole file.
+    func testAWritingSharedFromAMacKeepsItsFootnotes() throws {
+        let url = try writeMacDocument(
+            body: "Asdf Handbag[^1] and more[^2]",
+            footnotes: ["[^1]: First\n[^2]: Second"]
+        )
+
+        let devotional = try XCTUnwrap(manager.importFromFile(url).first)
+
+        XCTAssertEqual(devotional.footnotes?.map(\.id), ["1", "2"])
+        XCTAssertEqual(
+            devotional.footnotes?.map(\.content.plainText), ["First", "Second"]
+        )
+    }
+
+    /// Text that carries no definitions at all is still kept rather than
+    /// dropped; the writing is worth more than the shape of its footnotes.
+    func testFootnoteTextWithoutDefinitionsIsStillKept() throws {
+        let url = try writeMacDocument(body: "Body", footnotes: ["Just a remark"])
+
+        let devotional = try XCTUnwrap(manager.importFromFile(url).first)
+
+        XCTAssertEqual(devotional.footnotes?.map(\.content.plainText), ["Just a remark"])
+    }
+
+    /// This app's own shape still decodes as it always did.
+    func testThisAppsOwnFootnoteShapeIsUnchanged() throws {
+        var original = makeDevotional()
+        original.footnotes = [
+            DevotionalFootnote(id: "a", content: .plain("First")),
+            DevotionalFootnote(id: "b", content: .plain("Second")),
+        ]
+        let exported = try track(manager.exportForSharing(original))
+
+        let imported = try XCTUnwrap(manager.importFromFile(exported).first)
+
+        XCTAssertEqual(imported.footnotes?.map(\.id), ["a", "b"])
+        XCTAssertEqual(imported.footnotes?.map(\.content.plainText), ["First", "Second"])
+    }
+
+    /// A writing with no footnotes at all keeps none, rather than gaining an
+    /// empty one on the way in.
+    func testAWritingWithoutFootnotesStaysThatWay() throws {
+        let url = try writeMacDocument(body: "Body")
+
+        let devotional = try XCTUnwrap(manager.importFromFile(url).first)
+
+        XCTAssertNil(devotional.footnotes)
     }
 
     // MARK: - Markdown
@@ -445,5 +634,60 @@ final class DevotionalSharingTests: XCTestCase {
 
         manager.discardStagedImport(staged)
         XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
+    }
+}
+
+/// A minimal ZIP writer for fixtures the app's own exporter would never
+/// produce, such as an entry that tries to climb out of its directory.
+private enum ZipFixture {
+    static func archive(entries: [(name: String, data: Data)]) -> Data {
+        var archive = Data()
+        var central = Data()
+        for entry in entries {
+            let name = Array(entry.name.utf8)
+            let offset = UInt32(archive.count)
+            let size = UInt32(entry.data.count)
+            append(&archive, [0x50, 0x4B, 0x03, 0x04])
+            append(&archive, UInt16(20)); append(&archive, UInt16(0))
+            append(&archive, UInt16(0)); append(&archive, UInt16(0))
+            append(&archive, UInt16(0)); append(&archive, UInt32(0))
+            append(&archive, size); append(&archive, size)
+            append(&archive, UInt16(name.count)); append(&archive, UInt16(0))
+            archive.append(contentsOf: name)
+            archive.append(entry.data)
+
+            append(&central, [0x50, 0x4B, 0x01, 0x02])
+            append(&central, UInt16(20)); append(&central, UInt16(20))
+            append(&central, UInt16(0)); append(&central, UInt16(0))
+            append(&central, UInt16(0)); append(&central, UInt16(0))
+            append(&central, UInt32(0)); append(&central, size); append(&central, size)
+            append(&central, UInt16(name.count)); append(&central, UInt16(0))
+            append(&central, UInt16(0)); append(&central, UInt16(0))
+            append(&central, UInt16(0)); append(&central, UInt32(0))
+            append(&central, offset)
+            central.append(contentsOf: name)
+        }
+        let centralOffset = UInt32(archive.count)
+        archive.append(central)
+        append(&archive, [0x50, 0x4B, 0x05, 0x06])
+        append(&archive, UInt16(0)); append(&archive, UInt16(0))
+        append(&archive, UInt16(entries.count)); append(&archive, UInt16(entries.count))
+        append(&archive, UInt32(central.count)); append(&archive, centralOffset)
+        append(&archive, UInt16(0))
+        return archive
+    }
+
+    private static func append(_ data: inout Data, _ bytes: [UInt8]) {
+        data.append(contentsOf: bytes)
+    }
+
+    private static func append(_ data: inout Data, _ value: UInt16) {
+        data.append(UInt8(truncatingIfNeeded: value))
+        data.append(UInt8(truncatingIfNeeded: value >> 8))
+    }
+
+    private static func append(_ data: inout Data, _ value: UInt32) {
+        append(&data, UInt16(truncatingIfNeeded: value))
+        append(&data, UInt16(truncatingIfNeeded: value >> 16))
     }
 }
