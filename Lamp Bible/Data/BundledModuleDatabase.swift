@@ -8,6 +8,7 @@
 import Foundation
 import GRDB
 import LampCore
+import LampModuleKit
 
 /// Read-only access to bundled modules database (translations, future: commentaries, dictionaries)
 /// This database is shipped with the app and cannot be modified by users.
@@ -109,11 +110,15 @@ class BundledModuleDatabase {
         // Decompress
         print("BundledModuleDatabase: Decompressing bundled database (build \(currentVersion))...")
         do {
-            let compressedData = try Data(contentsOf: URL(fileURLWithPath: compressedPath))
-            let decompressedData = try (compressedData as NSData).decompressed(using: .zlib) as Data
-            try decompressedData.write(to: decompressedURL)
+            // Mapped and unpacked straight to disk: the database is hundreds
+            // of megabytes unpacked, and this runs at launch.
+            let compressedData = try Data(
+                contentsOf: URL(fileURLWithPath: compressedPath), options: .alwaysMapped
+            )
+            try LampZlib.decompress(compressedData, to: decompressedURL)
             try currentVersion.write(to: versionMarkerURL, atomically: true, encoding: .utf8)
-            print("BundledModuleDatabase: Decompressed \(compressedData.count) -> \(decompressedData.count) bytes")
+            let decompressedSize = (try? fileManager.attributesOfItem(atPath: decompressedPath)[.size] as? Int) ?? 0
+            print("BundledModuleDatabase: Decompressed \(compressedData.count) -> \(decompressedSize) bytes")
             return decompressedPath
         } catch {
             print("BundledModuleDatabase: Decompression failed: \(error)")

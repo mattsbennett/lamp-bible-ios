@@ -114,7 +114,12 @@ class ModuleSyncManager: ObservableObject {
         complete: () async throws -> Void = {}
     ) async throws {
         guard await storage.isAvailable() else { throw SyncError.notAvailable }
-        guard !isSyncing else { throw SyncError.alreadyRunning }
+        guard !isSyncing else {
+            // Named, like the settings sync's, so a refused pass can be told
+            // apart from one refused there.
+            print("[ModuleSync] already running: a module sync is still in progress (runFullSync)")
+            throw SyncError.alreadyRunning
+        }
         isSyncing = true
         defer { isSyncing = false }
         var compatibilityManifest: LampCompatibilityManifest?
@@ -409,28 +414,41 @@ class ModuleSyncManager: ObservableObject {
 
         // Inspect the entire archive before changing the local library. A
         // damaged later entry must not leave an earlier entry installed.
+        //
+        // A task only drains its autorelease pool when it suspends or ends, and
+        // this loop never suspends, so whatever inspecting a module leaves in
+        // the pool would stay until the last module was done. On a large
+        // library that was more memory than iOS allows; drain it per module.
         let actions: [PortableArchiveImportAction] = try moduleEntries.map { entry in
-            let digest = entry.sha256 ?? LampSyncContentRevision.digest(for: entry.data)
-            if bridgeReady, !missingDevotionalMedia,
-               let cached = previous?.modules.first(where: {
-                $0.path == entry.path && $0.digest == digest
-            }), try isInstalled(cached) {
-                return .alreadyInstalled(cached)
-            }
+            try autoreleasepool {
+                let digest = entry.sha256 ?? LampSyncContentRevision.digest(for: entry.data)
+                if bridgeReady, !missingDevotionalMedia,
+                   let cached = previous?.modules.first(where: {
+                    $0.path == entry.path && $0.digest == digest
+                }), try isInstalled(cached) {
+                    return .alreadyInstalled(cached)
+                }
 
-            let descriptor = try LampPortableModuleInspector.inspect(
-                compressedData: entry.data, requireImportSchema: true
-            )
-            let type = descriptor.kind
-            let info = ModuleFileInfo(
-                id: descriptor.id,
-                type: type,
-                filePath: "\(descriptor.id).lamp",
-                fileHash: digest,
-                modificationDate: entry.modifiedAt
-            )
-            return .install(entry: entry, info: info, type: type, digest: digest)
+                let descriptor = try LampPortableModuleInspector.inspect(
+                    compressedData: entry.data, requireImportSchema: true
+                )
+                let type = descriptor.kind
+                let info = ModuleFileInfo(
+                    id: descriptor.id,
+                    type: type,
+                    filePath: "\(descriptor.id).lamp",
+                    fileHash: digest,
+                    modificationDate: entry.modifiedAt
+                )
+                return .install(entry: entry, info: info, type: type, digest: digest)
+            }
         }
+
+        let reinstalls = actions.compactMap { action -> String? in
+            if case .install(_, let info, let type, _) = action { return "\(type.rawValue) \(info.id)" }
+            return nil
+        }
+        print("[ModuleSync] archive import: \(actions.count - reinstalls.count) already installed, installing \(reinstalls)")
 
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lamp-archive-install-\(UUID().uuidString)", isDirectory: true)
@@ -451,7 +469,7 @@ class ModuleSyncManager: ObservableObject {
             case .install(let entry, let info, let type, let digest):
                 let sourceURL = temporaryDirectory
                     .appendingPathComponent("module-\(index).sqlite")
-                try decompressZlib(entry.data).write(to: sourceURL, options: .atomic)
+                try unpackModule(entry.data, to: sourceURL)
                 if type == .notes || type == .devotional {
                     let source = try DatabaseQueue(path: sourceURL.path)
                     let metadata = try await editableModuleMetadata(
@@ -897,6 +915,9 @@ class ModuleSyncManager: ObservableObject {
             )
 
             if needsUpdate {
+                if !isNew {
+                    print("[ModuleSync] reimporting \(type.rawValue) \(fileInfo.id): installed \(installed?.filePath ?? "-") @ \(installed?.fileHash ?? "nil"), remote \(fileInfo.filePath) @ \(fileInfo.fileHash ?? "nil")")
+                }
                 do {
                     try await importModuleFromCloud(
                         fileInfo: fileInfo,
@@ -966,14 +987,15 @@ class ModuleSyncManager: ObservableObject {
             return .book
         }
 
-        guard let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data else {
-            throw ModuleSyncError.importFailed("Failed to decompress the .lamp module.")
-        }
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("db")
-        try decompressed.write(to: tempURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: tempURL) }
+        do {
+            try LampZlib.decompress(data, to: tempURL)
+        } catch {
+            throw ModuleSyncError.importFailed("Failed to decompress the .lamp module.")
+        }
 
         let queue = try DatabaseQueue(path: tempURL.path)
         let tables = try queue.read { db in
@@ -1165,8 +1187,7 @@ class ModuleSyncManager: ObservableObject {
         // Decompress if it's a compressed file (.lamp or .db.zlib)
         let lowercasedPath = fileInfo.filePath.lowercased()
         if lowercasedPath.hasSuffix(".lamp") || lowercasedPath.hasSuffix(".db.zlib") {
-            let decompressedData = try decompressZlib(data)
-            try decompressedData.write(to: tempURL)
+            try unpackModule(data, to: tempURL)
         } else {
             try data.write(to: tempURL)
         }
@@ -3513,12 +3534,7 @@ class ModuleSyncManager: ObservableObject {
 
     /// Count entries in a cloud SQLite file (for safeguard check)
     private func countEntriesInCloudSQLite(_ compressedData: Data, type: ModuleType) throws -> Int {
-        // Decompress the data
-        guard let decompressedData = try? (compressedData as NSData).decompressed(using: .zlib) as Data else {
-            return 0
-        }
-
-        // Write to temp file
+        // Unpack straight to a temp file; see `unpackModule`.
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("db")
@@ -3527,7 +3543,11 @@ class ModuleSyncManager: ObservableObject {
             try? FileManager.default.removeItem(at: tempURL)
         }
 
-        try decompressedData.write(to: tempURL)
+        do {
+            try LampZlib.decompress(compressedData, to: tempURL)
+        } catch {
+            return 0
+        }
 
         // Open and count entries
         let queue = try DatabaseQueue(path: tempURL.path)
@@ -3683,16 +3703,12 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Zlib Decompression
 
-    private func decompressZlib(_ data: Data) throws -> Data {
-        // Use Foundation's built-in zlib decompression (iOS 13+)
-        print("Attempting to decompress \(data.count) bytes...")
-
+    /// Unpacks a module straight to disk. Unpacked in memory, a large module
+    /// on top of the sync archive it came in is more than iOS allows an app.
+    private func unpackModule(_ data: Data, to url: URL) throws {
         do {
-            let decompressedData = try (data as NSData).decompressed(using: .zlib) as Data
-            print("Successfully decompressed to \(decompressedData.count) bytes")
-            return decompressedData
+            try LampZlib.decompress(data, to: url)
         } catch {
-            print("Decompression error: \(error)")
             throw ModuleSyncError.importFailed("Failed to decompress zlib data: \(error.localizedDescription)")
         }
     }
