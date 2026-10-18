@@ -319,23 +319,40 @@ class UserSettingsSyncManager {
         /// The archive this pass read. Whether it is still what the server
         /// holds is for the caller to confirm, cheaply, by revision.
         let observedArchive: LampSyncArchiveRemote.Snapshot?
+        /// The pass settled it by revision alone and never fetched a body,
+        /// so neither need the caller.
+        let skippedUnchanged: Bool
     }
 
     func performFullSync(using storage: ModuleStorage) async -> FullSyncOutcome {
         guard await storage.isAvailable() else {
             print("[UserSettingsSync] Storage not available")
-            return FullSyncOutcome(succeeded: false, observedArchive: nil)
+            return FullSyncOutcome(
+                succeeded: false, observedArchive: nil, skippedUnchanged: false
+            )
+        }
+        // The thirty-second poll has always taken this exit. The launch pass
+        // never did, and so paid for the whole library to be downloaded and
+        // inflated in order to reach a settings entry that two revisions had
+        // already shown could not have changed.
+        if await canSkipUnchangedArchivePoll(storage: storage) {
+            print("[UserSettingsSync] unchanged, settings not read")
+            return FullSyncOutcome(
+                succeeded: true, observedArchive: nil, skippedUnchanged: true
+            )
         }
         lastObservedArchive = nil
         do {
             try await syncWithRemote(storage: storage, requireRemote: false)
             return FullSyncOutcome(
-                succeeded: true, observedArchive: takeLastObservedArchive()
+                succeeded: true, observedArchive: takeLastObservedArchive(),
+                skippedUnchanged: false
             )
         } catch {
             print("[UserSettingsSync] Full sync failed: \(error)")
             return FullSyncOutcome(
-                succeeded: false, observedArchive: takeLastObservedArchive()
+                succeeded: false, observedArchive: takeLastObservedArchive(),
+                skippedUnchanged: false
             )
         }
     }
@@ -1047,6 +1064,32 @@ enum SharedPreferenceArchiveSync {
         try LampSyncPreferenceState.remember(
             merged, for: source, in: defaults, key: baseKey
         )
+    }
+
+    /// Whether this device holds a preference edit the server has not seen.
+    ///
+    /// Local state only — no request, no archive. It lets a caller that has
+    /// already established the archive has not moved conclude there is
+    /// nothing for a preference merge to do. Asked through the real merge
+    /// rather than by comparing shapes: with the remote standing still,
+    /// anything the merge would change is a local edit waiting to go up. No
+    /// cached base means no idea, which counts as changed.
+    static func hasLocalChanges(
+        source: String,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard let previous = LampSyncPreferenceState.cached(
+            for: source, in: defaults, key: baseKey
+        ) else {
+            return true
+        }
+        let local = projectedValues(from: UserDatabase.shared.getSettings(), base: previous)
+        guard let merged = try? LampSharedPreferenceLedger.merge(
+            local: local, base: previous, remote: previous
+        ) else {
+            return true
+        }
+        return merged != previous
     }
 
     private static func projectedValues(

@@ -110,9 +110,39 @@ final class ArchiveReadCountTests: XCTestCase {
         let bodyReads = await server.bodyReadCount()
         let writes = await server.writeCount()
         XCTAssertEqual(writes, 0, "a quiet pass must not write")
-        XCTAssertLessThanOrEqual(
-            bodyReads, 1,
+        XCTAssertEqual(
+            bodyReads, 0,
             "a quiet pass inflated the whole library \(bodyReads) times"
+        )
+    }
+
+    /// The preference half of the skip, which is the part of it written here
+    /// rather than inherited from the poll. Getting this wrong the other way
+    /// would strand a local preference edit, so it has to be conservative
+    /// when it does not know.
+    func testAPreferenceEditIsNoticedAndAnUnknownSourceAssumesOne() async throws {
+        let server = ArchiveServer(archive: try makeArchive())
+        let storage = CountingArchiveStorage(server: server)
+        let source = "archive-reads-\(UUID().uuidString)"
+
+        // Never synced: nothing is known about it, so it cannot be skipped.
+        XCTAssertTrue(
+            SharedPreferenceArchiveSync.hasLocalChanges(source: source),
+            "a source with no recorded base must count as changed"
+        )
+
+        for _ in 0..<6 {
+            await server.resetCounts()
+            _ = await ModuleSyncManager.shared.syncAll(
+                using: storage, backend: .webdav, archiveSource: source
+            )
+            if await server.writeCount() == 0 { break }
+        }
+
+        // Settled: the ledger this device published is the one it holds.
+        XCTAssertFalse(
+            SharedPreferenceArchiveSync.hasLocalChanges(source: source),
+            "a settled source has nothing waiting to publish"
         )
     }
 

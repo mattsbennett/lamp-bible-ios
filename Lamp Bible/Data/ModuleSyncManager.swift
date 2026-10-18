@@ -183,12 +183,21 @@ class ModuleSyncManager: ObservableObject {
                 guard settings.succeeded else {
                     throw SyncError.incomplete
                 }
-                if let remoteStore = storage as? LampSyncRemoteStore {
+                let preferencesPending = SharedPreferenceArchiveSync.hasLocalChanges(
+                    source: archiveSource
+                )
+                if settings.skippedUnchanged, !preferencesPending {
+                    // Two revisions already said the archive has not moved,
+                    // and nothing local is waiting to go up. Reading the
+                    // library here would inflate every module to confirm what
+                    // those revisions settled.
+                    print("[ModuleSync] archive: untouched, not read")
+                } else if let remoteStore = storage as? LampSyncRemoteStore {
                     // The shared-preference ledger lives in the archive and is
                     // merged against what is there now, so a body is needed
-                    // here — but the settings pass immediately above has just
-                    // read the same one, and reading it again costs the whole
-                    // library twice in one pass.
+                    // here — but the settings pass immediately above may have
+                    // just read the same one, and reading it again costs the
+                    // whole library twice in one pass.
                     let current = try await currentArchive(
                         from: remoteStore, reusing: settings.observedArchive
                     )
