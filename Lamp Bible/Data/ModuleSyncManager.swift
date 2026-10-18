@@ -124,6 +124,8 @@ class ModuleSyncManager: ObservableObject {
         defer { isSyncing = false }
         var compatibilityManifest: LampCompatibilityManifest?
         var observedArchive: LampSyncArchiveRemote.Snapshot?
+        // What the pull saw, whether or not it needed the body to see it.
+        var observedRevision: String?
         try await LampSyncEngine.run(
             pullAndMerge: {
                 try await beforePull()
@@ -136,15 +138,24 @@ class ModuleSyncManager: ObservableObject {
                             from: remoteStore, source: archiveSource
                         )
                         compatibilityManifest = result.compatibilityManifest
+                        observedRevision = result.revision
                         if let snapshot = result.snapshot {
                             observedArchive = snapshot
+                            guard snapshot.revision == result.revision else {
+                                throw SyncError.conflictDetected
+                            }
+                            print("[ModuleSync] archive: read and decoded")
                         } else {
-                            observedArchive = try await LampSyncArchiveRemote.read(
-                                from: remoteStore
-                            )
-                        }
-                        guard observedArchive?.revision == result.revision else {
-                            throw SyncError.conflictDetected
+                            // The import recognised the archive by its
+                            // revision and never unpacked it. Reading it here
+                            // anyway cost a full download and an in-memory
+                            // inflate of every module body — on a large
+                            // library, most of a minute and a couple of
+                            // gigabytes — to obtain a copy whose only uses are
+                            // refreshing decks that cannot have changed and
+                            // feeding a comparison that an unmoved revision
+                            // already answers.
+                            print("[ModuleSync] archive: unchanged, not read")
                         }
                     } catch {
                         firstPullError = error
@@ -171,11 +182,26 @@ class ModuleSyncManager: ObservableObject {
                     throw SyncError.incomplete
                 }
                 if let remoteStore = storage as? LampSyncRemoteStore {
+                    // Still read here: the shared-preference ledger lives in
+                    // the archive and has to be merged against what is there
+                    // now, so this body is used rather than merely compared.
                     let current = try await LampSyncArchiveRemote.read(from: remoteStore)
-                    guard LampSyncSettingsArchive.preservesOtherContents(
-                        from: observedArchive?.archive, to: current?.archive
-                    ) else {
-                        throw SyncError.conflictDetected
+                    if let observedArchive {
+                        guard LampSyncSettingsArchive.preservesOtherContents(
+                            from: observedArchive.archive, to: current?.archive
+                        ) else {
+                            throw SyncError.conflictDetected
+                        }
+                    } else {
+                        // No copy was taken, so compare what identifies it.
+                        // An unmoved revision says nothing changed at all,
+                        // which is more than the entry comparison asks for.
+                        // Passing nil to that comparison would not do: it
+                        // reads as "there was no archive" and refuses every
+                        // library that has one.
+                        guard current?.revision == observedRevision else {
+                            throw SyncError.conflictDetected
+                        }
                     }
                     try await SharedPreferenceArchiveSync.sync(
                         from: remoteStore,
