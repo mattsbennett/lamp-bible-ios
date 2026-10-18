@@ -210,6 +210,119 @@ final class DevotionalSharingTests: XCTestCase {
         XCTAssertThrowsError(try manager.previewFile(url))
     }
 
+    // MARK: - Authored Markdown
+
+    /// Everything a block tree cannot hold: a heading, an image, a table.
+    private static let authoredBody = """
+        ## A heading
+
+        This is a test. Test. Another test.
+
+        ![Caption](lamp-media://B7FAA5A6/32D89C7E.png)
+
+        | One | Two |
+        | --- | --- |
+        | a | b |
+        """
+
+    /// The document the Mac writes when a writing is shared, built by hand so
+    /// this test fails if that shape stops matching. A writing with no blocks
+    /// of its own travels as a single paragraph holding its authored Markdown,
+    /// because the portable format has nowhere else to put it — and it carries
+    /// no `markdownContent` key to say so.
+    private func writeMacDocument(
+        body: String, title: String = "Cantata Narration"
+    ) throws -> URL {
+        let root: [String: Any] = [
+            "meta": [
+                "schemaVersion": "1.1",
+                "id": "B7FAA5A6",
+                "type": "devotional",
+                "title": title,
+                "tags": [],
+                "keyScriptures": [],
+                "created": 1_769_317_935,
+                "lastModified": 1_788_132_249,
+            ],
+            "content": [["type": "paragraph", "content": ["text": body]]],
+        ]
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".lamp")
+        try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            .write(to: url)
+        return track(url)
+    }
+
+    /// The body must land as authored text, character for character. Taken at
+    /// face value the wrapper becomes a block tree instead, and the body reads
+    /// back as one paragraph of literal text: the heading keeps its hashes and
+    /// the image stays written out as link syntax rather than appearing.
+    func testWritingSharedFromAMacKeepsItsAuthoredBody() throws {
+        let url = try writeMacDocument(body: Self.authoredBody)
+
+        let devotional = try XCTUnwrap(manager.importFromFile(url).first)
+
+        XCTAssertEqual(devotional.markdownContent, Self.authoredBody)
+        let entry = DevotionalEntry(from: devotional, moduleId: "devotionals")
+        XCTAssertEqual(entry.contentJson, Self.authoredBody)
+        XCTAssertEqual(try XCTUnwrap(entry.toDevotional()).markdownContent, Self.authoredBody)
+    }
+
+    /// The rest of the import is untouched: the body moves, the identity rules
+    /// still apply.
+    func testUnwrappingAnAuthoredBodyStillAssignsAFreshIdentity() throws {
+        let url = try writeMacDocument(body: Self.authoredBody)
+
+        let devotional = try XCTUnwrap(manager.importFromFile(url).first)
+
+        XCTAssertNotEqual(devotional.meta.id, "B7FAA5A6")
+        XCTAssertNotEqual(devotional.meta.lastModified, 1_788_132_249)
+        XCTAssertEqual(devotional.meta.title, "Cantata Narration")
+    }
+
+    /// A collection shared as one file carries the same wrapper per entry.
+    func testEveryEntryInASharedCollectionKeepsItsAuthoredBody() throws {
+        let bodies = ["# First\n\nOne.", "# Second\n\nTwo.", "# Third\n\nThree."]
+        let root: [String: Any] = [
+            "id": "shared-collection",
+            "name": "Lenten Readings",
+            "type": "devotional",
+            "entries": bodies.enumerated().map { index, body -> [String: Any] in
+                [
+                    "meta": [
+                        "schemaVersion": "1.1", "type": "devotional",
+                        "id": "entry-\(index)", "title": "Entry \(index)",
+                        "created": 1_769_317_935, "lastModified": 1_788_132_249,
+                    ],
+                    "content": [["type": "paragraph", "content": ["text": body]]],
+                ]
+            },
+        ]
+        let url = track(
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".lamp")
+        )
+        try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]).write(to: url)
+
+        let imported = try manager.importFromFile(url)
+
+        XCTAssertEqual(imported.compactMap(\.markdownContent), bodies)
+    }
+
+    /// The unwrap must only catch a body that was never blocks to begin with.
+    func testGenuineBlocksAreStillImportedAsBlocks() throws {
+        var devotional = makeDevotional()
+        devotional.content = .blocks([
+            .heading("A heading", level: 2), .paragraph("Body."),
+        ])
+        let exported = try track(manager.exportForSharing(devotional))
+
+        let imported = try XCTUnwrap(manager.importFromFile(exported).first)
+
+        XCTAssertNil(imported.markdownContent)
+        XCTAssertEqual(imported.content.allBlocks.count, 2)
+    }
+
     // MARK: - Staging
 
     /// Staging exists so an import can outlive the security-scoped access of the

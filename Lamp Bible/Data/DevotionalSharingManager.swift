@@ -311,21 +311,38 @@ class DevotionalSharingManager {
 
         // Try to decode as DevotionalShareData first
         if let shareData = try? JSONDecoder().decode(DevotionalShareData.self, from: data) {
-            return [withFreshIdentity(shareData.devotional)]
+            return [imported(shareData.devotional)]
         }
 
         // Try as raw Devotional
         if let devotional = try? JSONDecoder().decode(Devotional.self, from: data) {
-            return [withFreshIdentity(devotional)]
+            return [imported(devotional)]
         }
 
         // Try as DevotionalModuleFile - keep every entry, not just the first
         if let moduleFile = try? JSONDecoder().decode(DevotionalModuleFile.self, from: data),
            !moduleFile.entries.isEmpty {
-            return moduleFile.entries.map { withFreshIdentity($0) }
+            return moduleFile.entries.map { imported($0) }
         }
 
         throw ImportError.invalidFormat
+    }
+
+    /// Prepare a devotional that arrived in a file to be saved.
+    ///
+    /// A writing with no blocks of its own crosses in the portable format as a
+    /// single paragraph holding its authored Markdown, because that format has
+    /// nowhere else to put it. Stored as blocks, the body is read back as one
+    /// paragraph of literal text: its headings keep their hashes and its images
+    /// stay written out as link syntax instead of appearing. Put the authored
+    /// text back where authored text lives before anything saves it.
+    ///
+    /// `importFromMarkdown` is deliberately left out: it was handed Markdown and
+    /// parsed it into blocks on purpose, so there is nothing being mistaken for
+    /// structure. Previewing skips this too, because a preview reads the blocks
+    /// directly and never saves what it decoded.
+    private func imported(_ devotional: Devotional) -> Devotional {
+        withFreshIdentity(MarkdownDevotionalConverter.unwrappingAuthoredMarkdown(devotional))
     }
 
     /// Give an incoming devotional a new identity so importing never overwrites an
@@ -354,7 +371,7 @@ class DevotionalSharingManager {
         let devotionalURL = tempDir.appendingPathComponent("devotional.json")
         let data = try Data(contentsOf: devotionalURL)
         let shareData = try JSONDecoder().decode(DevotionalShareData.self, from: data)
-        let devotional = withFreshIdentity(shareData.devotional)
+        let devotional = imported(shareData.devotional)
         let newId = devotional.meta.id
 
         // Import media files
