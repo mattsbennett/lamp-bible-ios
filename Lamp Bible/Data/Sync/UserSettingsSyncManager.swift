@@ -1045,6 +1045,9 @@ enum SharedPreferenceArchiveSync {
             throw settingsSyncConflict("the archive revision moved under the shared preference write")
         }
         guard let remoteArchive else {
+            // Nothing on the server to merge against, so nothing is recorded
+            // either — and the next pass will say it has nothing recorded.
+            print("[SharedPreferences] no archive on the server; nothing recorded")
             return
         }
         let archive = remoteArchive.archive
@@ -1060,19 +1063,40 @@ enum SharedPreferenceArchiveSync {
             remote: remoteLedger
         )
 
-        if merged != remoteLedger && !merged.fields.isEmpty {
-            let updated = try LampSyncPreferenceState.replacing(merged, in: archive)
-            try await LampSyncArchiveRemote.publish(
-                updated,
-                replacing: remoteArchive,
-                in: store
-            )
+        // Each step below can throw, and until now a throw here left no
+        // trace: the pass simply never recorded a ledger, and every later
+        // pass reported having nothing recorded. Name the step instead.
+        do {
+            if merged != remoteLedger && !merged.fields.isEmpty {
+                let updated = try LampSyncPreferenceState.replacing(merged, in: archive)
+                try await LampSyncArchiveRemote.publish(
+                    updated,
+                    replacing: remoteArchive,
+                    in: store
+                )
+                print("[SharedPreferences] published \(merged.fields.count) field(s)")
+            }
+        } catch {
+            print("[SharedPreferences] publishing failed, so nothing is recorded: \(error)")
+            throw error
         }
 
-        try apply(merged)
-        try LampSyncPreferenceState.remember(
-            merged, for: source, in: defaults, key: baseKey
-        )
+        do {
+            try apply(merged)
+        } catch {
+            print("[SharedPreferences] applying failed, so nothing is recorded: \(error)")
+            throw error
+        }
+
+        do {
+            try LampSyncPreferenceState.remember(
+                merged, for: source, in: defaults, key: baseKey
+            )
+            print("[SharedPreferences] recorded \(merged.fields.count) field(s)")
+        } catch {
+            print("[SharedPreferences] recording failed: \(error)")
+            throw error
+        }
     }
 
     /// Whether this device holds a preference edit the server has not seen.
