@@ -1067,14 +1067,16 @@ enum SharedPreferenceArchiveSync {
         // trace: the pass simply never recorded a ledger, and every later
         // pass reported having nothing recorded. Name the step instead.
         do {
-            if merged != remoteLedger && !merged.fields.isEmpty {
-                let updated = try LampSyncPreferenceState.replacing(merged, in: archive)
+            if merged.publishable != remoteLedger && !merged.publishable.fields.isEmpty {
+                let updated = try LampSyncPreferenceState.replacing(
+                    merged.publishable, in: archive
+                )
                 try await LampSyncArchiveRemote.publish(
                     updated,
                     replacing: remoteArchive,
                     in: store
                 )
-                print("[SharedPreferences] published \(merged.fields.count) field(s)")
+                print("[SharedPreferences] published \(merged.publishable.fields.count) field(s)")
             }
         } catch {
             print("[SharedPreferences] publishing failed, so nothing is recorded: \(error)")
@@ -1082,7 +1084,7 @@ enum SharedPreferenceArchiveSync {
         }
 
         do {
-            try apply(merged)
+            try apply(merged.applicable)
         } catch {
             print("[SharedPreferences] applying failed, so nothing is recorded: \(error)")
             throw error
@@ -1090,9 +1092,9 @@ enum SharedPreferenceArchiveSync {
 
         do {
             try LampSyncPreferenceState.remember(
-                merged, for: source, in: defaults, key: baseKey
+                merged.baseline, for: source, in: defaults, key: baseKey
             )
-            print("[SharedPreferences] recorded \(merged.fields.count) field(s)")
+            print("[SharedPreferences] recorded \(merged.baseline.fields.count) field(s)")
         } catch {
             print("[SharedPreferences] recording failed: \(error)")
             throw error
@@ -1128,12 +1130,12 @@ enum SharedPreferenceArchiveSync {
             print("[SharedPreferences] pending: the recorded ledger would not merge")
             return true
         }
-        guard merged != previous else { return false }
+        guard merged.publishable != previous else { return false }
         // Name the fields rather than just the verdict: a field that never
         // settles would otherwise look exactly like a field someone edited,
         // and only one of those is worth chasing.
-        let moved = Set(merged.fields.keys).union(previous.fields.keys)
-            .filter { merged.fields[$0]?.value != previous.fields[$0]?.value }
+        let moved = Set(merged.publishable.fields.keys).union(previous.fields.keys)
+            .filter { merged.publishable.fields[$0]?.value != previous.fields[$0]?.value }
             .sorted()
         print("[SharedPreferences] pending: \(moved.joined(separator: ", "))")
         return true
