@@ -493,9 +493,15 @@ class UserSettingsSyncManager {
         // nil, so the comparison can never hold, and any write to the shared
         // archive moves the token besides. The merge is what the guard was
         // protecting anyway: with no base it reconciles through
-        // planWithoutBase rather than overwriting what it has not seen.
-        if action == .guardedFirstUpload,
-           remoteSnapshot.token == expectedStoredToken(for: remoteSnapshot.source) {
+        // planWithoutBase rather than overwriting what it has not seen. An
+        // unknown revision on either side can't show the server is unchanged,
+        // so it takes the merge too. Core owns the rule, where the sync model
+        // checks it.
+        if LampSyncSettingsBootstrap.uploadsBeforeMerge(
+            action: action,
+            observedToken: expectedStoredToken(for: remoteSnapshot.source),
+            remoteToken: remoteSnapshot.token
+        ) {
             if remoteSnapshot.archiveSnapshot != nil && !remoteSnapshot.isLegacy {
                 try await exportArchiveToRemote(
                     storage: storage, replacing: remoteSnapshot

@@ -2911,6 +2911,180 @@ final class Lamp_BibleTests: XCTestCase {
         ))
     }
 
+    // MARK: - Guarded first settings upload
+
+    /// An older install: unsynced local changes and no saved baseline, so its
+    /// first pass is a guarded upload. This device has finished one reading
+    /// the server may lack; the server has finished one this device lacks.
+    private struct GuardedFirstUpload {
+        let state: SettingsArchiveState
+        let storage: SettingsArchiveStorage
+        let localReading: String
+        let serverReading: String
+        let restore: () -> Void
+    }
+
+    @MainActor
+    private func guardedFirstUpload(
+        storedToken: String?,
+        serverRevision: String,
+        archived: Bool = false,
+        serverHasLocalReading: Bool = false
+    ) async throws -> GuardedFirstUpload {
+        let keys = [
+            "UserSettingsSync.remoteChangeToken",
+            "UserSettingsSync.readingsBase.v1",
+            "UserDatabase.lastExportedAt"
+        ]
+        let previous = keys.map { UserDefaults.standard.object(forKey: $0) }
+        let localReading = "guarded-local-\(UUID().uuidString)"
+        let serverReading = "guarded-server-\(UUID().uuidString)"
+        let restore = {
+            try? UserDatabase.shared.removeCompletedReading(localReading)
+            try? UserDatabase.shared.removeCompletedReading(serverReading)
+            for (key, value) in zip(keys, previous) {
+                UserDefaults.standard.set(value, forKey: key)
+            }
+        }
+        keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+        if let storedToken {
+            UserDefaults.standard.set(storedToken, forKey: keys[0])
+        }
+
+        // Finishing a reading is the unsynced change.
+        try UserDatabase.shared.addCompletedReading(localReading)
+        XCTAssertTrue(UserDatabase.shared.hasUnsyncedChanges)
+
+        // The server holds the same settings, with the other reading, as the
+        // pre-archive legacy file or inside the archive.
+        try UserDatabase.shared.checkpointForSync()
+        let remoteURL = temporaryDirectory
+            .appendingPathComponent("guarded-\(UUID().uuidString).db")
+        try FileManager.default.copyItem(
+            at: UserDatabase.shared.databaseURL, to: remoteURL
+        )
+        let queue = try DatabaseQueue(path: remoteURL.path)
+        _ = try await queue.writeWithoutTransaction { db in
+            if !serverHasLocalReading {
+                _ = try CompletedReading.deleteOne(db, key: localReading)
+            }
+            try CompletedReading(id: serverReading).insert(db)
+            try db.checkpoint(.truncate)
+        }
+        let remoteData = try Data(contentsOf: remoteURL)
+        let state = SettingsArchiveState()
+        if archived {
+            let archive = try LampSyncSettingsArchive.replacingData(
+                remoteData, in: nil, observedLegacy: nil
+            )
+            await state.seed(
+                path: LampSyncLayout.archivePath,
+                file: LampSyncRemoteFile(
+                    data: try archive.compressedData(), revision: serverRevision
+                )
+            )
+        } else {
+            await state.seed(
+                path: LampSyncLayout.userSettingsPath,
+                file: LampSyncRemoteFile(data: remoteData, revision: serverRevision)
+            )
+        }
+        return GuardedFirstUpload(
+            state: state,
+            storage: SettingsArchiveStorage(state: state),
+            localReading: localReading,
+            serverReading: serverReading,
+            restore: restore
+        )
+    }
+
+    /// The finished readings in a settings database as stored on the server.
+    private func readingIDs(inSettingsDatabase data: Data) throws -> Set<String> {
+        let url = temporaryDirectory
+            .appendingPathComponent("remote-\(UUID().uuidString).db")
+        try data.write(to: url)
+        var configuration = Configuration()
+        configuration.readonly = true
+        let queue = try DatabaseQueue(path: url.path, configuration: configuration)
+        return Set(try queue.read { db in
+            try String.fetchAll(db, sql: "SELECT id FROM completed_readings")
+        })
+    }
+
+    private func publishedReadingIDs(in state: SettingsArchiveState) async throws -> Set<String> {
+        let file = await state.file(LampSyncLayout.archivePath)
+        let archive = try LampSyncArchive.decode(compressedData: XCTUnwrap(file?.data))
+        return try readingIDs(
+            inSettingsDatabase: XCTUnwrap(LampSyncSettingsArchive.data(in: archive))
+        )
+    }
+
+    @MainActor
+    func testAGuardedFirstUploadWritesFirstWhileTheServerIsUnchanged() async throws {
+        let setup = try await guardedFirstUpload(
+            storedToken: "legacy-1", serverRevision: "\"legacy-1\""
+        )
+        defer { setup.restore() }
+
+        try await UserSettingsSyncManager.shared.reconcileWithRemote(storage: setup.storage)
+
+        // The server still held what this device last saw, so the device's
+        // copy went up before anything was merged: the legacy file first.
+        let written = await setup.state.writtenPaths()
+        XCTAssertEqual(written.first, LampSyncLayout.userSettingsPath)
+        let legacy = await setup.state.file(LampSyncLayout.userSettingsPath)
+        let uploaded = try readingIDs(inSettingsDatabase: XCTUnwrap(legacy?.data))
+        XCTAssertTrue(uploaded.contains(setup.localReading))
+        XCTAssertFalse(uploaded.contains(setup.serverReading))
+        let published = try await publishedReadingIDs(in: setup.state)
+        XCTAssertTrue(published.contains(setup.localReading))
+        XCTAssertFalse(published.contains(setup.serverReading))
+    }
+
+    @MainActor
+    func testAGuardedFirstUploadMergesWhenTheServerHasMoved() async throws {
+        let setup = try await guardedFirstUpload(
+            storedToken: "legacy-0", serverRevision: "\"legacy-1\""
+        )
+        defer { setup.restore() }
+
+        try await UserSettingsSyncManager.shared.reconcileWithRemote(storage: setup.storage)
+
+        // Nothing went up ahead of the merge, and the reading only the server
+        // had survived it, on the server and here.
+        let written = await setup.state.writtenPaths()
+        XCTAssertEqual(written.first, LampSyncLayout.archivePath)
+        let published = try await publishedReadingIDs(in: setup.state)
+        XCTAssertTrue(published.isSuperset(of: [setup.localReading, setup.serverReading]))
+        XCTAssertTrue(UserDatabase.shared.isReadingCompleted(setup.serverReading))
+    }
+
+    @MainActor
+    func testAGuardedFirstUploadMergesWhenNeitherRevisionIsKnown() async throws {
+        // No token saved here, and only a weak ETag on the archive there:
+        // nothing can show the server is unchanged. Uploading first would
+        // have written over an archive this device never saw, and the server
+        // refuses any write against a weak ETag, so the pass failed. Merging
+        // first finds the server already has this device's reading and
+        // brings the other one down, leaving nothing to write over.
+        let setup = try await guardedFirstUpload(
+            storedToken: nil,
+            serverRevision: "W/\"archive-1\"",
+            archived: true,
+            serverHasLocalReading: true
+        )
+        defer { setup.restore() }
+        let seeded = await setup.state.file(LampSyncLayout.archivePath)
+
+        try await UserSettingsSyncManager.shared.reconcileWithRemote(storage: setup.storage)
+
+        let written = await setup.state.writtenPaths()
+        XCTAssertFalse(written.contains(LampSyncLayout.archivePath))
+        let archive = await setup.state.file(LampSyncLayout.archivePath)
+        XCTAssertEqual(archive?.data, seeded?.data)
+        XCTAssertTrue(UserDatabase.shared.isReadingCompleted(setup.serverReading))
+    }
+
     @MainActor
     func testSettingsPlanMergesIndependentReadingEditsBeforePublish() throws {
         var baseSettings = UserSettings()
@@ -4514,9 +4688,13 @@ private actor SettingsArchiveState {
     private var files: [String: LampSyncRemoteFile] = [:]
     private var nextRevision = 0
     private var failLegacyWrite = false
+    private var written: [String] = []
 
     func file(_ path: String) -> LampSyncRemoteFile? { files[path] }
     func writeCount() -> Int { nextRevision }
+    /// The paths written, in order. Seeds and `replaceLegacy` stand for
+    /// another client and are left out.
+    func writtenPaths() -> [String] { written }
 
     func seed(path: String, file: LampSyncRemoteFile) { files[path] = file }
 
@@ -4541,6 +4719,7 @@ private actor SettingsArchiveState {
             break
         }
         nextRevision += 1
+        written.append(path)
         files[path] = LampSyncRemoteFile(
             data: data,
             revision: "\"settings-\(nextRevision)\""

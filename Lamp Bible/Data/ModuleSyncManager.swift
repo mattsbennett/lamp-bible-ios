@@ -497,33 +497,37 @@ class ModuleSyncManager: ObservableObject {
             let availability = await LampSyncArchiveIndex.availability(
                 in: remoteStore, knownRevision: liveRevision
             )
-            switch (previous.importableFingerprint, availability.index) {
-            case (nil, _):
-                // Recorded before this device ever published a fingerprint,
-                // so there is nothing to compare an index against. Expected
-                // once, on the first full import after this shipped.
-                print("[ModuleSync] archive: moved, nothing recorded to compare yet")
-            case (_, nil):
-                print("[ModuleSync] archive: moved, \(availability.reason)")
-            case (let fingerprint?, let index?)
-                where index.importableFingerprint != fingerprint:
-                print("[ModuleSync] archive: moved, the index says content changed")
-            default:
+            // Core owns the decision, where the sync model checks it.
+            if LampSyncArchiveIndex.mayAdvanceWithoutFetch(
+                cacheUsable: usableCache,
+                appliedFingerprint: previous.importableFingerprint,
+                availability: availability
+            ), let index = availability.index {
                 print("[ModuleSync] archive: moved, nothing installable changed")
                 // Move the record forward to the revision just vouched for.
                 // Without this the next pass would ask the index the same
                 // question again instead of recognising the archive outright,
                 // and would be back to a full fetch if the index went away.
                 var advanced = previous
-                advanced.revision = liveRevision
+                advanced.revision = index.archiveRevision
                 if let encoded = try? JSONEncoder().encode(advanced) {
                     defaults.set(encoded, forKey: Self.portableArchiveImportStateKey)
                 }
                 return PortableArchiveImportResult(
                     compatibilityManifest: previous.compatibilityManifest,
                     snapshot: nil,
-                    revision: liveRevision
+                    revision: index.archiveRevision
                 )
+            }
+            if previous.importableFingerprint == nil {
+                // Recorded before this device ever published a fingerprint,
+                // so there is nothing to compare an index against. Expected
+                // once, on the first full import after this shipped.
+                print("[ModuleSync] archive: moved, nothing recorded to compare yet")
+            } else if availability.index == nil {
+                print("[ModuleSync] archive: moved, \(availability.reason)")
+            } else {
+                print("[ModuleSync] archive: moved, the index says content changed")
             }
         }
         let observation = try await LampSyncArchiveRemote.readIfChanged(
