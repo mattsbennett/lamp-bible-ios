@@ -1249,7 +1249,7 @@ struct ToolPanelView: View {
                 // In horizontal split (hideHeader), no spacer - content scrolls under the shared toolbar
                 if !hideHeader {
                     if isHeaderCollapsed {
-                        Color.clear.frame(height: 24)
+                        Color.clear.frame(height: 38)
                     } else {
                         Color.clear.frame(height: 44)
                     }
@@ -1273,17 +1273,29 @@ struct ToolPanelView: View {
             if !hideHeader {
             VStack(spacing: 0) {
                 if isHeaderCollapsed {
-                    Text(currentPanelModeDisplayName)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(Color(UIColor.systemBackground))
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                    // The same one-line pill the reader's header shrinks to,
+                    // so the two panes collapse alike and either brings the
+                    // toolbars back.
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
                             toolbarsHidden = false
                             toolbarsCollapsed = false
                         }
+                    } label: {
+                        Text(currentPanelModeDisplayName)
+                            .font(.caption)
+                            .foregroundStyle(Color.primary)
+                            .lineLimit(1)
+                            .padding(.horizontal, 12)
+                            .frame(height: 30)
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .modifier(HeaderGlass(shape: Capsule()))
+                    .accessibilityHint("Shows the toolbars")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .background(Color(UIColor.systemBackground))
                 } else {
                 HStack {
                     Menu {

@@ -563,9 +563,9 @@ struct ReaderNavigationToolbarView: View {
     }
 }
 
-/// Glass for the reader header's controls, or a material where the OS has no
-/// glass.
-private struct HeaderGlass<S: Shape>: ViewModifier {
+/// Glass for header controls — the reader's and the tool panel's — or a
+/// material where the OS has no glass.
+struct HeaderGlass<S: Shape>: ViewModifier {
     let shape: S
 
     func body(content: Content) -> some View {
