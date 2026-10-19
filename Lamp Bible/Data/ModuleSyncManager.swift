@@ -39,6 +39,9 @@ class ModuleSyncManager: ObservableObject {
 
     private init() {
         do {
+            // Before anyone is shown them: a stored conflict whose two sides
+            // say the same thing has nothing to choose.
+            try dropSettledPendingConflicts()
             if let notes = try database.firstPendingModuleConflicts(type: .notes, as: NoteConflict.self) {
                 pendingConflicts = notes.conflicts
                 conflictModuleId = notes.moduleId
@@ -53,6 +56,7 @@ class ModuleSyncManager: ObservableObject {
     }
 
     func reloadPendingModuleConflicts() throws {
+        try dropSettledPendingConflicts()
         let notes = try database.firstPendingModuleConflicts(type: .notes, as: NoteConflict.self)
         let devotionals = try database.firstPendingModuleConflicts(type: .devotional, as: DevotionalConflict.self)
         DispatchQueue.main.async {
@@ -2705,23 +2709,7 @@ class ModuleSyncManager: ObservableObject {
             incoming: cloud,
             key: { $0.id },
             modified: { $0.lastModified },
-            sameContent: { local, cloud in
-                local.title == cloud.title
-                        && local.subtitle == cloud.subtitle
-                        && local.author == cloud.author
-                        && local.date == cloud.date
-                        && local.tags == cloud.tags
-                        && local.category == cloud.category
-                        && local.seriesId == cloud.seriesId
-                        && local.seriesName == cloud.seriesName
-                        && local.seriesOrder == cloud.seriesOrder
-                        && local.keyScripturesJson == cloud.keyScripturesJson
-                        && local.summaryJson == cloud.summaryJson
-                        && local.contentJson == cloud.contentJson
-                        && local.footnotesJson == cloud.footnotesJson
-                        && local.mediaJson == cloud.mediaJson
-                        && local.relatedIds == cloud.relatedIds
-            }
+            sameContent: Self.sameDevotionalContent
         )
         let conflicts = try merged.conflicts.map { conflict -> DevotionalConflict in
             guard let local = conflict.local.toDevotional(),
@@ -2805,12 +2793,7 @@ class ModuleSyncManager: ObservableObject {
             incoming: cloud,
             key: { $0.verseId },
             modified: { $0.lastModified },
-            sameContent: { local, cloud in
-                local.title == cloud.title
-                        && local.content == cloud.content
-                        && local.verseRefsJson == cloud.verseRefsJson
-                        && local.footnotesJson == cloud.footnotesJson
-            }
+            sameContent: Self.sameNoteContent
         )
         return NoteSyncMergeResult(
             entriesToSave: merged.recordsToSave,
@@ -2825,6 +2808,89 @@ class ModuleSyncManager: ObservableObject {
             cloudMergeCount: merged.incomingCount,
             localKeptCount: merged.localCount
         )
+    }
+
+    // MARK: - Comparing editable entries
+
+    /// Whether two copies of a note say the same thing.
+    static func sameNoteContent(_ local: NoteEntry, _ cloud: NoteEntry) -> Bool {
+        local.title == cloud.title
+            && local.content == cloud.content
+            && sameStoredJSON(local.verseRefsJson, cloud.verseRefsJson)
+            && sameStoredJSON(local.footnotesJson, cloud.footnotesJson)
+    }
+
+    /// Whether two copies of a devotional say the same thing.
+    static func sameDevotionalContent(_ local: DevotionalEntry, _ cloud: DevotionalEntry) -> Bool {
+        local.title == cloud.title
+            && local.subtitle == cloud.subtitle
+            && local.author == cloud.author
+            && local.date == cloud.date
+            && local.tags == cloud.tags
+            && local.category == cloud.category
+            && local.seriesId == cloud.seriesId
+            && local.seriesName == cloud.seriesName
+            && local.seriesOrder == cloud.seriesOrder
+            && sameStoredJSON(local.keyScripturesJson, cloud.keyScripturesJson)
+            && sameStoredJSON(local.summaryJson, cloud.summaryJson)
+            && sameStoredJSON(local.contentJson, cloud.contentJson)
+            && sameStoredJSON(local.footnotesJson, cloud.footnotesJson)
+            && sameStoredJSON(local.mediaJson, cloud.mediaJson)
+            && local.relatedIds == cloud.relatedIds
+    }
+
+    /// Whether two stored JSON columns hold the same value.
+    ///
+    /// The Mac writes object keys sorted and an empty list as `[]`; this device
+    /// writes keys in declaration order and leaves an absent list nil. Compared
+    /// as text, every note that crossed between them looked edited on both
+    /// sides at the same moment, and became a conflict with nothing to choose
+    /// between. A column that isn't JSON, such as a plain-text body, compares
+    /// as written.
+    static func sameStoredJSON(_ a: String?, _ b: String?) -> Bool {
+        canonicalStoredJSON(a) == canonicalStoredJSON(b)
+    }
+
+    private static func canonicalStoredJSON(_ text: String?) -> String? {
+        guard let text, !text.isEmpty else { return nil }
+        guard let data = text.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(
+                with: data, options: [.fragmentsAllowed]
+              ) else { return text }
+        if value is NSNull { return nil }
+        if let list = value as? [Any], list.isEmpty { return nil }
+        if let object = value as? [String: Any], object.isEmpty { return nil }
+        guard let canonical = try? JSONSerialization.data(
+            withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]
+        ) else { return text }
+        return String(decoding: canonical, as: UTF8.self)
+    }
+
+    /// Conflicts stored before the comparison above knew better: both sides
+    /// say the same thing, so there is nothing for anyone to choose. They
+    /// would otherwise stay until the remote file changed again, and block
+    /// publishing the module meanwhile.
+    private func dropSettledPendingConflicts() throws {
+        if let notes = try database.firstPendingModuleConflicts(type: .notes, as: NoteConflict.self) {
+            for conflict in notes.conflicts
+            where Self.sameNoteContent(conflict.localEntry, conflict.cloudEntry) {
+                _ = try database.removePendingModuleConflict(
+                    moduleId: notes.moduleId, type: .notes, key: conflict.id
+                )
+            }
+        }
+        if let devotionals = try database.firstPendingModuleConflicts(
+            type: .devotional, as: DevotionalConflict.self
+        ) {
+            for conflict in devotionals.conflicts where Self.sameDevotionalContent(
+                DevotionalEntry(from: conflict.localEntry, moduleId: devotionals.moduleId),
+                DevotionalEntry(from: conflict.cloudEntry, moduleId: devotionals.moduleId)
+            ) {
+                _ = try database.removePendingModuleConflict(
+                    moduleId: devotionals.moduleId, type: .devotional, key: conflict.id
+                )
+            }
+        }
     }
 
     /// Resolve a conflict with user's choice

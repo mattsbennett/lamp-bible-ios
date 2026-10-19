@@ -5334,3 +5334,47 @@ final class ReaderReadingLineTests: XCTestCase {
         XCTAssertEqual(coordinator.readerVerseAtReadingLine(in: scrollView), 1001001)
     }
 }
+
+// MARK: - Comparing editable entries
+
+/// Notes and devotionals cross between this device and the Mac, which stores
+/// the same values in a different spelling. Only a difference in what an entry
+/// says may make two copies a conflict.
+final class EditableEntryComparisonTests: XCTestCase {
+    private func note(footnotesJson: String?, verseRefsJson: String?) -> NoteEntry {
+        var entry = NoteEntry(
+            id: "personal-notes:1001000", moduleId: "notes", verseId: 1001000,
+            title: "General Notes", content: "General note test with asdfkey[^1]",
+            lastModified: 1768701506
+        )
+        entry.footnotesJson = footnotesJson
+        entry.verseRefsJson = verseRefsJson
+        return entry
+    }
+
+    /// As the device's log found them: identical notes, identical timestamps,
+    /// keys in a different order and an empty list written out on one side.
+    func testTheMacsSpellingOfANoteIsTheSameNote() {
+        let phone = note(footnotesJson: #"[{"id":"1","content":"Jer 4:30"}]"#, verseRefsJson: nil)
+        let mac = note(footnotesJson: #"[{"content":"Jer 4:30","id":"1"}]"#, verseRefsJson: "[]")
+        XCTAssertTrue(ModuleSyncManager.sameNoteContent(phone, mac))
+    }
+
+    func testADifferentFootnoteIsStillADifference() {
+        let phone = note(footnotesJson: #"[{"id":"1","content":"Jer 4:30"}]"#, verseRefsJson: nil)
+        let mac = note(footnotesJson: #"[{"content":"Jer 4:31","id":"1"}]"#, verseRefsJson: "[]")
+        XCTAssertFalse(ModuleSyncManager.sameNoteContent(phone, mac))
+    }
+
+    func testAnAbsentListAndAnEmptyOneAreTheSame() {
+        XCTAssertTrue(ModuleSyncManager.sameStoredJSON(nil, "[]"))
+        XCTAssertTrue(ModuleSyncManager.sameStoredJSON("null", nil))
+        XCTAssertFalse(ModuleSyncManager.sameStoredJSON(nil, #"[{"path":"a.jpg"}]"#))
+    }
+
+    /// A devotional body may be plain Markdown rather than JSON.
+    func testABodyThatIsNotJSONComparesAsWritten() {
+        XCTAssertTrue(ModuleSyncManager.sameStoredJSON("In the beginning", "In the beginning"))
+        XCTAssertFalse(ModuleSyncManager.sameStoredJSON("In the beginning", "In the beginning "))
+    }
+}
