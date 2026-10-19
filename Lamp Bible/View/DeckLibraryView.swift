@@ -98,7 +98,7 @@ struct DeckLibraryView: View {
             )
         ) {
             if let entry = entries.first(where: { $0.id == pendingDeckID }) {
-                DeckViewerView(deck: entry.deck, store: PresentationDeckStorage.shared.store(for: entry))
+                DeckViewerView(entry: entry)
             }
         }
     }

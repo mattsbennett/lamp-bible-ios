@@ -424,6 +424,50 @@ final class PresentationDeckSyncTests: XCTestCase {
         try decks.removeImportedDeck(id: "local")
         XCTAssertTrue(decks.entries().isEmpty)
     }
+
+    // MARK: - Decks made from a writing
+
+    private func publish(_ decks: [LampPresentationDeck]) throws {
+        let archive = LampSyncArchive(entries: try decks.map {
+            try deckEntry($0, modifiedAt: .init(timeIntervalSince1970: 100))
+        })
+        try PresentationDeckSync.pull(from: archive, into: self.decks)
+    }
+
+    func testAWritingFindsTheDecksMadeFromIt() throws {
+        var sermon = deck(id: "a", title: "Sermon")
+        sermon.source = LampPresentationSource(kind: .devotional, id: "9ADB692A-FE3C-4291-A012-074FFDB3AC53")
+        var other = deck(id: "b", title: "Another Writing")
+        other.source = LampPresentationSource(kind: .devotional, id: "D71AF007-C2C5-443D-87B1-6C6CABA13525")
+        let loose = deck(id: "c", title: "Untitled Presentation")
+        try publish([sermon, other, loose])
+
+        XCTAssertEqual(
+            decks.entries(forWriting: "9ADB692A-FE3C-4291-A012-074FFDB3AC53").map(\.title),
+            ["Sermon"]
+        )
+        XCTAssertEqual(
+            decks.linkedWritingIDs(),
+            ["9ADB692A-FE3C-4291-A012-074FFDB3AC53", "D71AF007-C2C5-443D-87B1-6C6CABA13525"]
+        )
+    }
+
+    func testAWritingIDMatchesWhicheverCaseItIsSpelledIn() throws {
+        var sermon = deck(id: "a", title: "Sermon")
+        sermon.source = LampPresentationSource(kind: .writing, id: "9adb692a-fe3c-4291-a012-074fdb3ac53")
+        try publish([sermon])
+
+        XCTAssertEqual(decks.entries(forWriting: "9ADB692A-FE3C-4291-A012-074FDB3AC53").count, 1)
+    }
+
+    func testADeckMadeFromScriptureBelongsToNoWriting() throws {
+        var passage = deck(id: "a", title: "Psalm 23")
+        passage.source = LampPresentationSource(kind: .scripture, id: "19023001")
+        try publish([passage])
+
+        XCTAssertTrue(decks.entries(forWriting: "19023001").isEmpty)
+        XCTAssertTrue(decks.linkedWritingIDs().isEmpty)
+    }
 }
 
 // MARK: - Test storage

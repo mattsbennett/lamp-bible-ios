@@ -244,3 +244,10 @@ struct DeckViewerView: View {
         }
     }
 }
+
+extension DeckViewerView {
+    /// Opens a stored deck, its images resolved wherever it was kept.
+    init(entry: PresentationDeckEntry) {
+        self.init(deck: entry.deck, store: PresentationDeckStorage.shared.store(for: entry))
+    }
+}

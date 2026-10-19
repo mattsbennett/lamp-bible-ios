@@ -91,6 +91,10 @@ struct DevotionalView: View {
     @State private var showingAudioFilePicker: Bool = false
     @State private var fullScreenImageItem: FullScreenImageItem? = nil
 
+    // Slide decks made from this writing on a Mac
+    @State private var linkedDecks: [PresentationDeckEntry] = []
+    @State private var openDeck: PresentationDeckEntry?
+
     // Table insertion state
     @State private var showingTableInsert: Bool = false
     @State private var tableRows: Int = 3
@@ -272,6 +276,13 @@ struct DevotionalView: View {
             allowsMultipleSelection: false
         ) { result in
             handleAudioFileImport(result)
+        }
+        .fullScreenCover(item: $openDeck) { entry in
+            DeckViewerView(entry: entry)
+        }
+        .task(id: devotional.meta.id) { await reloadLinkedDecks() }
+        .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
+            Task { await reloadLinkedDecks() }
         }
         .fullScreenCover(item: $fullScreenImageItem) { item in
             FullScreenImageView(
@@ -910,6 +921,10 @@ struct DevotionalView: View {
                     }
                 }
 
+                if !linkedDecks.isEmpty {
+                    slidesButton
+                }
+
                 // Share
                 Menu {
                     Button(action: shareDevotional) {
@@ -953,6 +968,38 @@ struct DevotionalView: View {
             }
         }
 
+    }
+
+    /// Opens the deck made from this writing, or offers the choice when there
+    /// is more than one.
+    @ViewBuilder
+    private var slidesButton: some View {
+        if linkedDecks.count == 1, let entry = linkedDecks.first {
+            Button { openDeck = entry } label: {
+                Image(systemName: "rectangle.on.rectangle")
+            }
+            .accessibilityLabel("Slides")
+        } else {
+            Menu {
+                ForEach(linkedDecks) { entry in
+                    Button(entry.title) { openDeck = entry }
+                }
+            } label: {
+                Image(systemName: "rectangle.on.rectangle")
+            }
+            .accessibilityLabel("Slides")
+        }
+    }
+
+    private func reloadLinkedDecks() async {
+        let writingID = devotional.meta.id
+        let entries = await Task.detached(priority: .userInitiated) {
+            PresentationDeckStorage.shared.entries(forWriting: writingID)
+        }.value
+        linkedDecks = entries
+        if let openDeck, !entries.contains(where: { $0.id == openDeck.id }) {
+            self.openDeck = nil
+        }
     }
 
     private func switchToVisualEdit() {

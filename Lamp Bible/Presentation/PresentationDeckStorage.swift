@@ -18,9 +18,26 @@ struct PresentationDeckEntry: Identifiable, Sendable {
     let modifiedAt: Date?
 
     var id: String { deck.id }
+    var title: String { deck.title }
 
     var visibleSlides: [LampPresentationSlide] {
         deck.slides.filter { !$0.isHidden }
+    }
+
+    /// The writing this deck was made from, if it was made from one. The Mac
+    /// links a deck to a writing as a `devotional` source; `writing` is the
+    /// format's other name for the same thing.
+    var linkedWritingID: String? {
+        guard let source = deck.source,
+              source.kind == .devotional || source.kind == .writing
+        else { return nil }
+        return source.id
+    }
+
+    /// Writing IDs are UUIDs, which one platform may spell in capitals and
+    /// another not.
+    func isLinked(toWriting writingID: String) -> Bool {
+        linkedWritingID?.caseInsensitiveCompare(writingID) == .orderedSame
     }
 }
 
@@ -77,6 +94,16 @@ struct PresentationDeckStorage: Sendable {
         return byID.values.sorted {
             $0.deck.title.localizedStandardCompare($1.deck.title) == .orderedAscending
         }
+    }
+
+    /// The decks made from one writing, so the writing can offer them.
+    func entries(forWriting writingID: String) -> [PresentationDeckEntry] {
+        entries().filter { $0.isLinked(toWriting: writingID) }
+    }
+
+    /// Every writing at least one deck was made from.
+    func linkedWritingIDs() -> Set<String> {
+        Set(entries().compactMap { $0.linkedWritingID?.uppercased() })
     }
 
     /// Stored copies with the bytes and dates a merge decision needs. A deck

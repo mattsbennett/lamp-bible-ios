@@ -86,21 +86,15 @@ struct PlanView: View {
                         )
                     }
                     .toolbar {
+                        // Slide decks open from the writings they were made
+                        // from; this is only the remote for a Mac presenting.
                         ToolbarItem(placement: .topBarTrailing) {
-                            Menu {
-                                Button("Slide Decks", systemImage: "rectangle.on.rectangle") {
-                                    showingDeckLibrary = true
-                                }
-                                Button(
-                                    "Presentation Remote",
-                                    systemImage: "appletvremote.gen4"
-                                ) {
-                                    showingPresentationRemote = true
-                                }
+                            Button {
+                                showingPresentationRemote = true
                             } label: {
-                                Image(systemName: "play.rectangle.on.rectangle")
+                                Image(systemName: "appletvremote.gen4")
                             }
-                            .accessibilityLabel("Presentations")
+                            .accessibilityLabel("Presentation Remote")
                         }
                     }
                     .toolbar {

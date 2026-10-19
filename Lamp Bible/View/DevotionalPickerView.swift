@@ -38,6 +38,9 @@ struct DevotionalPickerView: View {
     @State private var devotionalModules: [Module] = []
     @State private var selectedImportModuleId: String = ""
     @State private var lastLoadedModuleId: String = ""
+    /// Writings a slide deck was made from, so their rows can say so.
+    @State private var writingIDsWithSlides: Set<String> = []
+    @State private var showingDeckLibrary: Bool = false
 
     /// The currently selected module
     private var selectedModule: Module? {
@@ -183,6 +186,14 @@ struct DevotionalPickerView: View {
                     Button(action: { showingFileImporter = true }) {
                         Label("Import Devotional", systemImage: "doc.badge.plus")
                     }
+
+                    Divider()
+
+                    // Every deck, including those not made from a writing and
+                    // those opened from Files.
+                    Button(action: { showingDeckLibrary = true }) {
+                        Label("Slide Decks", systemImage: "rectangle.on.rectangle")
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                 }
@@ -205,6 +216,14 @@ struct DevotionalPickerView: View {
             DevotionalEditorSheet(moduleId: selectedModuleId) { newDevotional in
                 loadDevotionals()
             }
+        }
+        .sheet(isPresented: $showingDeckLibrary) {
+            DeckLibraryView()
+                .presentationDetents([.large])
+        }
+        .task { await reloadWritingIDsWithSlides() }
+        .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
+            Task { await reloadWritingIDsWithSlides() }
         }
         .sheet(isPresented: $showingFilterSheet) {
             DevotionalFilterSheet(
@@ -426,7 +445,7 @@ struct DevotionalPickerView: View {
                     Button {
                         onSelect(devotional)
                     } label: {
-                        DevotionalListRow(devotional: devotional)
+                        DevotionalListRow(devotional: devotional, hasSlides: hasSlides(devotional))
                     }
                     .buttonStyle(.plain)
                     .listRowSeparator(.hidden, edges: devotional.meta.id == filteredDevotionals.first?.meta.id ? .top : [])
@@ -443,7 +462,7 @@ struct DevotionalPickerView: View {
                             }
                         )
                     } label: {
-                        DevotionalListRow(devotional: devotional)
+                        DevotionalListRow(devotional: devotional, hasSlides: hasSlides(devotional))
                     }
                     .listRowSeparator(.hidden, edges: devotional.meta.id == filteredDevotionals.first?.meta.id ? .top : [])
                     .listRowSeparator(devotional.meta.id == filteredDevotionals.last?.meta.id ? .hidden : .visible, edges: .bottom)
@@ -458,6 +477,16 @@ struct DevotionalPickerView: View {
     }
 
     // MARK: - Actions
+
+    private func hasSlides(_ devotional: Devotional) -> Bool {
+        writingIDsWithSlides.contains(devotional.meta.id.uppercased())
+    }
+
+    private func reloadWritingIDsWithSlides() async {
+        writingIDsWithSlides = await Task.detached(priority: .utility) {
+            PresentationDeckStorage.shared.linkedWritingIDs()
+        }.value
+    }
 
     private func loadDevotionals() {
         Task {
@@ -542,9 +571,12 @@ struct DevotionalPickerView: View {
 
 struct DevotionalListRow: View {
     let devotional: Devotional
+    /// A slide deck was made from this writing; the writing opens it.
+    var hasSlides: Bool = false
 
-    init(devotional: Devotional) {
+    init(devotional: Devotional, hasSlides: Bool = false) {
         self.devotional = devotional
+        self.hasSlides = hasSlides
     }
 
     private var dateFormatter: DateFormatter = {
@@ -601,6 +633,16 @@ struct DevotionalListRow: View {
                         Image(systemName: "person")
                             .font(.caption2)
                         Text(author)
+                            .font(.caption)
+                    }
+                    .foregroundColor(.secondary)
+                }
+
+                if hasSlides {
+                    HStack(spacing: 4) {
+                        Image(systemName: "rectangle.on.rectangle")
+                            .font(.caption2)
+                        Text("Slides")
                             .font(.caption)
                     }
                     .foregroundColor(.secondary)
