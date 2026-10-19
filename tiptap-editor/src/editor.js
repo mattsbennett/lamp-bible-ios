@@ -9,6 +9,12 @@ import { TableCell } from '@tiptap/extension-table-cell'
 import { TableHeader } from '@tiptap/extension-table-header'
 import { Markdown } from 'tiptap-markdown'
 import { FootnoteRef, FootnoteDefinition } from './extensions/footnote.js'
+import {
+  readFootnotes,
+  shownLabel,
+  orderedDefinitions,
+  encodeLabels,
+} from './footnote-numbering.js'
 import { AudioBlock } from './extensions/audio-block.js'
 import { ImageBlock } from './extensions/image-caption.js'
 
@@ -68,37 +74,32 @@ function resolveBlockquoteLineBreaks(md) {
 }
 
 
-// Extract footnote definitions and convert footnote refs to HTML
+// Extract footnote definitions and convert footnote refs to HTML.
+//
+// Footnotes are shown numbered by the order they are first referred to, so a
+// writing can label them anything — [^lewis], [^2a], or numbers written out of
+// order — and still read 1, 2, 3 down the page. Only the display is numbered:
+// each original label travels with it, in `data-id` on a reference and in
+// `data-labels` on the definition block, so what is written back to Markdown
+// is what the writing already said.
 function resolveFootnotes(md) {
-  const lines = md.split('\n')
-  const contentLines = []
-  const footnoteDefinitions = []
-  const defPattern = /^\[\^(\w+)\]:\s*(.+)$/
+  const read = readFootnotes(md)
+  const { numbers } = read
 
-  for (const line of lines) {
-    const match = line.match(defPattern)
-    if (match) {
-      footnoteDefinitions.push({ id: match[1], content: match[2] })
-    } else {
-      contentLines.push(line)
-    }
-  }
-
-  // Convert [^id] refs to <sup> tags
-  let content = contentLines.join('\n')
-  content = content.replace(/\[\^(\w+)\]/g, (match, id) => {
-    return `<sup class="footnote-ref" data-id="${id}">[${id}]</sup>`
+  const content = read.content.replace(/\[\^(\w+)\]/g, (match, id) => {
+    const shown = shownLabel(numbers, id)
+    return `<sup class="footnote-ref" data-id="${id}" data-number="${shown}">[${shown}]</sup>`
   })
 
-  // Append footnote definitions as HTML block
-  if (footnoteDefinitions.length > 0) {
-    const defsHtml = footnoteDefinitions.map(d =>
-      `<span class="footnote-label">[${d.id}]</span> ${escapeHtmlContent(d.content)}`
-    ).join('<br>')
-    content += `\n<div class="footnote-definition">${defsHtml}</div>`
-  }
+  if (read.definitions.length === 0) return content
 
+  const ordered = orderedDefinitions(read)
+  const defsHtml = ordered.map(d =>
+    `<span class="footnote-label">[${d.shown}]</span> ${escapeHtmlContent(d.content)}`
+  ).join('<br>')
+  const labels = escapeHtmlContent(encodeLabels(ordered))
   return content
+    + `\n<div class="footnote-definition" data-labels="${labels}">${defsHtml}</div>`
 }
 
 let editor = null
