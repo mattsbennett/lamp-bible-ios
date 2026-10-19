@@ -1295,7 +1295,6 @@ struct ToolPanelView: View {
                     .accessibilityHint("Shows the toolbars")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 4)
-                    .background(Color(UIColor.systemBackground))
                 } else {
                 HStack {
                     Menu {
@@ -1527,17 +1526,10 @@ struct ToolPanelView: View {
                 .padding(.horizontal)
                 .padding(.top, 2)
                 .padding(.bottom, 6)
-                .background(Color(UIColor.systemBackground))
                 }
-
-                // Gradient fade below header
-                LinearGradient(
-                    colors: [Color(UIColor.systemBackground), Color(UIColor.systemBackground).opacity(0)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 15)
             }
+            // No band behind the header in either form: its controls are glass,
+            // and sit over the content the way the reader's header does.
             } // end if !hideHeader
         }
         // In horizontal split mode, extend to top of screen so content scrolls under the shared toolbar
