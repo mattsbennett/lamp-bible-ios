@@ -163,9 +163,9 @@ struct PlanView: View {
                             initialToolbarMode: deepLinkPlanMode ? .plan : nil
                         )
                     }
-                    .sheet(isPresented: $showingPresentationRemote) {
+                    // Full screen: the remote is the one thing in use while presenting.
+                    .fullScreenCover(isPresented: $showingPresentationRemote) {
                         PresentationRemoteView()
-                            .presentationDetents([.large])
                     }
                     .sheet(isPresented: $showingDeckLibrary) {
                         DeckLibraryView()

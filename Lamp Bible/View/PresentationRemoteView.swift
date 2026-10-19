@@ -21,6 +21,8 @@ struct PresentationRemoteView: View {
                     pairingView
                 case .presenting:
                     presenterView
+                case .ended:
+                    failureView("The presentation has ended on the Mac.")
                 case let .failed(message):
                     failureView(message)
                 }
@@ -29,20 +31,32 @@ struct PresentationRemoteView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-                if client.phase != .browsing && client.phase != .stopped {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Change") {
-                            pairingCode = ""
-                            client.startBrowsing()
-                        }
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
                     }
+                    .accessibilityLabel("Close")
+                }
+                if client.phase == .presenting, let state = client.presentationState {
+                    // While presenting the bars carry everything but the slide
+                    // and notes: the deck, place and time up top, the controls
+                    // floating below as the system's glass bottom bar.
+                    ToolbarItem(placement: .principal) {
+                        presentingTitle(state)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        slideMenu(state)
+                    }
+                    remoteControls(state)
                 }
             }
         }
         .onAppear {
             if client.phase == .stopped { client.startBrowsing() }
+        }
+        // When the Mac quits or ends the presentation there is nothing left
+        // to control, so the remote goes too.
+        .onChange(of: client.phase) { _, phase in
+            if phase == .ended { dismiss() }
         }
         .onDisappear { client.stop() }
         .sheet(isPresented: $showingScanner) {
@@ -219,6 +233,11 @@ struct PresentationRemoteView: View {
                 .frame(maxWidth: 320)
             }
 
+            // Back to the nearby Macs, for a wrong choice. Only here, before
+            // a presentation is open: once it is, there's nothing to change.
+            Button("Choose a Different Mac") { changePresenter() }
+                .font(.subheadline)
+
             Spacer()
         }
         .padding(28)
@@ -229,8 +248,6 @@ struct PresentationRemoteView: View {
             if let state = client.presentationState {
                 ScrollView {
                     VStack(spacing: 18) {
-                        presenterHeader(state)
-
                         if horizontalSizeClass == .regular {
                             HStack(alignment: .top, spacing: 20) {
                                 slideColumn(state)
@@ -246,10 +263,6 @@ struct PresentationRemoteView: View {
                         }
                     }
                     .padding()
-                    .padding(.bottom, 96)
-                }
-                .safeAreaInset(edge: .bottom) {
-                    remoteControls(state)
                 }
             } else {
                 VStack(spacing: 14) {
@@ -262,46 +275,50 @@ struct PresentationRemoteView: View {
         }
     }
 
-    private func presenterHeader(_ state: LampPresentationRemoteState) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(state.deckTitle)
-                    .font(.headline)
-                    .lineLimit(1)
+    /// The deck, where it has got to, and how long it has run, in the space
+    /// a navigation title takes.
+    private func presentingTitle(_ state: LampPresentationRemoteState) -> some View {
+        VStack(spacing: 1) {
+            Text(state.deckTitle)
+                .font(.headline)
+                .lineLimit(1)
+            HStack(spacing: 6) {
                 Text("Slide \(state.currentSlideIndex + 1) of \(state.slideCount)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("·")
+                Text(elapsedTime(state.elapsedSeconds))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                if state.isBlackout {
+                    Text("·")
+                    Label("Black", systemImage: "moon.fill")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Audience screen is black")
+                }
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+    }
 
-            Spacer()
-
-            if state.isBlackout {
-                Label("Audience black", systemImage: "moon.fill")
-                    .font(.caption.bold())
-                    .foregroundStyle(.orange)
-            }
-
-            Text(elapsedTime(state.elapsedSeconds))
-                .font(.system(.headline, design: .monospaced))
-                .contentTransition(.numericText())
-
-            Menu {
-                ForEach(state.slideReferences) { slide in
-                    Button {
-                        client.send(.init(action: .goTo, slideIndex: slide.index))
-                    } label: {
-                        if slide.index == state.currentSlideIndex {
-                            Label("\(slide.index + 1). \(slide.title)", systemImage: "checkmark")
-                        } else {
-                            Text("\(slide.index + 1). \(slide.title)")
-                        }
+    private func slideMenu(_ state: LampPresentationRemoteState) -> some View {
+        Menu {
+            ForEach(state.slideReferences) { slide in
+                Button {
+                    client.send(.init(action: .goTo, slideIndex: slide.index))
+                } label: {
+                    if slide.index == state.currentSlideIndex {
+                        Label("\(slide.index + 1). \(slide.title)", systemImage: "checkmark")
+                    } else {
+                        Text("\(slide.index + 1). \(slide.title)")
                     }
                 }
-            } label: {
-                Image(systemName: "list.number")
             }
-            .accessibilityLabel("Choose slide")
+        } label: {
+            Image(systemName: "list.number")
         }
+        .accessibilityLabel("Choose slide")
     }
 
     private func slideColumn(_ state: LampPresentationRemoteState) -> some View {
@@ -362,24 +379,23 @@ struct PresentationRemoteView: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 
-    private func remoteControls(_ state: LampPresentationRemoteState) -> some View {
-        HStack(spacing: 12) {
+    @ToolbarContentBuilder
+    private func remoteControls(_ state: LampPresentationRemoteState) -> some ToolbarContent {
+        ToolbarItem(placement: .bottomBar) {
             Button {
                 client.send(.init(action: .toggleBlackout))
             } label: {
                 Image(systemName: state.isBlackout ? "sun.max.fill" : "moon.fill")
-                    .frame(width: 30, height: 38)
             }
-            .buttonStyle(.bordered)
             .accessibilityLabel(state.isBlackout ? "Restore audience slide" : "Black out audience screen")
-
+        }
+        ToolbarItemGroup(placement: .bottomBar) {
+            Spacer()
             Button {
                 client.send(.init(action: .previous))
             } label: {
                 Label("Previous", systemImage: "chevron.left")
-                    .frame(minHeight: 38)
             }
-            .buttonStyle(.bordered)
             .disabled(!state.canGoPrevious)
 
             Button {
@@ -387,15 +403,10 @@ struct PresentationRemoteView: View {
             } label: {
                 Label("Next", systemImage: "chevron.right")
                     .labelStyle(.titleAndIcon)
-                    .frame(maxWidth: .infinity, minHeight: 38)
             }
             .buttonStyle(.borderedProminent)
             .disabled(!state.canGoNext)
         }
-        .controlSize(.large)
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
     }
 
     private func failureView(_ message: String) -> some View {
@@ -407,6 +418,11 @@ struct PresentationRemoteView: View {
             Button("Look Again") { client.startBrowsing() }
                 .buttonStyle(.borderedProminent)
         }
+    }
+
+    private func changePresenter() {
+        pairingCode = ""
+        client.startBrowsing()
     }
 
     private func pair() {

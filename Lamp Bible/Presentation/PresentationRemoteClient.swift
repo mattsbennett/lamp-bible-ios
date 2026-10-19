@@ -12,6 +12,9 @@ final class PresentationRemoteClient: ObservableObject {
         case awaitingPairing
         case pairing
         case presenting
+        /// The Mac closed the connection mid-presentation: it quit, or ended the
+        /// presentation. Distinct from `failed`, which leaves something to retry.
+        case ended
         case failed(String)
     }
 
@@ -122,7 +125,7 @@ final class PresentationRemoteClient: ObservableObject {
             case let .failed(error):
                 DispatchQueue.main.async {
                     guard self.connection === connection else { return }
-                    self.phase = .failed(error.localizedDescription)
+                    self.connectionClosed(error: error)
                 }
             case .cancelled:
                 break
@@ -204,16 +207,31 @@ final class PresentationRemoteClient: ObservableObject {
             if isComplete || error != nil {
                 DispatchQueue.main.async {
                     guard self.connection === connection else { return }
-                    if case .failed = self.phase { return }
-                    self.phase = .failed(
-                        self.phase == .pairing
-                            ? "Pairing failed. Check the code and choose the presenter again."
-                            : "The presentation connection ended."
-                    )
+                    self.connectionClosed(error: error)
                 }
             } else {
                 self.receive(from: connection)
             }
+        }
+    }
+
+    /// The connection is over. A presenter that closed it while presenting —
+    /// cleanly, or by its process going away (a reset) — has ended the session;
+    /// anything else is a failure worth showing.
+    private func connectionClosed(error: NWError?) {
+        switch phase {
+        case .failed, .ended, .stopped:
+            return
+        case .presenting:
+            if error == nil || error == .posix(.ECONNRESET) {
+                phase = .ended
+                return
+            }
+            phase = .failed(error?.localizedDescription ?? "The presentation connection ended.")
+        case .pairing:
+            phase = .failed("Pairing failed. Check the code and choose the presenter again.")
+        default:
+            phase = .failed(error?.localizedDescription ?? "The presentation connection ended.")
         }
     }
 
