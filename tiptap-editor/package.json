@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node src/footnote-numbering.test.mjs"
   },
   "dependencies": {
     "@tiptap/core": "^3.0.0",
