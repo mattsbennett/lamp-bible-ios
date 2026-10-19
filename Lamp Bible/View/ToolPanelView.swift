@@ -240,6 +240,39 @@ protocol ToolPanelScrollable: AnyObject {
     func scrollToVerse(_ verse: Int, animated: Bool)
 }
 
+// MARK: - Empty states in visible space
+
+private struct PanelObscuredBottomKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    /// How much of the bottom of the tool panel something else covers, for
+    /// the views inside it. Zero anywhere else.
+    var panelObscuredBottom: CGFloat {
+        get { self[PanelObscuredBottomKey.self] }
+        set { self[PanelObscuredBottomKey.self] = newValue }
+    }
+}
+
+/// Centres an empty state in the part of its container that can be seen,
+/// rather than in its full height, part of which may be under a toolbar.
+struct VisibleSpaceCentering: ViewModifier {
+    @Environment(\.panelObscuredBottom) private var obscuredBottom
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.bottom, obscuredBottom)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+extension View {
+    func centeredInVisibleSpace() -> some View {
+        modifier(VisibleSpaceCentering())
+    }
+}
+
 // MARK: - Toolbar Collapse Tracking
 
 /// Collapses the headers when the reader scrolls down.
@@ -1224,6 +1257,18 @@ struct ToolPanelView: View {
         toolbarsHidden || toolbarsCollapsed
     }
 
+    /// How much of the panel's bottom edge something else covers. A split runs
+    /// the panel on beneath the reader's bottom toolbar and the home indicator,
+    /// so anything centred in its full height can land out of sight. In
+    /// horizontal split the toolbar sits under the reader alone.
+    private var bottomObscuredHeight: CGFloat {
+        let homeIndicator = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first?.safeAreaInsets.bottom ?? 0
+        if hideHeader || isHeaderCollapsed { return homeIndicator }
+        return max(homeIndicator, ReaderView.bottomBarObscuredHeight)
+    }
+
     /// Display name for current panel mode - shows module/series name
     private var currentPanelModeDisplayName: String {
         if panelMode == .commentary {
@@ -1265,6 +1310,7 @@ struct ToolPanelView: View {
             }
             // In horizontal split, add content margins so content starts below toolbar but scrolls under it
             .contentMargins(.top, hideHeader ? (isHeaderCollapsed ? 24 : 56) : 0, for: .scrollContent)
+            .environment(\.panelObscuredBottom, bottomObscuredHeight)
 
             // Transparent top area for horizontal split mode - content scrolls under with no overlay
             // (The reader's navigation bar provides the visual treatment)
@@ -1900,7 +1946,6 @@ struct ToolPanelView: View {
                     return true
                 }
                 if sections.isEmpty || (isReadOnly && !hasContent) {
-                    // Empty state - offset up to account for bottom toolbar
                     VStack(spacing: 12) {
                         Image(systemName: "note.text")
                             .font(.system(size: 40))
@@ -1921,8 +1966,7 @@ struct ToolPanelView: View {
                             .padding(.top, 8)
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .offset(y: -28)
+                    .centeredInVisibleSpace()
                 } else {
                     // UIKit-based notes list for performance and scroll sync
                     UIKitVerseList(
@@ -2039,14 +2083,14 @@ struct ToolPanelView: View {
                         .font(.system(size: CGFloat(toolFontSize)))
                         .foregroundStyle(.tertiary)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .centeredInVisibleSpace()
             } else if isCommentaryLoading {
                 VStack {
                     Spacer()
                     ProgressView()
                     Spacer()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .centeredInVisibleSpace()
             } else if !commentarySeriesHasCoverage {
                 VStack(spacing: 12) {
                     Image(systemName: "book.closed")
@@ -2057,14 +2101,14 @@ struct ToolPanelView: View {
                         .foregroundStyle(.tertiary)
                         .multilineTextAlignment(.center)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .centeredInVisibleSpace()
             } else if commentaryUnits.isEmpty {
                 VStack(spacing: 12) {
                     Text("No commentary for this chapter")
                         .font(.system(size: CGFloat(toolFontSize)))
                         .foregroundStyle(.tertiary)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .centeredInVisibleSpace()
             } else {
                 commentaryScrollView(units: commentaryUnits, commentaryBook: commentaryBook)
                     .id("commentaryScroll_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)")

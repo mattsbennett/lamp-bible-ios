@@ -2275,8 +2275,9 @@ struct ReaderView: View {
     /// How much of the passage the floating bottom bar covers. Measured from the
     /// view hierarchy: its container runs from y=788 to the bottom of an 874pt
     /// window. Unlike the navigation bar it contributes nothing to
-    /// `adjustedContentInset`, so nothing can derive this.
-    private static let bottomBarObscuredHeight: CGFloat = 86
+    /// `adjustedContentInset`, so nothing can derive this. The tool panel, which
+    /// runs on beneath the bar in a split, keeps its empty states clear of it.
+    static let bottomBarObscuredHeight: CGFloat = 86
 
     /// Drops the button onto the row the bottom bar occupied, so collapsing moves
     /// it into the vacated space rather than leaving it hovering mid-page.

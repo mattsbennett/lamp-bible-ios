@@ -415,7 +415,7 @@ struct DevotionalPickerView: View {
                 .padding(.top, 8)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .centeredInVisibleSpace()
     }
 
     private var devotionalList: some View {
