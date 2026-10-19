@@ -14,6 +14,7 @@ import {
   shownLabel,
   orderedDefinitions,
   encodeLabels,
+  markerPattern,
 } from './footnote-numbering.js'
 import { AudioBlock } from './extensions/audio-block.js'
 import { ImageBlock } from './extensions/image-caption.js'
@@ -86,18 +87,21 @@ function resolveFootnotes(md) {
   const read = readFootnotes(md)
   const { numbers } = read
 
-  const content = read.content.replace(/\[\^(\w+)\]/g, (match, id) => {
+  // Escaped on the way in: a label may hold any character but a space and a
+  // closing bracket, a quotation mark among them.
+  const content = read.content.replace(markerPattern(), (match, id) => {
     const shown = shownLabel(numbers, id)
-    return `<sup class="footnote-ref" data-id="${id}" data-number="${shown}">[${shown}]</sup>`
+    return `<sup class="footnote-ref" data-id="${escapeHtmlAttribute(id)}"`
+      + ` data-number="${escapeHtmlAttribute(shown)}">[${escapeHtmlContent(shown)}]</sup>`
   })
 
   if (read.definitions.length === 0) return content
 
   const ordered = orderedDefinitions(read)
   const defsHtml = ordered.map(d =>
-    `<span class="footnote-label">[${d.shown}]</span> ${escapeHtmlContent(d.content)}`
+    `<span class="footnote-label">[${escapeHtmlContent(d.shown)}]</span> ${escapeHtmlContent(d.content)}`
   ).join('<br>')
-  const labels = escapeHtmlContent(encodeLabels(ordered))
+  const labels = escapeHtmlAttribute(encodeLabels(ordered))
   return content
     + `\n<div class="footnote-definition" data-labels="${labels}">${defsHtml}</div>`
 }
@@ -440,7 +444,7 @@ window.editorAPI = {
     const defBlock = document.querySelector('.footnote-definition')
     if (defBlock) {
       // Append to existing definitions
-      defBlock.innerHTML += `<br><span class="footnote-label">[${id}]</span> ${escapeHtmlContent(content)}`
+      defBlock.innerHTML += `<br><span class="footnote-label">[${escapeHtmlContent(id)}]</span> ${escapeHtmlContent(content)}`
     } else {
       // Create new definition block at end
       editor.commands.insertContentAt(editor.state.doc.content.size, {

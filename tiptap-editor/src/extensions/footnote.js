@@ -1,5 +1,5 @@
 import { Node, mergeAttributes } from '@tiptap/core'
-import { decodeLabels, writtenLabel } from '../footnote-numbering.js'
+import { decodeLabels, shownDefinitionPattern, writtenLabel } from '../footnote-numbering.js'
 
 /**
  * Inline footnote reference: renders as superscript [^1]
@@ -95,11 +95,13 @@ export const FootnoteDefinition = Node.create({
           const text = node.textBetween(0, node.content.size, '', '\n') || ''
           const lines = text.split('\n').filter(l => l.trim())
           const labels = decodeLabels(node.attrs.labels)
+          const shownDefinition = shownDefinitionPattern()
           const defs = []
           for (const line of lines) {
-            const match = line.match(/^\[(\w+)\]\s*(.+)$/)
+            const match = line.match(shownDefinition)
             if (match) {
-              defs.push(`[^${writtenLabel(labels, match[1])}]: ${match[2]}`)
+              const label = writtenLabel(labels, match[1])
+              defs.push(`[^${label}]:${match[2] ? ` ${match[2]}` : ''}`)
             }
           }
           if (defs.length > 0) {
