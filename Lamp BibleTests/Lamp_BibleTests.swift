@@ -5366,15 +5366,54 @@ final class EditableEntryComparisonTests: XCTestCase {
         XCTAssertFalse(ModuleSyncManager.sameNoteContent(phone, mac))
     }
 
-    func testAnAbsentListAndAnEmptyOneAreTheSame() {
-        XCTAssertTrue(ModuleSyncManager.sameStoredJSON(nil, "[]"))
-        XCTAssertTrue(ModuleSyncManager.sameStoredJSON("null", nil))
-        XCTAssertFalse(ModuleSyncManager.sameStoredJSON(nil, #"[{"path":"a.jpg"}]"#))
+    /// A copy that only spells the same note differently changes nothing: no
+    /// conflict, and nothing left to publish. Counted as a local change, each
+    /// device would re-upload its own spelling on every pass, and the other
+    /// would fetch it back.
+    func testAMatchingCopyLeavesNothingToPublish() {
+        let phone = note(footnotesJson: #"[{"id":"1","content":"Jer 4:30"}]"#, verseRefsJson: nil)
+        let mac = note(footnotesJson: #"[{"content":"Jer 4:30","id":"1"}]"#, verseRefsJson: "[]")
+        let merged = LampSyncMerge.records(
+            local: [phone], incoming: [mac],
+            key: { $0.verseId }, modified: { $0.lastModified },
+            sameContent: ModuleSyncManager.sameNoteContent
+        )
+        XCTAssertTrue(merged.conflicts.isEmpty)
+        XCTAssertEqual(merged.localCount, 0, "a matching copy must not make the module pending")
+        XCTAssertEqual(merged.incomingCount, 0)
     }
 
-    /// A devotional body may be plain Markdown rather than JSON.
-    func testABodyThatIsNotJSONComparesAsWritten() {
-        XCTAssertTrue(ModuleSyncManager.sameStoredJSON("In the beginning", "In the beginning"))
-        XCTAssertFalse(ModuleSyncManager.sameStoredJSON("In the beginning", "In the beginning "))
+    private func writing(mediaJson: String?, footnotesJson: String?, body: String) throws -> DevotionalEntry {
+        var row: [String: Any] = [
+            "id": "beta-writing", "module_id": "devotionals", "title": "Beta Writing",
+            "content_json": body, "created": 1756000000, "last_modified": 1756000000
+        ]
+        if let mediaJson { row["media_json"] = mediaJson }
+        if let footnotesJson { row["footnotes_json"] = footnotesJson }
+        return try JSONDecoder().decode(
+            DevotionalEntry.self, from: JSONSerialization.data(withJSONObject: row)
+        )
+    }
+
+    /// Writings merge separately from notes, so the same must hold for them:
+    /// the Mac's spelling of an unchanged writing is no conflict and no change.
+    func testTheMacsSpellingOfAWritingIsTheSameWriting() throws {
+        let phone = try writing(mediaJson: nil, footnotesJson: nil, body: "In the beginning")
+        let mac = try writing(mediaJson: "[]", footnotesJson: "[]", body: "In the beginning")
+        let merged = LampSyncMerge.records(
+            local: [phone], incoming: [mac],
+            key: { $0.id }, modified: { $0.lastModified },
+            sameContent: ModuleSyncManager.sameDevotionalContent
+        )
+        XCTAssertTrue(merged.conflicts.isEmpty)
+        XCTAssertEqual(merged.localCount, 0, "a matching copy must not make the module pending")
+        XCTAssertEqual(merged.incomingCount, 0)
+    }
+
+    /// A plain-text body isn't JSON; a change in what it says is still a change.
+    func testADifferentWritingBodyIsStillADifference() throws {
+        let phone = try writing(mediaJson: nil, footnotesJson: nil, body: "In the beginning")
+        let mac = try writing(mediaJson: "[]", footnotesJson: "[]", body: "In the end")
+        XCTAssertFalse(ModuleSyncManager.sameDevotionalContent(phone, mac))
     }
 }

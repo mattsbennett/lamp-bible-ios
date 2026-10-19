@@ -2812,12 +2812,18 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Comparing editable entries
 
+    // JSON columns compare by value through core's LampSyncJSONComparison, the
+    // rule the Mac's merges use too. The Mac writes object keys sorted and an
+    // empty list as `[]`; this device writes keys in declaration order and
+    // leaves an absent list nil. Compared as text, every note that crossed
+    // between them looked edited on both sides at the same moment.
+
     /// Whether two copies of a note say the same thing.
     static func sameNoteContent(_ local: NoteEntry, _ cloud: NoteEntry) -> Bool {
         local.title == cloud.title
             && local.content == cloud.content
-            && sameStoredJSON(local.verseRefsJson, cloud.verseRefsJson)
-            && sameStoredJSON(local.footnotesJson, cloud.footnotesJson)
+            && LampSyncJSONComparison.sameValue(local.verseRefsJson, cloud.verseRefsJson)
+            && LampSyncJSONComparison.sameValue(local.footnotesJson, cloud.footnotesJson)
     }
 
     /// Whether two copies of a devotional say the same thing.
@@ -2831,39 +2837,12 @@ class ModuleSyncManager: ObservableObject {
             && local.seriesId == cloud.seriesId
             && local.seriesName == cloud.seriesName
             && local.seriesOrder == cloud.seriesOrder
-            && sameStoredJSON(local.keyScripturesJson, cloud.keyScripturesJson)
-            && sameStoredJSON(local.summaryJson, cloud.summaryJson)
-            && sameStoredJSON(local.contentJson, cloud.contentJson)
-            && sameStoredJSON(local.footnotesJson, cloud.footnotesJson)
-            && sameStoredJSON(local.mediaJson, cloud.mediaJson)
+            && LampSyncJSONComparison.sameValue(local.keyScripturesJson, cloud.keyScripturesJson)
+            && LampSyncJSONComparison.sameValue(local.summaryJson, cloud.summaryJson)
+            && LampSyncJSONComparison.sameValue(local.contentJson, cloud.contentJson)
+            && LampSyncJSONComparison.sameValue(local.footnotesJson, cloud.footnotesJson)
+            && LampSyncJSONComparison.sameValue(local.mediaJson, cloud.mediaJson)
             && local.relatedIds == cloud.relatedIds
-    }
-
-    /// Whether two stored JSON columns hold the same value.
-    ///
-    /// The Mac writes object keys sorted and an empty list as `[]`; this device
-    /// writes keys in declaration order and leaves an absent list nil. Compared
-    /// as text, every note that crossed between them looked edited on both
-    /// sides at the same moment, and became a conflict with nothing to choose
-    /// between. A column that isn't JSON, such as a plain-text body, compares
-    /// as written.
-    static func sameStoredJSON(_ a: String?, _ b: String?) -> Bool {
-        canonicalStoredJSON(a) == canonicalStoredJSON(b)
-    }
-
-    private static func canonicalStoredJSON(_ text: String?) -> String? {
-        guard let text, !text.isEmpty else { return nil }
-        guard let data = text.data(using: .utf8),
-              let value = try? JSONSerialization.jsonObject(
-                with: data, options: [.fragmentsAllowed]
-              ) else { return text }
-        if value is NSNull { return nil }
-        if let list = value as? [Any], list.isEmpty { return nil }
-        if let object = value as? [String: Any], object.isEmpty { return nil }
-        guard let canonical = try? JSONSerialization.data(
-            withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]
-        ) else { return text }
-        return String(decoding: canonical, as: UTF8.self)
     }
 
     /// Conflicts stored before the comparison above knew better: both sides
