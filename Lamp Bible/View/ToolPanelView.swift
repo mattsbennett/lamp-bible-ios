@@ -651,6 +651,10 @@ struct UIKitVerseList<ItemData, CellContent: View>: UIViewControllerRepresentabl
     let cellContent: (ItemData) -> CellContent
     let listId: String // Force recreation when this changes
     var additionalTopOffset: CGFloat = 0  // Extra offset for collapsed header in horizontal split
+    /// The height of the panel's header bar, which the list runs on beneath.
+    /// SwiftUI doesn't pass a bar's inset through to a UIKit scroll view that
+    /// extends under it, so it is stated.
+    var topInset: CGFloat = 0
     var onToolbarCollapseChange: ((Bool) -> Void)? = nil
     var toolbarsCollapsed: Bool = false
 
@@ -671,6 +675,7 @@ struct UIKitVerseList<ItemData, CellContent: View>: UIViewControllerRepresentabl
     func updateUIViewController(_ uiViewController: UIKitVerseListController<ItemData, CellContent>, context: Context) {
         uiViewController.cellContent = cellContent
         uiViewController.additionalTopOffset = additionalTopOffset
+        uiViewController.topInset = topInset
         uiViewController.onToolbarCollapseChange = onToolbarCollapseChange
         uiViewController.syncToolbarCollapsed(toolbarsCollapsed)
 
@@ -706,6 +711,21 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
 
     // Additional top offset for collapsed header in horizontal split
     var additionalTopOffset: CGFloat = 0
+
+    /// Clears the panel's header bar. Part of `adjustedContentInset`, so a verse
+    /// brought to the top lands just below the bar, and the reading line is read
+    /// from there.
+    var topInset: CGFloat = 0 {
+        didSet {
+            guard topInset != oldValue, let collectionView else { return }
+            applyTopInset(to: collectionView)
+        }
+    }
+
+    private func applyTopInset(to collectionView: UICollectionView) {
+        collectionView.contentInset.top = topInset
+        collectionView.verticalScrollIndicatorInsets.top = topInset
+    }
 
     // Scrolling this pane collapses both headers, same as scrolling the reader.
     var onToolbarCollapseChange: ((Bool) -> Void)?
@@ -751,6 +771,7 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
         collectionView.backgroundColor = .clear
         collectionView.delegate = self
         collectionView.contentInsetAdjustmentBehavior = .automatic
+        applyTopInset(to: collectionView)
 
         view.addSubview(collectionView)
     }
@@ -1209,6 +1230,8 @@ struct ToolPanelView: View {
 
     // UI state
     @State private var isMaximized: Bool = false
+    /// The header bar's height, for the UIKit lists that run on beneath it.
+    @State private var headerBarHeight: CGFloat = 0
     @State private var showingOptionsMenu: Bool = false
     @AppStorage("toolFontSize") private var toolFontSize: Int = 16
 
@@ -1290,16 +1313,6 @@ struct ToolPanelView: View {
         ZStack(alignment: .top) {
             // Content layer
             VStack(spacing: 0) {
-                // Spacer for header height (only when showing our own header)
-                // In horizontal split (hideHeader), no spacer - content scrolls under the shared toolbar
-                if !hideHeader {
-                    if isHeaderCollapsed {
-                        Color.clear.frame(height: 38)
-                    } else {
-                        Color.clear.frame(height: 44)
-                    }
-                }
-
                 if panelMode == .notes {
                     notesContent
                 } else if panelMode == .devotionals {
@@ -1311,11 +1324,13 @@ struct ToolPanelView: View {
             // In horizontal split, add content margins so content starts below toolbar but scrolls under it
             .contentMargins(.top, hideHeader ? (isHeaderCollapsed ? 24 : 56) : 0, for: .scrollContent)
             .environment(\.panelObscuredBottom, bottomObscuredHeight)
-
-            // Transparent top area for horizontal split mode - content scrolls under with no overlay
-            // (The reader's navigation bar provides the visual treatment)
-
-            // Header overlay layer (hidden in horizontal split mode - controls are in main toolbar)
+            // The header is a bar the content runs on beneath, as the reader's
+            // is: a list starts below it at rest and scrolls up under its
+            // glass, and everything else is laid out clear of it. Reserving a
+            // strip for it instead left the panel's own background showing
+            // behind the controls. Horizontal split has no header of its own;
+            // the reader's toolbar holds its controls there.
+            .safeAreaInset(edge: .top, spacing: 0) {
             if !hideHeader {
             VStack(spacing: 0) {
                 if isHeaderCollapsed {
@@ -1574,9 +1589,13 @@ struct ToolPanelView: View {
                 .padding(.bottom, 6)
                 }
             }
-            // No band behind the header in either form: its controls are glass,
-            // and sit over the content the way the reader's header does.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                headerBarHeight = height
+            }
             } // end if !hideHeader
+            }
         }
         // In horizontal split mode, extend to top of screen so content scrolls under the shared toolbar
         .ignoresSafeArea(edges: hideHeader ? .top : [])
@@ -2014,6 +2033,7 @@ struct ToolPanelView: View {
                         },
                         listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(isReadOnly)_\(sections.count)",
                         additionalTopOffset: hideHeader && isHeaderCollapsed ? 36 : 0,
+                        topInset: hideHeader ? 0 : headerBarHeight,
                         onToolbarCollapseChange: { collapsed in
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 toolbarsCollapsed = collapsed
@@ -2021,6 +2041,7 @@ struct ToolPanelView: View {
                         },
                         toolbarsCollapsed: toolbarsCollapsed
                     )
+                    .ignoresSafeArea(.container, edges: hideHeader ? [] : .top)
 
                     // Trailing gap button (after last verse section)
                     if !isReadOnly {
@@ -2201,6 +2222,7 @@ struct ToolPanelView: View {
             },
             listId: "commentary_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)_\(selectedCommentarySeries)_\(toolFontSize)",
             additionalTopOffset: hideHeader && isHeaderCollapsed ? 36 : 0,
+                        topInset: hideHeader ? 0 : headerBarHeight,
                         onToolbarCollapseChange: { collapsed in
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 toolbarsCollapsed = collapsed
@@ -2208,6 +2230,8 @@ struct ToolPanelView: View {
                         },
                         toolbarsCollapsed: toolbarsCollapsed
         )
+        // Under the panel's header bar, which its automatic inset then clears.
+        .ignoresSafeArea(.container, edges: hideHeader ? [] : .top)
     }
 
     private func loadCommentaryContent() async {
