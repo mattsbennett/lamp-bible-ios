@@ -381,10 +381,47 @@ class UserSettingsSyncManager {
         try await syncWithRemote(storage: storage, requireRemote: false)
     }
 
+    /// The settings pass already under way, so a second caller can wait for
+    /// it rather than be turned away.
+    private var inFlightSync: Task<Void, Error>?
+
+    /// Run a settings pass, waiting for one already running rather than
+    /// refusing.
+    ///
+    /// Refusing failed the caller outright, and on launch the caller is the
+    /// module publish: one overlapping poll and the phone published nothing
+    /// at all — not its settings, not its notes, not its writing. The
+    /// collision is also entirely ordinary, since a launch pass and the
+    /// thirty-second poll are both meant to be happening.
+    ///
+    /// The waiting pass then runs its own, rather than adopting the result
+    /// of one it did not specify: the two callers do not ask for the same
+    /// thing, and `requireRemote` in particular means a caller cannot be
+    /// told someone else's pass satisfied it.
     private func syncWithRemote(
         storage: ModuleStorage,
         requireRemote: Bool,
         reusing candidate: LampSyncArchiveRemote.Snapshot? = nil
+    ) async throws {
+        while let running = inFlightSync {
+            _ = try? await running.value
+        }
+        let task = Task { @MainActor in
+            // Cleared here rather than by the caller, so that anyone waiting
+            // resumes to find the slot free.
+            defer { self.inFlightSync = nil }
+            try await self.runSyncWithRemote(
+                storage: storage, requireRemote: requireRemote, reusing: candidate
+            )
+        }
+        inFlightSync = task
+        try await task.value
+    }
+
+    private func runSyncWithRemote(
+        storage: ModuleStorage,
+        requireRemote: Bool,
+        reusing candidate: LampSyncArchiveRemote.Snapshot?
     ) async throws {
         guard !syncInProgress else { throw settingsSyncAlreadyRunning("another settings sync is still running") }
         syncInProgress = true
