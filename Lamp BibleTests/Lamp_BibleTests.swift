@@ -5986,7 +5986,11 @@ private actor LibraryServer {
         return LampSyncRemoteFile(data: file.data, revision: "W/" + revision)
     }
 
+    /// Every write sent, taken or refused.
+    private(set) var attempts: [String] = []
+
     func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) throws -> String? {
+        attempts.append(path)
         let current = files[path]
         switch condition {
         case .ifAbsent where current != nil:
@@ -6633,6 +6637,33 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(after, writes, "the second pass sent something again")
         let manifest = try await bundle().manifest
         XCTAssertEqual(manifest.entry(at: notesPath)?.isMember, true)
+    }
+
+    /// An attachment sent to a server that names no revision for it is asked
+    /// for one, so the next pass knows it is there and sends nothing.
+    func testAnAttachmentSentWithoutARevisionIsNotSentAgain() async throws {
+        await server.behaveLikeASynology(lagging: false)
+        let reference = try saveWritingModule(attachment: "sunrise.png")
+        try DevotionalMediaStorage.shared.ensureMediaDirectory(devotionalId: "w1", moduleId: moduleId)
+        let local = DevotionalMediaStorage.shared.expectedMediaURL(
+            for: reference, devotionalId: "w1", moduleId: moduleId
+        )
+        try Data("image".utf8).write(to: local)
+        defer {
+            try? FileManager.default.removeItem(at: local.deletingLastPathComponent().deletingLastPathComponent())
+        }
+        let mediaPath = try LampPortableDevotionalMedia.iOSRemotePath(
+            moduleID: moduleId, devotionalID: "w1", filename: reference.filename
+        )
+
+        _ = try await pass().run()
+        let sent = await server.attempts.filter { $0 == mediaPath }.count
+        _ = try await pass().run()
+
+        let after = await server.attempts.filter { $0 == mediaPath }.count
+        XCTAssertEqual(sent, 1)
+        XCTAssertEqual(after, sent, "the attachment was sent again")
+        XCTAssertNotNil(try database.syncFileRecord(source: source, path: mediaPath)?.lastRevision)
     }
 
     /// Apache tags a file weak for the second after it changes, so the read

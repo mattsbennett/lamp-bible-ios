@@ -618,11 +618,16 @@ struct LibrarySyncPass {
     }
 
     private func uploadMedia(_ path: String, from url: URL) async throws {
-        let revision: String?
+        var revision: String?
         do {
             revision = try await storage.write(fileAt: url, to: path, condition: .ifAbsent)
         } catch where LampSyncConditionalWrite.isRefusal(error) {
             // Already there: media is the same bytes at a path, so it's done.
+            revision = try await storage.revision(path: path)
+        }
+        // A Synology names no revision for a PUT. Recorded without one, the
+        // next pass would take the file for one never sent, and send it again.
+        if revision == nil {
             revision = try await storage.revision(path: path)
         }
         try database.recordSyncUpload(
