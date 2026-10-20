@@ -213,7 +213,26 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
         condition: LampSyncWriteCondition
     ) async throws -> String? {
         try await ensureParentDirectories(for: path)
-        return try await client.write(data, to: path, condition: condition)
+        return try await inCoreTerms { try await client.write(data, to: path, condition: condition) }
+    }
+
+    /// Core decides what a refused write means (`LampSyncConditionalWrite
+    /// .isRefusal`): another device wrote first, so re-read and try again.
+    /// The client reports a refusal in its own error type, which core does not
+    /// know, and a settings bundle update met with one failed outright
+    /// instead of retrying. So a refusal leaves this store in core's terms.
+    private func inCoreTerms<T>(_ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
+        } catch WebDAVError.preconditionFailed {
+            throw LampWebDAVStorage.StorageError.preconditionFailed
+        }
+    }
+
+    /// Reaps a tombstoned file, only while it is still the copy that was
+    /// deleted: one put back since is a refusal, and stays.
+    func delete(path: String, condition: LampSyncWriteCondition) async throws {
+        try await inCoreTerms { try await client.delete(path: path, condition: condition) }
     }
 
     /// Sent from disk, for the same reason.
@@ -223,7 +242,7 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
         condition: LampSyncWriteCondition
     ) async throws -> String? {
         try await ensureParentDirectories(for: path)
-        return try await client.write(fileAt: url, to: path, condition: condition)
+        return try await inCoreTerms { try await client.write(fileAt: url, to: path, condition: condition) }
     }
 
     func writeFile(path: String, data: Data) async throws {

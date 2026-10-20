@@ -245,6 +245,10 @@ class UserSettingsSyncManager {
                 print("[UserSettingsSync] Debounce fired but no storage available")
                 return
             }
+            if let webDAV = storage as? WebDAVModuleStorage, LibrarySyncPass.isInUse(at: webDAV) {
+                LibrarySyncPass.schedule(on: webDAV, after: 0)
+                return
+            }
             if storage is any LampSyncRemoteStore, self?.archivePassIsDue == false {
                 print("[UserSettingsSync] Debounce: archive pass held back; the poll will send it")
                 return
@@ -265,6 +269,22 @@ class UserSettingsSyncManager {
     }
 
     func pollForRemoteChanges(storage: ModuleStorage) async {
+        // The settings bundle: one HEAD says whether anyone else wrote, and
+        // a pass runs only then or with something of this device's to send.
+        if let webDAV = storage as? WebDAVModuleStorage,
+           let revision = LibrarySyncPass.bundleRevision(for: webDAV.syncSourceIdentifier) {
+            var due = LibrarySyncPass.hasLocalWork(at: webDAV)
+            if !due {
+                due = (try? await LampSyncSettingsStore.hasChanged(since: revision, in: webDAV)) ?? true
+            }
+            guard due else { return }
+            do {
+                try await LibrarySyncPass.runIfMigrated(storage: webDAV)
+            } catch {
+                print("[UserSettingsSync] Poll: library pass failed: \(error)")
+            }
+            return
+        }
         // The archive and the legacy settings file can change independently.
         // Read both so an older client's edit cannot be hidden by an unchanged
         // archive revision.
@@ -436,6 +456,12 @@ class UserSettingsSyncManager {
         requireRemote: Bool,
         reusing candidate: LampSyncArchiveRemote.Snapshot? = nil
     ) async throws {
+        // Once the server holds the settings bundle, settings travel in it,
+        // with the rest of the library pass.
+        if let webDAV = storage as? WebDAVModuleStorage, LibrarySyncPass.isInUse(at: webDAV) {
+            try await LibrarySyncPass.runIfMigrated(storage: webDAV)
+            return
+        }
         while let running = inFlightSync {
             _ = try? await running.value
         }
@@ -817,7 +843,7 @@ class UserSettingsSyncManager {
             return try await LampSyncSettingsArchive.publishLegacyMirror(
                 data, replacing: legacy, in: store
             )
-        } catch WebDAVError.preconditionFailed {
+        } catch LampWebDAVStorage.StorageError.preconditionFailed {
             throw settingsSyncConflict("the server refused the legacy mirror: it had changed first")
         } catch LampSyncConditionalWrite.WriteError.conflict {
             throw settingsSyncConflict("the legacy mirror's base no longer matched")
@@ -858,7 +884,7 @@ class UserSettingsSyncManager {
                 observedLegacy: legacy,
                 in: store
             )
-        } catch WebDAVError.preconditionFailed {
+        } catch LampWebDAVStorage.StorageError.preconditionFailed {
             throw settingsSyncConflict("the server refused the archive write: it had changed first")
         } catch LampSyncConditionalWrite.WriteError.conflict {
             throw settingsSyncConflict("the archive's base no longer matched")
@@ -953,7 +979,7 @@ class UserSettingsSyncManager {
                     condition: writeCondition
                 )
                 storedChangeToken = LampSyncConditionalWrite.token(for: confirmedRevision)
-            } catch WebDAVError.preconditionFailed {
+            } catch LampWebDAVStorage.StorageError.preconditionFailed {
                 throw settingsSyncConflict("the server refused the legacy upload: it had changed first")
             } catch LampSyncConditionalWrite.WriteError.conflict {
                 throw settingsSyncConflict("the legacy upload's base no longer matched")
@@ -1334,6 +1360,110 @@ enum SharedPreferenceArchiveSync {
             default:
                 break
             }
+        }
+    }
+}
+
+// MARK: - Design B: settings in the bundle
+
+extension UserSettingsSyncManager {
+    /// The settings and preference bases for the bundle, kept apart from the
+    /// archive's: the revisions they were taken at are the bundle's own.
+    func bundleSource(for storage: ModuleStorage) -> String {
+        "bundle:" + syncSource(for: storage)
+    }
+
+    /// The bundle's settings and completed readings merged into this device
+    /// now, and what the pass's one bundle write should carry back.
+    ///
+    /// The merge is a SQLite file merge that applies as it goes, so it runs
+    /// here, before the write, rather than in `change`, which must only
+    /// compute. `change` then checks the bundle still holds what was merged.
+    func bundleParticipants(
+        for bundle: LampSyncSettingsBundle?,
+        storage: ModuleStorage
+    ) throws -> [any SettingsBundleParticipant] {
+        let source = bundleSource(for: storage)
+        let remote = bundle?.userSettings
+        var merged: MergeResult?
+        if let remote {
+            merged = try mergeRemoteData(remote, base: readingsBase(for: source))
+        }
+        try UserDatabase.shared.checkpointForSync()
+        let portable = try portableSettingsData(from: UserDatabase.shared.databaseURL)
+        let publishes = remote == nil || merged?.needsPublish == true
+        let settings = BundleSettingsParticipant(
+            source: source,
+            mergedAgainst: remote,
+            publish: publishes ? portable.data : nil,
+            settings: portable.settings,
+            readingIDs: publishes ? portable.readingIDs : (merged?.readingIDs ?? portable.readingIDs)
+        )
+        return [settings, SharedPreferenceArchiveSync.BundleParticipant(source: source)]
+    }
+
+    fileprivate func rememberBundleSettings(
+        source: String, revision: String, settings: UserSettings, readingIDs: Set<String>
+    ) throws {
+        try rememberReadingsBase(
+            for: source, token: LampSyncConditionalWrite.token(for: revision),
+            settings: settings, readingIDs: readingIDs
+        )
+        UserDatabase.shared.clearUnsyncedChanges(through: settings.updatedAt)
+    }
+}
+
+@MainActor
+private struct BundleSettingsParticipant: SettingsBundleParticipant {
+    let source: String
+    let mergedAgainst: Data?
+    let publish: Data?
+    let settings: UserSettings
+    let readingIDs: Set<String>
+
+    func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
+        guard bundle.userSettings == mergedAgainst else { throw LibrarySyncPass.BundleMoved() }
+        if let publish { bundle.userSettings = publish }
+    }
+
+    func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
+        try UserSettingsSyncManager.shared.rememberBundleSettings(
+            source: source, revision: written.revision, settings: settings, readingIDs: readingIDs
+        )
+    }
+}
+
+extension SharedPreferenceArchiveSync {
+    /// The preference ledger, which the merge settles without touching this
+    /// device, so it runs in `change`; what the written bundle settled is
+    /// applied after.
+    @MainActor
+    final class BundleParticipant: SettingsBundleParticipant {
+        let source: String
+        let defaults: UserDefaults
+        private var settled: LampSharedPreferenceLedger.Merge?
+
+        init(source: String, defaults: UserDefaults = .standard) {
+            self.source = source
+            self.defaults = defaults
+        }
+
+        func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
+            let previous = LampSyncPreferenceState.cached(for: source, in: defaults, key: baseKey)
+            let local = projectedValues(from: UserDatabase.shared.getSettings(), base: previous)
+            let merged = try LampSharedPreferenceLedger.merge(
+                local: local, base: previous, remote: bundle.preferences
+            )
+            if merged.publishable != bundle.preferences && !merged.publishable.fields.isEmpty {
+                bundle.preferences = merged.publishable
+            }
+            settled = merged
+        }
+
+        func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
+            guard let settled else { return }
+            try apply(settled.applicable)
+            try LampSyncPreferenceState.remember(settled.baseline, for: source, in: defaults, key: baseKey)
         }
     }
 }

@@ -54,6 +54,15 @@ enum WebDAVError: Error, LocalizedError {
     }
 }
 
+/// So core recognises a refused write however it reaches it: the store
+/// already rethrows in core's terms, and this covers any path that doesn't.
+extension WebDAVError: LampSyncRefusal {
+    var isRefusal: Bool {
+        if case .preconditionFailed = self { return true }
+        return false
+    }
+}
+
 // MARK: - WebDAV Client
 
 /// HTTP client for WebDAV operations (PROPFIND, PUT, DELETE, MKCOL)
@@ -117,6 +126,10 @@ final class WebDAVClient {
 
     func delete(_ path: String) async throws {
         try await mapped { try await storage.delete(path) }
+    }
+
+    func delete(path: String, condition: LampSyncWriteCondition) async throws {
+        try await mapped { try await storage.delete(path: path, condition: condition) }
     }
 
     func createDirectory(_ path: String) async throws {

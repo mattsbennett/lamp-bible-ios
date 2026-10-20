@@ -46,6 +46,7 @@
 		B85B89992F1C73D7004B4F61 /* SyncTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89942F1C73D7004B4F61 /* SyncTypes.swift */; };
 		B85B899A2F1C73D7004B4F61 /* WebDAVClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */; };
 		B85B899B2F1C73D7004B4F61 /* WebDAVModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */; };
+		AFBCFCDCAFBCADC6742A5A4C /* LibrarySyncPass.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6C803C49379DDECF99FDBEE /* LibrarySyncPass.swift */; };
 		B85B899C2F1C73D7004B4F61 /* SyncableEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89912F1C73D7004B4F61 /* SyncableEntry.swift */; };
 		B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89922F1C73D7004B4F61 /* SyncCoordinator.swift */; };
 		B85B89A42F1F11CC004B4F61 /* ImageBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */; };
@@ -219,6 +220,7 @@
 		B85B89942F1C73D7004B4F61 /* SyncTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncTypes.swift; sourceTree = "<group>"; };
 		B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVClient.swift; sourceTree = "<group>"; };
 		B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVModuleStorage.swift; sourceTree = "<group>"; };
+		C6C803C49379DDECF99FDBEE /* LibrarySyncPass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySyncPass.swift; sourceTree = "<group>"; };
 		B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageBlockView.swift; sourceTree = "<group>"; };
 		B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePickerSheet.swift; sourceTree = "<group>"; };
 		B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportPreviewSheet.swift; sourceTree = "<group>"; };
@@ -484,6 +486,7 @@
 				B85B89942F1C73D7004B4F61 /* SyncTypes.swift */,
 				B85B89952F1C73D7004B4F61 /* WebDAVClient.swift */,
 				B85B89962F1C73D7004B4F61 /* WebDAVModuleStorage.swift */,
+				C6C803C49379DDECF99FDBEE /* LibrarySyncPass.swift */,
 				B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */,
 			);
 			path = Sync;
@@ -853,6 +856,7 @@
 				B85B89AC2F1F1206004B4F61 /* AudioRecorder.swift in Sources */,
 				B85B89AD2F1F1206004B4F61 /* AudioPlayer.swift in Sources */,
 				B85B899B2F1C73D7004B4F61 /* WebDAVModuleStorage.swift in Sources */,
+				AFBCFCDCAFBCADC6742A5A4C /* LibrarySyncPass.swift in Sources */,
 				B85B899C2F1C73D7004B4F61 /* SyncableEntry.swift in Sources */,
 				B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */,
 				B85B89CF2F1C73D7004B4F61 /* UserSettingsSyncManager.swift in Sources */,

@@ -344,6 +344,24 @@ class SyncCoordinator: ObservableObject {
 
         syncState = .syncing(progress: nil)
 
+        // Design B, where the server has it. While it still holds the archive
+        // this touches nothing, and the archive pass below runs as before.
+        if let webDAV = activeStorage as? WebDAVModuleStorage {
+            do {
+                if case .synced = try await LibrarySyncPass.runIfMigrated(storage: webDAV) {
+                    var updatedSettings = settings
+                    updatedSettings.lastSyncDate = Date()
+                    try userDatabase.saveSyncSettings(updatedSettings)
+                    settings = updatedSettings
+                    syncState = .idle
+                    return
+                }
+            } catch {
+                syncState = .error(error as? SyncError ?? .unknown(error))
+                throw error
+            }
+        }
+
         do {
             try await ModuleSyncManager.shared.runFullSync(
                 using: activeStorage,

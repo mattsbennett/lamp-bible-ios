@@ -1103,10 +1103,10 @@ struct ModuleManagerView: View {
             // Delete from iCloud - try both extensions
             let jsonFileName = "\(book.moduleId).json"
             let lampFileName = "\(book.moduleId).lamp"
-            if let storage = await storage {
-                try? await storage.deleteModuleFile(type: .commentary, fileName: jsonFileName)
-                try? await storage.deleteModuleFile(type: .commentary, fileName: lampFileName)
-            }
+            await syncManager.removeFromLibrary(
+                type: .commentary, moduleId: book.moduleId,
+                fileNames: [jsonFileName, lampFileName], storage: await storage
+            )
             await loadModules()
             selectedCommentarySeries = nil
         } catch {
@@ -1126,10 +1126,10 @@ struct ModuleManagerView: View {
             // Delete from iCloud - try both .json and .lamp extensions
             let jsonFileName = "\(userModule.id).json"
             let dbFileName = "\(userModule.id).lamp"
-            if let storage = await storage {
-                try? await storage.deleteModuleFile(type: .dictionary, fileName: jsonFileName)
-                try? await storage.deleteModuleFile(type: .dictionary, fileName: dbFileName)
-            }
+            await syncManager.removeFromLibrary(
+                type: .dictionary, moduleId: userModule.id,
+                fileNames: [jsonFileName, dbFileName], storage: await storage
+            )
 
             await loadModules()
             selectedDictionarySeries = nil
@@ -1148,10 +1148,10 @@ struct ModuleManagerView: View {
             // Delete from iCloud - try both extensions since modules can be stored as .json or .lamp
             let jsonFileName = "\(module.id).json"
             let lampFileName = "\(module.id).lamp"
-            if let storage = await storage {
-                try? await storage.deleteModuleFile(type: module.type, fileName: jsonFileName)
-                try? await storage.deleteModuleFile(type: module.type, fileName: lampFileName)
-            }
+            await syncManager.removeFromLibrary(
+                type: module.type, moduleId: module.id,
+                fileNames: [jsonFileName, lampFileName], storage: await storage
+            )
 
             await loadModules()
         } catch {
@@ -1236,9 +1236,9 @@ struct ModuleManagerView: View {
 
             // Delete from iCloud - try both extensions
             let dbFileName = "\(plan.id).lamp"
-            if let storage = await storage {
-                try? await storage.deleteModuleFile(type: .plan, fileName: dbFileName)
-            }
+            await syncManager.removeFromLibrary(
+                type: .plan, moduleId: plan.id, fileNames: [dbFileName], storage: await storage
+            )
 
             await loadModules()
         } catch {
@@ -1254,9 +1254,10 @@ struct ModuleManagerView: View {
 
             // Delete from iCloud
             let fileName = "\(highlightSet.module.id).lamp"
-            if let storage = await storage {
-                try? await storage.deleteModuleFile(type: .highlights, fileName: fileName)
-            }
+            await syncManager.removeFromLibrary(
+                type: .highlights, moduleId: highlightSet.module.id,
+                fileNames: [fileName], storage: await storage
+            )
 
             await loadModules()
         } catch {

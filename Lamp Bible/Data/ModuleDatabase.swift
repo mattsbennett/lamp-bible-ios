@@ -1418,6 +1418,52 @@ class ModuleDatabase {
             try ExternalContentSearchIndex.installTriggers(in: db)
         }
 
+        // Design B keeps each module as its own file on the server, and needs
+        // to know per file what this device last installed and last uploaded:
+        // whether to upload is this device's export compared with its own
+        // last upload, never with the server's bytes.
+        migrator.registerMigration("v28_sync_file_records") { db in
+            // Per sync endpoint: revisions are the provider's, and a switch
+            // of provider must start from nothing, not from "already uploaded".
+            try db.execute(sql: """
+                CREATE TABLE sync_file_records (
+                    source TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    last_revision TEXT,
+                    uploaded_digest TEXT,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (source, path)
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE sync_pending_manifest_changes (
+                    source TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    change TEXT NOT NULL,
+                    revision TEXT,
+                    replacing TEXT,
+                    at INTEGER NOT NULL,
+                    PRIMARY KEY (source, path)
+                )
+                """)
+        }
+
+        // When each note, writing or highlight was last saved here and when
+        // it was deleted, in the shape the Mac keeps. Sync merges content as
+        // a union, so without this a deletion here is undone by the next
+        // copy that still has the item.
+        migrator.registerMigration("v29_personal_sync_ledger") { db in
+            try db.execute(sql: """
+                CREATE TABLE personal_sync_ledger (
+                    kind TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    present_since INTEGER,
+                    deleted_at INTEGER,
+                    PRIMARY KEY (kind, item_key)
+                )
+                """)
+        }
+
         return migrator
     }
 
@@ -1635,15 +1681,20 @@ class ModuleDatabase {
 
     // MARK: - Note Entry CRUD
 
+    /// A save made on this device. Sync imports write rows directly and do
+    /// not come through here, so they never mask a deletion made elsewhere.
     func saveNoteEntry(_ entry: NoteEntry) throws {
         try dbQueue.write { db in
             try entry.save(db)
+            try Self.recordPersonalPresence(db, .note, entry.id)
         }
     }
 
     func deleteNoteEntry(id: String) throws {
         try dbQueue.write { db in
-            _ = try NoteEntry.deleteOne(db, key: id)
+            if try NoteEntry.deleteOne(db, key: id) {
+                try Self.recordPersonalDeletion(db, .note, id)
+            }
         }
     }
 
@@ -1956,6 +2007,7 @@ class ModuleDatabase {
 
             try write { db in
                 try entry.save(db)
+                try Self.recordPersonalPresence(db, .devotional, entry.id)
 
                 // Debug: Immediately read back to verify
                 if let savedEntry = try DevotionalEntry.fetchOne(db, key: entry.id) {
@@ -1973,7 +2025,9 @@ class ModuleDatabase {
 
     func deleteDevotionalEntry(id: String) throws {
         try dbQueue.write { db in
-            _ = try DevotionalEntry.deleteOne(db, key: id)
+            if try DevotionalEntry.deleteOne(db, key: id) {
+                try Self.recordPersonalDeletion(db, .devotional, id)
+            }
         }
     }
 
@@ -2754,13 +2808,16 @@ class ModuleDatabase {
     func saveHighlightSet(_ set: HighlightSet) throws {
         try dbQueue.write { db in
             try set.save(db)
+            try Self.recordPersonalPresence(db, .highlightSet, set.id)
         }
     }
 
     /// Delete a highlight set by ID
     func deleteHighlightSet(id: String) throws {
         try dbQueue.write { db in
-            _ = try HighlightSet.deleteOne(db, key: id)
+            if try HighlightSet.deleteOne(db, key: id) {
+                try Self.recordPersonalDeletion(db, .highlightSet, id)
+            }
         }
     }
 
@@ -2808,24 +2865,30 @@ class ModuleDatabase {
         try dbQueue.write { db in
             var entry = highlight
             try entry.insert(db)
+            try Self.recordPersonalPresence(db, .highlight, Self.ledgerKey(entry))
             return entry
         }
     }
 
     /// Update a highlight entry's character offsets
+    ///
+    /// A highlight is known by where it is, so moving one deletes the old
+    /// one and saves a new one as far as other devices can tell.
     func updateHighlight(id: Int64, sc: Int, ec: Int) throws {
         try dbQueue.write { db in
-            try db.execute(
-                sql: "UPDATE highlights SET sc = ?, ec = ? WHERE id = ?",
-                arguments: [sc, ec, id]
-            )
+            guard var entry = try HighlightEntry.fetchOne(db, key: id) else { return }
+            try Self.recordPersonalDeletion(db, .highlight, Self.ledgerKey(entry))
+            entry.sc = sc
+            entry.ec = ec
+            try entry.update(db)
+            try Self.recordPersonalPresence(db, .highlight, Self.ledgerKey(entry))
         }
     }
 
     /// Delete a highlight entry by ID
     func deleteHighlight(id: Int64) throws {
         try dbQueue.write { db in
-            _ = try HighlightEntry.deleteOne(db, key: id)
+            try Self.deleteRecordingHighlights(db, HighlightEntry.filter(key: id))
         }
     }
 
@@ -2878,21 +2941,43 @@ class ModuleDatabase {
     /// Delete all highlights for a specific verse in a set
     func deleteHighlights(setId: String, ref: Int) throws {
         try dbQueue.write { db in
-            try db.execute(
-                sql: "DELETE FROM highlights WHERE set_id = ? AND ref = ?",
-                arguments: [setId, ref]
-            )
+            try Self.deleteRecordingHighlights(db, HighlightEntry
+                .filter(Column("set_id") == setId)
+                .filter(Column("ref") == ref))
         }
     }
 
     /// Delete a highlight that overlaps with given character range
     func deleteHighlight(setId: String, ref: Int, sc: Int, ec: Int) throws {
         try dbQueue.write { db in
-            try db.execute(
-                sql: "DELETE FROM highlights WHERE set_id = ? AND ref = ? AND sc = ? AND ec = ?",
-                arguments: [setId, ref, sc, ec]
-            )
+            try Self.deleteRecordingHighlights(db, HighlightEntry
+                .filter(Column("set_id") == setId)
+                .filter(Column("ref") == ref)
+                .filter(Column("sc") == sc)
+                .filter(Column("ec") == ec))
         }
+    }
+
+    private static func deleteRecordingHighlights(
+        _ db: Database, _ request: QueryInterfaceRequest<HighlightEntry>
+    ) throws {
+        for entry in try request.fetchAll(db) {
+            _ = try entry.delete(db)
+            try recordPersonalDeletion(db, .highlight, ledgerKey(entry))
+        }
+    }
+
+    static func ledgerKey(_ entry: HighlightEntry) -> String {
+        LampPersonalDeletionLedger.highlightKey(
+            setID: entry.setId, reference: entry.ref, start: entry.sc, end: entry.ec,
+            style: entry.style, color: entry.color
+        )
+    }
+
+    static func ledgerKey(_ theme: HighlightTheme) -> String {
+        LampPersonalDeletionLedger.highlightThemeKey(
+            setID: theme.setId, color: theme.color, style: theme.style
+        )
     }
 
     /// Get highlight count for a set
@@ -2906,9 +2991,11 @@ class ModuleDatabase {
 
     /// Import highlights for a set (bulk insert)
     func importHighlights(_ highlights: [HighlightEntry]) throws {
+        // A file the user chose to import: its highlights are saved here now.
         try dbQueue.write { db in
             for var highlight in highlights {
                 try highlight.insert(db)
+                try Self.recordPersonalPresence(db, .highlight, Self.ledgerKey(highlight))
             }
         }
     }
@@ -2958,13 +3045,16 @@ class ModuleDatabase {
     func saveHighlightTheme(_ theme: HighlightTheme) throws {
         try dbQueue.write { db in
             try theme.save(db)
+            try Self.recordPersonalPresence(db, .highlightTheme, Self.ledgerKey(theme))
         }
     }
 
     /// Delete a highlight theme by ID
     func deleteHighlightTheme(id: String) throws {
         try dbQueue.write { db in
-            _ = try HighlightTheme.deleteOne(db, key: id)
+            guard let theme = try HighlightTheme.fetchOne(db, key: id) else { return }
+            _ = try theme.delete(db)
+            try Self.recordPersonalDeletion(db, .highlightTheme, Self.ledgerKey(theme))
         }
     }
 
@@ -3158,6 +3248,275 @@ enum TranslationVerseSearch {
                 // sorts on rank descending.
                 rank: -(row["rank"] as Double)
             )
+        }
+    }
+}
+
+// MARK: - Sync File Records
+
+/// What this device last did with one file at one sync endpoint.
+struct SyncFileRecord: Codable, Equatable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "sync_file_records"
+
+    /// The endpoint, as the settings sync names it (`webdav:<url>|<user>`).
+    var source: String
+    /// The file's path there, as `LampSyncFolderLayout` names it.
+    var path: String
+    /// The provider's revision of the copy this device last installed or
+    /// wrote, whichever came last.
+    var lastRevision: String?
+    /// SHA-256 of this device's own export when it last uploaded the file, or
+    /// right after it installed one with nothing of its own pending. Never
+    /// the digest of what was downloaded: a copy equal in value but not in
+    /// bytes must not read as a local change, or both devices re-upload it
+    /// forever.
+    var uploadedDigest: String?
+    var updatedAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case source, path
+        case lastRevision = "last_revision"
+        case uploadedDigest = "uploaded_digest"
+        case updatedAt = "updated_at"
+    }
+
+    /// Whether this device's export has moved since it last uploaded it.
+    /// With nothing recorded it never has, so it has.
+    func hasChangedSinceUpload(exportDigest: String) -> Bool {
+        uploadedDigest != exportDigest
+    }
+}
+
+/// A change to the library's membership made here, kept until a settings
+/// bundle this device wrote carries it, so a pass cut short still tells the
+/// other devices.
+struct SyncPendingManifestChange: Codable, Equatable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "sync_pending_manifest_changes"
+
+    enum Change: String, Codable { case write, delete }
+
+    var source: String
+    var path: String
+    var change: Change
+    /// For a write: the revision it produced, and the one it replaced.
+    var revision: String?
+    var replacing: String?
+    /// Milliseconds since 1970, as the manifest records times.
+    var at: Int64
+}
+
+extension ModuleDatabase {
+    func syncFileRecord(source: String, path: String) throws -> SyncFileRecord? {
+        try read { try SyncFileRecord.fetchOne($0, key: ["source": source, "path": path]) }
+    }
+
+    func syncFileRecords(source: String) throws -> [SyncFileRecord] {
+        try read {
+            try SyncFileRecord.filter(Column("source") == source).order(Column("path")).fetchAll($0)
+        }
+    }
+
+    /// After installing the server's copy. `exportDigest` is this device's
+    /// export taken right after the install, given only when nothing of its
+    /// own was pending; then the install is not mistaken for a local change.
+    func recordSyncInstall(
+        source: String, path: String, revision: String?, exportDigest: String?,
+        at time: Date = Date()
+    ) throws {
+        try write { db in
+            var record = try SyncFileRecord.fetchOne(db, key: ["source": source, "path": path])
+                ?? SyncFileRecord(source: source, path: path, updatedAt: 0)
+            record.lastRevision = revision
+            if let exportDigest { record.uploadedDigest = exportDigest }
+            record.updatedAt = Self.nowMilliseconds(time)
+            try record.save(db)
+        }
+    }
+
+    /// After uploading this device's export: recorded here, and queued for
+    /// the pass's settings bundle.
+    func recordSyncUpload(
+        source: String, path: String, digest: String?, revision: String?, replacing: String?,
+        at time: Date = Date()
+    ) throws {
+        let now = Self.nowMilliseconds(time)
+        try write { db in
+            try SyncFileRecord(
+                source: source, path: path, lastRevision: revision,
+                uploadedDigest: digest, updatedAt: now
+            ).save(db)
+            try SyncPendingManifestChange(
+                source: source, path: path, change: .write,
+                revision: revision, replacing: replacing, at: now
+            ).save(db)
+        }
+    }
+
+    /// A file this device deleted. The tombstone records which copy it
+    /// deleted, so a copy put back later is told apart from it.
+    func recordSyncLocalDeletion(source: String, path: String, at time: Date = Date()) throws {
+        try write { db in
+            let deleted = try SyncFileRecord.fetchOne(db, key: ["source": source, "path": path])
+            _ = try SyncFileRecord.deleteOne(db, key: ["source": source, "path": path])
+            try SyncPendingManifestChange(
+                source: source, path: path, change: .delete,
+                revision: deleted?.lastRevision, at: Self.nowMilliseconds(time)
+            ).save(db)
+        }
+    }
+
+    /// Deleted elsewhere and removed here: nothing to tell anyone.
+    func removeSyncFileRecord(source: String, path: String) throws {
+        try write { _ = try SyncFileRecord.deleteOne($0, key: ["source": source, "path": path]) }
+    }
+
+    func pendingManifestChanges(source: String) throws -> [SyncPendingManifestChange] {
+        try read {
+            try SyncPendingManifestChange.filter(Column("source") == source)
+                .order(Column("path")).fetchAll($0)
+        }
+    }
+
+    /// Deletions still to reach a bundle, by path: the plan's `deletedLocally`.
+    func pendingManifestDeletions(source: String) throws -> [String: Int64] {
+        Dictionary(uniqueKeysWithValues: try pendingManifestChanges(source: source)
+            .filter { $0.change == .delete }.map { ($0.path, $0.at) })
+    }
+
+    /// Once a written bundle carries them. Matched on time as well as path,
+    /// so a newer change to the same file, made while the pass ran, stays.
+    func clearPendingManifestChanges(_ carried: [SyncPendingManifestChange]) throws {
+        guard !carried.isEmpty else { return }
+        try write { db in
+            for change in carried {
+                try db.execute(sql: """
+                    DELETE FROM sync_pending_manifest_changes
+                    WHERE source = ? AND path = ? AND at = ?
+                    """, arguments: [change.source, change.path, change.at])
+            }
+        }
+    }
+}
+
+// MARK: - Personal Deletion Ledger
+
+extension ModuleDatabase {
+    static func nowMilliseconds(_ date: Date = Date()) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1_000).rounded(.down))
+    }
+
+    static func recordPersonalPresence(
+        _ db: Database, _ kind: LampPersonalItemKind, _ key: String,
+        at time: Int64 = nowMilliseconds()
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO personal_sync_ledger (kind, item_key, present_since) VALUES (?, ?, ?)
+            ON CONFLICT(kind, item_key) DO UPDATE SET
+                present_since = MAX(COALESCE(present_since, 0), excluded.present_since)
+            """, arguments: [kind.rawValue, key, time])
+    }
+
+    static func recordPersonalDeletion(
+        _ db: Database, _ kind: LampPersonalItemKind, _ key: String,
+        at time: Int64 = nowMilliseconds()
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO personal_sync_ledger (kind, item_key, deleted_at) VALUES (?, ?, ?)
+            ON CONFLICT(kind, item_key) DO UPDATE SET
+                deleted_at = MAX(COALESCE(deleted_at, 0), excluded.deleted_at)
+            """, arguments: [kind.rawValue, key, time])
+    }
+
+    static func personalDeletionLedger(in db: Database) throws -> LampPersonalDeletionLedger {
+        var ledger = LampPersonalDeletionLedger()
+        for row in try Row.fetchAll(db, sql: """
+            SELECT kind, item_key, present_since, deleted_at FROM personal_sync_ledger
+            """) {
+            guard let kind = LampPersonalItemKind(rawValue: row["kind"]) else { continue }
+            ledger.set(
+                .init(presentSince: row["present_since"], deletedAt: row["deleted_at"]),
+                kind: kind, key: row["item_key"]
+            )
+        }
+        return ledger
+    }
+
+    func personalDeletionLedger() throws -> LampPersonalDeletionLedger {
+        try read { try Self.personalDeletionLedger(in: $0) }
+    }
+
+    /// Takes in another device's record: per item, the later save and the
+    /// later deletion.
+    func mergePersonalDeletionLedger(_ incoming: LampPersonalDeletionLedger) throws {
+        try write { db in
+            for (kind, entries) in incoming.entries {
+                for (key, entry) in entries {
+                    try db.execute(sql: """
+                        INSERT INTO personal_sync_ledger (kind, item_key, present_since, deleted_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(kind, item_key) DO UPDATE SET
+                            present_since = CASE
+                                WHEN present_since IS NULL THEN excluded.present_since
+                                WHEN excluded.present_since IS NULL THEN present_since
+                                ELSE MAX(present_since, excluded.present_since) END,
+                            deleted_at = CASE
+                                WHEN deleted_at IS NULL THEN excluded.deleted_at
+                                WHEN excluded.deleted_at IS NULL THEN deleted_at
+                                ELSE MAX(deleted_at, excluded.deleted_at) END
+                        """, arguments: [kind.rawValue, key, entry.presentSince, entry.deletedAt])
+                }
+            }
+        }
+    }
+
+    /// Removes notes, writings, highlight sets, highlights and themes the
+    /// ledger records as deleted since this device's copy was saved, and
+    /// returns the modules they were in, which now need publishing without
+    /// them. Nothing new is recorded.
+    @discardableResult
+    func applyPersonalDeletionLedger() throws -> Set<String> {
+        try write { db in
+            let ledger = try Self.personalDeletionLedger(in: db)
+            guard ledger.hasDeletions else { return [] }
+            var touched = Set<String>()
+            for (table, kind) in [("note_entries", LampPersonalItemKind.note),
+                                  ("devotional_entries", .devotional)] {
+                for row in try Row.fetchAll(db, sql: "SELECT id, module_id, last_modified FROM \(table)") {
+                    let id: String = row["id"]
+                    guard ledger.isDeleted(kind, id, itemModified: row["last_modified"]) else { continue }
+                    try db.execute(sql: "DELETE FROM \(table) WHERE id = ?", arguments: [id])
+                    touched.insert(row["module_id"])
+                }
+            }
+            for row in try Row.fetchAll(db, sql: "SELECT id, module_id, last_modified FROM highlight_sets") {
+                let id: String = row["id"]
+                guard ledger.isDeleted(.highlightSet, id, itemModified: row["last_modified"]) else { continue }
+                try db.execute(sql: "DELETE FROM highlights WHERE set_id = ?", arguments: [id])
+                try db.execute(sql: "DELETE FROM highlight_themes WHERE set_id = ?", arguments: [id])
+                try db.execute(sql: "DELETE FROM highlight_sets WHERE id = ?", arguments: [id])
+                touched.insert(row["module_id"])
+            }
+            let setModules = Dictionary(uniqueKeysWithValues: try Row.fetchAll(
+                db, sql: "SELECT id, module_id FROM highlight_sets"
+            ).map { ($0["id"] as String, $0["module_id"] as String) })
+            for entry in try HighlightEntry.fetchAll(db)
+            where ledger.isDeleted(.highlight, Self.ledgerKey(entry), itemModified: nil) {
+                _ = try entry.delete(db)
+                if let module = setModules[entry.setId] { touched.insert(module) }
+            }
+            for theme in try HighlightTheme.fetchAll(db)
+            where ledger.isDeleted(.highlightTheme, Self.ledgerKey(theme), itemModified: nil) {
+                _ = try theme.delete(db)
+                if let module = setModules[theme.setId] { touched.insert(module) }
+            }
+            for moduleId in touched {
+                let type = try String.fetchOne(db, sql: "SELECT type FROM modules WHERE id = ?", arguments: [moduleId])
+                try db.execute(sql: """
+                    INSERT OR REPLACE INTO sync_pending_module_publications (module_id, type)
+                    VALUES (?, ?)
+                    """, arguments: [moduleId, type ?? ModuleType.notes.rawValue])
+            }
+            return touched
         }
     }
 }

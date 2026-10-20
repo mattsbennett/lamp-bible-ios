@@ -50,6 +50,7 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
     override func tearDownWithError() throws {
         try? database.deleteAllEntriesForModule(moduleId: moduleId)
         try? database.deleteModule(id: moduleId)
+        try? database.write { try $0.execute(sql: "DELETE FROM personal_sync_ledger") }
         try? FileManager.default.removeItem(
             at: DevotionalMediaStorage.shared.mediaDirectory(moduleId: moduleId)
         )
@@ -296,5 +297,25 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
 
         try saveEntry(id: "entry-b", title: "Named now", contentJson: body)
         XCTAssertNotEqual(try export(), first)
+    }
+
+    /// As for notes: the merge is a union, and the ledger is what keeps a
+    /// writing deleted here from coming back.
+    func testAWritingDeletedHereIsNotBroughtBackByAnOlderCopy() async throws {
+        let body = #"{"blocks":[{"type":"paragraph","text":"In the beginning"}]}"#
+        try saveEntry(id: "gone", contentJson: body)
+        try saveEntry(id: "stays", contentJson: body)
+        let shelf = ModuleShelf()
+        let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .devotional)
+        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+
+        try database.deleteDevotionalEntry(id: "gone")
+        await shelf.reissueRevision(for: "\(moduleId!).lamp")
+        try await ModuleSyncManager.shared.syncModuleType(.devotional, using: storage)
+
+        let ids = try database.read { db in
+            try String.fetchAll(db, sql: "SELECT id FROM devotional_entries WHERE module_id = ? ORDER BY id", arguments: [moduleId])
+        }
+        XCTAssertEqual(ids, ["stays"])
     }
 }

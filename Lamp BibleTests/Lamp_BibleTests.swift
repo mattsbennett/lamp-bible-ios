@@ -4707,14 +4707,14 @@ private actor SettingsArchiveState {
     ) throws -> String? {
         if path == LampSyncLayout.userSettingsPath && failLegacyWrite {
             failLegacyWrite = false
-            throw WebDAVError.preconditionFailed
+            throw LampWebDAVStorage.StorageError.preconditionFailed
         }
         let current = files[path]
         switch condition {
         case .ifAbsent where current != nil:
-            throw WebDAVError.preconditionFailed
+            throw LampWebDAVStorage.StorageError.preconditionFailed
         case .ifRevision(let expected) where current?.revision != expected:
-            throw WebDAVError.preconditionFailed
+            throw LampWebDAVStorage.StorageError.preconditionFailed
         default:
             break
         }
@@ -4883,7 +4883,7 @@ private actor PreferenceArchiveStore: LampSyncRemoteStore {
         condition: LampSyncWriteCondition
     ) async throws -> String? {
         guard condition == .ifRevision(revisionValue) else {
-            throw WebDAVError.preconditionFailed
+            throw LampWebDAVStorage.StorageError.preconditionFailed
         }
         self.data = data
         writes += 1
@@ -5335,7 +5335,7 @@ private struct ChangedSettingsStorage: ModuleStorage, LampSyncRemoteStore {
             await writeState.save(data)
             return nil
         }
-        throw WebDAVError.preconditionFailed
+        throw LampWebDAVStorage.StorageError.preconditionFailed
     }
     func readFile(path: String) async throws -> Data { Data([2]) }
     func writeFile(path: String, data: Data) async throws { fatalError("Unexpected write") }
@@ -5867,4 +5867,475 @@ final class ArchivePassSpacingTests: XCTestCase {
         XCTAssertFalse(UserSettingsSyncManager.archivePassIsDue(lastEnded: ended, now: ended.addingTimeInterval(spacing - 1)))
         XCTAssertTrue(UserSettingsSyncManager.archivePassIsDue(lastEnded: ended, now: ended.addingTimeInterval(spacing)))
     }
+}
+
+final class SyncFileRecordTests: XCTestCase {
+    private let database = ModuleDatabase.shared
+    private let source = "webdav:https://records-\(UUID().uuidString).test/LampBible|someone"
+    private let notes = "Notes/notes.lamp"
+
+    override func tearDownWithError() throws {
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM sync_file_records WHERE source = ?", arguments: [source])
+            try db.execute(sql: "DELETE FROM sync_pending_manifest_changes WHERE source = ?", arguments: [source])
+        }
+    }
+
+    func testAnImportIsNotMistakenForALocalChange() throws {
+        try database.recordSyncUpload(source: source, path: notes, digest: "d1", revision: "r1", replacing: nil)
+        // Another device's copy, equal in value, installed with nothing pending
+        // here: this device's export right afterwards is what it now holds.
+        try database.recordSyncInstall(source: source, path: notes, revision: "r2", exportDigest: "d2")
+
+        let record = try XCTUnwrap(database.syncFileRecord(source: source, path: notes))
+        XCTAssertEqual(record.lastRevision, "r2")
+        XCTAssertFalse(record.hasChangedSinceUpload(exportDigest: "d2"))
+        XCTAssertTrue(record.hasChangedSinceUpload(exportDigest: "d3"))
+    }
+
+    func testAnInstallOverPendingWorkKeepsItPending() throws {
+        try database.recordSyncUpload(source: source, path: notes, digest: "d1", revision: "r1", replacing: nil)
+        try database.recordSyncInstall(source: source, path: notes, revision: "r2", exportDigest: nil)
+        let record = try XCTUnwrap(database.syncFileRecord(source: source, path: notes))
+        XCTAssertEqual(record.uploadedDigest, "d1")
+        XCTAssertTrue(record.hasChangedSinceUpload(exportDigest: "d-after-merge"))
+    }
+
+    func testAnotherEndpointStartsFromNothing() throws {
+        try database.recordSyncUpload(source: source, path: notes, digest: "d1", revision: "r1", replacing: nil)
+        XCTAssertNil(try database.syncFileRecord(source: "folder:/elsewhere", path: notes))
+    }
+
+    func testChangesWaitForABundleAndANewerOneSurvivesTheClear() throws {
+        try database.recordSyncUpload(
+            source: source, path: notes, digest: "d1", revision: "r1", replacing: "r0",
+            at: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        try database.recordSyncLocalDeletion(
+            source: source, path: "Highlights/old.lamp", at: Date(timeIntervalSince1970: 1_800_000_001)
+        )
+        let carried = try database.pendingManifestChanges(source: source)
+        XCTAssertEqual(carried.map(\.change), [.delete, .write])
+        XCTAssertEqual(try database.pendingManifestDeletions(source: source), ["Highlights/old.lamp": 1_800_000_001_000])
+
+        // Uploaded again while the pass that read `carried` was still running.
+        try database.recordSyncUpload(
+            source: source, path: notes, digest: "d2", revision: "r2", replacing: "r1",
+            at: Date(timeIntervalSince1970: 1_800_000_002)
+        )
+        try database.clearPendingManifestChanges(carried)
+
+        let left = try database.pendingManifestChanges(source: source)
+        XCTAssertEqual(left.map(\.revision), ["r2"])
+    }
+}
+
+// MARK: - Design B pass
+
+/// A WebDAV server holding the library as files, with strong revisions and
+/// conditional writes and deletes, as the Synology serves them.
+private actor LibraryServer {
+    private(set) var files: [String: LampSyncRemoteFile] = [:]
+    private var next = 0
+    private(set) var writes: [String] = []
+    private(set) var deletes: [String] = []
+
+    func file(_ path: String) -> LampSyncRemoteFile? { files[path] }
+
+    /// Another device's write.
+    @discardableResult
+    func seed(_ path: String, _ data: Data) -> String {
+        next += 1
+        let revision = "\"lib-\(next)\""
+        files[path] = LampSyncRemoteFile(data: data, revision: revision)
+        return revision
+    }
+
+    func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) throws -> String? {
+        let current = files[path]
+        switch condition {
+        case .ifAbsent where current != nil:
+            throw LampWebDAVStorage.StorageError.preconditionFailed
+        case .ifRevision(let expected)
+            where !LampSyncConditionalWrite.namesSameRevision(current?.revision, expected):
+            throw LampWebDAVStorage.StorageError.preconditionFailed
+        default:
+            break
+        }
+        writes.append(path)
+        return seed(path, data)
+    }
+
+    func delete(_ path: String, condition: LampSyncWriteCondition) throws {
+        guard let current = files[path] else { return }
+        if case .ifRevision(let expected) = condition,
+           !LampSyncConditionalWrite.namesSameRevision(current.revision, expected) {
+            throw LampWebDAVStorage.StorageError.preconditionFailed
+        }
+        files[path] = nil
+        deletes.append(path)
+    }
+
+    /// Another device's bundle, written the moment the pass first lists a
+    /// folder: after the pass read the bundle, before it writes.
+    private var interloper: Data?
+    func writeBundleDuringThePass(_ data: Data) { interloper = data }
+
+    func list(_ directory: String) -> [LampSyncRemoteEntry] {
+        if let interloper {
+            self.interloper = nil
+            seed(LampSyncSettingsStore.path, interloper)
+        }
+        let prefix = directory.hasSuffix("/") ? directory : directory + "/"
+        return files.compactMap { path, file in
+            guard path.hasPrefix(prefix) else { return nil }
+            let name = String(path.dropFirst(prefix.count))
+            guard !name.contains("/") else { return nil }
+            return LampSyncRemoteEntry(
+                path: path, name: name, isDirectory: false,
+                revision: file.revision, modifiedAt: nil, size: Int64(file.data.count)
+            )
+        }
+    }
+}
+
+private struct LibraryServerStorage: ModuleStorage, LampSyncRemoteStore {
+    let server: LibraryServer
+
+    func isAvailable() async -> Bool { true }
+    func list(directory: String) async throws -> [LampSyncRemoteEntry]? { await server.list(directory) }
+    func read(path: String) async throws -> LampSyncRemoteFile? { await server.file(path) }
+    func revision(path: String) async throws -> String? { await server.file(path)?.revision }
+    func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) async throws -> String? {
+        try await server.write(data, to: path, condition: condition)
+    }
+    func delete(path: String, condition: LampSyncWriteCondition) async throws {
+        try await server.delete(path, condition: condition)
+    }
+    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile {
+        let path = "\(directoryName(for: type))/\(fileName)"
+        guard let file = await server.file(path) else { throw ModuleStorageError.fileNotFound(path) }
+        return file
+    }
+    func readModuleFile(type: ModuleType, fileName: String) async throws -> Data {
+        try await readModuleSnapshot(type: type, fileName: fileName).data
+    }
+    func readFile(path: String) async throws -> Data {
+        guard let file = await server.file(path) else { throw ModuleStorageError.fileNotFound(path) }
+        return file.data
+    }
+    func listFiles(path: String) async throws -> [StoredFileListing] {
+        await server.list(path).map { StoredFileListing(name: $0.name, modificationDate: nil) }
+    }
+    func listModuleFiles(type: ModuleType) async throws -> [ModuleFileInfo] { [] }
+    func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws {
+        fatalError("Design B writes go through the conditional store")
+    }
+    func writeFile(path: String, data: Data) async throws {
+        fatalError("Design B writes go through the conditional store")
+    }
+    func deleteModuleFile(type: ModuleType, fileName: String) async throws {
+        fatalError("Design B deletes are conditional reaps")
+    }
+    func getFileHash(type: ModuleType, fileName: String) async throws -> String? {
+        await server.file("\(directoryName(for: type))/\(fileName)")?.revision
+    }
+    func getModificationDate(type: ModuleType, fileName: String) async throws -> Date? { nil }
+    func ensureDirectoryExists(type: ModuleType) async throws {}
+    func directoryURL(for type: ModuleType) -> URL? { nil }
+    func getSyncStatus(type: ModuleType, fileName: String) async -> ModuleSyncStatus { .notAvailable }
+}
+
+@MainActor
+final class LibrarySyncPassTests: XCTestCase {
+    private let database = ModuleDatabase.shared
+    private var server: LibraryServer!
+    private var storage: LibraryServerStorage!
+    private var moduleId: String!
+    private var source: String!
+
+    private var notesPath: String { "Notes/\(moduleId!).lamp" }
+
+    override func setUp() async throws {
+        server = LibraryServer()
+        storage = LibraryServerStorage(server: server)
+        moduleId = "library-pass-\(UUID().uuidString)"
+        source = "webdav:https://library-\(UUID().uuidString).test/LampBible|someone"
+    }
+
+    override func tearDown() async throws {
+        try? database.deleteAllEntriesForModule(moduleId: moduleId)
+        try? database.deleteModule(id: moduleId)
+        try? database.clearPendingModulePublication(moduleId: moduleId)
+        try? database.write { db in
+            try db.execute(sql: "DELETE FROM sync_file_records WHERE source = ?", arguments: [source])
+            try db.execute(sql: "DELETE FROM sync_pending_manifest_changes WHERE source = ?", arguments: [source])
+            try db.execute(sql: "DELETE FROM personal_sync_ledger")
+        }
+    }
+
+    private func pass() -> LibrarySyncPass { LibrarySyncPass(storage: storage, source: source) }
+
+    private func saveNotesModule(notes: [String]) throws {
+        try database.saveModule(Module(
+            id: moduleId, type: .notes, name: "My Notes",
+            filePath: "\(moduleId!).lamp", isEditable: true
+        ))
+        for (offset, id) in notes.enumerated() {
+            try database.saveNoteEntry(NoteEntry(
+                id: id, moduleId: moduleId, verseId: 43_001_001 + offset,
+                title: nil, content: "Note \(id)", verseRefs: nil,
+                lastModified: 1_788_132_249, footnotes: nil
+            ))
+        }
+    }
+
+    private func storedNoteIDs() throws -> [String] {
+        try database.read { db in
+            try String.fetchAll(db, sql: "SELECT id FROM note_entries WHERE module_id = ? ORDER BY id", arguments: [moduleId])
+        }
+    }
+
+    private func bundle() async throws -> LampSyncSettingsBundle {
+        let stored = await server.file(LampSyncSettingsStore.path)
+        let file = try XCTUnwrap(stored)
+        return try LampSyncSettingsBundle.decode(file.data)
+    }
+
+    func testAnArchiveAtThePathMeansTheMacHasNotMigrated() async throws {
+        let revision = await server.seed(
+            LampSyncSettingsStore.path, try LampSyncArchive(entries: []).compressedData()
+        )
+        let outcome = try await pass().run()
+        XCTAssertEqual(outcome, .notMigrated(archiveRevision: revision))
+        let writes = await server.writes
+        XCTAssertEqual(writes, [], "the phone never migrates")
+    }
+
+    func testAFreshServerGetsABundleAndThisDevicesNotesAndThenAQuietPass() async throws {
+        try saveNotesModule(notes: ["a", "b"])
+
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+
+        let written = try await bundle()
+        XCTAssertEqual(written.manifest.entry(at: notesPath)?.isMember, true)
+        let uploaded = await server.file(notesPath)
+        XCTAssertNotNil(uploaded)
+        XCTAssertEqual(written.manifest.entry(at: notesPath)?.revision, uploaded?.revision)
+
+        let before = await server.writes.count
+        _ = try await pass().run()
+        let after = await server.writes.count
+        XCTAssertEqual(after, before, "nothing changed, so nothing is written")
+    }
+
+    func testANoteAddedElsewhereArrivesAndDoesNotEchoBack() async throws {
+        try saveNotesModule(notes: ["a"])
+        _ = try await pass().run()
+
+        // Another device adds note "b" and publishes: export it from here, then
+        // take it back out without a deletion, as if this device never had it.
+        try database.saveNoteEntry(NoteEntry(
+            id: "b", moduleId: moduleId, verseId: 43_001_002, title: nil, content: "Note b",
+            verseRefs: nil, lastModified: 1_788_132_300, footnotes: nil
+        ))
+        let module = try XCTUnwrap(database.getModule(id: moduleId))
+        let theirs = try ModuleSyncManager.shared.exportNoteModuleToSQLite(module)
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM note_entries WHERE id = 'b' AND module_id = ?", arguments: [moduleId])
+            try db.execute(sql: "DELETE FROM personal_sync_ledger WHERE item_key = 'b'")
+        }
+        let previous = await server.file(notesPath)?.revision
+        let revision = await server.seed(notesPath, theirs)
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.recordingWrite(
+                notesPath, revision: revision, replacing: previous, at: ModuleDatabase.nowMilliseconds()
+            )
+        }
+        let before = await server.writes.filter { $0 == notesPath }.count
+
+        _ = try await pass().run()
+
+        XCTAssertEqual(try storedNoteIDs(), ["a", "b"])
+        let after = await server.writes.filter { $0 == notesPath }.count
+        XCTAssertEqual(after, before, "a download is not uploaded back")
+        let record = try XCTUnwrap(database.syncFileRecord(source: source, path: notesPath))
+        XCTAssertEqual(record.lastRevision, revision)
+    }
+
+    func testAModuleDeletedElsewhereIsRemovedHere() async throws {
+        try saveNotesModule(notes: ["a"])
+        _ = try await pass().run()
+        let revision = await server.file(notesPath)?.revision
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(
+                notesPath, at: ModuleDatabase.nowMilliseconds() + 1_000, revision: revision
+            )
+        }
+
+        _ = try await pass().run()
+
+        XCTAssertNil(try database.getModule(id: moduleId))
+        let reaped = await server.file(notesPath)
+        XCTAssertNil(reaped, "the tombstoned copy is reaped")
+    }
+
+    // MARK: Settings
+
+    private let settingsKeys = [
+        "UserSettingsSync.remoteChangeToken",
+        "UserSettingsSync.readingsBase.v1",
+        "UserDatabase.lastExportedAt",
+        "SharedPreferenceArchiveSync.bases.v1",
+    ]
+    private var savedSettingsKeys: [Any?] = []
+    private var addedReadings: [String] = []
+
+    private func keepSettingsState() {
+        savedSettingsKeys = settingsKeys.map { UserDefaults.standard.object(forKey: $0) }
+    }
+
+    private func restoreSettingsState() {
+        for reading in addedReadings { try? UserDatabase.shared.removeCompletedReading(reading) }
+        for (key, value) in zip(settingsKeys, savedSettingsKeys) { UserDefaults.standard.set(value, forKey: key) }
+    }
+
+    private func settingsPass() -> LibrarySyncPass {
+        var pass = LibrarySyncPass(storage: storage, source: source)
+        let storage = self.storage!
+        pass.makeParticipants = {
+            try UserSettingsSyncManager.shared.bundleParticipants(for: $0, storage: storage)
+        }
+        return pass
+    }
+
+    private func readings(in settingsDatabase: Data) throws -> Set<String> {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bundle-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try settingsDatabase.write(to: url)
+        let queue = try DatabaseQueue(path: url.path)
+        defer { try? queue.close() }
+        return Set(try queue.read { try String.fetchAll($0, sql: "SELECT id FROM completed_readings") })
+    }
+
+    /// Another device's settings: these, with one more reading finished.
+    private func adding(reading: String, to settingsDatabase: Data) throws -> Data {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bundle-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try settingsDatabase.write(to: url)
+        let queue = try DatabaseQueue(path: url.path)
+        try queue.writeWithoutTransaction { db in
+            try CompletedReading(id: reading).insert(db)
+            try db.checkpoint(.truncate)
+        }
+        try queue.close()
+        return try Data(contentsOf: url)
+    }
+
+    func testSettingsAndReadingsTravelInTheBundle() async throws {
+        keepSettingsState()
+        defer { restoreSettingsState() }
+        let reading = "bundle-here-\(UUID().uuidString)"
+        addedReadings.append(reading)
+        try UserDatabase.shared.addCompletedReading(reading)
+
+        _ = try await settingsPass().run()
+
+        let written = try await bundle()
+        XCTAssertTrue(try readings(in: XCTUnwrap(written.userSettings)).contains(reading))
+        XCTAssertFalse(UserDatabase.shared.hasUnsyncedChanges)
+    }
+
+    func testAReadingFinishedElsewhereArrivesFromTheBundle() async throws {
+        keepSettingsState()
+        defer { restoreSettingsState() }
+        _ = try await settingsPass().run()
+        let theirs = "bundle-there-\(UUID().uuidString)"
+        addedReadings.append(theirs)
+        let current = try await bundle()
+        let changed = try adding(reading: theirs, to: XCTUnwrap(current.userSettings))
+        _ = try await LampSyncSettingsStore.update(in: storage) { $0.userSettings = changed }
+
+        _ = try await settingsPass().run()
+
+        XCTAssertTrue(UserDatabase.shared.isReadingCompleted(theirs))
+    }
+
+    /// Prepared against one bundle, met with a newer one at the write: the
+    /// pass prepares again against what is there, rather than writing over it.
+    func testABundleThatMovesMidPassIsPreparedAgain() async throws {
+        await server.writeBundleDuringThePass(
+            try LampSyncSettingsBundle(macSettings: Data("the Mac wrote".utf8)).encoded()
+        )
+        final class Count { var value = 0 }
+        let prepared = Count()
+        var pass = LibrarySyncPass(storage: storage, source: source)
+        pass.makeParticipants = { bundle in
+            prepared.value += 1
+            return [ExpectingParticipant(expected: bundle?.macSettings)]
+        }
+
+        _ = try await pass.run()
+
+        XCTAssertEqual(prepared.value, 2)
+        let written = try await bundle()
+        XCTAssertEqual(written.macSettings, Data("the Mac wrote".utf8))
+        XCTAssertEqual(written.userSettings, Data("the phone wrote".utf8))
+    }
+
+    /// After the switch nothing is recorded per file, so every installed
+    /// module is fetched once; one whose bytes the archive already installed
+    /// is recorded, not reinstalled.
+    func testAModuleTheArchiveInstalledIsRecordedNotReinstalled() async throws {
+        let key = ModuleSyncManager.portableArchiveImportStateKey
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        // Not a module at all: importing it would fail, so the pass can only
+        // succeed by recognising the bytes.
+        let bytes = Data("the archive's copy".utf8)
+        try database.saveModule(Module(
+            id: moduleId, type: .dictionary, name: "Lexicon",
+            filePath: "\(moduleId!).lamp", isEditable: false
+        ))
+        UserDefaults.standard.set(try JSONEncoder().encode(ModuleSyncManager.PortableArchiveImportState(
+            source: "archive", revision: nil,
+            modules: [.init(path: "Dictionaries/\(moduleId!).lamp", id: moduleId, type: .dictionary,
+                            digest: LibrarySyncPass.digest(bytes))],
+            compatibilityManifest: nil
+        )), forKey: key)
+        let path = "Dictionaries/\(moduleId!).lamp"
+        let revision = await server.seed(path, bytes)
+
+        _ = try await pass().run()
+
+        XCTAssertEqual(try database.getModule(id: moduleId)?.fileHash, revision)
+        XCTAssertEqual(try database.syncFileRecord(source: source, path: path)?.lastRevision, revision)
+    }
+
+    func testADeletionHereIsTombstonedAndReaped() async throws {
+        try saveNotesModule(notes: ["a"])
+        _ = try await pass().run()
+        try database.recordSyncLocalDeletion(source: source, path: notesPath)
+        try database.deleteAllEntriesForModule(moduleId: moduleId)
+        try database.deleteModule(id: moduleId)
+
+        _ = try await pass().run()
+
+        let written = try await bundle()
+        XCTAssertEqual(written.manifest.entry(at: notesPath)?.isMember, false)
+        let left = await server.file(notesPath)
+        XCTAssertNil(left)
+        XCTAssertEqual(try database.pendingManifestChanges(source: source), [])
+    }
+}
+
+/// Writes only over the bundle it was prepared against.
+@MainActor
+private struct ExpectingParticipant: SettingsBundleParticipant {
+    let expected: Data?
+    func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
+        guard bundle.macSettings == expected else { throw LibrarySyncPass.BundleMoved() }
+        bundle.userSettings = Data("the phone wrote".utf8)
+    }
+    func committed(_ written: LampSyncSettingsStore.Snapshot) throws {}
 }

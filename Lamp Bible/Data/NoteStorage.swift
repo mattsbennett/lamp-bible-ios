@@ -114,6 +114,10 @@ struct NoteSyncMergeResult {
     var cloudMergeCount: Int
     /// Count of entries kept from local (newer than cloud)
     var localKeptCount: Int
+    /// Copies dropped because they predate a recorded deletion.
+    var deletedCount = 0
+    /// The server copy differs from what this device now holds.
+    var needsPublish: Bool { localKeptCount > 0 || deletedCount > 0 }
 }
 
 /// User's resolution choice for a conflict

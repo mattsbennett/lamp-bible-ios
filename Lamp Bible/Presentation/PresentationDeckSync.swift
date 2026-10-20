@@ -32,6 +32,7 @@ enum PresentationDeckSync {
     @discardableResult
     static func pull(
         from storage: ModuleStorage,
+        deletions bundleDeletions: Data? = nil,
         into decks: PresentationDeckStorage = .shared
     ) async throws -> Bool {
         let directory = LampPresentationDeckPortableLayout.directoryPath
@@ -54,8 +55,11 @@ enum PresentationDeckSync {
             )
         }
 
+        // With the settings bundle in use, deck deletions travel in it.
         var deletions = LampPresentationDeckDeletionLedger()
-        if listings.contains(where: {
+        if let bundleDeletions {
+            deletions = LampPresentationDeckDeletionLedger.decoded(from: bundleDeletions)
+        } else if listings.contains(where: {
             $0.name == LampPresentationDeckPortableLayout.deletionsFilename
         }), let data = try? await storage.readFile(
             path: LampPresentationDeckPortableLayout.deletionsPath
@@ -67,9 +71,15 @@ enum PresentationDeckSync {
         let assetsDirectory = LampPresentationDeckPortableLayout.assetsDirectoryPath
         for listing in (try? await storage.listFiles(path: assetsDirectory)) ?? [] {
             let path = "\(assetsDirectory)/\(listing.name)"
-            guard LampPresentationDeckPortableLayout.isAssetPath(path),
-                  let data = try? await storage.readFile(path: path)
-            else { continue }
+            guard LampPresentationDeckPortableLayout.isAssetPath(path) else { continue }
+            // Images are merged newest-wins, so one held here at least as new
+            // as the listed copy would be kept anyway: don't fetch it again.
+            let local = decks.syncedStore.assetsDirectoryURL.appendingPathComponent(listing.name)
+            if let listed = listing.modificationDate,
+               let held = try? local.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate,
+               held >= listed { continue }
+            guard let data = try? await storage.readFile(path: path) else { continue }
             assets.append(
                 LampPresentationAssetRevision(
                     name: listing.name,

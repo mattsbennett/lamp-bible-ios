@@ -10,6 +10,7 @@
 import CryptoKit
 import GRDB
 import LampCore
+import LampModuleKit
 import XCTest
 @testable import Lamp_Bible
 
@@ -25,6 +26,9 @@ final class EditableModuleRoundTripTests: XCTestCase {
     override func tearDownWithError() throws {
         try? database.deleteAllEntriesForModule(moduleId: moduleId)
         try? database.deleteModule(id: moduleId)
+        // Item ids repeat across these tests; a deletion recorded by one must
+        // not drop the next one's import.
+        try? database.write { try $0.execute(sql: "DELETE FROM personal_sync_ledger") }
     }
 
     private func saveModule(type: ModuleType, name: String) throws {
@@ -251,5 +255,134 @@ final class EditableModuleRoundTripTests: XCTestCase {
 
         _ = try database.saveHighlight(HighlightEntry(setId: setId, ref: 1_001_001, sc: 0, ec: 2))
         XCTAssertNotEqual(try export(), first)
+    }
+
+    // MARK: - Deletions
+
+    private func storedNoteIDs() throws -> [String] {
+        try database.read { db in
+            try String.fetchAll(db, sql: "SELECT id FROM note_entries WHERE module_id = ? ORDER BY id", arguments: [moduleId])
+        }
+    }
+
+    /// Publish, change something here, then sync with the published copy:
+    /// pull it back, and publish again whatever that leaves to send.
+    @discardableResult
+    private func publishThenPull(_ change: () throws -> Void) async throws -> ModuleShelf {
+        let shelf = ModuleShelf()
+        let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .notes)
+        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try change()
+        await shelf.reissueRevision(for: "\(moduleId!).lamp")
+        try await ModuleSyncManager.shared.syncModuleType(.notes, using: storage)
+        return shelf
+    }
+
+    private func publishedNoteIDs(on shelf: ModuleShelf) async throws -> [String] {
+        let stored = await shelf.data(named: "\(moduleId!).lamp")
+        let packed = try XCTUnwrap(stored)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try LampZlib.decompress(packed, to: url)
+        let queue = try DatabaseQueue(path: url.path)
+        defer { try? queue.close() }
+        return try await queue.read { try String.fetchAll($0, sql: "SELECT id FROM note_entries ORDER BY id") }
+    }
+
+    /// The import merge is a union, so before the ledger a note deleted here
+    /// came straight back from any copy that still had it.
+    func testANoteDeletedHereIsNotBroughtBackByAnOlderCopy() async throws {
+        try saveModule(type: .notes, name: "My Notes")
+        try saveNote(id: "gone", verseId: 43_001_001)
+        try saveNote(id: "stays", verseId: 43_001_002)
+
+        let shelf = try await publishThenPull { try database.deleteNoteEntry(id: "gone") }
+
+        XCTAssertEqual(try storedNoteIDs(), ["stays"])
+        // And the copy on the server, which still had it, was replaced.
+        let published = try await publishedNoteIDs(on: shelf)
+        XCTAssertEqual(published, ["stays"])
+    }
+
+    /// An edit made elsewhere after the deletion is newer than it, and wins.
+    func testAnEditMadeAfterADeletionComesBack() async throws {
+        try saveModule(type: .notes, name: "My Notes")
+        let later = Int(Date().timeIntervalSince1970) + 3_600
+        try saveNote(id: "edited", verseId: 43_001_001, lastModified: later)
+
+        try await publishThenPull { try database.deleteNoteEntry(id: "edited") }
+
+        XCTAssertEqual(try storedNoteIDs(), ["edited"])
+    }
+
+    /// A deletion another device made arrives as a ledger, and takes the
+    /// note away here too.
+    func testADeletionRecordedElsewhereRemovesTheNoteHere() throws {
+        try saveModule(type: .notes, name: "My Notes")
+        try saveNote(id: "theirs", verseId: 43_001_001)
+        try saveNote(id: "kept", verseId: 43_001_002)
+        try database.clearPendingModulePublication(moduleId: moduleId)
+        var incoming = LampPersonalDeletionLedger()
+        incoming.set(.init(deletedAt: ModuleDatabase.nowMilliseconds() + 1_000), kind: .note, key: "theirs")
+
+        try database.mergePersonalDeletionLedger(incoming)
+        let touched = try database.applyPersonalDeletionLedger()
+
+        XCTAssertEqual(touched, [moduleId])
+        XCTAssertEqual(try storedNoteIDs(), ["kept"])
+        XCTAssertTrue(try database.pendingModulePublications(type: .notes).contains(moduleId))
+        // Applying it records nothing new: the note is not deleted again here.
+        XCTAssertEqual(try database.personalDeletionLedger().entry(.note, "theirs")?.deletedAt,
+                       incoming.entry(.note, "theirs")?.deletedAt)
+    }
+
+    // MARK: - Highlight deletions
+
+    private func storedHighlightKeys(setId: String) throws -> [String] {
+        try database.getAllHighlights(setId: setId).map(ModuleDatabase.ledgerKey)
+    }
+
+    func testAHighlightDeletedElsewhereIsRemovedHere() throws {
+        try saveModule(type: .highlights, name: "My Highlights")
+        let setId = try saveHighlightSet(lastModified: 1_788_132_249)
+        let all = try storedHighlightKeys(setId: setId)
+        XCTAssertEqual(all.count, 3)
+        var incoming = LampPersonalDeletionLedger()
+        incoming.recordDeletion(.highlight, all[0], at: ModuleDatabase.nowMilliseconds() + 1_000)
+
+        try database.mergePersonalDeletionLedger(incoming)
+        XCTAssertEqual(try database.applyPersonalDeletionLedger(), [moduleId])
+
+        XCTAssertEqual(try storedHighlightKeys(setId: setId), Array(all.dropFirst()))
+    }
+
+    func testHighlightingTheSameWordsAgainAfterDeletingThemKeepsIt() throws {
+        try saveModule(type: .highlights, name: "My Highlights")
+        let setId = try saveHighlightSet(lastModified: 1_788_132_249)
+        let first = try XCTUnwrap(database.getAllHighlights(setId: setId).first)
+        try database.deleteHighlight(id: try XCTUnwrap(first.id))
+        Thread.sleep(forTimeInterval: 0.005)  // a person cannot do both in one millisecond
+        _ = try database.saveHighlight(HighlightEntry(setId: setId, ref: first.ref, sc: first.sc, ec: first.ec))
+
+        try database.applyPersonalDeletionLedger()
+
+        XCTAssertTrue(try storedHighlightKeys(setId: setId).contains(ModuleDatabase.ledgerKey(first)))
+    }
+
+    /// A highlight is known by where it is: moving one is, to another device,
+    /// deleting it there and highlighting here.
+    func testMovingAHighlightRecordsTheOldPlaceAsDeleted() throws {
+        try saveModule(type: .highlights, name: "My Highlights")
+        let setId = try saveHighlightSet(lastModified: 1_788_132_249)
+        let moved = try XCTUnwrap(database.getAllHighlights(setId: setId).first)
+        Thread.sleep(forTimeInterval: 0.005)
+        try database.updateHighlight(id: try XCTUnwrap(moved.id), sc: moved.sc + 1, ec: moved.ec + 1)
+
+        let ledger = try database.personalDeletionLedger()
+        XCTAssertTrue(ledger.isDeleted(.highlight, ModuleDatabase.ledgerKey(moved), itemModified: nil))
+        var now = moved
+        now.sc += 1
+        now.ec += 1
+        XCTAssertFalse(ledger.isDeleted(.highlight, ModuleDatabase.ledgerKey(now), itemModified: nil))
     }
 }

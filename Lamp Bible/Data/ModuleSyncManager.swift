@@ -9,6 +9,7 @@ import Foundation
 import GRDB
 import Compression
 import Combine
+import LampCore
 import LampModuleKit
 
 class ModuleSyncManager: ObservableObject {
@@ -22,7 +23,8 @@ class ModuleSyncManager: ObservableObject {
 
     private let database = ModuleDatabase.shared
 
-    private var isSyncing = false
+    /// One pass at a time, archive or library.
+    var isSyncing = false
     private let initialDevotionalSync = LampSyncOnce()
 
     /// Pending note conflicts that need user resolution
@@ -849,24 +851,26 @@ class ModuleSyncManager: ObservableObject {
                             let local = try NoteEntry
                                 .filter(Column("module_id") == module.id).fetchAll(db)
                             let result = mergeNoteEntries(
-                                local: local, cloud: entries, moduleId: module.id
+                                local: local, cloud: entries, moduleId: module.id,
+                                deletions: try ModuleDatabase.personalDeletionLedger(in: db)
                             )
                             try saveEditableReconciliation(
                                 in: db, module: module, type: .notes,
                                 entries: result.entriesToSave, conflicts: result.conflicts,
-                                key: { $0.id }, keptLocal: result.localKeptCount > 0
+                                key: { $0.id }, keptLocal: result.needsPublish
                             )
                             mergedEditable = true
                         case .devotional(let module, let entries):
                             let local = try DevotionalEntry
                                 .filter(Column("module_id") == module.id).fetchAll(db)
                             let result = try mergeDevotionalEntries(
-                                local: local, cloud: entries, moduleId: module.id
+                                local: local, cloud: entries, moduleId: module.id,
+                                deletions: try ModuleDatabase.personalDeletionLedger(in: db)
                             )
                             try saveEditableReconciliation(
                                 in: db, module: module, type: .devotional,
                                 entries: result.entriesToSave, conflicts: result.conflicts,
-                                key: { $0.id }, keptLocal: result.localKeptCount > 0
+                                key: { $0.id }, keptLocal: result.needsPublish
                             )
                             mergedEditable = true
                         case .sqlite(let info, _):
@@ -1120,6 +1124,21 @@ class ModuleSyncManager: ObservableObject {
             }
         }
 
+        // A highlight set is imported whole rather than merged, so what it
+        // brought back that was deleted here goes again now. Notes and
+        // writings were already filtered in their merge; this finds nothing
+        // there.
+        if type == .highlights || type == .notes || type == .devotional {
+            do {
+                let touched = try database.applyPersonalDeletionLedger()
+                if !touched.isEmpty {
+                    print("[ModuleSync] removed items deleted since their copy from \(touched.sorted())")
+                }
+            } catch {
+                if firstImportError == nil { firstImportError = error }
+            }
+        }
+
         // Remote absence is not a tombstone. It may indicate a
         // backend switch or temporarily incomplete remote storage.
         var cloudIds = Set(cloudFiles.map { $0.id })
@@ -1269,7 +1288,7 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Import from Cloud
 
-    private func importModuleFromCloud(
+    func importModuleFromCloud(
         fileInfo: ModuleFileInfo,
         type: ModuleType,
         storage: ModuleStorage
@@ -1282,7 +1301,7 @@ class ModuleSyncManager: ObservableObject {
         )
     }
 
-    private func importRemoteModuleSnapshot(
+    func importRemoteModuleSnapshot(
         fileInfo: ModuleFileInfo,
         type: ModuleType,
         snapshot: LampSyncRemoteFile,
@@ -2098,12 +2117,13 @@ class ModuleSyncManager: ObservableObject {
                 .filter(Column("module_id") == fileInfo.id)
                 .fetchAll(db)
             let result = mergeNoteEntries(
-                local: localEntries, cloud: remoteEntries, moduleId: fileInfo.id
+                local: localEntries, cloud: remoteEntries, moduleId: fileInfo.id,
+                deletions: try ModuleDatabase.personalDeletionLedger(in: db)
             )
             try saveEditableReconciliation(
                 in: db, module: metadata, type: .notes,
                 entries: result.entriesToSave, conflicts: result.conflicts,
-                key: { $0.id }, keptLocal: result.localKeptCount > 0
+                key: { $0.id }, keptLocal: result.needsPublish
             )
             return result
         }
@@ -2132,12 +2152,13 @@ class ModuleSyncManager: ObservableObject {
                 .filter(Column("module_id") == fileInfo.id)
                 .fetchAll(db)
             let result = try mergeDevotionalEntries(
-                local: localEntries, cloud: remoteEntries, moduleId: fileInfo.id
+                local: localEntries, cloud: remoteEntries, moduleId: fileInfo.id,
+                deletions: try ModuleDatabase.personalDeletionLedger(in: db)
             )
             try saveEditableReconciliation(
                 in: db, module: metadata, type: .devotional,
                 entries: result.entriesToSave, conflicts: result.conflicts,
-                key: { $0.id }, keptLocal: result.localKeptCount > 0
+                key: { $0.id }, keptLocal: result.needsPublish
             )
             return result
         }
@@ -2680,12 +2701,13 @@ class ModuleSyncManager: ObservableObject {
                 .filter(Column("module_id") == file.id)
                 .fetchAll(db)
             let result = try mergeDevotionalEntries(
-                local: localEntries, cloud: cloudEntries, moduleId: file.id
+                local: localEntries, cloud: cloudEntries, moduleId: file.id,
+                deletions: try ModuleDatabase.personalDeletionLedger(in: db)
             )
             try saveEditableReconciliation(
                 in: db, module: module, type: .devotional,
                 entries: result.entriesToSave, conflicts: result.conflicts,
-                key: { $0.id }, keptLocal: result.localKeptCount > 0
+                key: { $0.id }, keptLocal: result.needsPublish
             )
             return result
         }
@@ -2695,7 +2717,16 @@ class ModuleSyncManager: ObservableObject {
     }
 
     /// Merge local and cloud devotional entries with conflict detection
-    private func mergeDevotionalEntries(local: [DevotionalEntry], cloud: [DevotionalEntry], moduleId: String) throws -> DevotionalMergeResult {
+    private func mergeDevotionalEntries(
+        local allLocal: [DevotionalEntry], cloud allCloud: [DevotionalEntry], moduleId: String,
+        deletions: LampPersonalDeletionLedger
+    ) throws -> DevotionalMergeResult {
+        // A copy older than a recorded deletion, on either side, is gone.
+        let isLive = { (entry: DevotionalEntry) in
+            !deletions.isDeleted(.devotional, entry.id, itemModified: entry.lastModified)
+        }
+        let local = allLocal.filter(isLive)
+        let cloud = allCloud.filter(isLive)
         let incomingByID = cloud.reduce(into: [String: DevotionalEntry]()) { result, entry in
             if result[entry.id] == nil { result[entry.id] = entry }
         }
@@ -2730,7 +2761,8 @@ class ModuleSyncManager: ObservableObject {
             entriesToSave: merged.recordsToSave,
             conflicts: conflicts,
             cloudMergeCount: merged.incomingCount,
-            localKeptCount: merged.localCount
+            localKeptCount: merged.localCount,
+            deletedCount: (allLocal.count - local.count) + (allCloud.count - cloud.count)
         )
     }
 
@@ -2740,6 +2772,10 @@ class ModuleSyncManager: ObservableObject {
         var conflicts: [DevotionalConflict]
         var cloudMergeCount: Int
         var localKeptCount: Int
+        /// Copies dropped because they predate a recorded deletion.
+        var deletedCount = 0
+        /// The server copy differs from what this device now holds.
+        var needsPublish: Bool { localKeptCount > 0 || deletedCount > 0 }
     }
 
     private func importNoteModule(_ file: NoteModuleFile, hash: String?) throws {
@@ -2780,12 +2816,13 @@ class ModuleSyncManager: ObservableObject {
                 .filter(Column("module_id") == moduleId)
                 .fetchAll(db)
             let result = mergeNoteEntries(
-                local: localEntries, cloud: cloudEntries, moduleId: moduleId
+                local: localEntries, cloud: cloudEntries, moduleId: moduleId,
+                deletions: try ModuleDatabase.personalDeletionLedger(in: db)
             )
             try saveEditableReconciliation(
                 in: db, module: module, type: .notes,
                 entries: result.entriesToSave, conflicts: result.conflicts,
-                key: { $0.id }, keptLocal: result.localKeptCount > 0
+                key: { $0.id }, keptLocal: result.needsPublish
             )
             return result
         }
@@ -2795,10 +2832,19 @@ class ModuleSyncManager: ObservableObject {
     }
 
     /// Merge local and cloud note entries with conflict detection
-    private func mergeNoteEntries(local: [NoteEntry], cloud: [NoteEntry], moduleId: String) -> NoteSyncMergeResult {
+    private func mergeNoteEntries(
+        local: [NoteEntry], cloud: [NoteEntry], moduleId: String,
+        deletions: LampPersonalDeletionLedger
+    ) -> NoteSyncMergeResult {
+        // A copy older than a recorded deletion, on either side, is gone.
+        let isLive = { (entry: NoteEntry) in
+            !deletions.isDeleted(.note, entry.id, itemModified: entry.lastModified)
+        }
+        let liveLocal = local.filter(isLive)
+        let liveCloud = cloud.filter(isLive)
         let merged = LampSyncMerge.records(
-            local: local,
-            incoming: cloud,
+            local: liveLocal,
+            incoming: liveCloud,
             key: { $0.verseId },
             modified: { $0.lastModified },
             sameContent: Self.sameNoteContent
@@ -2814,7 +2860,8 @@ class ModuleSyncManager: ObservableObject {
                 )
             },
             cloudMergeCount: merged.incomingCount,
-            localKeptCount: merged.localCount
+            localKeptCount: merged.localCount,
+            deletedCount: (local.count - liveLocal.count) + (cloud.count - liveCloud.count)
         )
     }
 
@@ -3205,7 +3252,11 @@ class ModuleSyncManager: ObservableObject {
         // If remote storage is configured, also write there for sync.
         let storage = await MainActor.run { getStorage() }
         if let storage, await storage.isAvailable() {
-            if let webDAV = storage as? WebDAVModuleStorage {
+            if let webDAV = storage as? WebDAVModuleStorage, await LibrarySyncPass.isInUse(at: webDAV) {
+                try await publishImportedFile(
+                    compressedData, type: moduleType, moduleId: moduleId, fileName: fileName, to: webDAV
+                )
+            } else if let webDAV = storage as? WebDAVModuleStorage {
                 let revision = try await webDAV.writeModuleFile(
                     type: moduleType,
                     fileName: fileName,
@@ -3241,6 +3292,17 @@ class ModuleSyncManager: ObservableObject {
     /// Local-only mode intentionally treats this as a no-op.
     func exportModule(id: String) async throws {
         guard let storage = await getStorage() else { return }
+        // With the settings bundle in use, the library pass publishes: it
+        // records each upload in the manifest, which a write from here
+        // would not, and the other devices would not know the file was ours.
+        if let webDAV = storage as? WebDAVModuleStorage, await LibrarySyncPass.isInUse(at: webDAV) {
+            guard let module = try database.getModule(id: id) else {
+                throw ModuleSyncError.moduleNotFound(id)
+            }
+            try database.markPendingModulePublication(moduleId: id, type: module.type)
+            await LibrarySyncPass.schedule(on: webDAV)
+            return
+        }
         try await exportModule(id: id, to: storage)
     }
 
