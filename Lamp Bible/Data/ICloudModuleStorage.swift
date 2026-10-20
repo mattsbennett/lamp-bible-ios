@@ -73,24 +73,6 @@ class ICloudModuleStorage: ModuleStorage {
         throw (coordinationError as Error?) ?? ModuleStorageError.fileCoordinationFailed
     }
 
-    private func coordinatedWrite(
-        at fileURL: URL,
-        options: NSFileCoordinator.WritingOptions,
-        _ body: (URL) throws -> Void
-    ) throws {
-        let coordinator = NSFileCoordinator()
-        var coordinationError: NSError?
-        var result: Result<Void, Error>?
-        coordinator.coordinate(writingItemAt: fileURL, options: options, error: &coordinationError) { url in
-            result = Result {
-                try ensureNoUnresolvedVersions(at: url)
-                try body(url)
-            }
-        }
-        if let result { return try result.get() }
-        throw (coordinationError as Error?) ?? ModuleStorageError.fileCoordinationFailed
-    }
-
     // MARK: - Container Access
 
     private var containerURL: URL? {
@@ -208,224 +190,17 @@ class ICloudModuleStorage: ModuleStorage {
 
     // MARK: - Directory Management
 
-    func ensureDirectoryExists(type: ModuleType) async throws {
-        guard let dirURL = directoryURL(for: type) else {
-            throw ModuleStorageError.notAvailable
-        }
-
-        if !fileManager.fileExists(atPath: dirURL.path) {
-            do {
-                try fileManager.createDirectory(at: dirURL, withIntermediateDirectories: true)
-            } catch {
-                throw ModuleStorageError.directoryCreationFailed
-            }
-        }
-    }
-
     // MARK: - List Module Files
-
-    func listModuleFiles(type: ModuleType) async throws -> [ModuleFileInfo] {
-        guard let dirURL = directoryURL(for: type) else {
-            throw ModuleStorageError.notAvailable
-        }
-
-        // Ensure directory exists
-        try await ensureDirectoryExists(type: type)
-
-        let contents = try fileManager.contentsOfDirectory(
-            at: dirURL,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            options: []
-        )
-
-        var moduleFiles: [ModuleFileInfo] = []
-        var listedNames = Set<String>()
-
-        for itemURL in contents {
-            guard try itemURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
-                continue
-            }
-            guard let fileName = Self.canonicalModuleFilename(itemURL.lastPathComponent),
-                  listedNames.insert(fileName).inserted else { continue }
-            guard let id = LampSyncModuleFiles.moduleID(from: fileName) else { continue }
-
-            let fileURL = dirURL.appendingPathComponent(fileName)
-            try await downloadIfPlaceholder(at: fileURL)
-            let modDate = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            let hash = try await calculateHash(at: fileURL)
-
-            moduleFiles.append(ModuleFileInfo(
-                id: id,
-                type: type,
-                filePath: fileName,
-                fileHash: hash,
-                modificationDate: modDate
-            ))
-        }
-
-        return moduleFiles
-    }
 
     // MARK: - Read Module File
 
-    func readModuleFile(type: ModuleType, fileName: String) async throws -> Data {
-        guard let dirURL = directoryURL(for: type) else {
-            throw ModuleStorageError.notAvailable
-        }
-
-        let fileURL = dirURL.appendingPathComponent(fileName)
-
-        try await downloadIfPlaceholder(at: fileURL)
-
-        return try coordinatedRead(at: fileURL)
-    }
-
-    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile {
-        LampSyncModuleRead.content(
-            try await readModuleFile(type: type, fileName: fileName)
-        )
-    }
-
     // MARK: - Write Module File
-
-    func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws {
-        try await writeModuleFile(
-            type: type, fileName: fileName, data: data,
-            matching: nil, enforceMatch: false
-        )
-    }
-
-    /// Rechecks the observed body inside the coordinated write callback.
-    /// Another device can still upload a version after local coordination.
-    func writeModuleFile(
-        type: ModuleType,
-        fileName: String,
-        data: Data,
-        matching expectedDigest: String?
-    ) async throws {
-        try await writeModuleFile(
-            type: type, fileName: fileName, data: data,
-            matching: expectedDigest, enforceMatch: true
-        )
-    }
-
-    private func writeModuleFile(
-        type: ModuleType,
-        fileName: String,
-        data: Data,
-        matching expectedDigest: String?,
-        enforceMatch: Bool
-    ) async throws {
-        guard let dirURL = directoryURL(for: type) else {
-            throw ModuleStorageError.notAvailable
-        }
-
-        // Ensure directory exists
-        try await ensureDirectoryExists(type: type)
-
-        let fileURL = dirURL.appendingPathComponent(fileName)
-
-        if fileManager.fileExists(atPath: fileURL.path)
-            || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) {
-            try await downloadIfPlaceholder(at: fileURL)
-            try coordinatedWrite(at: fileURL, options: []) { url in
-                if enforceMatch {
-                    let observed = try Data(contentsOf: url)
-                    guard LampSyncContentRevision.matchesDigest(
-                        expectedDigest, observed: observed
-                    ) else { throw SyncError.conflictDetected }
-                }
-                try data.write(to: url)
-            }
-        } else {
-            guard !enforceMatch || expectedDigest == nil else {
-                throw SyncError.conflictDetected
-            }
-            // New ubiquitous files must be moved from a local temporary URL.
-            let fileExtension = (fileName as NSString).pathExtension
-            let tempURL = fileManager.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + ".\(fileExtension)")
-            do {
-                try data.write(to: tempURL)
-                if enforceMatch && (
-                    fileManager.fileExists(atPath: fileURL.path)
-                        || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path)
-                ) {
-                    throw SyncError.conflictDetected
-                }
-                try fileManager.setUbiquitous(true, itemAt: tempURL, destinationURL: fileURL)
-            } catch {
-                try? fileManager.removeItem(at: tempURL)
-                throw error
-            }
-        }
-    }
 
     // MARK: - Delete Module File
 
-    func deleteModuleFile(type: ModuleType, fileName: String) async throws {
-        guard let dirURL = directoryURL(for: type) else {
-            throw ModuleStorageError.notAvailable
-        }
-
-        let fileURL = dirURL.appendingPathComponent(fileName)
-
-        guard fileManager.fileExists(atPath: fileURL.path)
-            || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) else {
-            return // Already deleted
-        }
-        try await downloadIfPlaceholder(at: fileURL)
-
-        try coordinatedWrite(at: fileURL, options: .forDeleting) { url in
-            try fileManager.removeItem(at: url)
-        }
-    }
-
     // MARK: - File Hash
 
-    func getFileHash(type: ModuleType, fileName: String) async throws -> String? {
-        guard let dirURL = directoryURL(for: type) else {
-            throw ModuleStorageError.notAvailable
-        }
-
-        let fileURL = dirURL.appendingPathComponent(fileName)
-
-        guard fileManager.fileExists(atPath: fileURL.path)
-            || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) else {
-            return nil
-        }
-        try await downloadIfPlaceholder(at: fileURL)
-
-        return try await calculateHash(at: fileURL)
-    }
-
-    private func calculateHash(at url: URL) async throws -> String {
-        let data = try coordinatedRead(at: url)
-        return LampSyncContentRevision.digest(for: data)
-    }
-
     // MARK: - Modification Date
-
-    func getModificationDate(type: ModuleType, fileName: String) async throws -> Date? {
-        guard let dirURL = directoryURL(for: type) else {
-            throw ModuleStorageError.notAvailable
-        }
-
-        let fileURL = dirURL.appendingPathComponent(fileName)
-
-        guard fileManager.fileExists(atPath: fileURL.path)
-            || fileManager.fileExists(atPath: placeholderURL(for: fileURL).path) else {
-            return nil
-        }
-        try await downloadIfPlaceholder(at: fileURL)
-
-        // Clear cached values to get fresh data
-        var url = fileURL
-        try? url.removeAllCachedResourceValues()
-
-        let resourceValues = try fileURL.resourceValues(forKeys: [.contentModificationDateKey])
-        return resourceValues.contentModificationDate
-    }
 
     // MARK: - Sync Status
 
@@ -462,11 +237,6 @@ class ICloudModuleStorage: ModuleStorage {
     }
 
     // MARK: - Change Token
-
-    func getChangeToken(path: String) async -> String? {
-        guard let data = try? await readFile(path: path) else { return nil }
-        return LampSyncContentRevision.token(for: data)
-    }
 
     // MARK: - Generic File Access
 
@@ -509,70 +279,16 @@ class ICloudModuleStorage: ModuleStorage {
 
             let fileURL = directoryURL.appendingPathComponent(fileName)
             try await downloadIfPlaceholder(at: fileURL)
-            let modified = try? fileURL
-                .resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate
-            listings.append(StoredFileListing(name: fileName, modificationDate: modified))
+            let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            listings.append(StoredFileListing(
+                name: fileName,
+                modificationDate: values?.contentModificationDate,
+                size: values?.fileSize.map(Int64.init)
+            ))
         }
         return listings
     }
 
-    func writeFile(path: String, data: Data) async throws {
-        try await writeFile(path: path, data: data, matching: nil, enforceMatch: false)
-    }
-
-    func writeFile(path: String, data: Data, matching expectedToken: String?) async throws {
-        try await writeFile(
-            path: path, data: data, matching: expectedToken, enforceMatch: true
-        )
-    }
-
-    func writeFileIfAbsentOrUnchanged(path: String, data: Data) async throws {
-        let observed: Data?
-        do {
-            observed = try await readFile(path: path)
-        } catch ModuleStorageError.fileNotFound {
-            observed = nil
-        }
-        guard LampSyncContentRevision.allowsUnbasedWrite(data, over: observed) else {
-            throw SyncError.conflictDetected
-        }
-        try await writeFile(
-            path: path, data: data,
-            matching: observed.map(LampSyncContentRevision.token(for:))
-        )
-    }
-
-    private func writeFile(
-        path: String,
-        data: Data,
-        matching expectedToken: String?,
-        enforceMatch: Bool
-    ) async throws {
-        guard let docsURL = documentsURL else {
-            throw ModuleStorageError.notAvailable
-        }
-
-        let fileURL = docsURL.appendingPathComponent(path)
-
-        // Create parent directory if needed
-        let parentDir = fileURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
-
-        try coordinatedWrite(at: fileURL, options: .forReplacing) { url in
-            if enforceMatch {
-                guard !fileManager.fileExists(atPath: placeholderURL(for: url).path) else {
-                    throw SyncError.conflictDetected
-                }
-                let observed = fileManager.fileExists(atPath: url.path)
-                    ? try Data(contentsOf: url) : nil
-                guard LampSyncContentRevision.matchesToken(
-                    expectedToken, observed: observed
-                ) else { throw SyncError.conflictDetected }
-            }
-            try data.write(to: url, options: .atomic)
-        }
-    }
 }
 
 // MARK: - Design B
@@ -632,14 +348,6 @@ struct ICloudLibraryStorage: LibraryEndpoint, LampSyncVersionedStore {
 
     func isAvailable() async -> Bool { FileManager.default.fileExists(atPath: store.root.path) }
 
-    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile {
-        let path = "\(directoryName(for: type))/\(fileName)"
-        guard let file = try await store.read(path: path) else { throw ModuleStorageError.fileNotFound(path) }
-        return file
-    }
-    func readModuleFile(type: ModuleType, fileName: String) async throws -> Data {
-        try await readModuleSnapshot(type: type, fileName: fileName).data
-    }
     func readFile(path: String) async throws -> Data {
         guard let file = try await store.read(path: path) else { throw ModuleStorageError.fileNotFound(path) }
         return file.data
@@ -647,26 +355,8 @@ struct ICloudLibraryStorage: LibraryEndpoint, LampSyncVersionedStore {
     func listFiles(path: String) async throws -> [StoredFileListing] {
         (try await store.list(directory: path) ?? [])
             .filter { !$0.isDirectory }
-            .map { StoredFileListing(name: $0.name, modificationDate: $0.modifiedAt) }
+            .map { StoredFileListing(name: $0.name, modificationDate: $0.modifiedAt, size: $0.size) }
     }
-    /// The pass lists through `list`; nothing here asks by module type.
-    func listModuleFiles(type: ModuleType) async throws -> [ModuleFileInfo] { [] }
-    func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws {
-        _ = try await store.write(data, to: "\(directoryName(for: type))/\(fileName)", condition: .unconditional)
-    }
-    func writeFile(path: String, data: Data) async throws {
-        _ = try await store.write(data, to: path, condition: .unconditional)
-    }
-    func deleteModuleFile(type: ModuleType, fileName: String) async throws {
-        let path = "\(directoryName(for: type))/\(fileName)"
-        guard let revision = try await store.revision(path: path) else { return }
-        try await store.delete(path: path, condition: .ifRevision(revision))
-    }
-    func getFileHash(type: ModuleType, fileName: String) async throws -> String? {
-        try await store.revision(path: "\(directoryName(for: type))/\(fileName)")
-    }
-    func getModificationDate(type: ModuleType, fileName: String) async throws -> Date? { nil }
-    func ensureDirectoryExists(type: ModuleType) async throws {}
     func directoryURL(for type: ModuleType) -> URL? {
         store.root.appendingPathComponent(directoryName(for: type), isDirectory: true)
     }

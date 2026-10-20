@@ -329,6 +329,15 @@ struct SettingsView: View {
                             Text(manualSyncError ?? "Sync could not be completed.")
                         }
 
+                        if syncCoordinator.libraryAwaitingMove {
+                            Label(
+                                "This library is still in the earlier format. On your Mac, open Lamp Bible's Settings, choose Sync and press Move Library. This device syncs once it has moved.",
+                                systemImage: "arrow.triangle.2.circlepath"
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        }
+
                         if syncCoordinator.olderDeviceSyncing {
                             Label(
                                 "A device with an older Lamp Bible is still syncing here. Update it to 1.2.0 or later: until then it can't see changes made with the new sync, and they can't see its changes.",
@@ -632,12 +641,11 @@ struct SettingsView: View {
             // Migration progress sheet
             .sheet(isPresented: $isMigrating) {
                 MigrationProgressView(
-                    progress: syncCoordinator.migrationProgress,
+                    progress: nil,
                     result: migrationResult,
                     onDismiss: {
                         isMigrating = false
                         migrationResult = nil
-                        SyncCoordinator.shared.clearMigrationProgress()
                     }
                 )
                 .interactiveDismissDisabled(migrationResult == nil)
@@ -753,7 +761,7 @@ struct MigrationProgressView: View {
                         Text("Migration Complete")
                             .font(.title2)
                             .fontWeight(.semibold)
-                        Text("\(result.successCount) file(s) copied successfully")
+                        Text("This device's library is synced to the new location.")
                             .foregroundStyle(.secondary)
                     } else {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -811,7 +819,7 @@ struct MigrationProgressView: View {
                 } else {
                     // Initial state
                     ProgressView()
-                    Text("Preparing migration...")
+                    Text("Syncing to the new location...")
                         .foregroundStyle(.secondary)
                 }
 

@@ -36,116 +36,6 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
         }
     }
 
-    func listModuleFiles(type: ModuleType) async throws -> [ModuleFileInfo] {
-        let dirPath = "\(directoryName(for: type))/"
-
-        do {
-            // Ensure directory exists first
-            try await ensureDirectoryExists(type: type)
-
-            let items = try await LampSyncModuleFolder.list(
-                in: self, directory: dirPath
-            )
-
-            return items.compactMap { item -> ModuleFileInfo? in
-                guard let id = LampSyncModuleFiles.moduleID(from: item.name) else { return nil }
-
-                return ModuleFileInfo(
-                    id: id,
-                    type: type,
-                    filePath: item.name,
-                    fileHash: item.revision.flatMap {
-                        LampWebDAVStorage.isStrongETag($0) ? $0 : nil
-                    },
-                    modificationDate: item.modifiedAt
-                )
-            }
-        } catch WebDAVError.notFound {
-            // Directory doesn't exist yet - return empty list
-            return []
-        } catch {
-            throw error
-        }
-    }
-
-    func readModuleFile(type: ModuleType, fileName: String) async throws -> Data {
-        try await readModuleSnapshot(type: type, fileName: fileName).data
-    }
-
-    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile {
-        let filePath = "\(directoryName(for: type))/\(fileName)"
-        guard let remote = try await client.read(path: filePath) else {
-            throw ModuleStorageError.fileNotFound(fileName)
-        }
-        return LampSyncModuleRead.webDAV(remote)
-    }
-
-    func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws {
-        _ = try await writeModuleFile(
-            type: type, fileName: fileName, data: data, matching: nil
-        )
-    }
-
-    @discardableResult
-    func writeModuleFile(
-        type: ModuleType,
-        fileName: String,
-        data: Data,
-        matching base: String?,
-        supersededBy archiveFile: LampCompatibilityManifest.File? = nil
-    ) async throws -> String {
-        // Ensure directory structure exists
-        try await ensureDirectoryExists(type: type)
-
-        let filePath = "\(directoryName(for: type))/\(fileName)"
-        let revision = try await LampSyncObservedWrite.publish(
-            data, to: filePath, in: self,
-            matching: base, supersededBy: archiveFile
-        )
-        return revision
-    }
-
-    func deleteModuleFile(type: ModuleType, fileName: String) async throws {
-        let filePath = "\(directoryName(for: type))/\(fileName)"
-
-        do {
-            try await client.delete(filePath)
-        } catch WebDAVError.notFound {
-            // Already deleted - ignore
-        } catch {
-            throw error
-        }
-    }
-
-    func getFileHash(type: ModuleType, fileName: String) async throws -> String? {
-        let filePath = "\(directoryName(for: type))/\(fileName)"
-        let revision = try await client.revision(path: filePath)
-        return revision.flatMap { LampWebDAVStorage.isStrongETag($0) ? $0 : nil }
-    }
-
-    func getModificationDate(type: ModuleType, fileName: String) async throws -> Date? {
-        let dirPath = "\(directoryName(for: type))/"
-
-        do {
-            let items = try await list(directory: dirPath) ?? []
-            return items.first { $0.name == fileName }?.modifiedAt
-        } catch {
-            return nil
-        }
-    }
-
-    func ensureDirectoryExists(type: ModuleType) async throws {
-        // Create type-specific directory directly under baseURL
-        let typePath = directoryName(for: type)
-        do {
-            try await client.createDirectory(typePath)
-        } catch WebDAVError.httpError(405, _) {
-            // Directory exists
-        } catch WebDAVError.conflict {
-            // Directory already exists
-        }
-    }
-
     func directoryURL(for type: ModuleType) -> URL? {
         return client.baseURL
             .appendingPathComponent(directoryName(for: type))
@@ -163,11 +53,6 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
     }
 
     // MARK: - Change Token
-
-    func getChangeToken(path: String) async -> String? {
-        let revision = try? await client.revision(path: path)
-        return LampSyncConditionalWrite.strongToken(for: revision)
-    }
 
     // MARK: - Generic File Access
 
@@ -192,6 +77,12 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
         try await client.read(path: path, into: url)
     }
 
+    /// The start of a file, by a ranged GET: enough to tell a Mac's archive
+    /// from a phone's without downloading a library to learn it.
+    func readPrefix(path: String, count: Int) async throws -> LampSyncRemoteFile? {
+        try await client.readPrefix(path: path, count: count)
+    }
+
     func list(directory: String) async throws -> [LampSyncRemoteEntry]? {
         try await client.list(directory: directory)
     }
@@ -200,7 +91,7 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
         guard let entries = try await client.list(directory: path) else { return [] }
         return entries
             .filter { !$0.isDirectory }
-            .map { StoredFileListing(name: $0.name, modificationDate: $0.modifiedAt) }
+            .map { StoredFileListing(name: $0.name, modificationDate: $0.modifiedAt, size: $0.size) }
     }
 
     func revision(path: String) async throws -> String? {
@@ -243,13 +134,6 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
     ) async throws -> String? {
         try await ensureParentDirectories(for: path)
         return try await inCoreTerms { try await client.write(fileAt: url, to: path, condition: condition) }
-    }
-
-    func writeFile(path: String, data: Data) async throws {
-        try await ensureParentDirectories(for: path)
-        _ = try await LampSyncObservedWrite.publish(
-            data, to: path, in: self, matching: nil
-        )
     }
 
     private func ensureParentDirectories(for path: String) async throws {

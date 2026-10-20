@@ -62,6 +62,8 @@ struct ModuleFileInfo {
 struct StoredFileListing {
     let name: String
     let modificationDate: Date?
+    /// Bytes, where the provider says.
+    var size: Int64? = nil
 }
 
 // MARK: - Sync Status
@@ -76,33 +78,12 @@ enum ModuleSyncStatus: Equatable {
 
 // MARK: - Module Storage Protocol
 
+/// What the app asks of a sync provider beside the library pass, which goes
+/// through `LampSyncRemoteStore`: whether it is there, its folder names, the
+/// files an attachment or a deck is read from, and how an iCloud file stands.
 protocol ModuleStorage {
     /// Check if storage is available
     func isAvailable() async -> Bool
-
-    /// List all module files in the given directory
-    func listModuleFiles(type: ModuleType) async throws -> [ModuleFileInfo]
-
-    /// Read module file data
-    func readModuleFile(type: ModuleType, fileName: String) async throws -> Data
-
-    /// Read bytes with the revision that identifies that same body.
-    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile
-
-    /// Write module file data
-    func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws
-
-    /// Delete module file
-    func deleteModuleFile(type: ModuleType, fileName: String) async throws
-
-    /// Get file hash for change detection
-    func getFileHash(type: ModuleType, fileName: String) async throws -> String?
-
-    /// Get file modification date
-    func getModificationDate(type: ModuleType, fileName: String) async throws -> Date?
-
-    /// Ensure directory exists for module type
-    func ensureDirectoryExists(type: ModuleType) async throws
 
     /// Get directory URL for module type
     func directoryURL(for type: ModuleType) -> URL?
@@ -117,20 +98,11 @@ protocol ModuleStorage {
     /// A directory that does not exist lists as empty rather than throwing, so
     /// optional shared content can be polled without a probe first.
     func listFiles(path: String) async throws -> [StoredFileListing]
-
-    /// Write file at arbitrary path (relative to base storage)
-    func writeFile(path: String, data: Data) async throws
-
-    /// Change token for a file (ETag for WebDAV, content digest for iCloud).
-    /// Returns nil if the file doesn't exist or the storage doesn't support it.
-    func getChangeToken(path: String) async -> String?
 }
 
 // MARK: - Default Implementations
 
 extension ModuleStorage {
-    func getChangeToken(path: String) async -> String? { nil }
-
     /// Backends that only serve module directories list nothing here. The two
     /// shipping backends both override this; the default keeps fixtures and
     /// future partial backends from having to care about shared content.
@@ -140,29 +112,6 @@ extension ModuleStorage {
 // MARK: - Module Storage Extensions
 
 extension ModuleStorage {
-    /// Read and decode a module JSON file
-    func readModuleJSON<T: Decodable>(type: ModuleType, fileName: String, as: T.Type) async throws -> T {
-        let data = try await readModuleFile(type: type, fileName: fileName)
-        let decoder = JSONDecoder()
-        do {
-            return try decoder.decode(T.self, from: data)
-        } catch {
-            throw ModuleStorageError.decodingFailed
-        }
-    }
-
-    /// Encode and write a module JSON file
-    func writeModuleJSON<T: Encodable>(type: ModuleType, fileName: String, value: T) async throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        do {
-            let data = try encoder.encode(value)
-            try await writeModuleFile(type: type, fileName: fileName, data: data)
-        } catch is EncodingError {
-            throw ModuleStorageError.encodingFailed
-        }
-    }
-
     /// Directory name for each module type
     func directoryName(for type: ModuleType) -> String {
         switch type {
@@ -184,14 +133,6 @@ extension ModuleStorage {
             return LampSyncContentKind.highlights.rawValue
         case .quiz:
             return LampSyncContentKind.quizzes.rawValue
-        }
-    }
-
-    /// Initialize the full directory structure for all module types
-    /// Creates: /LampBible/Notes/, /LampBible/Translations/, etc.
-    func initializeDirectoryStructure() async throws {
-        for type in ModuleType.allCases {
-            try await ensureDirectoryExists(type: type)
         }
     }
 }

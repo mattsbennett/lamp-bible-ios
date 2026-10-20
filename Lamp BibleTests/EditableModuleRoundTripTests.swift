@@ -46,13 +46,13 @@ final class EditableModuleRoundTripTests: XCTestCase {
     private func publishAndPullBack(type: ModuleType) async throws -> ModuleShelf {
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: type)
-        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try await ModuleSyncManager.shared.publish(moduleId: moduleId, to: storage)
         // Otherwise a suite that published nothing, and so read nothing back,
         // would pass by having left everything alone.
         let published = await shelf.names()
         XCTAssertEqual(published, ["\(moduleId!).lamp"])
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
-        try await ModuleSyncManager.shared.syncModuleType(type, using: storage)
+        try await ModuleSyncManager.shared.pull(moduleId: moduleId, type: type, from: storage)
         return shelf
     }
 
@@ -114,12 +114,12 @@ final class EditableModuleRoundTripTests: XCTestCase {
 
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .notes)
-        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try await ModuleSyncManager.shared.publish(moduleId: moduleId, to: storage)
         try database.deleteAllEntriesForModule(moduleId: moduleId)
         XCTAssertEqual(try storedNotes(), [])
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
 
-        try await ModuleSyncManager.shared.syncModuleType(.notes, using: storage)
+        try await ModuleSyncManager.shared.pull(moduleId: moduleId, type: .notes, from: storage)
 
         XCTAssertEqual(try storedNotes(), before)
     }
@@ -196,12 +196,12 @@ final class EditableModuleRoundTripTests: XCTestCase {
 
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .highlights)
-        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try await ModuleSyncManager.shared.publish(moduleId: moduleId, to: storage)
         try database.deleteAllEntriesForModule(moduleId: moduleId)
         XCTAssertEqual(try storedHighlights(setId: setId), [])
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
 
-        try await ModuleSyncManager.shared.syncModuleType(.highlights, using: storage)
+        try await ModuleSyncManager.shared.pull(moduleId: moduleId, type: .highlights, from: storage)
 
         XCTAssertEqual(try storedHighlights(setId: setId), before)
         XCTAssertEqual(try database.getHighlightCount(setId: setId), 3)
@@ -271,10 +271,10 @@ final class EditableModuleRoundTripTests: XCTestCase {
     private func publishThenPull(_ change: () throws -> Void) async throws -> ModuleShelf {
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .notes)
-        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try await ModuleSyncManager.shared.publish(moduleId: moduleId, to: storage)
         try change()
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
-        try await ModuleSyncManager.shared.syncModuleType(.notes, using: storage)
+        try await ModuleSyncManager.shared.pull(moduleId: moduleId, type: .notes, from: storage)
         return shelf
     }
 

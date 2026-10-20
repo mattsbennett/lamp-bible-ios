@@ -118,3 +118,71 @@ struct ShelfStorage: ModuleStorage {
         await shelf.write(data, named: path)
     }
 }
+
+/// A module going out and coming back the way the library pass moves it:
+/// this device's own export, and another device's copy taken in by value.
+extension ModuleSyncManager {
+    /// Puts this device's export of an editable module on the shelf, with any
+    /// attachments its writings name, as the pass sends them.
+    func publish(moduleId: String, to storage: ShelfStorage) async throws {
+        guard let module = try ModuleDatabase.shared.getModule(id: moduleId) else {
+            throw ModuleSyncError.moduleNotFound(moduleId)
+        }
+        let data: Data
+        switch module.type {
+        case .notes: data = try exportNoteModuleToSQLite(module)
+        case .devotional: data = try exportDevotionalModuleToSQLite(module)
+        case .highlights: data = try exportHighlightModuleToSQLite(module)
+        default: throw ModuleSyncError.moduleNotEditable(moduleId)
+        }
+        try await storage.writeModuleFile(type: module.type, fileName: "\(moduleId).lamp", data: data)
+        if module.type == .devotional {
+            for item in try devotionalMediaItems(moduleId: moduleId, forExport: true)
+            where FileManager.default.fileExists(atPath: item.localURL.path) {
+                try await storage.writeFile(path: item.remotePath, data: Data(contentsOf: item.localURL))
+            }
+        }
+        try ModuleDatabase.shared.clearPendingModulePublication(moduleId: moduleId)
+    }
+
+    /// Takes the shelf's copy in as the pass takes another device's, and
+    /// sends back what the merge leaves of this device's own.
+    func pull(
+        moduleId: String, type: ModuleType, from storage: ShelfStorage, fileName: String? = nil
+    ) async throws {
+        let fileName = fileName ?? "\(moduleId).lamp"
+        let snapshot = try await storage.readModuleSnapshot(type: type, fileName: fileName)
+        try await importRemoteModuleSnapshot(
+            fileInfo: ModuleFileInfo(
+                id: moduleId, type: type, filePath: fileName,
+                fileHash: snapshot.revision, modificationDate: nil
+            ),
+            type: type, snapshot: snapshot, storage: storage
+        )
+        if try ModuleDatabase.shared.pendingModulePublications(type: type).contains(moduleId) {
+            try await publish(moduleId: moduleId, to: storage)
+        }
+    }
+}
+
+/// A test storage that can list and read its module files, as a server's
+/// folders would be listed and read.
+protocol ListedModuleStorage: ModuleStorage {
+    func listModuleFiles(type: ModuleType) async throws -> [ModuleFileInfo]
+    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile
+}
+
+extension ShelfStorage: ListedModuleStorage {}
+
+extension ModuleSyncManager {
+    /// Takes in every module file a storage lists for a type, as the library
+    /// pass installs each file that arrives.
+    func takeIn(_ type: ModuleType, from storage: some ListedModuleStorage) async throws {
+        for file in try await storage.listModuleFiles(type: type) {
+            let snapshot = try await storage.readModuleSnapshot(type: type, fileName: file.filePath)
+            try await importRemoteModuleSnapshot(
+                fileInfo: file, type: type, snapshot: snapshot, storage: storage
+            )
+        }
+    }
+}

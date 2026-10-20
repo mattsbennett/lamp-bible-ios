@@ -2,9 +2,9 @@
 //  PresentationDeckSyncTests.swift
 //  Lamp BibleTests
 //
-//  Decks are read-only on iOS. These cover the two ways they arrive — inside a
-//  WebDAV sync archive and as loose files on iCloud Documents — plus the local
-//  import that keeps a device's own decks apart from the synced mirror.
+//  Decks are read-only on iOS. They arrive as files in the library's deck
+//  folder on either provider; these cover that mirror, its images and
+//  deletions, and the local import that keeps a device's own decks apart.
 //
 
 import LampCore
@@ -78,48 +78,51 @@ final class PresentationDeckSyncTests: XCTestCase {
         )
     }
 
-    // MARK: - Archive pull (WebDAV)
+    // MARK: - Published decks
 
-    func testArchivePullStoresPublishedDecks() throws {
+    func testArchivePullStoresPublishedDecks() async throws {
         let archive = LampSyncArchive(entries: [
             try deckEntry(deck(id: "a", title: "Living Hope"), modifiedAt: .init(timeIntervalSince1970: 100)),
             try deckEntry(deck(id: "b", title: "Advent"), modifiedAt: .init(timeIntervalSince1970: 200)),
         ])
 
-        XCTAssertTrue(try PresentationDeckSync.pull(from: archive, into: decks))
+        let pulled1 = try await PresentationDeckSync.pull(from: archive, into: decks)
+        XCTAssertTrue(pulled1)
 
         let entries = decks.entries()
         XCTAssertEqual(entries.map(\.deck.title), ["Advent", "Living Hope"])
         XCTAssertTrue(entries.allSatisfy { $0.origin == .synced })
     }
 
-    func testArchivePullPreservesThePublishedModificationDate() throws {
+    func testArchivePullPreservesThePublishedModificationDate() async throws {
         let published = Date(timeIntervalSince1970: 1_234_567)
         let archive = LampSyncArchive(entries: [
             try deckEntry(deck(id: "a", title: "Living Hope"), modifiedAt: published),
         ])
 
-        try PresentationDeckSync.pull(from: archive, into: decks)
+        try await PresentationDeckSync.pull(from: archive, into: decks)
 
         // Without this the next pull would compare a local "now" against the
         // publisher's timestamp and keep replacing an unchanged deck.
         XCTAssertEqual(decks.entries().first?.modifiedAt, published)
     }
 
-    func testArchivePullIsIdempotent() throws {
+    func testArchivePullIsIdempotent() async throws {
         let archive = LampSyncArchive(entries: [
             try deckEntry(deck(id: "a", title: "Living Hope"), modifiedAt: .init(timeIntervalSince1970: 100)),
         ])
 
-        XCTAssertTrue(try PresentationDeckSync.pull(from: archive, into: decks))
-        XCTAssertFalse(try PresentationDeckSync.pull(from: archive, into: decks))
+        let pulled2 = try await PresentationDeckSync.pull(from: archive, into: decks)
+        XCTAssertTrue(pulled2)
+        let pulled3 = try await PresentationDeckSync.pull(from: archive, into: decks)
+        XCTAssertFalse(pulled3)
     }
 
-    func testArchivePullAppliesDeletions() throws {
+    func testArchivePullAppliesDeletions() async throws {
         let archive = LampSyncArchive(entries: [
             try deckEntry(deck(id: "a", title: "Living Hope"), modifiedAt: .init(timeIntervalSince1970: 100)),
         ])
-        try PresentationDeckSync.pull(from: archive, into: decks)
+        try await PresentationDeckSync.pull(from: archive, into: decks)
         XCTAssertEqual(decks.entries().count, 1)
 
         var ledger = LampPresentationDeckDeletionLedger()
@@ -128,11 +131,12 @@ final class PresentationDeckSyncTests: XCTestCase {
             try ledgerEntry(ledger, modifiedAt: .init(timeIntervalSince1970: 500)),
         ])
 
-        XCTAssertTrue(try PresentationDeckSync.pull(from: afterDeletion, into: decks))
+        let pulled4 = try await PresentationDeckSync.pull(from: afterDeletion, into: decks)
+        XCTAssertTrue(pulled4)
         XCTAssertTrue(decks.entries().isEmpty)
     }
 
-    func testArchivePullSkipsAnUnreadableDeck() throws {
+    func testArchivePullSkipsAnUnreadableDeck() async throws {
         let archive = LampSyncArchive(entries: [
             try deckEntry(deck(id: "a", title: "Living Hope"), modifiedAt: .init(timeIntervalSince1970: 100)),
             LampSyncArchive.Entry(
@@ -142,7 +146,7 @@ final class PresentationDeckSyncTests: XCTestCase {
             ),
         ])
 
-        try PresentationDeckSync.pull(from: archive, into: decks)
+        try await PresentationDeckSync.pull(from: archive, into: decks)
         XCTAssertEqual(decks.entries().map(\.deck.title), ["Living Hope"])
     }
 
@@ -236,13 +240,14 @@ final class PresentationDeckSyncTests: XCTestCase {
         return (try? Data(contentsOf: url)).map { String(decoding: $0, as: UTF8.self) }
     }
 
-    func testArchivePullStoresImagesBesideTheirDecks() throws {
+    func testArchivePullStoresImagesBesideTheirDecks() async throws {
         let archive = LampSyncArchive(entries: [
             try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
             assetEntry("photo.jpg", "image bytes", modifiedAt: .init(timeIntervalSince1970: 100)),
         ])
 
-        XCTAssertTrue(try PresentationDeckSync.pull(from: archive, into: decks))
+        let pulled5 = try await PresentationDeckSync.pull(from: archive, into: decks)
+        XCTAssertTrue(pulled5)
         XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
 
         let block = decks.entries().first?.deck.slides.last?.blocks.first
@@ -250,40 +255,40 @@ final class PresentationDeckSyncTests: XCTestCase {
         XCTAssertNotNil(decks.syncedStore.assetURL(for: block!))
     }
 
-    func testTiedImageEditsUseTheSharedMergeRule() throws {
+    func testTiedImageEditsUseTheSharedMergeRule() async throws {
         let date = Date(timeIntervalSince1970: 100)
         let original = LampSyncArchive(entries: [
             try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: date),
             assetEntry("photo.jpg", "alpha", modifiedAt: date),
         ])
-        try PresentationDeckSync.pull(from: original, into: decks)
+        try await PresentationDeckSync.pull(from: original, into: decks)
         let revised = LampSyncArchive(entries: [
             assetEntry("photo.jpg", "zeta", modifiedAt: date),
         ])
-        try PresentationDeckSync.pull(from: revised, into: decks)
+        try await PresentationDeckSync.pull(from: revised, into: decks)
         XCTAssertEqual(storedAsset("photo.jpg"), "zeta")
-        try PresentationDeckSync.pull(from: original, into: decks)
+        try await PresentationDeckSync.pull(from: original, into: decks)
         XCTAssertEqual(storedAsset("photo.jpg"), "zeta")
     }
 
-    func testImagesNoDeckReferencesAreRemoved() throws {
+    func testImagesNoDeckReferencesAreRemoved() async throws {
         let withImage = LampSyncArchive(entries: [
             try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
             assetEntry("photo.jpg", "image bytes", modifiedAt: .init(timeIntervalSince1970: 100)),
         ])
-        try PresentationDeckSync.pull(from: withImage, into: decks)
+        try await PresentationDeckSync.pull(from: withImage, into: decks)
         XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
 
         // The deck is revised to drop its picture.
         let withoutImage = LampSyncArchive(entries: [
             try deckEntry(imageDeck(id: "a", assetName: nil), modifiedAt: .init(timeIntervalSince1970: 900)),
         ])
-        try PresentationDeckSync.pull(from: withoutImage, into: decks)
+        try await PresentationDeckSync.pull(from: withoutImage, into: decks)
 
         XCTAssertNil(storedAsset("photo.jpg"))
     }
 
-    func testAnImageSharedByTwoDecksSurvivesOneBeingDeleted() throws {
+    func testAnImageSharedByTwoDecksSurvivesOneBeingDeleted() async throws {
         var second = imageDeck(id: "b", assetName: "photo.jpg")
         second.title = "Also Pictures"
         let archive = LampSyncArchive(entries: [
@@ -291,11 +296,11 @@ final class PresentationDeckSyncTests: XCTestCase {
             try deckEntry(second, modifiedAt: .init(timeIntervalSince1970: 100)),
             assetEntry("photo.jpg", "image bytes", modifiedAt: .init(timeIntervalSince1970: 100)),
         ])
-        try PresentationDeckSync.pull(from: archive, into: decks)
+        try await PresentationDeckSync.pull(from: archive, into: decks)
 
         var ledger = LampPresentationDeckDeletionLedger()
         ledger.record("a", at: Date(timeIntervalSince1970: 500))
-        try PresentationDeckSync.pull(
+        try await PresentationDeckSync.pull(
             from: LampSyncArchive(entries: [try ledgerEntry(ledger, modifiedAt: .init(timeIntervalSince1970: 500))]),
             into: decks
         )
@@ -304,8 +309,8 @@ final class PresentationDeckSyncTests: XCTestCase {
         XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
     }
 
-    func testANewerPublishedImageReplacesTheStoredOne() throws {
-        try PresentationDeckSync.pull(
+    func testANewerPublishedImageReplacesTheStoredOne() async throws {
+        try await PresentationDeckSync.pull(
             from: LampSyncArchive(entries: [
                 try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
                 assetEntry("photo.jpg", "first", modifiedAt: .init(timeIntervalSince1970: 100)),
@@ -313,7 +318,7 @@ final class PresentationDeckSyncTests: XCTestCase {
             into: decks
         )
 
-        try PresentationDeckSync.pull(
+        try await PresentationDeckSync.pull(
             from: LampSyncArchive(entries: [
                 try deckEntry(imageDeck(id: "a", assetName: "photo.jpg"), modifiedAt: .init(timeIntervalSince1970: 100)),
                 assetEntry("photo.jpg", "second", modifiedAt: .init(timeIntervalSince1970: 900)),
@@ -337,7 +342,7 @@ final class PresentationDeckSyncTests: XCTestCase {
         XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
     }
 
-    func testADeckNamingAFileOutsideTheLibraryIsRejected() throws {
+    func testADeckNamingAFileOutsideTheLibraryIsRejected() async throws {
         var deck = self.deck(id: "evil", title: "Nasty")
         deck.slides.append(
             LampPresentationSlide(
@@ -360,13 +365,14 @@ final class PresentationDeckSyncTests: XCTestCase {
             ),
         ])
 
-        XCTAssertFalse(try PresentationDeckSync.pull(from: archive, into: decks))
+        let pulled6 = try await PresentationDeckSync.pull(from: archive, into: decks)
+        XCTAssertFalse(pulled6)
         XCTAssertTrue(decks.entries().isEmpty)
     }
 
     // MARK: - Local import
 
-    func testImportKeepsADeckOnThisDevice() throws {
+    func testImportKeepsADeckOnThisDevice() async throws {
         let source = root.appendingPathComponent("shared.lampdeck")
         try encoded(deck(id: "a", title: "Borrowed")).write(to: source)
 
@@ -377,7 +383,7 @@ final class PresentationDeckSyncTests: XCTestCase {
         XCTAssertEqual(entries.first?.origin, .imported)
     }
 
-    func testImportRejectsAnInvalidDeck() throws {
+    func testImportRejectsAnInvalidDeck() async throws {
         let source = root.appendingPathComponent("broken.lampdeck")
         try Data("{}".utf8).write(to: source)
 
@@ -385,7 +391,7 @@ final class PresentationDeckSyncTests: XCTestCase {
         XCTAssertTrue(decks.entries().isEmpty)
     }
 
-    func testAPublishedDeckWinsOverAnImportedCopyOfIt() throws {
+    func testAPublishedDeckWinsOverAnImportedCopyOfIt() async throws {
         let source = root.appendingPathComponent("shared.lampdeck")
         try encoded(deck(id: "a", title: "Imported Copy")).write(to: source)
         try decks.importDeck(from: source)
@@ -393,7 +399,7 @@ final class PresentationDeckSyncTests: XCTestCase {
         let archive = LampSyncArchive(entries: [
             try deckEntry(deck(id: "a", title: "Published Copy"), modifiedAt: .init(timeIntervalSince1970: 100)),
         ])
-        try PresentationDeckSync.pull(from: archive, into: decks)
+        try await PresentationDeckSync.pull(from: archive, into: decks)
 
         let entries = decks.entries()
         XCTAssertEqual(entries.count, 1)
@@ -401,7 +407,7 @@ final class PresentationDeckSyncTests: XCTestCase {
         XCTAssertEqual(entries.first?.origin, .synced)
     }
 
-    func testSyncDoesNotRemoveAnImportedDeck() throws {
+    func testSyncDoesNotRemoveAnImportedDeck() async throws {
         let source = root.appendingPathComponent("local.lampdeck")
         try encoded(deck(id: "local", title: "Mine")).write(to: source)
         try decks.importDeck(from: source)
@@ -412,11 +418,11 @@ final class PresentationDeckSyncTests: XCTestCase {
             try ledgerEntry(ledger, modifiedAt: .init(timeIntervalSince1970: 9_000)),
         ])
 
-        try PresentationDeckSync.pull(from: archive, into: decks)
+        try await PresentationDeckSync.pull(from: archive, into: decks)
         XCTAssertEqual(decks.entries().map(\.deck.title), ["Mine"])
     }
 
-    func testRemovingAnImportedDeck() throws {
+    func testRemovingAnImportedDeck() async throws {
         let source = root.appendingPathComponent("local.lampdeck")
         try encoded(deck(id: "local", title: "Mine")).write(to: source)
         try decks.importDeck(from: source)
@@ -427,20 +433,20 @@ final class PresentationDeckSyncTests: XCTestCase {
 
     // MARK: - Decks made from a writing
 
-    private func publish(_ decks: [LampPresentationDeck]) throws {
+    private func publish(_ decks: [LampPresentationDeck]) async throws {
         let archive = LampSyncArchive(entries: try decks.map {
             try deckEntry($0, modifiedAt: .init(timeIntervalSince1970: 100))
         })
-        try PresentationDeckSync.pull(from: archive, into: self.decks)
+        try await PresentationDeckSync.pull(from: archive, into: self.decks)
     }
 
-    func testAWritingFindsTheDecksMadeFromIt() throws {
+    func testAWritingFindsTheDecksMadeFromIt() async throws {
         var sermon = deck(id: "a", title: "Sermon")
         sermon.source = LampPresentationSource(kind: .devotional, id: "9ADB692A-FE3C-4291-A012-074FFDB3AC53")
         var other = deck(id: "b", title: "Another Writing")
         other.source = LampPresentationSource(kind: .devotional, id: "D71AF007-C2C5-443D-87B1-6C6CABA13525")
         let loose = deck(id: "c", title: "Untitled Presentation")
-        try publish([sermon, other, loose])
+        try await publish([sermon, other, loose])
 
         XCTAssertEqual(
             decks.entries(forWriting: "9ADB692A-FE3C-4291-A012-074FFDB3AC53").map(\.title),
@@ -452,21 +458,48 @@ final class PresentationDeckSyncTests: XCTestCase {
         )
     }
 
-    func testAWritingIDMatchesWhicheverCaseItIsSpelledIn() throws {
+    func testAWritingIDMatchesWhicheverCaseItIsSpelledIn() async throws {
         var sermon = deck(id: "a", title: "Sermon")
         sermon.source = LampPresentationSource(kind: .writing, id: "9adb692a-fe3c-4291-a012-074fdb3ac53")
-        try publish([sermon])
+        try await publish([sermon])
 
         XCTAssertEqual(decks.entries(forWriting: "9ADB692A-FE3C-4291-A012-074FDB3AC53").count, 1)
     }
 
-    func testADeckMadeFromScriptureBelongsToNoWriting() throws {
+    func testADeckMadeFromScriptureBelongsToNoWriting() async throws {
         var passage = deck(id: "a", title: "Psalm 23")
         passage.source = LampPresentationSource(kind: .scripture, id: "19023001")
-        try publish([passage])
+        try await publish([passage])
 
         XCTAssertTrue(decks.entries(forWriting: "19023001").isEmpty)
         XCTAssertTrue(decks.linkedWritingIDs().isEmpty)
+    }
+}
+
+// MARK: - Published files
+
+extension PresentationDeckSync {
+    /// What the Mac published, as files in a library folder of their own,
+    /// pulled the way the library pass mirrors decks.
+    @discardableResult
+    static func pull(
+        from published: LampSyncArchive,
+        into decks: PresentationDeckStorage
+    ) async throws -> Bool {
+        let library = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deck-library-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: library) }
+        for entry in published.entries {
+            let url = library.appendingPathComponent(entry.path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try entry.data.write(to: url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: entry.modifiedAt], ofItemAtPath: url.path
+            )
+        }
+        return try await pull(from: FolderBackedStorage(root: library), into: decks)
     }
 }
 
@@ -491,14 +524,14 @@ private final class FolderBackedStorage: ModuleStorage {
 
         return try FileManager.default.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         ).map { url in
-            StoredFileListing(
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            return StoredFileListing(
                 name: url.lastPathComponent,
-                modificationDate: try? url
-                    .resourceValues(forKeys: [.contentModificationDateKey])
-                    .contentModificationDate
+                modificationDate: values?.contentModificationDate,
+                size: values?.fileSize.map(Int64.init)
             )
         }
     }

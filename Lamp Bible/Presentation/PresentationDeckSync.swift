@@ -12,23 +12,8 @@ import LampModuleKit
 ///
 /// This pull never publishes. Decks are a read-only mirror on iOS.
 enum PresentationDeckSync {
-    /// WebDAV: decks travel inside `lamp-bible.lampsync`, which the module sync
-    /// has already decoded, so this costs no extra request.
-    @discardableResult
-    static func pull(
-        from archive: LampSyncArchive,
-        into decks: PresentationDeckStorage = .shared
-    ) throws -> Bool {
-        try apply(
-            incoming: archive.presentationDeckRevisions(),
-            deletions: archive.presentationDeckDeletions(),
-            assets: archive.presentationAssetRevisions(),
-            into: decks
-        )
-    }
-
-    /// iCloud Documents: the Mac's folder sync writes the backup tree out as
-    /// loose files, so decks arrive as individual documents.
+    /// Decks are the Mac's to publish, as files in the library's deck folder
+    /// on either provider; this device mirrors them.
     @discardableResult
     static func pull(
         from storage: ModuleStorage,
@@ -72,13 +57,17 @@ enum PresentationDeckSync {
         for listing in (try? await storage.listFiles(path: assetsDirectory)) ?? [] {
             let path = "\(assetsDirectory)/\(listing.name)"
             guard LampPresentationDeckPortableLayout.isAssetPath(path) else { continue }
-            // Images are merged newest-wins, so one held here at least as new
-            // as the listed copy would be kept anyway: don't fetch it again.
+            // Images are merged newest-wins, so one held here newer than the
+            // listed copy, or as new and the same size, would be kept anyway:
+            // don't fetch it again. One only as new but of another size is
+            // fetched, for the merge's tie rule to decide as the Mac's does.
             let local = decks.syncedStore.assetsDirectoryURL.appendingPathComponent(listing.name)
             if let listed = listing.modificationDate,
-               let held = try? local.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate,
-               held >= listed { continue }
+               let values = try? local.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+               let held = values.contentModificationDate,
+               held > listed || (held == listed && listing.size != nil && values.fileSize.map(Int64.init) == listing.size) {
+                continue
+            }
             guard let data = try? await storage.readFile(path: path) else { continue }
             assets.append(
                 LampPresentationAssetRevision(

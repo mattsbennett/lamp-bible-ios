@@ -32,6 +32,9 @@ class SyncCoordinator: ObservableObject {
     /// A device on a Lamp Bible older than 1.2.0 is still writing to a library
     /// that has moved to the new sync, and nothing it does is seen.
     @Published var olderDeviceSyncing = false
+    /// The library at the active endpoint is still in the earlier shape, kept
+    /// by a Mac that has not moved it yet. Nothing syncs until it does.
+    @Published var libraryAwaitingMove = false
     /// Attachments the writings name that neither this device nor the server
     /// holds, by library path. Their writings sync all the same; on other
     /// devices these show as missing until the file is back here.
@@ -49,8 +52,6 @@ class SyncCoordinator: ObservableObject {
     struct SyncSession {
         let storage: ModuleStorage
         let backend: SyncBackend
-        let archiveSource: String
-        let needsLegacyReconciliation: Bool
     }
 
     // MARK: - Dependencies
@@ -181,33 +182,23 @@ class SyncCoordinator: ObservableObject {
         }
 
         do {
+            // Nothing is copied between providers: this device holds its
+            // library, and the first pass at the new endpoint publishes it
+            // there, claiming an empty library or merging into the one there.
+            // Copying files without their bundle left a library that read as
+            // an earlier one waiting to move.
             try await LampSyncBackendTransition.run(
                 wipeLocalAfterPublish: !migrateData,
-                pullAndMerge: {
-                    if migrateData {
-                        if previousBackend != .none && backend != .none {
-                            let result = try await self.migrateStorage(
-                                from: previousBackend, to: backend
-                            )
-                            guard result.isFullySuccessful else {
-                                throw MigrationError.incomplete(result)
-                            }
-                        } else if previousBackend == .none && backend != .none {
-                            try await self.uploadLocalDataToBackend(backend)
-                        } else if previousBackend != .none && backend == .none {
-                            try await self.downloadDataFromBackend(previousBackend)
-                        }
-                    }
-                },
+                pullAndMerge: {},
+                // Before anything here is wiped: the new endpoint must exist
+                // and answer, or the switch stops with this device's data
+                // untouched.
                 publish: {
                     guard backend.usesRemoteStorage else { return }
-                    guard let targetStorage = try self.createStorage(for: backend) else {
+                    guard let target = try self.createStorage(for: backend) else {
                         throw SyncError.notConfigured
                     }
-                    try await targetStorage.initializeDirectoryStructure()
-                    try await UserSettingsSyncManager.shared.reconcileWithRemote(
-                        storage: targetStorage
-                    )
+                    guard await target.isAvailable() else { throw SyncError.notAvailable }
                 },
                 persistBackend: {
                     let previousSettings = self.settings
@@ -254,48 +245,30 @@ class SyncCoordinator: ObservableObject {
             }
             throw error
         }
+        // The library goes to the new endpoint by the first pass there.
+        guard backend.usesRemoteStorage else { return }
+        backendTransitionInProgress = false
+        configureStorage()
+        try await syncAll()
     }
 
-    /// Upload local syncable data to the specified backend
-    private func uploadLocalDataToBackend(_ backend: SyncBackend) async throws {
-        // Create storage for the target backend
-        guard let targetStorage = try createStorage(for: backend) else {
-            throw SyncError.notConfigured
-        }
-
-        guard await targetStorage.isAvailable() else {
-            throw SyncError.notAvailable
-        }
-        try await targetStorage.initializeDirectoryStructure()
-
-        // Merge any existing destination content before writing the combined
-        // editable modules back. This avoids choosing either side wholesale.
-        try await ModuleSyncManager.shared.reconcileEditableModules(with: targetStorage)
-        try await ModuleSyncManager.shared.exportAllEditableModules(to: targetStorage)
-
-        do {
-            try await UserSettingsSyncManager.shared.mergeFromRemote(storage: targetStorage)
-        } catch ModuleStorageError.fileNotFound {
-            // A new destination has no user-settings file yet.
-        }
-    }
-
-    /// Download data from the specified backend to local storage
-    private func downloadDataFromBackend(_ backend: SyncBackend) async throws {
-        guard let sourceStorage = try createStorage(for: backend) else {
-            throw SyncError.notConfigured
-        }
-        guard await sourceStorage.isAvailable() else {
-            throw SyncError.notAvailable
-        }
-
-        for type in ModuleType.allCases {
-            try await ModuleSyncManager.shared.syncModuleType(type, using: sourceStorage)
-        }
-        do {
-            try await UserSettingsSyncManager.shared.mergeFromRemote(storage: sourceStorage)
-        } catch ModuleStorageError.fileNotFound {
-            // The provider may predate user-settings sync.
+    /// A storage instance for a backend, before it is the active one.
+    private func createStorage(for backend: SyncBackend) throws -> ModuleStorage? {
+        switch backend {
+        case .icloudDrive:
+            return ICloudModuleStorage.shared
+        case .webdav:
+            guard let urlString = settings.webdavURL,
+                  let baseURL = URL(string: urlString) else {
+                throw SyncError.notConfigured
+            }
+            return WebDAVModuleStorage(
+                baseURL: baseURL,
+                username: settings.webdavUsername,
+                password: KeychainHelper.getWebDAVPassword()
+            )
+        case .none:
+            return nil
         }
     }
 
@@ -354,53 +327,23 @@ class SyncCoordinator: ObservableObject {
 
         syncState = .syncing(progress: nil)
 
-        // Design B, where the server has it. While it still holds the archive
-        // this touches nothing, and the archive pass below runs as before.
-        if let endpoint = libraryEndpoint(for: activeStorage) {
-            do {
-                let outcome = try await LibrarySyncPass.runIfMigrated(storage: endpoint)
-                libraryMoveOffered = outcome == .phoneLibrary
-                if case .synced = outcome {
-                    var updatedSettings = settings
-                    updatedSettings.lastSyncDate = Date()
-                    try userDatabase.saveSyncSettings(updatedSettings)
-                    settings = updatedSettings
-                    syncState = .idle
-                    return
-                }
-            } catch {
-                syncState = .error(error as? SyncError ?? .unknown(error))
-                throw error
-            }
+        // The library syncs only through its settings bundle. One still in
+        // the earlier shape waits for the Mac to move it, or, kept only by
+        // this device, is offered the move here.
+        guard let endpoint = libraryEndpoint(for: activeStorage) else {
+            syncState = .idle
+            throw SyncError.notConfigured
         }
-
         do {
-            try await ModuleSyncManager.shared.runFullSync(
-                using: activeStorage,
-                backend: session.backend,
-                archiveSource: session.archiveSource,
-                beforePull: {
-                    if session.needsLegacyReconciliation {
-                        try await ModuleSyncManager.shared.reconcileEditableModules(with: activeStorage)
-                    }
-                },
-                afterPublish: {
-                    if session.needsLegacyReconciliation {
-                        try await ModuleSyncManager.shared.exportAllEditableModules(to: activeStorage)
-                    }
-                    if self.userDatabase.hasUnsyncedChanges {
-                        try await UserSettingsSyncManager.shared.reconcileWithRemote(storage: activeStorage)
-                    }
-                },
-                complete: {
-                    var updatedSettings = self.settings
-                    updatedSettings.lastSyncDate = Date()
-                    updatedSettings.legacyICloudReconciliationPending = nil
-                    try self.userDatabase.saveSyncSettings(updatedSettings)
-                    self.settings = updatedSettings
-                }
-            )
-
+            let outcome = try await LibrarySyncPass.runIfMigrated(storage: endpoint)
+            libraryMoveOffered = outcome == .phoneLibrary
+            if case .notMigrated = outcome { libraryAwaitingMove = true } else { libraryAwaitingMove = false }
+            if case .synced = outcome {
+                var updatedSettings = settings
+                updatedSettings.lastSyncDate = Date()
+                try userDatabase.saveSyncSettings(updatedSettings)
+                settings = updatedSettings
+            }
             syncState = .idle
         } catch {
             syncState = .error(error as? SyncError ?? .unknown(error))
@@ -443,12 +386,7 @@ class SyncCoordinator: ObservableObject {
 
     var activeSession: SyncSession? {
         guard let activeStorage else { return nil }
-        return SyncSession(
-            storage: activeStorage,
-            backend: settings.backend,
-            archiveSource: settings.webdavURL ?? "",
-            needsLegacyReconciliation: settings.legacyICloudReconciliationPending == true
-        )
+        return SyncSession(storage: activeStorage, backend: settings.backend)
     }
 
     // MARK: - WebDAV Testing
@@ -478,164 +416,6 @@ class SyncCoordinator: ObservableObject {
         try KeychainHelper.saveWebDAVPassword(password)
     }
 
-    // MARK: - Migration
-
-    /// Migration progress state
-    @Published private(set) var migrationProgress: MigrationProgress?
-
-    /// Migrate all modules from one storage backend to another
-    /// - Parameters:
-    ///   - from: Source backend to migrate from
-    ///   - to: Destination backend to migrate to
-    ///   - progressHandler: Optional callback for progress updates
-    /// - Returns: Migration result with success/failure counts
-    func migrateStorage(from sourceBackend: SyncBackend, to destBackend: SyncBackend) async throws -> MigrationResult {
-        // Create storage instances for source and destination
-        let sourceStorage = try createStorage(for: sourceBackend)
-        let destStorage = try createStorage(for: destBackend)
-
-        guard let source = sourceStorage else {
-            throw SyncError.notConfigured
-        }
-        guard let dest = destStorage else {
-            throw SyncError.notConfigured
-        }
-
-        // Check both are available
-        guard await source.isAvailable() else {
-            throw SyncError.notAvailable
-        }
-        guard await dest.isAvailable() else {
-            throw SyncError.notAvailable
-        }
-
-        var result = MigrationResult()
-        let moduleTypes = ModuleType.allCases
-
-        // Initialize directory structure on destination
-        try await dest.initializeDirectoryStructure()
-
-        // Merge editable data from both providers into the local database before
-        // copying files. Destination-only files remain in place throughout.
-        try await ModuleSyncManager.shared.reconcileEditableModules(with: source)
-        try await ModuleSyncManager.shared.reconcileEditableModules(with: dest)
-
-        // First pass: count total files
-        var totalFiles = 0
-        var allFiles: [(ModuleType, ModuleFileInfo)] = []
-
-        for type in moduleTypes {
-            let files = try await source.listModuleFiles(type: type)
-            allFiles.append(contentsOf: files.map { (type, $0) })
-            totalFiles += files.count
-        }
-
-        migrationProgress = MigrationProgress(
-            currentFile: "",
-            filesCompleted: 0,
-            totalFiles: totalFiles,
-            currentType: nil
-        )
-
-        // Second pass: copy files
-        for (index, (type, fileInfo)) in allFiles.enumerated() {
-            migrationProgress = MigrationProgress(
-                currentFile: fileInfo.filePath,
-                filesCompleted: index,
-                totalFiles: totalFiles,
-                currentType: type
-            )
-
-            do {
-                // Read from source
-                let data = try await source.readModuleFile(type: type, fileName: fileInfo.filePath)
-                let moduleID = fileInfo.id == "bible-notes" ? "notes" : fileInfo.id
-                let localModule = try ModuleDatabase.shared.getModule(id: moduleID)
-                let isEditable = [ModuleType.notes, .devotional, .highlights].contains(type)
-                    && localModule?.type == type && localModule?.isEditable == true
-                _ = try await LampSyncMigrationCopy.run(
-                    isEditable: isEditable,
-                    source: data,
-                    readDestination: {
-                        do {
-                            return try await dest.readModuleFile(
-                                type: type, fileName: fileInfo.filePath
-                            )
-                        } catch ModuleStorageError.fileNotFound {
-                            return nil
-                        }
-                    },
-                    createIfAbsent: { data in
-                        if let iCloud = dest as? ICloudModuleStorage {
-                            try await iCloud.writeModuleFile(
-                                type: type, fileName: fileInfo.filePath,
-                                data: data, matching: nil
-                            )
-                        } else if let webDAV = dest as? WebDAVModuleStorage {
-                            _ = try await webDAV.writeModuleFile(
-                                type: type, fileName: fileInfo.filePath,
-                                data: data, matching: nil
-                            )
-                        } else {
-                            throw SyncError.notConfigured
-                        }
-                    }
-                )
-
-                result.successCount += 1
-                print("[Migration] Prepared \(type)/\(fileInfo.filePath)")
-            } catch {
-                result.failedFiles.append(MigrationFailure(
-                    type: type,
-                    fileName: fileInfo.filePath,
-                    error: error.localizedDescription
-                ))
-                print("[Migration] Failed to copy \(type)/\(fileInfo.filePath): \(error)")
-            }
-        }
-
-        // Raw copies preserve bundled/read-only modules. Editable modules are
-        // rewritten from the reconciled local database so neither side wins
-        // wholesale when both providers contain changes.
-        try await ModuleSyncManager.shared.exportAllEditableModules(to: dest)
-
-        // Update progress to complete
-        migrationProgress = MigrationProgress(
-            currentFile: "",
-            filesCompleted: totalFiles,
-            totalFiles: totalFiles,
-            currentType: nil
-        )
-
-        return result
-    }
-
-    /// Create a storage instance for a given backend
-    private func createStorage(for backend: SyncBackend) throws -> ModuleStorage? {
-        switch backend {
-        case .icloudDrive:
-            return ICloudModuleStorage.shared
-
-        case .webdav:
-            guard let urlString = settings.webdavURL,
-                  let baseURL = URL(string: urlString) else {
-                throw SyncError.notConfigured
-            }
-            return WebDAVModuleStorage(
-                baseURL: baseURL,
-                username: settings.webdavUsername,
-                password: KeychainHelper.getWebDAVPassword()
-            )
-
-        case .none:
-            return nil
-        }
-    }
-
-    /// Clear migration progress
-    func clearMigrationProgress() {
-        migrationProgress = nil
-    }
 }
 
 // MARK: - Migration Types

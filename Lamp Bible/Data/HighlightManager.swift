@@ -214,10 +214,9 @@ class HighlightManager: ObservableObject {
         // Delete the module (cascade will delete set and highlights)
         try ModuleDatabase.shared.deleteModule(id: moduleId)
 
-        // Out of the library: under the new sync a tombstone the next pass
-        // carries to every device, under the earlier one the file itself.
+        // Out of the library: a tombstone the next pass carries to every device.
         await ModuleSyncManager.shared.removeFromLibrary(
-            type: .highlights, moduleId: moduleId, fileNames: ["\(moduleId).lamp"],
+            type: .highlights, moduleId: moduleId,
             storage: await ModuleSyncManager.shared.getStorage()
         )
 

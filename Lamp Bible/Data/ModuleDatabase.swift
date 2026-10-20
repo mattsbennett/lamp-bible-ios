@@ -3291,11 +3291,6 @@ struct SyncFileRecord: Codable, Equatable, FetchableRecord, PersistableRecord {
         case pendingRevision = "pending_revision"
     }
 
-    /// Whether this device's export has moved since it last uploaded it.
-    /// With nothing recorded it never has, so it has.
-    func hasChangedSinceUpload(exportDigest: String) -> Bool {
-        uploadedDigest != exportDigest
-    }
 }
 
 /// A change to the library's membership made here, kept until a settings
@@ -3324,23 +3319,6 @@ extension ModuleDatabase {
     func syncFileRecords(source: String) throws -> [SyncFileRecord] {
         try read {
             try SyncFileRecord.filter(Column("source") == source).order(Column("path")).fetchAll($0)
-        }
-    }
-
-    /// After installing the server's copy. `exportDigest` is this device's
-    /// export taken right after the install, given only when nothing of its
-    /// own was pending; then the install is not mistaken for a local change.
-    func recordSyncInstall(
-        source: String, path: String, revision: String?, exportDigest: String?,
-        at time: Date = Date()
-    ) throws {
-        try write { db in
-            var record = try SyncFileRecord.fetchOne(db, key: ["source": source, "path": path])
-                ?? SyncFileRecord(source: source, path: path, updatedAt: 0)
-            record.lastRevision = revision
-            if let exportDigest { record.uploadedDigest = exportDigest }
-            record.updatedAt = Self.nowMilliseconds(time)
-            try record.save(db)
         }
     }
 
@@ -3391,11 +3369,6 @@ extension ModuleDatabase {
                 revision: deleted?.pendingRevision ?? deleted?.lastRevision, at: Self.nowMilliseconds(time)
             ).save(db)
         }
-    }
-
-    /// Deleted elsewhere and removed here: nothing to tell anyone.
-    func removeSyncFileRecord(source: String, path: String) throws {
-        try write { _ = try SyncFileRecord.deleteOne($0, key: ["source": source, "path": path]) }
     }
 
     func pendingManifestChanges(source: String) throws -> [SyncPendingManifestChange] {

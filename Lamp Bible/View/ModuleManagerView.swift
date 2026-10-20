@@ -747,10 +747,9 @@ struct ModuleManagerView: View {
                     Task { await resetModule(userModule) }
                 }
             } : nil,
+            // The library syncs as a whole: a module's own sync is the library's.
             onSync: displayModule.isBundled ? nil : {
-                if let userModule = displayModule.userModule {
-                    Task { await syncModule(userModule) }
-                }
+                syncAllModules()
             }
         )
         .contentShape(Rectangle())
@@ -1078,19 +1077,14 @@ struct ModuleManagerView: View {
     private func syncAllModules() {
         isSyncing = true
         Task {
-            await syncManager.syncAll()
+            do {
+                try await SyncCoordinator.shared.syncAll()
+            } catch {
+                alertMessage = "Failed to sync: \(error.localizedDescription)"
+                showingAlert = true
+            }
             await loadModules()
             isSyncing = false
-        }
-    }
-
-    private func syncModule(_ module: Module) async {
-        do {
-            try await syncManager.syncModule(id: module.id)
-            await loadModules()
-        } catch {
-            alertMessage = "Failed to sync: \(error.localizedDescription)"
-            showingAlert = true
         }
     }
 
@@ -1100,12 +1094,8 @@ struct ModuleManagerView: View {
             try database.deleteCommentaryBook(moduleId: book.moduleId)
             // Also delete the module record
             try database.deleteModule(id: book.moduleId)
-            // Delete from iCloud - try both extensions
-            let jsonFileName = "\(book.moduleId).json"
-            let lampFileName = "\(book.moduleId).lamp"
             await syncManager.removeFromLibrary(
-                type: .commentary, moduleId: book.moduleId,
-                fileNames: [jsonFileName, lampFileName], storage: await storage
+                type: .commentary, moduleId: book.moduleId, storage: await storage
             )
             await loadModules()
             selectedCommentarySeries = nil
@@ -1123,12 +1113,8 @@ struct ModuleManagerView: View {
             try database.deleteAllEntriesForModule(moduleId: userModule.id)
             try database.deleteModule(id: userModule.id)
 
-            // Delete from iCloud - try both .json and .lamp extensions
-            let jsonFileName = "\(userModule.id).json"
-            let dbFileName = "\(userModule.id).lamp"
             await syncManager.removeFromLibrary(
-                type: .dictionary, moduleId: userModule.id,
-                fileNames: [jsonFileName, dbFileName], storage: await storage
+                type: .dictionary, moduleId: userModule.id, storage: await storage
             )
 
             await loadModules()
@@ -1145,12 +1131,8 @@ struct ModuleManagerView: View {
             try database.deleteAllEntriesForModule(moduleId: module.id)
             try database.deleteModule(id: module.id)
 
-            // Delete from iCloud - try both extensions since modules can be stored as .json or .lamp
-            let jsonFileName = "\(module.id).json"
-            let lampFileName = "\(module.id).lamp"
             await syncManager.removeFromLibrary(
-                type: module.type, moduleId: module.id,
-                fileNames: [jsonFileName, lampFileName], storage: await storage
+                type: module.type, moduleId: module.id, storage: await storage
             )
 
             await loadModules()
@@ -1234,10 +1216,8 @@ struct ModuleManagerView: View {
             // Delete plan and its days from database
             try database.deletePlan(id: plan.id)
 
-            // Delete from iCloud - try both extensions
-            let dbFileName = "\(plan.id).lamp"
             await syncManager.removeFromLibrary(
-                type: .plan, moduleId: plan.id, fileNames: [dbFileName], storage: await storage
+                type: .plan, moduleId: plan.id, storage: await storage
             )
 
             await loadModules()
@@ -1252,11 +1232,8 @@ struct ModuleManagerView: View {
             // Delete the module (cascade will delete set and highlights)
             try database.deleteModule(id: highlightSet.module.id)
 
-            // Delete from iCloud
-            let fileName = "\(highlightSet.module.id).lamp"
             await syncManager.removeFromLibrary(
-                type: .highlights, moduleId: highlightSet.module.id,
-                fileNames: [fileName], storage: await storage
+                type: .highlights, moduleId: highlightSet.module.id, storage: await storage
             )
 
             await loadModules()

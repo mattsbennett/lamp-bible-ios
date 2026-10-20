@@ -122,11 +122,7 @@ struct LibrarySyncPass {
                 from: storage, knownArchiveRevision: knownArchiveRevision, patience: patience
             )
         } catch LampSyncSettingsStore.StoreError.notMigrated(let revision) {
-            // An archive is judged by what is in it, never by the folders
-            // beside it, and only from a copy this device already decoded.
-            if let revision {
-                if Self.archiveIsThisDevicesOwn(at: source, revision: revision) { return .phoneLibrary }
-            } else if try await LampSyncSettingsStore.earlierLibrary(in: storage) == .phone {
+            if try await Self.isThisDevicesOwnLibrary(in: storage, source: source, archiveRevision: revision) {
                 return .phoneLibrary
             }
             return .notMigrated(archiveRevision: revision)
@@ -411,6 +407,14 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             }
             let path = remotePath(type: module.type, fileName: "\(module.id).lamp")
             guard case .module(let kind)? = LampSyncFolderLayout.kind(of: path) else { continue }
+            // A conflict the person has not settled yet: held as it was last
+            // agreed, so the other device's changes still arrive but neither
+            // side's version goes up until they choose.
+            if try database.hasPendingModuleConflicts(moduleId: module.id) {
+                gathered.heldWithoutAFile.insert(path)
+                heldModules[path] = (module.type, module.id)
+                continue
+            }
             let data = try exportedBytes(module)
             let url = scratch.appendingPathComponent("\(UUID().uuidString).lamp")
             try data.write(to: url)
@@ -732,21 +736,25 @@ extension LibrarySyncPass {
 
     private static let archiveJudgementsKey = "LibrarySync.archiveJudgements.v1"
 
-    /// Who kept the archive at an endpoint, judged from a copy this device
-    /// decoded anyway for its own sync and kept by revision. Judging one on
-    /// purpose would download a whole library to answer a yes or no.
-    static func noteArchive(_ snapshot: LampSyncArchiveRemote.Snapshot, at source: String) {
-        guard let revision = snapshot.revision else { return }
-        let judged = LampSyncSettingsStore.earlierLibrary(ofArchive: snapshot.archive)
+    /// Whether a library not moved yet was kept only by this device, which
+    /// may then offer to move it. A folder is judged by its files. An archive
+    /// is judged by what is in it, by core, once for each revision: it only
+    /// changes when the device keeping it syncs, and a Mac's archive is told
+    /// apart from its first entries.
+    static func isThisDevicesOwnLibrary(
+        in storage: Store, source: String, archiveRevision: String?
+    ) async throws -> Bool {
+        guard let archiveRevision else {
+            return try await LampSyncSettingsStore.earlierLibrary(in: storage) == .phone
+        }
+        let token = LampSyncConditionalWrite.token(for: archiveRevision)
         let defaults = UserDefaults.standard
         var all = (defaults.dictionary(forKey: archiveJudgementsKey) as? [String: [String: String]]) ?? [:]
-        all[source] = [LampSyncConditionalWrite.token(for: revision): judged == .phone ? "phone" : "mac"]
+        if let judged = all[source]?[token] { return judged == "phone" }
+        let phone = try await LampSyncSettingsStore.earlierLibrary(in: storage) == .phone
+        all[source] = [token: phone ? "phone" : "mac"]
         defaults.set(all, forKey: archiveJudgementsKey)
-    }
-
-    static func archiveIsThisDevicesOwn(at source: String, revision: String) -> Bool {
-        let all = (UserDefaults.standard.dictionary(forKey: archiveJudgementsKey) as? [String: [String: String]]) ?? [:]
-        return all[source]?[LampSyncConditionalWrite.token(for: revision)] == "phone"
+        return phone
     }
 
     /// Moves a library only this device kept onto the settings bundle, once
@@ -795,14 +803,13 @@ extension LibrarySyncPass {
 extension ModuleSyncManager {
     /// A module the user removed here, already gone from the database.
     ///
-    /// With the settings bundle in use, each file this device synced for it
-    /// is recorded as deleted, and the next pass tombstones it and reaps the
-    /// copy. Deleting the files directly, as before, would leave no record
-    /// of the deletion: absence never deletes anything, so another device
-    /// would put its copy back. Without the bundle, the folder copies go as
-    /// they always have.
+    /// Each file this device synced for it is recorded as deleted, and the
+    /// next pass tombstones it and reaps the copy. Deleting the files
+    /// directly would leave no record of the deletion: absence never deletes
+    /// anything, so another device would put its copy back. A library not
+    /// moved yet is not this device's to change.
     func removeFromLibrary(
-        type: ModuleType, moduleId: String, fileNames: [String], storage: ModuleStorage?
+        type: ModuleType, moduleId: String, storage: ModuleStorage?
     ) async {
         guard let storage else { return }
         if let endpoint = libraryEndpoint(for: storage), await LibrarySyncPass.isInUse(at: endpoint) {
@@ -819,10 +826,6 @@ extension ModuleSyncManager {
                 try? ModuleDatabase.shared.recordSyncLocalDeletion(source: source, path: path)
             }
             await LibrarySyncPass.schedule(on: endpoint)
-            return
-        }
-        for fileName in fileNames {
-            try? await storage.deleteModuleFile(type: type, fileName: fileName)
         }
     }
 }

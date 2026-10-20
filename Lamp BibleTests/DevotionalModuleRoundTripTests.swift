@@ -110,11 +110,11 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
     private func publishAndPullBack() async throws {
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .devotional)
-        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try await ModuleSyncManager.shared.publish(moduleId: moduleId, to: storage)
         let writes = await shelf.writeCount()
         XCTAssertEqual(writes, 1, "the module should have been published once")
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
-        try await ModuleSyncManager.shared.syncModuleType(.devotional, using: storage)
+        try await ModuleSyncManager.shared.pull(moduleId: moduleId, type: .devotional, from: storage)
     }
 
     // MARK: - Fidelity
@@ -139,12 +139,12 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
 
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .devotional)
-        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try await ModuleSyncManager.shared.publish(moduleId: moduleId, to: storage)
         try database.deleteAllEntriesForModule(moduleId: moduleId)
         XCTAssertEqual(try storedEntries(), [])
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
 
-        try await ModuleSyncManager.shared.syncModuleType(.devotional, using: storage)
+        try await ModuleSyncManager.shared.pull(moduleId: moduleId, type: .devotional, from: storage)
 
         XCTAssertEqual(try storedEntries(), before)
     }
@@ -221,7 +221,9 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
         )
         await shelf.write(try JSONEncoder().encode(file), named: name)
 
-        try await ModuleSyncManager.shared.syncModuleType(.devotional, using: storage)
+        try await ModuleSyncManager.shared.pull(
+            moduleId: moduleId, type: .devotional, from: storage, fileName: name
+        )
 
         let stored = try XCTUnwrap(try database.read { db in
             try DevotionalEntry.filter(Column("module_id") == moduleId).fetchOne(db)
@@ -249,14 +251,14 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
 
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .devotional)
-        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try await ModuleSyncManager.shared.publish(moduleId: moduleId, to: storage)
 
         // The other device has the file; this one loses it.
         try FileManager.default.removeItem(at: localURL)
         XCTAssertFalse(FileManager.default.fileExists(atPath: localURL.path))
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
 
-        try await ModuleSyncManager.shared.syncModuleType(.devotional, using: storage)
+        try await ModuleSyncManager.shared.pull(moduleId: moduleId, type: .devotional, from: storage)
 
         XCTAssertEqual(try Data(contentsOf: localURL), bytes)
     }
@@ -307,11 +309,11 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
         try saveEntry(id: "stays", contentJson: body)
         let shelf = ModuleShelf()
         let storage = ShelfStorage(shelf: shelf, moduleID: moduleId, moduleType: .devotional)
-        try await ModuleSyncManager.shared.exportModule(id: moduleId, to: storage)
+        try await ModuleSyncManager.shared.publish(moduleId: moduleId, to: storage)
 
         try database.deleteDevotionalEntry(id: "gone")
         await shelf.reissueRevision(for: "\(moduleId!).lamp")
-        try await ModuleSyncManager.shared.syncModuleType(.devotional, using: storage)
+        try await ModuleSyncManager.shared.pull(moduleId: moduleId, type: .devotional, from: storage)
 
         let ids = try database.read { db in
             try String.fetchAll(db, sql: "SELECT id FROM devotional_entries WHERE module_id = ? ORDER BY id", arguments: [moduleId])
