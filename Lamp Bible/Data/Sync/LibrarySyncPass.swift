@@ -108,8 +108,9 @@ struct LibrarySyncPass {
         let bundle = snapshot.bundle
 
         // Deletions made elsewhere, before anything here is compared or sent.
-        if let data = bundle.personalDeletions {
-            try database.mergePersonalDeletionLedger(LampPersonalDeletionLedger.decode(data))
+        // One no device can read is skipped, as the Mac skips it.
+        if let ledger = bundle.personalDeletions.flatMap({ try? LampPersonalDeletionLedger.decode($0) }) {
+            try database.mergePersonalDeletionLedger(ledger)
             try database.applyPersonalDeletionLedger()
         }
 
@@ -687,18 +688,24 @@ struct ManifestParticipant: SettingsBundleParticipant {
 /// Item deletions: this device's ledger joined with the bundle's, and what
 /// the join says is gone removed here too.
 @MainActor
+/// An unreadable ledger is no reason to stop syncing content, so it is
+/// neither applied nor merged; this device's own records take its place,
+/// and with none of its own the device leaves it alone. The Mac does the
+/// same.
 struct DeletionLedgerParticipant: SettingsBundleParticipant {
     func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
-        var ledger = try bundle.personalDeletions.map(LampPersonalDeletionLedger.decode)
-            ?? LampPersonalDeletionLedger()
-        ledger.merge(try ModuleDatabase.shared.personalDeletionLedger())
+        var ledger = try ModuleDatabase.shared.personalDeletionLedger()
+        if let existing = bundle.personalDeletions.flatMap({ try? LampPersonalDeletionLedger.decode($0) }) {
+            ledger.merge(existing)
+        }
         guard !ledger.isEmpty else { return }
         bundle.personalDeletions = try ledger.encoded()
     }
 
     func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
-        guard let data = written.bundle.personalDeletions else { return }
-        try ModuleDatabase.shared.mergePersonalDeletionLedger(LampPersonalDeletionLedger.decode(data))
+        guard let data = written.bundle.personalDeletions,
+              let ledger = try? LampPersonalDeletionLedger.decode(data) else { return }
+        try ModuleDatabase.shared.mergePersonalDeletionLedger(ledger)
         try ModuleDatabase.shared.applyPersonalDeletionLedger()
     }
 }

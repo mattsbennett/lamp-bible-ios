@@ -6535,6 +6535,20 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertNotNil(file, "nothing old is deleted")
     }
 
+    /// A ledger no device can read must not stop the library syncing.
+    func testAnUnreadableDeletionLedgerDoesNotStopThePass() async throws {
+        try saveNotesModule(notes: ["a"])
+        _ = try await LampSyncSettingsStore.readOrClaim(from: storage)
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.personalDeletions = Data("{ not a ledger".utf8)
+        }
+
+        _ = try await pass().run()
+
+        let published = await server.file(notesPath)
+        XCTAssertNotNil(published)
+    }
+
     func testADeletionHereIsTombstonedAndReaped() async throws {
         try saveNotesModule(notes: ["a"])
         _ = try await pass().run()
