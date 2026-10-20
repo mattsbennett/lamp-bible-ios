@@ -5964,12 +5964,26 @@ private actor LibraryServer {
     private(set) var withholdsRevisions = false
     private(set) var lagging = false
     private var before: [String: LampSyncRemoteFile?] = [:]
-    func behaveLikeASynology(lagging: Bool) { withholdsRevisions = true; self.lagging = lagging }
+    /// Apache, which the Synology runs, tags a file weak for the second after
+    /// it changes: modelled as the next reads of each written path.
+    private var weakReadsAfterWrite = 0
+    private var weakReadsLeft: [String: Int] = [:]
+    func behaveLikeASynology(lagging: Bool, weakReadsAfterWrite: Int = 0) {
+        withholdsRevisions = true
+        self.lagging = lagging
+        self.weakReadsAfterWrite = weakReadsAfterWrite
+    }
     func catchUp() { before = [:]; lagging = false }
     /// What a read sees now.
     func visible(_ path: String) -> LampSyncRemoteFile? {
-        if let stale = before[path] { return stale }
-        return files[path]
+        let file: LampSyncRemoteFile?
+        if let stale = before[path] { file = stale } else { file = files[path] }
+        return file.map { weakened($0, at: path) }
+    }
+    private func weakened(_ file: LampSyncRemoteFile, at path: String) -> LampSyncRemoteFile {
+        guard let left = weakReadsLeft[path], left > 0, let revision = file.revision else { return file }
+        weakReadsLeft[path] = left - 1
+        return LampSyncRemoteFile(data: file.data, revision: "W/" + revision)
     }
 
     func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) throws -> String? {
@@ -5978,12 +5992,14 @@ private actor LibraryServer {
         case .ifAbsent where current != nil:
             throw LampWebDAVStorage.StorageError.preconditionFailed
         case .ifRevision(let expected)
-            where !LampSyncConditionalWrite.namesSameRevision(current?.revision, expected):
+            where !LampWebDAVStorage.isStrongETag(expected)
+                || !LampSyncConditionalWrite.namesSameRevision(current?.revision, expected):
             throw LampWebDAVStorage.StorageError.preconditionFailed
         default:
             break
         }
         writes.append(path)
+        if weakReadsAfterWrite > 0 { weakReadsLeft[path] = weakReadsAfterWrite }
         if lagging, before[path] == nil { before[path] = .some(current) }
         let revision = seed(path, data)
         return withholdsRevisions ? nil : revision
@@ -6010,8 +6026,8 @@ private actor LibraryServer {
             seed(LampSyncSettingsStore.path, interloper)
         }
         let prefix = directory.hasSuffix("/") ? directory : directory + "/"
-        return files.compactMap { path, file in
-            guard path.hasPrefix(prefix) else { return nil }
+        return files.keys.sorted().compactMap { path in
+            guard path.hasPrefix(prefix), let file = visible(path) else { return nil }
             let name = String(path.dropFirst(prefix.count))
             guard !name.contains("/") else { return nil }
             return LampSyncRemoteEntry(
@@ -6612,6 +6628,27 @@ final class LibrarySyncPassTests: XCTestCase {
         _ = try await pass().run()
         let writes = await server.writes.count
         _ = try await pass().run()
+
+        let after = await server.writes.count
+        XCTAssertEqual(after, writes, "the second pass sent something again")
+        let manifest = try await bundle().manifest
+        XCTAssertEqual(manifest.entry(at: notesPath)?.isMember, true)
+    }
+
+    /// Apache tags a file weak for the second after it changes, so the read
+    /// after any write may carry no usable revision. With patience to wait it
+    /// out, a pass completes and the next has nothing to send.
+    func testWeakRevisionsJustAfterAWriteAreWaitedOut() async throws {
+        await server.behaveLikeASynology(lagging: false, weakReadsAfterWrite: 2)
+        try saveNotesModule(notes: ["a"])
+        var patient = pass()
+        patient.patience = LampSyncConditionalWrite.Patience(
+            confirm: [.zero, .zero, .zero, .zero], retry: [.zero, .zero]
+        )
+
+        _ = try await patient.run()
+        let writes = await server.writes.count
+        _ = try await patient.run()
 
         let after = await server.writes.count
         XCTAssertEqual(after, writes, "the second pass sent something again")
