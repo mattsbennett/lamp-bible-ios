@@ -5942,6 +5942,13 @@ private actor LibraryServer {
 
     func file(_ path: String) -> LampSyncRemoteFile? { files[path] }
 
+    /// Downloads, by path, as a device's reads.
+    private(set) var fetches: [String] = []
+    func fetch(_ path: String) -> LampSyncRemoteFile? {
+        fetches.append(path)
+        return files[path]
+    }
+
     /// Another device's write.
     @discardableResult
     func seed(_ path: String, _ data: Data) -> String {
@@ -6004,7 +6011,7 @@ private struct LibraryServerStorage: ModuleStorage, LampSyncRemoteStore {
 
     func isAvailable() async -> Bool { true }
     func list(directory: String) async throws -> [LampSyncRemoteEntry]? { await server.list(directory) }
-    func read(path: String) async throws -> LampSyncRemoteFile? { await server.file(path) }
+    func read(path: String) async throws -> LampSyncRemoteFile? { await server.fetch(path) }
     func revision(path: String) async throws -> String? { await server.file(path)?.revision }
     func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) async throws -> String? {
         try await server.write(data, to: path, condition: condition)
@@ -6014,14 +6021,14 @@ private struct LibraryServerStorage: ModuleStorage, LampSyncRemoteStore {
     }
     func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile {
         let path = "\(directoryName(for: type))/\(fileName)"
-        guard let file = await server.file(path) else { throw ModuleStorageError.fileNotFound(path) }
+        guard let file = await server.fetch(path) else { throw ModuleStorageError.fileNotFound(path) }
         return file
     }
     func readModuleFile(type: ModuleType, fileName: String) async throws -> Data {
         try await readModuleSnapshot(type: type, fileName: fileName).data
     }
     func readFile(path: String) async throws -> Data {
-        guard let file = await server.file(path) else { throw ModuleStorageError.fileNotFound(path) }
+        guard let file = await server.fetch(path) else { throw ModuleStorageError.fileNotFound(path) }
         return file.data
     }
     func listFiles(path: String) async throws -> [StoredFileListing] {
@@ -6490,6 +6497,42 @@ final class LibrarySyncPassTests: XCTestCase {
         let published = await server.file("Devotionals/\(moduleId!).lamp")
         XCTAssertNotNil(published)
         XCTAssertEqual(SyncCoordinator.shared.unsuppliedAttachments, [])
+    }
+
+    /// The earlier sync left a copy of the notes under their old name. Its
+    /// notes were merged into `notes` long ago, and taken in again they would
+    /// make a second notes module and bring back notes deleted before the
+    /// ledger existed: it stays out of the library.
+    func testTheNotesOldNameStaysOutOfTheLibrary() async throws {
+        let entry = "legacy-\(UUID().uuidString)"
+        defer {
+            try? database.write { db in
+                try db.execute(sql: "DELETE FROM note_entries WHERE id = ?", arguments: [entry])
+            }
+            try? database.deleteAllEntriesForModule(moduleId: "bible-notes")
+            try? database.deleteModule(id: "bible-notes")
+        }
+        let legacy = Module(id: "bible-notes", type: .notes, name: "Bible Notes", filePath: "bible-notes.lamp", isEditable: true)
+        try database.saveModule(legacy)
+        try database.saveNoteEntry(NoteEntry(
+            id: entry, moduleId: "bible-notes", verseId: 43_001_001, title: nil, content: "Old",
+            verseRefs: nil, lastModified: 1_788_132_249, footnotes: nil
+        ))
+        let data = try ModuleSyncManager.shared.exportNoteModuleToSQLite(legacy)
+        try database.deleteAllEntriesForModule(moduleId: "bible-notes")
+        try database.deleteModule(id: "bible-notes")
+        _ = try await LampSyncSettingsStore.readOrClaim(from: storage)
+        await server.seed("Notes/bible-notes.lamp", data)
+
+        _ = try await pass().run()
+
+        let fetches = await server.fetches
+        XCTAssertFalse(fetches.contains("Notes/bible-notes.lamp"))
+        let manifest = try await bundle().manifest
+        XCTAssertNil(manifest.entry(at: "Notes/bible-notes.lamp"))
+        XCTAssertNil(try database.getModule(id: "bible-notes"))
+        let file = await server.file("Notes/bible-notes.lamp")
+        XCTAssertNotNil(file, "nothing old is deleted")
     }
 
     func testADeletionHereIsTombstonedAndReaped() async throws {
