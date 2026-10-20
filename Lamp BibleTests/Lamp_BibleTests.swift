@@ -6402,6 +6402,40 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(try database.syncFileRecord(source: source, path: path)?.lastRevision, revision)
     }
 
+    /// A WebDAV library only this phone kept: the archive it made holds its
+    /// settings and nothing of a Mac's. Judged from a copy the phone decoded,
+    /// it is offered, and moving it carries the settings into the bundle.
+    func testAnArchiveOnlyThisPhoneMadeIsOfferedAndMovedWithItsSettings() async throws {
+        let settings = Data("the phone's settings".utf8)
+        let archive = try LampSyncSettingsArchive.replacingData(settings, in: nil, observedLegacy: nil)
+        let revision = await server.seed(LampSyncSettingsStore.path, try archive.compressedData())
+        LibrarySyncPass.noteArchive(
+            try LampSyncArchiveRemote.decode(LampSyncRemoteFile(data: archive.compressedData(), revision: revision)),
+            at: source
+        )
+
+        let outcome = try await pass().run()
+        XCTAssertEqual(outcome, .phoneLibrary)
+
+        _ = try await LampSyncSettingsStore.migratePhoneLibrary(in: storage)
+        let moved = try await bundle()
+        XCTAssertEqual(moved.userSettings, settings)
+    }
+
+    /// The same archive with anything of a Mac's in it waits for the Mac.
+    func testAnArchiveTheMacKeptIsNeverOffered() async throws {
+        var archive = try LampSyncSettingsArchive.replacingData(Data("settings".utf8), in: nil, observedLegacy: nil)
+        archive = try archive.replacingEntry(at: "Modules/Translations/KJV.lamp", with: Data("module".utf8))
+        let revision = await server.seed(LampSyncSettingsStore.path, try archive.compressedData())
+        LibrarySyncPass.noteArchive(
+            try LampSyncArchiveRemote.decode(LampSyncRemoteFile(data: archive.compressedData(), revision: revision)),
+            at: source
+        )
+
+        let outcome = try await pass().run()
+        XCTAssertEqual(outcome, .notMigrated(archiveRevision: revision))
+    }
+
     func testADeletionHereIsTombstonedAndReaped() async throws {
         try saveNotesModule(notes: ["a"])
         _ = try await pass().run()
@@ -6454,7 +6488,94 @@ final class ICloudLibraryPassTests: XCTestCase {
             try db.execute(sql: "DELETE FROM sync_file_records WHERE source = ?", arguments: [storage.librarySource])
             try db.execute(sql: "DELETE FROM sync_pending_manifest_changes WHERE source = ?", arguments: [storage.librarySource])
         }
+        // The older-device check keeps a baseline per endpoint, and every test
+        // here shares one.
+        var seen = UserDefaults.standard.dictionary(forKey: "LibrarySync.settingsFileRevisions.v1") ?? [:]
+        seen[storage.librarySource] = nil
+        UserDefaults.standard.set(seen, forKey: "LibrarySync.settingsFileRevisions.v1")
         try? FileManager.default.removeItem(at: root)
+    }
+
+    /// An earlier library on the folder, as the phone's old iCloud sync left
+    /// it: its notes file and settings, and no bundle.
+    private func seedPhoneLibrary() throws {
+        try database.saveModule(Module(
+            id: moduleId, type: .notes, name: "My Notes", filePath: "\(moduleId!).lamp", isEditable: true
+        ))
+        try database.saveNoteEntry(NoteEntry(
+            id: "a", moduleId: moduleId, verseId: 43_001_001, title: nil, content: "In the beginning",
+            verseRefs: nil, lastModified: 1_788_132_249, footnotes: nil
+        ))
+        let module = try XCTUnwrap(database.getModule(id: moduleId))
+        let notes = root.appendingPathComponent("Notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        try ModuleSyncManager.shared.exportNoteModuleToSQLite(module)
+            .write(to: notes.appendingPathComponent("\(moduleId!).lamp"))
+        let userData = root.appendingPathComponent("UserData", isDirectory: true)
+        try FileManager.default.createDirectory(at: userData, withIntermediateDirectories: true)
+        try Data("settings".utf8).write(to: userData.appendingPathComponent("user-settings.db"))
+    }
+
+    func testALibraryOnlyThisDeviceKeptIsOfferedNotMoved() async throws {
+        try seedPhoneLibrary()
+        let pass = LibrarySyncPass(storage: storage, source: storage.librarySource)
+
+        let outcome = try await pass.run()
+        XCTAssertEqual(outcome, .phoneLibrary)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(LampSyncSettingsStore.path).path
+        ), "nothing moves until the person agrees")
+    }
+
+    func testALibraryTheMacKeptWaitsForTheMac() async throws {
+        try seedPhoneLibrary()
+        try Data("{}".utf8).write(to: root.appendingPathComponent("lamp-sync-snapshot.json"))
+        let pass = LibrarySyncPass(storage: storage, source: storage.librarySource)
+
+        let outcome = try await pass.run()
+        XCTAssertEqual(outcome, .notMigrated(archiveRevision: nil))
+        do {
+            try await LibrarySyncPass.movePhoneLibrary(storage: storage)
+            XCTFail("the phone must not move a library the Mac kept")
+        } catch LampSyncSettingsStore.StoreError.notMigrated {}
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(LampSyncSettingsStore.path).path
+        ))
+    }
+
+    func testMovingALibraryOnlyThisDeviceKeptKeepsItsNotes() async throws {
+        try seedPhoneLibrary()
+
+        guard case .synced = try await LibrarySyncPass.movePhoneLibrary(storage: storage) else {
+            return XCTFail("expected the moved library to sync")
+        }
+
+        let bundle = try LampSyncSettingsBundle.decode(
+            Data(contentsOf: root.appendingPathComponent(LampSyncSettingsStore.path))
+        )
+        XCTAssertEqual(bundle.manifest.entry(at: "Notes/\(moduleId!).lamp")?.isMember, true)
+        let notes = try database.read { db in
+            try String.fetchAll(db, sql: "SELECT id FROM note_entries WHERE module_id = ?", arguments: [moduleId])
+        }
+        XCTAssertEqual(notes, ["a"])
+    }
+
+    /// An older Lamp Bible on iCloud Drive never reads the bundle and keeps
+    /// writing the old settings file; the pass notices the file moving.
+    func testAnOlderDeviceStillWritingTheOldSettingsFileIsNoticed() async throws {
+        try seedPhoneLibrary()
+        SyncCoordinator.shared.olderDeviceSyncing = false
+        defer { SyncCoordinator.shared.olderDeviceSyncing = false }
+        try await LibrarySyncPass.movePhoneLibrary(storage: storage)
+        let pass = LibrarySyncPass(storage: storage, source: storage.librarySource)
+        _ = try await pass.run()
+        XCTAssertFalse(SyncCoordinator.shared.olderDeviceSyncing)
+
+        try Data("an older phone's settings".utf8)
+            .write(to: root.appendingPathComponent("UserData/user-settings.db"))
+        _ = try await pass.run()
+
+        XCTAssertTrue(SyncCoordinator.shared.olderDeviceSyncing)
     }
 
     func testNotesGoUpAsAFileWithABundleAndASecondPassWritesNothing() async throws {

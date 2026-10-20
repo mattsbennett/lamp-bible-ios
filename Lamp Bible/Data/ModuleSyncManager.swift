@@ -151,6 +151,9 @@ class ModuleSyncManager: ObservableObject {
                         observedRevision = result.revision
                         if let snapshot = result.snapshot {
                             observedArchive = snapshot
+                            if let endpoint = storage as? any LibraryEndpoint {
+                                await LibrarySyncPass.noteArchive(snapshot, at: endpoint.librarySource)
+                            }
                             guard snapshot.revision == result.revision else {
                                 throw SyncError.conflictDetected
                             }

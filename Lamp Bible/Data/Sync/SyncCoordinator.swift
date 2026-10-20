@@ -26,6 +26,12 @@ class SyncCoordinator: ObservableObject {
     // MARK: - Published State
 
     @Published private(set) var syncState: SyncState = .idle
+    /// The library at the active endpoint was kept only by this device and
+    /// can move to the new sync, once the person agrees.
+    @Published var libraryMoveOffered = false
+    /// A device on a Lamp Bible older than 1.2.0 is still writing to a library
+    /// that has moved to the new sync, and nothing it does is seen.
+    @Published var olderDeviceSyncing = false
     @Published private(set) var settings: SyncSettings
 
     // MARK: - Storage Provider
@@ -348,7 +354,9 @@ class SyncCoordinator: ObservableObject {
         // this touches nothing, and the archive pass below runs as before.
         if let endpoint = libraryEndpoint(for: activeStorage) {
             do {
-                if case .synced = try await LibrarySyncPass.runIfMigrated(storage: endpoint) {
+                let outcome = try await LibrarySyncPass.runIfMigrated(storage: endpoint)
+                libraryMoveOffered = outcome == .phoneLibrary
+                if case .synced = outcome {
                     var updatedSettings = settings
                     updatedSettings.lastSyncDate = Date()
                     try userDatabase.saveSyncSettings(updatedSettings)
@@ -389,6 +397,20 @@ class SyncCoordinator: ObservableObject {
                 }
             )
 
+            syncState = .idle
+        } catch {
+            syncState = .error(error as? SyncError ?? .unknown(error))
+            throw error
+        }
+    }
+
+    /// The person agreed to move a library only this device kept.
+    func movePhoneLibraryToNewSync() async throws {
+        guard let endpoint = libraryEndpoint(for: activeStorage) else { throw SyncError.notConfigured }
+        syncState = .syncing(progress: nil)
+        do {
+            try await LibrarySyncPass.movePhoneLibrary(storage: endpoint)
+            libraryMoveOffered = false
             syncState = .idle
         } catch {
             syncState = .error(error as? SyncError ?? .unknown(error))

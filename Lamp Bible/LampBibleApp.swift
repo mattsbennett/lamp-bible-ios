@@ -107,6 +107,7 @@ class DeepLinkManager: ObservableObject {
 private struct ContentBootstrapView: View {
     @State private var isReady = false
     @State private var didBootstrap = false
+    @ObservedObject private var sync = SyncCoordinator.shared
 
     var body: some View {
         Group {
@@ -115,6 +116,14 @@ private struct ContentBootstrapView: View {
             } else {
                 ProgressView()
             }
+        }
+        .alert("Move to the new sync?", isPresented: $sync.libraryMoveOffered) {
+            Button("Move") {
+                Task { try? await SyncCoordinator.shared.movePhoneLibraryToNewSync() }
+            }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            Text("Only this device has kept this library. The new sync keeps each module as its own file, so a change no longer uploads the whole library.\n\nUpdate Lamp Bible to 1.2.0 or later on your other devices first: older versions won't see changes made after the move.")
         }
         .task {
             guard !didBootstrap else { return }

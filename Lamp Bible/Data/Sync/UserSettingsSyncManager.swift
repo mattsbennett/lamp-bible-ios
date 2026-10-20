@@ -495,6 +495,9 @@ class UserSettingsSyncManager {
         defer { syncInProgress = false }
         let observed = try await readRemoteSettings(from: storage, reusing: candidate)
         lastObservedArchive = observed?.archiveSnapshot?.archive
+        if let archive = observed?.archiveSnapshot?.archive, let endpoint = storage as? any LibraryEndpoint {
+            LibrarySyncPass.noteArchive(archive, at: endpoint.librarySource)
+        }
         let hasBase = observed.flatMap { applicableBase(for: $0, storage: storage) } != nil
         let hasStoredToken = observed.flatMap { expectedStoredToken(for: $0.source) } != nil
         let action = LampSyncSettingsBootstrap.action(

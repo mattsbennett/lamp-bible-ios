@@ -328,6 +328,15 @@ struct SettingsView: View {
                         } message: {
                             Text(manualSyncError ?? "Sync could not be completed.")
                         }
+
+                        if syncCoordinator.olderDeviceSyncing {
+                            Label(
+                                "A device with an older Lamp Bible is still syncing here. Update it to 1.2.0 or later: until then it can't see changes made with the new sync, and they can't see its changes.",
+                                systemImage: "exclamationmark.triangle"
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                        }
                     }
                 } header: {
                     Text("Sync")

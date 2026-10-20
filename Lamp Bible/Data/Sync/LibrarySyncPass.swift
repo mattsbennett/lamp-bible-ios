@@ -59,6 +59,10 @@ struct LibrarySyncPass {
         /// The server still holds the archive: the Mac has not migrated, so
         /// the archive pass runs instead. The phone never migrates.
         case notMigrated(archiveRevision: String?)
+        /// Nothing migrated, and only this device ever kept the library: the
+        /// person may move it, after updating their other devices. Until
+        /// they do, it syncs as before.
+        case phoneLibrary
         case synced(bundleRevision: String)
     }
 
@@ -92,6 +96,13 @@ struct LibrarySyncPass {
                 from: storage, knownArchiveRevision: knownArchiveRevision
             )
         } catch LampSyncSettingsStore.StoreError.notMigrated(let revision) {
+            // An archive is judged by what is in it, never by the folders
+            // beside it, and only from a copy this device already decoded.
+            if let revision {
+                if Self.archiveIsThisDevicesOwn(at: source, revision: revision) { return .phoneLibrary }
+            } else if try await LampSyncSettingsStore.earlierLibrary(in: storage) == .phone {
+                return .phoneLibrary
+            }
             return .notMigrated(archiveRevision: revision)
         }
         let bundle = snapshot.bundle
@@ -149,6 +160,10 @@ struct LibrarySyncPass {
             fixed: [membership, DeletionLedgerParticipant()], from: snapshot
         )
 
+        if await olderDeviceIsWriting() {
+            SyncCoordinator.shared.olderDeviceSyncing = true
+        }
+
         for (path, revision) in plan.reap.sorted(by: { $0.key < $1.key }) {
             await attempt("reaping \(path)") {
                 try await storage.delete(path: path, condition: .ifRevision(revision))
@@ -156,6 +171,26 @@ struct LibrarySyncPass {
         }
         if let firstError { throw firstError }
         return .synced(bundleRevision: written.revision)
+    }
+
+    private static let settingsFileRevisionsKey = "LibrarySync.settingsFileRevisions.v1"
+
+    /// A Lamp Bible before 1.2.0 on iCloud Drive never reads the bundle: it
+    /// goes on writing the settings file the new sync left behind, and what
+    /// it does there is not seen. That file moving since the last pass means
+    /// such a device is still syncing here. Its first sighting only sets the
+    /// baseline.
+    private func olderDeviceIsWriting() async -> Bool {
+        guard let current = try? await storage.revision(path: LampSyncLayout.userSettingsPath) else {
+            return false
+        }
+        let defaults = UserDefaults.standard
+        var seen = (defaults.dictionary(forKey: Self.settingsFileRevisionsKey) as? [String: String]) ?? [:]
+        let previous = seen[source]
+        seen[source] = current
+        defaults.set(seen, forKey: Self.settingsFileRevisionsKey)
+        guard let previous else { return false }
+        return !LampSyncConditionalWrite.namesSameRevision(previous, current)
     }
 
     /// The pass's one bundle write, with every participant in it.
@@ -226,6 +261,15 @@ struct LibrarySyncPass {
             uniqueKeysWithValues: try database.syncFileRecords(source: source).map { ($0.path, $0) }
         )
         var held: [String: Held] = [:]
+        // On iCloud Drive a file's revision is the digest of its bytes, which
+        // is what the earlier iCloud sync recorded for each module. With that
+        // as the starting revision, the first pass compares most files
+        // without downloading them.
+        let folderRevision: (String?) -> String? = { hash in
+            guard self.storage is ICloudLibraryStorage, let hash,
+                  hash.count == 64, hash.allSatisfy(\.isHexDigit) else { return nil }
+            return LampSyncDirectoryStore.revision(forDigest: hash.lowercased())
+        }
 
         for module in try database.getAllModules() where module.isEditable
             && [.notes, .devotional, .highlights].contains(module.type) {
@@ -236,21 +280,21 @@ struct LibrarySyncPass {
                 local: .init(
                     path: path,
                     changedSinceUpload: record?.hasChangedSinceUpload(exportDigest: digest) ?? true,
-                    lastRevision: record?.lastRevision,
+                    lastRevision: record?.lastRevision ?? folderRevision(module.fileHash),
                     savedAt: try savedAt(module)
                 ),
                 origin: .editable(module)
             )
         }
 
-        for (type, id, fileName) in try installedReadOnlyModules() {
+        for (type, id, fileName, fileHash) in try installedReadOnlyModules() {
             let path = remotePath(type: type, fileName: fileName)
             guard held[path] == nil,
                   listing[path] != nil || manifest.entry(at: path) != nil else { continue }
             held[path] = Held(
                 local: .init(
                     path: path, changedSinceUpload: false,
-                    lastRevision: records[path]?.lastRevision, savedAt: nil
+                    lastRevision: records[path]?.lastRevision ?? folderRevision(fileHash), savedAt: nil
                 ),
                 origin: .installed(type: type, id: id)
             )
@@ -283,15 +327,15 @@ struct LibrarySyncPass {
         }
     }
 
-    private func installedReadOnlyModules() throws -> [(ModuleType, String, String)] {
+    private func installedReadOnlyModules() throws -> [(ModuleType, String, String, String?)] {
         let translations = try database.getAllTranslations(bundledOnly: false).compactMap {
-            translation -> (ModuleType, String, String)? in
+            translation -> (ModuleType, String, String, String?)? in
             guard let filePath = translation.filePath, !filePath.isEmpty else { return nil }
-            return (.translation, translation.id, filePath)
+            return (.translation, translation.id, filePath, translation.fileHash)
         }
-        let others = try database.getAllModules().compactMap { module -> (ModuleType, String, String)? in
+        let others = try database.getAllModules().compactMap { module -> (ModuleType, String, String, String?)? in
             guard !module.isEditable, module.type != .translation, !module.filePath.isEmpty else { return nil }
-            return (module.type, module.id, module.filePath)
+            return (module.type, module.id, module.filePath, module.fileHash)
         }
         return translations + others
     }
@@ -685,10 +729,39 @@ extension LibrarySyncPass {
         let outcome = try await pass.run(knownArchiveRevision: archiveRevision)
         switch outcome {
         case .synced(let revision): remember(revision, for: pass.source)
-        case .notMigrated: remember(nil, for: pass.source)
+        case .notMigrated, .phoneLibrary: remember(nil, for: pass.source)
         }
         print("[LibrarySync] \(outcome)")
         return outcome
+    }
+
+    private static let archiveJudgementsKey = "LibrarySync.archiveJudgements.v1"
+
+    /// Who kept the archive at an endpoint, judged from a copy this device
+    /// decoded anyway for its own sync and kept by revision. Judging one on
+    /// purpose would download a whole library to answer a yes or no.
+    static func noteArchive(_ snapshot: LampSyncArchiveRemote.Snapshot, at source: String) {
+        guard let revision = snapshot.revision else { return }
+        let judged = LampSyncSettingsStore.earlierLibrary(ofArchive: snapshot.archive)
+        let defaults = UserDefaults.standard
+        var all = (defaults.dictionary(forKey: archiveJudgementsKey) as? [String: [String: String]]) ?? [:]
+        all[source] = [LampSyncConditionalWrite.token(for: revision): judged == .phone ? "phone" : "mac"]
+        defaults.set(all, forKey: archiveJudgementsKey)
+    }
+
+    static func archiveIsThisDevicesOwn(at source: String, revision: String) -> Bool {
+        let all = (UserDefaults.standard.dictionary(forKey: archiveJudgementsKey) as? [String: [String: String]]) ?? [:]
+        return all[source]?[LampSyncConditionalWrite.token(for: revision)] == "phone"
+    }
+
+    /// Moves a library only this device kept onto the settings bundle, once
+    /// the person has agreed: claims it, then runs the pass, which adopts
+    /// every file and compares it by value. Core refuses a library the Mac
+    /// kept, writing nothing.
+    @discardableResult
+    static func movePhoneLibrary(storage: any LibraryEndpoint) async throws -> Outcome {
+        _ = try await LampSyncSettingsStore.migratePhoneLibrary(in: storage)
+        return try await runIfMigrated(storage: storage)
     }
 
     /// Whether this device holds anything the server has not seen: settings,
