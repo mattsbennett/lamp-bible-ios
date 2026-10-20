@@ -117,6 +117,7 @@ struct LibrarySyncPass {
             try database.mergePersonalDeletionLedger(ledger)
             try database.applyPersonalDeletionLedger()
         }
+        try Self.settleEmptiedHighlightModules(source: source)
 
         // Decks are the Mac's to publish, and mirrored here as before; the
         // plan covers modules and their media. Pruning still sees every
@@ -173,7 +174,7 @@ struct LibrarySyncPass {
             source: source, carried: carried, adopt: plan.adopt, present: Set(everything.keys)
         )
         let written = try await writeBundle(
-            fixed: [membership, DeletionLedgerParticipant()], from: snapshot
+            fixed: [membership, DeletionLedgerParticipant(source: source)], from: snapshot
         )
 
         if await olderDeviceIsWriting() {
@@ -293,6 +294,10 @@ struct LibrarySyncPass {
 
         for module in try database.getAllModules() where module.isEditable
             && [.notes, .devotional, .highlights].contains(module.type) {
+            // A highlights module whose set has gone has nothing to send.
+            if module.type == .highlights, try database.getHighlightSets(forModule: module.id).isEmpty {
+                continue
+            }
             let path = remotePath(type: module.type, fileName: "\(module.id).lamp")
             let digest = Self.digest(try exportedBytes(module))
             let record = records[path]
@@ -705,6 +710,8 @@ struct ManifestParticipant: SettingsBundleParticipant {
 /// and with none of its own the device leaves it alone. The Mac does the
 /// same.
 struct DeletionLedgerParticipant: SettingsBundleParticipant {
+    let source: String
+
     func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
         var ledger = try ModuleDatabase.shared.personalDeletionLedger()
         if let existing = bundle.personalDeletions.flatMap({ try? LampPersonalDeletionLedger.decode($0) }) {
@@ -719,6 +726,7 @@ struct DeletionLedgerParticipant: SettingsBundleParticipant {
               let ledger = try? LampPersonalDeletionLedger.decode(data) else { return }
         try ModuleDatabase.shared.mergePersonalDeletionLedger(ledger)
         try ModuleDatabase.shared.applyPersonalDeletionLedger()
+        try LibrarySyncPass.settleEmptiedHighlightModules(source: source)
     }
 }
 
@@ -783,6 +791,19 @@ extension LibrarySyncPass {
         }
         print("[LibrarySync] \(outcome)")
         return outcome
+    }
+
+    /// A highlight set deleted on another device goes from here through the
+    /// ledger, which leaves its module behind with nothing in it. The module
+    /// goes too, and its file is tombstoned if this device synced it, so the
+    /// library agrees the set has gone rather than offering it back.
+    static func settleEmptiedHighlightModules(source: String) throws {
+        for id in try ModuleDatabase.shared.removeHighlightModulesWithoutSets() {
+            let path = "\(LampSyncContentKind.highlights.rawValue)/\(id).lamp"
+            if try ModuleDatabase.shared.syncFileRecord(source: source, path: path) != nil {
+                try ModuleDatabase.shared.recordSyncLocalDeletion(source: source, path: path)
+            }
+        }
     }
 
     private static let archiveJudgementsKey = "LibrarySync.archiveJudgements.v1"

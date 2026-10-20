@@ -6713,6 +6713,46 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(after, writes, "settled: nothing left to send")
     }
 
+    /// A highlight set deleted on another device reaches this one through the
+    /// ledger, which takes the set and leaves its module with nothing to
+    /// export. The pass carries on, the module goes, and its file is
+    /// tombstoned so the library agrees the set has gone.
+    func testAHighlightSetDeletedElsewhereTakesItsModuleWithIt() async throws {
+        let setID = "set-\(UUID().uuidString)"
+        defer {
+            try? database.deleteModule(id: moduleId)
+            try? database.write { db in
+                try db.execute(sql: "DELETE FROM highlight_sets WHERE id = ?", arguments: [setID])
+            }
+        }
+        try database.saveModule(Module(
+            id: moduleId, type: .highlights, name: "My Highlights",
+            filePath: "\(moduleId!).lamp", isEditable: true
+        ))
+        try database.saveHighlightSet(HighlightSet(
+            id: setID, moduleId: moduleId, name: "My Highlights", description: nil,
+            translationId: "KJV", created: 1_788_132_249, lastModified: 1_788_132_249
+        ))
+        let path = "Highlights/\(moduleId!).lamp"
+        _ = try await pass().run()
+        let published = try await bundle().manifest.entry(at: path)
+        XCTAssertEqual(published?.isMember, true)
+
+        var ledger = LampPersonalDeletionLedger()
+        ledger.recordDeletion(.highlightSet, setID, at: ModuleDatabase.nowMilliseconds() + 60_000)
+        let encoded = try ledger.encoded()
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.personalDeletions = encoded
+        }
+
+        _ = try await pass().run()
+        _ = try await pass().run()
+
+        XCTAssertNil(try database.getModule(id: moduleId))
+        let after = try await bundle().manifest.entry(at: path)
+        XCTAssertEqual(after?.isMember, false, "the set's file should be tombstoned")
+    }
+
     /// A ledger no device can read must not stop the library syncing.
     func testAnUnreadableDeletionLedgerDoesNotStopThePass() async throws {
         try saveNotesModule(notes: ["a"])

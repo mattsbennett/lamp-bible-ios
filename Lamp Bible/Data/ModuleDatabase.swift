@@ -3354,6 +3354,23 @@ extension ModuleDatabase {
 
     /// A file this device deleted. The tombstone records which copy it
     /// deleted, so a copy put back later is told apart from it.
+    /// Highlights modules left with no set, as a set deleted on another
+    /// device leaves them: removed, with any publication pending for them.
+    /// Such a module has nothing to export, and kept would stop every pass.
+    func removeHighlightModulesWithoutSets() throws -> [String] {
+        try write { db in
+            let ids = try String.fetchAll(db, sql: """
+                SELECT id FROM modules WHERE type = ?
+                  AND id NOT IN (SELECT module_id FROM highlight_sets)
+                """, arguments: [ModuleType.highlights.rawValue])
+            for id in ids {
+                try db.execute(sql: "DELETE FROM sync_pending_module_publications WHERE module_id = ?", arguments: [id])
+                try db.execute(sql: "DELETE FROM modules WHERE id = ?", arguments: [id])
+            }
+            return ids
+        }
+    }
+
     func recordSyncLocalDeletion(source: String, path: String, at time: Date = Date()) throws {
         try write { db in
             let deleted = try SyncFileRecord.fetchOne(db, key: ["source": source, "path": path])
