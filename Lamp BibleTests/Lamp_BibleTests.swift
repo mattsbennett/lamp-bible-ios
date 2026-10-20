@@ -5946,7 +5946,7 @@ private actor LibraryServer {
     private(set) var fetches: [String] = []
     func fetch(_ path: String) -> LampSyncRemoteFile? {
         fetches.append(path)
-        return files[path]
+        return visible(path)
     }
 
     /// Another device's write.
@@ -5956,6 +5956,20 @@ private actor LibraryServer {
         let revision = "\"lib-\(next)\""
         files[path] = LampSyncRemoteFile(data: data, revision: revision)
         return revision
+    }
+
+    /// As a Synology: a PUT answers with no ETag, so a writer confirms by
+    /// reading back. With `lagging`, reads keep showing the body from before
+    /// each write until `catchUp()`.
+    private(set) var withholdsRevisions = false
+    private(set) var lagging = false
+    private var before: [String: LampSyncRemoteFile?] = [:]
+    func behaveLikeASynology(lagging: Bool) { withholdsRevisions = true; self.lagging = lagging }
+    func catchUp() { before = [:]; lagging = false }
+    /// What a read sees now.
+    func visible(_ path: String) -> LampSyncRemoteFile? {
+        if let stale = before[path] { return stale }
+        return files[path]
     }
 
     func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) throws -> String? {
@@ -5970,7 +5984,9 @@ private actor LibraryServer {
             break
         }
         writes.append(path)
-        return seed(path, data)
+        if lagging, before[path] == nil { before[path] = .some(current) }
+        let revision = seed(path, data)
+        return withholdsRevisions ? nil : revision
     }
 
     func delete(_ path: String, condition: LampSyncWriteCondition) throws {
@@ -6012,7 +6028,7 @@ private struct LibraryServerStorage: ModuleStorage, LampSyncRemoteStore {
     func isAvailable() async -> Bool { true }
     func list(directory: String) async throws -> [LampSyncRemoteEntry]? { await server.list(directory) }
     func read(path: String) async throws -> LampSyncRemoteFile? { await server.fetch(path) }
-    func revision(path: String) async throws -> String? { await server.file(path)?.revision }
+    func revision(path: String) async throws -> String? { await server.visible(path)?.revision }
     func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) async throws -> String? {
         try await server.write(data, to: path, condition: condition)
     }
@@ -6081,7 +6097,11 @@ final class LibrarySyncPassTests: XCTestCase {
         }
     }
 
-    private func pass() -> LibrarySyncPass { LibrarySyncPass(storage: storage, source: source) }
+    private func pass() -> LibrarySyncPass {
+        var pass = LibrarySyncPass(storage: storage, source: source)
+        pass.patience = .immediate
+        return pass
+    }
 
     private func saveNotesModule(notes: [String]) throws {
         try database.saveModule(Module(
@@ -6107,6 +6127,33 @@ final class LibrarySyncPassTests: XCTestCase {
         let stored = await server.file(LampSyncSettingsStore.path)
         let file = try XCTUnwrap(stored)
         return try LampSyncSettingsBundle.decode(file.data)
+    }
+
+    /// The revision the phone last imported, while that archive is still
+    /// there: nothing has moved, and the archive is not downloaded to learn it.
+    func testTheArchiveLastImportedIsNotReadAgain() async throws {
+        let revision = await server.seed(
+            LampSyncSettingsStore.path, try LampSyncArchive(entries: []).compressedData()
+        )
+
+        let outcome = try await pass().run(knownArchiveRevision: revision)
+
+        XCTAssertEqual(outcome, .notMigrated(archiveRevision: revision))
+        let fetches = await server.fetches
+        XCTAssertFalse(fetches.contains(LampSyncSettingsStore.path))
+    }
+
+    /// Once the Mac has moved the library the bundle stands where the archive
+    /// was, and the archive revision this phone remembers names nothing there.
+    func testABundleWhereTheImportedArchiveWasIsSynced() async throws {
+        let archived = await server.seed(
+            LampSyncSettingsStore.path, try LampSyncArchive(entries: []).compressedData()
+        )
+        await server.seed(LampSyncSettingsStore.path, try LampSyncSettingsBundle().encoded())
+
+        let outcome = try await pass().run(knownArchiveRevision: archived)
+
+        guard case .synced = outcome else { return XCTFail("expected a synced pass, got \(outcome)") }
     }
 
     func testAnArchiveAtThePathMeansTheMacHasNotMigrated() async throws {
@@ -6554,6 +6601,48 @@ final class LibrarySyncPassTests: XCTestCase {
 
         let entry = try await bundle().manifest.entry(at: deck)
         XCTAssertNotNil(entry?.deletedAt, "the deletion went while its file is still on the server")
+    }
+
+    /// A Synology sends no ETag with a PUT: each upload is confirmed by
+    /// reading it back, recorded, and the next pass has nothing to send.
+    func testUploadsToAServerThatSendsNoETagAreConfirmedByReadingBack() async throws {
+        await server.behaveLikeASynology(lagging: false)
+        try saveNotesModule(notes: ["a"])
+
+        _ = try await pass().run()
+        let writes = await server.writes.count
+        _ = try await pass().run()
+
+        let after = await server.writes.count
+        XCTAssertEqual(after, writes, "the second pass sent something again")
+        let manifest = try await bundle().manifest
+        XCTAssertEqual(manifest.entry(at: notesPath)?.isMember, true)
+    }
+
+    /// Taken but not yet shown back: the pass says so rather than calling it
+    /// a lost race, and once the server catches up the next pass settles it
+    /// without losing anything.
+    func testAnUploadTheServerHasNotShownBackIsSettledNextPass() async throws {
+        try saveNotesModule(notes: ["a"])
+        _ = try await LampSyncSettingsStore.readOrClaim(from: storage)
+        await server.behaveLikeASynology(lagging: true)
+
+        do {
+            _ = try await pass().run()
+            XCTFail("the unconfirmed upload should be reported")
+        } catch let error as LampSyncConditionalWrite.Unconfirmed {
+            XCTAssertFalse(LampSyncConditionalWrite.isRefusal(error))
+        } catch {}
+        await server.catchUp()
+        _ = try await pass().run()
+
+        let manifest = try await bundle().manifest
+        XCTAssertEqual(manifest.entry(at: notesPath)?.isMember, true)
+        XCTAssertEqual(try storedNoteIDs(), ["a"])
+        let writes = await server.writes.count
+        _ = try await pass().run()
+        let after = await server.writes.count
+        XCTAssertEqual(after, writes, "settled: nothing left to send")
     }
 
     /// A ledger no device can read must not stop the library syncing.

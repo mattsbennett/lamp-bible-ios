@@ -78,6 +78,10 @@ struct LibrarySyncPass {
     var makeParticipants: (
         LampSyncSettingsBundle?, [LampSyncSettingsStore.Version]
     ) throws -> [any SettingsBundleParticipant] = { _, _ in [] }
+    /// How long a write the server took may take to show back. A Synology
+    /// sends no ETag with a PUT and can answer a read with the body from
+    /// before for a while after.
+    var patience: LampSyncConditionalWrite.Patience = .standard
 
     /// A participant prepared against one bundle met a newer one at the
     /// write: prepare again against what is there now.
@@ -93,7 +97,7 @@ struct LibrarySyncPass {
             // anything else: once a module file is there without one, core
             // reads the library as an earlier one waiting for the Mac.
             snapshot = try await LampSyncSettingsStore.readOrClaim(
-                from: storage, knownArchiveRevision: knownArchiveRevision
+                from: storage, knownArchiveRevision: knownArchiveRevision, patience: patience
             )
         } catch LampSyncSettingsStore.StoreError.notMigrated(let revision) {
             // An archive is judged by what is in it, never by the folders
@@ -226,6 +230,7 @@ struct LibrarySyncPass {
             do {
                 let written = try await LampSyncSettingsStore.update(
                     in: storage,
+                    patience: patience,
                     mergingVersion: { bundle, version in
                         guard prepared.contains(version.revision) else { throw BundleMoved() }
                         try bundle.merge(version: version.bundle)
@@ -550,9 +555,9 @@ struct LibrarySyncPass {
         _ path: String, module: Module, condition: LampSyncWriteCondition, replacing: String?
     ) async throws {
         let data = try exportedBytes(module)
-        let revision = try await LampSyncConditionalWrite.writeAndConfirm(
-            data, to: path, in: storage, condition: condition
-        )
+        let revision = try await LampSyncConditionalWrite.write(
+            data, to: path, in: storage, condition: condition, patience: patience
+        ).revision(at: path)
         var updated = module
         updated.fileHash = revision
         updated.filePath = "\(module.id).lamp"
@@ -887,9 +892,9 @@ extension ModuleSyncManager {
         let path = "\(storage.directoryName(for: type))/\(fileName)"
         let source = storage.librarySource
         let current = try await storage.revision(path: path)
-        let revision = try await LampSyncConditionalWrite.writeAndConfirm(
+        let revision = try await LampSyncConditionalWrite.write(
             data, to: path, in: storage, condition: current.map { .ifRevision($0) } ?? .ifAbsent
-        )
+        ).revision(at: path)
         if type == .translation {
             if var translation = try ModuleDatabase.shared.getTranslation(id: moduleId) {
                 translation.fileHash = revision
@@ -907,3 +912,16 @@ extension ModuleSyncManager {
     }
 }
 
+
+extension LampSyncConditionalWrite.Outcome {
+    /// The revision a write produced. Refused, it is the refusal the plan
+    /// expects; taken but not yet shown back, nothing is recorded and the
+    /// module stays pending, so the next pass finds the file and settles it.
+    func revision(at path: String) throws -> String {
+        switch self {
+        case .written(let revision): return revision
+        case .writtenUnconfirmed: throw LampSyncConditionalWrite.Unconfirmed(path: path)
+        case .refused: throw LampSyncConditionalWrite.WriteError.conflict
+        }
+    }
+}
