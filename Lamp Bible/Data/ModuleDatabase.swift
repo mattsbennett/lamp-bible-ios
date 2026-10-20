@@ -1698,6 +1698,22 @@ class ModuleDatabase {
         }
     }
 
+    /// Empties a notes or writing module, each entry deleted as if one at a
+    /// time: every deletion goes in the ledger, so it reaches the devices
+    /// that still hold the entry rather than being merged back from them.
+    func resetPersonalModule(moduleId: String) throws {
+        try dbQueue.write { db in
+            for id in try String.fetchAll(db, sql: "SELECT id FROM note_entries WHERE module_id = ?", arguments: [moduleId]) {
+                try Self.recordPersonalDeletion(db, .note, id)
+            }
+            for id in try String.fetchAll(db, sql: "SELECT id FROM devotional_entries WHERE module_id = ?", arguments: [moduleId]) {
+                try Self.recordPersonalDeletion(db, .devotional, id)
+            }
+            try db.execute(sql: "DELETE FROM note_entries WHERE module_id = ?", arguments: [moduleId])
+            try db.execute(sql: "DELETE FROM devotional_entries WHERE module_id = ?", arguments: [moduleId])
+        }
+    }
+
     func deleteNoteEntry(id: String) throws {
         try dbQueue.write { db in
             if try NoteEntry.deleteOne(db, key: id) {

@@ -2964,6 +2964,74 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertNil(reaped, "the tombstoned copy is reaped")
     }
 
+    /// This device's default notes and writings land on the two paths core
+    /// keeps whole; a second notes module, or a highlight set with a
+    /// colliding ID, deletes like any other module.
+    func testThisDevicesDefaultModulesAreTheCollectionsCoreKeeps() {
+        func path(_ type: ModuleType, _ id: String) -> String { "\(storage.directoryName(for: type))/\(id).lamp" }
+        XCTAssertEqual(LampSyncLocalDeletion.target(of: path(.notes, LampSyncLocalDeletion.notesCollectionID)), .collection)
+        XCTAssertEqual(LampSyncLocalDeletion.target(of: path(.devotional, LampSyncLocalDeletion.writingCollectionID)), .collection)
+        XCTAssertEqual(LampSyncLocalDeletion.target(of: path(.notes, "grandads-notes")), .module("grandads-notes"))
+        XCTAssertEqual(LampSyncLocalDeletion.target(of: path(.highlights, "notes")), .module("notes"))
+    }
+
+    /// Another device's deletion of the default notes file never takes every
+    /// note here: the file is kept, goes back up, and the pass reads clean.
+    func testTheDefaultNotesOutliveADeletionElsewhere() async throws {
+        let existed = try database.getModule(id: "notes") != nil
+        if !existed {
+            try database.saveModule(Module(
+                id: "notes", type: .notes, name: "Notes", filePath: "notes.lamp", isEditable: true
+            ))
+        }
+        let noteID = "kept-\(UUID().uuidString)"
+        try database.saveNoteEntry(NoteEntry(
+            id: noteID, moduleId: "notes", verseId: 43_001_001, title: nil, content: "Kept",
+            verseRefs: nil, lastModified: Int(Date().timeIntervalSince1970) - 3_600, footnotes: nil
+        ))
+        defer {
+            try? database.write { db in
+                _ = try NoteEntry.deleteOne(db, key: noteID)
+                if !existed { try db.execute(sql: "DELETE FROM modules WHERE id = 'notes'") }
+            }
+        }
+        _ = try await pass().run()
+        let path = "Notes/notes.lamp"
+        let revision = await server.file(path)?.revision
+        XCTAssertNotNil(revision)
+        // Deleted elsewhere after this device's last save and upload, and
+        // before its next pass.
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let deletedAt = ModuleDatabase.nowMilliseconds()
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(path, at: deletedAt, revision: revision)
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        _ = try await pass().run()
+
+        XCTAssertNotNil(try database.getNoteEntry(id: noteID), "a deletion elsewhere took every note")
+        let back = await server.file(path)
+        XCTAssertNotNil(back, "the notes go back up")
+        let entry = try await bundle().manifest.entry(at: path)
+        XCTAssertEqual(entry?.isMember, true)
+        _ = try await pass().run()
+    }
+
+    /// Resetting a notes module sends each note's own deletion, so a device
+    /// still holding them lets them go rather than merging them back.
+    func testResettingAModuleRecordsEachEntrysDeletion() throws {
+        try saveNotesModule(notes: ["a", "b"])
+
+        try database.resetPersonalModule(moduleId: moduleId)
+
+        XCTAssertEqual(try storedNoteIDs(), [])
+        XCTAssertNotNil(try database.getModule(id: moduleId), "the module itself stays")
+        let ledger = try database.personalDeletionLedger()
+        XCTAssertNotNil(ledger.entry(.note, "a")?.deletedAt)
+        XCTAssertNotNil(ledger.entry(.note, "b")?.deletedAt)
+    }
+
     // MARK: Settings
 
     private let settingsKeys = [

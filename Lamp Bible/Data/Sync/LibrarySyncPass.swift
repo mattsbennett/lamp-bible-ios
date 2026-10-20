@@ -57,6 +57,8 @@ func libraryEndpoint(for storage: ModuleStorage?) -> (any LibraryEndpoint)? {
 /// the next pass picks up what is left.
 enum LibrarySyncError: LocalizedError, Equatable {
     case incomplete([String])
+    /// A deletion of a whole collection, which this device never carries out.
+    case collectionKept(String)
 
     var errorDescription: String? {
         switch self {
@@ -65,6 +67,8 @@ enum LibrarySyncError: LocalizedError, Equatable {
             return failures.count > 1
                 ? "Some of the library didn't sync: \(first), and \(failures.count - 1) more."
                 : "Some of the library didn't sync: \(first)"
+        case .collectionKept(let path):
+            return "\(path) holds a whole collection, so it is kept here."
         }
     }
 }
@@ -500,6 +504,10 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         case .devotionalMedia, .bookMedia:
             if let url = localURL(forMedia: path) { try? FileManager.default.removeItem(at: url) }
         case .module:
+            // Core's plan never asks for a collection; refused here as well.
+            guard LampSyncLocalDeletion.target(of: path) != .collection else {
+                throw LibrarySyncError.collectionKept(path)
+            }
             guard let held = heldModules[path] else { return }
             if held.type == .translation {
                 try database.deleteTranslation(id: held.id)
@@ -822,6 +830,7 @@ extension ModuleSyncManager {
                 .filter {
                     $0.hasPrefix(folder + "/")
                         && LampSyncFolderLayout.remoteModuleID(of: $0) == moduleId
+                        && LampSyncLocalDeletion.target(of: $0).isAllowed
                 }
             // Only what this device synced: a path it never had a record of
             // is not its to tombstone.

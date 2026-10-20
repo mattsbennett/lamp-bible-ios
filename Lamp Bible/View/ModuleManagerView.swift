@@ -8,6 +8,7 @@
 import SwiftUI
 import GRDB
 import UniformTypeIdentifiers
+import LampModuleKit
 
 // MARK: - Module Source
 
@@ -147,8 +148,12 @@ struct DisplayModule: Identifiable {
         source == .bundled
     }
 
-    var isDefaultNotesModule: Bool {
-        id == "notes"
+    /// The default notes or writings module: the one file every note or
+    /// every writing syncs in. It resets rather than deletes, so each entry
+    /// goes as its own deletion and no device takes the whole collection.
+    var isDefaultCollection: Bool {
+        (type == .notes && id == LampSyncLocalDeletion.notesCollectionID)
+            || (type == .devotional && id == LampSyncLocalDeletion.writingCollectionID)
     }
 }
 
@@ -737,12 +742,12 @@ struct ModuleManagerView: View {
                     exportModuleToMarkdown(userModule)
                 }
             },
-            onDelete: (displayModule.isBundled || displayModule.isDefaultNotesModule) ? nil : {
+            onDelete: (displayModule.isBundled || displayModule.isDefaultCollection) ? nil : {
                 if let userModule = displayModule.userModule {
                     Task { await deleteModule(userModule) }
                 }
             },
-            onReset: displayModule.isDefaultNotesModule ? {
+            onReset: displayModule.isDefaultCollection ? {
                 if let userModule = displayModule.userModule {
                     Task { await resetModule(userModule) }
                 }
@@ -1144,10 +1149,8 @@ struct ModuleManagerView: View {
 
     private func resetModule(_ module: Module) async {
         do {
-            // Delete all entries but keep the module
-            try database.deleteAllEntriesForModule(moduleId: module.id)
-
-            // Export the now-empty module to iCloud
+            // Every entry goes, each as its own deletion; the module stays.
+            try database.resetPersonalModule(moduleId: module.id)
             try await syncManager.exportModule(id: module.id)
 
             await loadModules()
@@ -1436,8 +1439,8 @@ struct ModuleRow: View {
                         }
                     }
 
-                    // Show Reset for default notes module, Delete for others
-                    if module.isDefaultNotesModule {
+                    // Reset for a default collection, Delete for others
+                    if module.isDefaultCollection {
                         if onReset != nil {
                             Divider()
 
