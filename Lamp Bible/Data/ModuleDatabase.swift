@@ -8,6 +8,7 @@
 import Foundation
 import GRDB
 import LampCore
+import LampModuleKit
 
 class ModuleDatabase {
     static let shared = ModuleDatabase()
@@ -1462,6 +1463,13 @@ class ModuleDatabase {
                     PRIMARY KEY (kind, item_key)
                 )
                 """)
+        }
+
+        // v30: The pass engine is core's, and keeps a write the bundle has not
+        // named yet apart from what was installed: only a bundle naming that
+        // very revision confirms it.
+        migrator.registerMigration("v30_sync_pending_revision") { db in
+            try db.execute(sql: "ALTER TABLE sync_file_records ADD COLUMN pending_revision TEXT")
         }
 
         return migrator
@@ -3272,12 +3280,15 @@ struct SyncFileRecord: Codable, Equatable, FetchableRecord, PersistableRecord {
     /// forever.
     var uploadedDigest: String?
     var updatedAt: Int64
+    /// A revision this device wrote that no settings bundle has named yet.
+    var pendingRevision: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case source, path
         case lastRevision = "last_revision"
         case uploadedDigest = "uploaded_digest"
         case updatedAt = "updated_at"
+        case pendingRevision = "pending_revision"
     }
 
     /// Whether this device's export has moved since it last uploaded it.
@@ -3352,8 +3363,6 @@ extension ModuleDatabase {
         }
     }
 
-    /// A file this device deleted. The tombstone records which copy it
-    /// deleted, so a copy put back later is told apart from it.
     /// Highlights modules left with no set, as a set deleted on another
     /// device leaves them: removed, with any publication pending for them.
     /// Such a module has nothing to export, and kept would stop every pass.
@@ -3371,13 +3380,15 @@ extension ModuleDatabase {
         }
     }
 
+    /// A file this device deleted. The tombstone records which copy it
+    /// deleted, so a copy put back later is told apart from it.
     func recordSyncLocalDeletion(source: String, path: String, at time: Date = Date()) throws {
         try write { db in
             let deleted = try SyncFileRecord.fetchOne(db, key: ["source": source, "path": path])
             _ = try SyncFileRecord.deleteOne(db, key: ["source": source, "path": path])
             try SyncPendingManifestChange(
                 source: source, path: path, change: .delete,
-                revision: deleted?.lastRevision, at: Self.nowMilliseconds(time)
+                revision: deleted?.pendingRevision ?? deleted?.lastRevision, at: Self.nowMilliseconds(time)
             ).save(db)
         }
     }
@@ -3410,6 +3421,58 @@ extension ModuleDatabase {
                     DELETE FROM sync_pending_manifest_changes
                     WHERE source = ? AND path = ? AND at = ?
                     """, arguments: [change.source, change.path, change.at])
+            }
+        }
+    }
+
+    /// Writes made outside a pass, as importing a module file makes one,
+    /// still to reach a bundle.
+    func pendingManifestWrites(source: String) throws -> [SyncPendingManifestChange] {
+        try pendingManifestChanges(source: source).filter { $0.change == .write }
+    }
+
+    // MARK: Core's records
+
+    /// This endpoint's records as core's pass engine keeps them.
+    func libraryRecords(source: String) throws -> LampSyncFileRecords {
+        var records = LampSyncFileRecords()
+        var files: [String: LampSyncFileRecords.Record] = [:]
+        for row in try syncFileRecords(source: source) {
+            files[row.path] = LampSyncFileRecords.Record(
+                uploadedDigest: row.uploadedDigest,
+                installedRevision: row.lastRevision,
+                pendingRevision: row.pendingRevision
+            )
+        }
+        records.sources[source, default: LampSyncFileRecords.Source()].files = files
+        return records
+    }
+
+    /// What a pass left in `records` for this endpoint, replacing what was
+    /// kept for it before: a path the pass forgot is forgotten here too.
+    func saveLibraryRecords(_ records: LampSyncFileRecords, source: String, at time: Date = Date()) throws {
+        var files = records.sources[source]?.files ?? [:]
+        let now = Self.nowMilliseconds(time)
+        // Deleted here while the pass ran: the deletion already took its
+        // record, and the pass's copy of it must not bring it back.
+        for path in try pendingManifestDeletions(source: source).keys { files[path] = nil }
+        try write { db in
+            let kept = try SyncFileRecord.filter(Column("source") == source).fetchAll(db)
+            let before = Dictionary(uniqueKeysWithValues: kept.map { ($0.path, $0) })
+            for row in kept where files[row.path] == nil {
+                _ = try row.delete(db)
+            }
+            for (path, record) in files {
+                var row = before[path] ?? SyncFileRecord(source: source, path: path, updatedAt: now)
+                let changed = row.lastRevision != record.installedRevision
+                    || row.uploadedDigest != record.uploadedDigest
+                    || row.pendingRevision != record.pendingRevision
+                guard changed || before[path] == nil else { continue }
+                row.lastRevision = record.installedRevision
+                row.uploadedDigest = record.uploadedDigest
+                row.pendingRevision = record.pendingRevision
+                row.updatedAt = now
+                try row.save(db)
             }
         }
     }

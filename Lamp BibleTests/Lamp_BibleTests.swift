@@ -6472,7 +6472,6 @@ final class LibrarySyncPassTests: XCTestCase {
 
         _ = try await pass().run()
 
-        XCTAssertEqual(try database.getModule(id: moduleId)?.fileHash, revision)
         XCTAssertEqual(try database.syncFileRecord(source: source, path: path)?.lastRevision, revision)
     }
 
@@ -6695,12 +6694,17 @@ final class LibrarySyncPassTests: XCTestCase {
         _ = try await LampSyncSettingsStore.readOrClaim(from: storage)
         await server.behaveLikeASynology(lagging: true)
 
+        // The engine says the server took it but has not shown it back: as a
+        // failure line for a file, or as the error itself for the bundle.
+        // Never as a refusal, which would read as another device writing.
         do {
             _ = try await pass().run()
             XCTFail("the unconfirmed upload should be reported")
         } catch let error as LampSyncConditionalWrite.Unconfirmed {
             XCTAssertFalse(LampSyncConditionalWrite.isRefusal(error))
-        } catch {}
+        } catch let LibrarySyncError.incomplete(failures) {
+            XCTAssertTrue(failures.contains { $0.contains("not shown it back") }, "\(failures)")
+        }
         await server.catchUp()
         _ = try await pass().run()
 

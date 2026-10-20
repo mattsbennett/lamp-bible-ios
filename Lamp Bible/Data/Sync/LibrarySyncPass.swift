@@ -53,6 +53,28 @@ func libraryEndpoint(for storage: ModuleStorage?) -> (any LibraryEndpoint)? {
     }
 }
 
+/// A pass's work that did not all get done. The rest was, and is recorded;
+/// the next pass picks up what is left.
+enum LibrarySyncError: LocalizedError, Equatable {
+    case incomplete([String])
+
+    var errorDescription: String? {
+        switch self {
+        case .incomplete(let failures):
+            let first = failures.first ?? ""
+            return failures.count > 1
+                ? "Some of the library didn't sync: \(first), and \(failures.count - 1) more."
+                : "Some of the library didn't sync: \(first)"
+        }
+    }
+}
+
+/// A Design B pass on this device. The pass itself is core's
+/// (`LampSyncBundlePass`), the same one the Mac runs: it orders the work and
+/// keeps the records. What is this device's own is around it: whether the
+/// library has moved yet, the settings and deletion ledger that share its
+/// bundle, the decks it mirrors, and `PhonePassLibrary`, which says what the
+/// phone holds and takes in what arrives.
 @MainActor
 struct LibrarySyncPass {
     enum Outcome: Equatable {
@@ -91,12 +113,12 @@ struct LibrarySyncPass {
     private var modules: ModuleSyncManager { .shared }
 
     func run(knownArchiveRevision: String? = nil) async throws -> Outcome {
-        let snapshot: LampSyncSettingsStore.Snapshot
+        // Whether the library has moved, asked first and cheaply: while the
+        // archive is still there, at the revision this device imported, one
+        // HEAD says so without the library being downloaded to learn it. A
+        // truly empty library is claimed here before anything is written.
         do {
-            // A truly empty library is claimed with an empty bundle before
-            // anything else: once a module file is there without one, core
-            // reads the library as an earlier one waiting for the Mac.
-            snapshot = try await LampSyncSettingsStore.readOrClaim(
+            _ = try await LampSyncSettingsStore.readOrClaim(
                 from: storage, knownArchiveRevision: knownArchiveRevision, patience: patience
             )
         } catch LampSyncSettingsStore.StoreError.notMigrated(let revision) {
@@ -109,73 +131,72 @@ struct LibrarySyncPass {
             }
             return .notMigrated(archiveRevision: revision)
         }
-        let bundle = snapshot.bundle
 
-        // Deletions made elsewhere, before anything here is compared or sent.
-        // One no device can read is skipped, as the Mac skips it.
-        if let ledger = bundle.personalDeletions.flatMap({ try? LampPersonalDeletionLedger.decode($0) }) {
-            try database.mergePersonalDeletionLedger(ledger)
-            try database.applyPersonalDeletionLedger()
-        }
-        try Self.settleEmptiedHighlightModules(source: source)
+        let library = PhonePassLibrary(storage: storage, source: source)
+        defer { library.cleanUp() }
+        var records = try database.libraryRecords(source: source)
+        library.seedFolderRevisions(into: &records)
+        let carried = try database.pendingManifestWrites(source: source)
+        let ledger = DeletionLedgerParticipant(source: source)
+        var participants: [any SettingsBundleParticipant] = []
+        var prepared: Set<String> = []
 
-        // Decks are the Mac's to publish, and mirrored here as before; the
-        // plan covers modules and their media. Pruning still sees every
-        // listed file, or a deck's old tombstone would go while its file
-        // waits to be reaped, and the Mac would adopt the deck back.
-        let everything = try await LampSyncFilePlan.listing(in: storage, manifest: bundle.manifest)
-        let listing = everything.filter { Self.isPlanned(LampSyncFolderLayout.kind(of: $0.key)) }
-        let held = try heldFiles(manifest: bundle.manifest, listing: listing)
-        let plan = LampSyncFilePlan.plan(
-            manifest: bundle.manifest,
-            local: held.values.map(\.local),
-            deletedLocally: try database.pendingManifestDeletions(source: source),
-            listing: listing
-        )
-
-        var firstError: Error?
-        func attempt(_ what: String, _ body: () async throws -> Void) async {
-            do { try await body() } catch {
-                print("[LibrarySync] \(what) failed: \(error)")
-                if firstError == nil { firstError = error }
-            }
-        }
-        for path in plan.deleteLocally {
-            await attempt("removing \(path)") { try removeLocally(path, held: held[path]) }
-        }
-        for path in plan.downloads where plan.merge[path] == nil {
-            await attempt("downloading \(path)") { try await install(path, revision: listing[path]) }
-        }
-        for (path, revision) in plan.merge.sorted(by: { $0.key < $1.key }) {
-            await attempt("merging \(path)") { try await merge(path, revision: revision) }
-        }
-        // Media before the modules that name them, so a writing never lands
-        // on another device pointing at an attachment not there yet.
-        let uploadOrder = plan.uploads.sorted { left, right in
-            let (leftMedia, rightMedia) = (
-                LampSyncFolderLayout.kind(of: left.key)?.isMedia == true,
-                LampSyncFolderLayout.kind(of: right.key)?.isMedia == true
+        let engine = LampSyncBundlePass(store: storage, library: library, source: source)
+        let outcome: LampSyncBundlePass.Outcome
+        do {
+            outcome = try await engine.run(
+                gathering: { try library.gather() },
+                records: &records,
+                mergingVersion: { bundle, version in
+                    // Only versions the settings were prepared with: one that
+                    // landed since would be resolved without this device
+                    // having merged its settings.
+                    guard prepared.contains(version.revision) else {
+                        throw LampSyncBundlePass.PrepareAgain()
+                    }
+                    try bundle.merge(version: version.bundle)
+                },
+                plannedKinds: { Self.isPlanned($0) },
+                // Notes, writings, highlights and attachments are small, and
+                // a write the server took must be seen back before it is
+                // recorded; the Synology can answer with the body from before.
+                confirmByReading: { Self.confirmsByReading($0) },
+                patience: patience,
+                receiving: { snapshot in
+                    try receive(snapshot.bundle)
+                    library.opened = snapshot.bundle
+                    prepared = Set(snapshot.versions.map(\.revision))
+                    participants = try makeParticipants(snapshot.bundle, snapshot.versions)
+                },
+                contributing: { bundle in
+                    let now = ModuleDatabase.nowMilliseconds()
+                    // A module file imported here goes up when it is chosen,
+                    // outside any pass; the manifest learns of it now.
+                    for write in carried {
+                        bundle.manifest = try bundle.manifest.recordingWrite(
+                            write.path, revision: write.revision, replacing: write.replacing,
+                            at: max(write.at, now)
+                        )
+                    }
+                    do {
+                        for participant in [ledger] + participants {
+                            try participant.change(&bundle, now: now)
+                        }
+                    } catch is BundleMoved {
+                        throw LampSyncBundlePass.PrepareAgain()
+                    }
+                }
             )
-            return leftMedia != rightMedia ? leftMedia : left.key < right.key
+        } catch {
+            // What was written before it stopped is real; keep its records.
+            try? database.saveLibraryRecords(records, source: source)
+            throw error
         }
-        for (path, condition) in uploadOrder {
-            await attempt("uploading \(path)") {
-                try await upload(path, condition: condition, held: held[path])
-            }
-        }
-        await attempt("mirroring decks") {
-            try await PresentationDeckSync.pull(from: storage, deletions: bundle.deckDeletions)
-        }
+        try database.saveLibraryRecords(records, source: source)
 
-        // One bundle write for the whole pass: membership, the deletion
-        // ledger, settings and preferences together.
-        let carried = try database.pendingManifestChanges(source: source)
-        let membership = ManifestParticipant(
-            source: source, carried: carried, adopt: plan.adopt, present: Set(everything.keys)
-        )
-        let written = try await writeBundle(
-            fixed: [membership, DeletionLedgerParticipant(source: source)], from: snapshot
-        )
+        guard let written = outcome.written else { throw LampSyncSettingsStore.StoreError.tooManyAttempts }
+        for participant in [ledger] + participants { try participant.committed(written) }
+        try database.clearPendingManifestChanges(carried + library.carriedDeletions)
 
         if await olderDeviceIsWriting() {
             SyncCoordinator.shared.olderDeviceSyncing = true
@@ -184,13 +205,42 @@ struct LibrarySyncPass {
             SyncCoordinator.shared.unsuppliedAttachments = unsupplied
         }
 
-        for (path, revision) in plan.reap.sorted(by: { $0.key < $1.key }) {
-            await attempt("reaping \(path)") {
-                try await storage.delete(path: path, condition: .ifRevision(revision))
+        var failures = outcome.failures
+        do {
+            try await PresentationDeckSync.pull(from: storage, deletions: written.bundle.deckDeletions)
+        } catch {
+            failures.append("mirroring decks: \(error.localizedDescription)")
+        }
+        for failure in failures { print("[LibrarySync] \(failure)") }
+        // A module marked for publishing is settled once what it exports is
+        // what the records say was sent. One edited while the pass ran stays
+        // marked, so the pass its edit asks for still has it to send.
+        for type in [ModuleType.notes, .devotional, .highlights] {
+            for id in try database.pendingModulePublications(type: type) {
+                guard let module = try database.getModule(id: id) else {
+                    try database.clearPendingModulePublication(moduleId: id)
+                    continue
+                }
+                let path = "\(storage.directoryName(for: type))/\(id).lamp"
+                if let sent = records.record(path, in: source)?.uploadedDigest,
+                   sent == (try? library.exportDigest(module)) {
+                    try database.clearPendingModulePublication(moduleId: id)
+                }
             }
         }
-        if let firstError { throw firstError }
+        guard failures.isEmpty else { throw LibrarySyncError.incomplete(failures) }
         return .synced(bundleRevision: written.revision)
+    }
+
+    /// Deletions made elsewhere, before anything here is gathered: a library
+    /// read before them would publish what it had just been told was gone.
+    /// One no device can read is skipped, as the Mac skips it.
+    private func receive(_ bundle: LampSyncSettingsBundle) throws {
+        if let ledger = bundle.personalDeletions.flatMap({ try? LampPersonalDeletionLedger.decode($0) }) {
+            try database.mergePersonalDeletionLedger(ledger)
+            try database.applyPersonalDeletionLedger()
+        }
+        try Self.settleEmptiedHighlightModules(source: source)
     }
 
     private static let settingsFileRevisionsKey = "LibrarySync.settingsFileRevisions.v1"
@@ -213,42 +263,9 @@ struct LibrarySyncPass {
         return !LampSyncConditionalWrite.namesSameRevision(previous, current)
     }
 
-    /// The pass's one bundle write, with every participant in it.
-    ///
-    /// Versions iCloud kept beside the bundle are folded in by core's merge
-    /// and resolved by the write, but only those the participants were
-    /// prepared with: one that landed since would be resolved without this
-    /// device having merged its settings, so the pass prepares again.
-    func writeBundle(
-        fixed: [any SettingsBundleParticipant],
-        from read: LampSyncSettingsStore.Snapshot?
-    ) async throws -> LampSyncSettingsStore.Snapshot {
-        var latest = read
-        for _ in 0..<3 {
-            let versions = latest?.versions ?? []
-            let prepared = Set(versions.map(\.revision))
-            let all = fixed + (try makeParticipants(latest?.bundle, versions))
-            do {
-                let written = try await LampSyncSettingsStore.update(
-                    in: storage,
-                    patience: patience,
-                    mergingVersion: { bundle, version in
-                        guard prepared.contains(version.revision) else { throw BundleMoved() }
-                        try bundle.merge(version: version.bundle)
-                    }
-                ) { bundle in
-                    let now = ModuleDatabase.nowMilliseconds()
-                    for participant in all { try participant.change(&bundle, now: now) }
-                }
-                for participant in all { try participant.committed(written) }
-                return written
-            } catch is BundleMoved {
-                latest = try await LampSyncSettingsStore.read(from: storage)
-            }
-        }
-        throw LampSyncSettingsStore.StoreError.tooManyAttempts
-    }
-
+    /// What this device plans: modules and their media. Decks are the Mac's
+    /// to publish and mirrored here as before; workspaces stay on the Mac.
+    /// Pruning still sees every listed file, which core keeps to.
     static func isPlanned(_ kind: LampSyncFileKind?) -> Bool {
         switch kind {
         case .module, .devotionalMedia, .bookMedia: true
@@ -256,90 +273,12 @@ struct LibrarySyncPass {
         }
     }
 
-    // MARK: - What this device holds
-
-    /// A file this device can produce, and where it comes from.
-    struct Held {
-        enum Origin {
-            /// Notes, writings and highlights: exported from the database.
-            case editable(Module)
-            /// Installed from the server and never changed here.
-            case installed(type: ModuleType, id: String)
-            case media(URL)
+    static func confirmsByReading(_ kind: LampSyncFileKind) -> Bool {
+        switch kind {
+        case .module(let content): [.notes, .devotionals, .highlights].contains(content)
+        case .devotionalMedia, .bookMedia: true
+        case .deck, .deckAsset, .workspaceFile: false
         }
-        let local: LampSyncFilePlan.Local
-        let origin: Origin
-    }
-
-    /// Everything this device can offer the plan. A module it cannot produce
-    /// bytes for is left out unless the server already has it: offered, it
-    /// would be planned as an upload this device has nothing to send for.
-    func heldFiles(
-        manifest: LampSyncLibraryManifest,
-        listing: [String: String]
-    ) throws -> [String: Held] {
-        let records = Dictionary(
-            uniqueKeysWithValues: try database.syncFileRecords(source: source).map { ($0.path, $0) }
-        )
-        var held: [String: Held] = [:]
-        // On iCloud Drive a file's revision is the digest of its bytes, which
-        // is what the earlier iCloud sync recorded for each module. With that
-        // as the starting revision, the first pass compares most files
-        // without downloading them.
-        let folderRevision: (String?) -> String? = { hash in
-            guard self.storage is ICloudLibraryStorage, let hash,
-                  hash.count == 64, hash.allSatisfy(\.isHexDigit) else { return nil }
-            return LampSyncDirectoryStore.revision(forDigest: hash.lowercased())
-        }
-
-        for module in try database.getAllModules() where module.isEditable
-            && [.notes, .devotional, .highlights].contains(module.type) {
-            // A highlights module whose set has gone has nothing to send.
-            if module.type == .highlights, try database.getHighlightSets(forModule: module.id).isEmpty {
-                continue
-            }
-            let path = remotePath(type: module.type, fileName: "\(module.id).lamp")
-            let digest = Self.digest(try exportedBytes(module))
-            let record = records[path]
-            held[path] = Held(
-                local: .init(
-                    path: path,
-                    changedSinceUpload: record?.hasChangedSinceUpload(exportDigest: digest) ?? true,
-                    lastRevision: record?.lastRevision ?? folderRevision(module.fileHash),
-                    savedAt: try savedAt(module)
-                ),
-                origin: .editable(module)
-            )
-        }
-
-        for (type, id, fileName, fileHash) in try installedReadOnlyModules() {
-            let path = remotePath(type: type, fileName: fileName)
-            guard held[path] == nil,
-                  listing[path] != nil || manifest.entry(at: path) != nil else { continue }
-            held[path] = Held(
-                local: .init(
-                    path: path, changedSinceUpload: false,
-                    lastRevision: records[path]?.lastRevision ?? folderRevision(fileHash), savedAt: nil
-                ),
-                origin: .installed(type: type, id: id)
-            )
-        }
-
-        // Media only for modules in the library: the cache also holds media
-        // for books that came with the app, which are no one's to upload.
-        let libraryModules = Set(held.keys).union(listing.keys).union(manifest.members.map(\.path))
-        for (path, url) in localMedia() where held[path] == nil {
-            guard manifest.entry(at: path) != nil
-                    || Self.modulePath(forMedia: path).map(libraryModules.contains) == true else { continue }
-            held[path] = Held(
-                local: .init(
-                    path: path, changedSinceUpload: false,
-                    lastRevision: records[path]?.lastRevision, savedAt: nil
-                ),
-                origin: .media(url)
-            )
-        }
-        return held
     }
 
     /// The module a media file belongs to, as a path in the library.
@@ -349,6 +288,276 @@ struct LibrarySyncPass {
         case .devotionalMedia: return "\(LampSyncContentKind.devotionals.rawValue)/\(id).lamp"
         case .bookMedia: return "\(LampSyncContentKind.books.rawValue)/\(id).lamp"
         default: return nil
+        }
+    }
+
+    static func moduleType(of path: String) -> ModuleType? {
+        guard case .module(let kind) = LampSyncFolderLayout.kind(of: path) else { return nil }
+        switch kind {
+        case .translations: return .translation
+        case .dictionaries: return .dictionary
+        case .commentaries: return .commentary
+        case .books: return .book
+        case .devotionals: return .devotional
+        case .notes: return .notes
+        case .plans: return .plan
+        case .highlights: return .highlights
+        case .quizzes: return .quiz
+        default: return nil
+        }
+    }
+
+    nonisolated static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Attachments the writings name that neither this device nor the server
+    /// holds, by library path. Writings still go up with them: every writing
+    /// shares one file, so holding it back would stop them all, and the
+    /// reference mends itself, since an attachment never changes at its path
+    /// and goes up there the day it is back. One missing here but a member of
+    /// the library is on the server, and leaves nothing to fix. The Mac
+    /// reports by the same rule, from the same manifest.
+    func unsuppliedAttachments(manifest: LampSyncLibraryManifest) throws -> [String] {
+        try database.getAllModules()
+            .filter { $0.type == .devotional && $0.isEditable }
+            .flatMap { try modules.devotionalMediaItems(moduleId: $0.id, forExport: true) }
+            .filter {
+                !FileManager.default.fileExists(atPath: $0.localURL.path)
+                    && manifest.entry(at: $0.remotePath)?.isMember != true
+            }
+            .map(\.remotePath)
+            .sorted()
+    }
+}
+
+// MARK: - What the phone holds
+
+/// The phone's library as core's pass sees it: what it holds, as files with
+/// digests, and how a file from the server becomes part of it. Editable
+/// collections live in the database, so each pass exports them to files of
+/// its own; installed modules keep no file at all, and are held by what the
+/// records say was taken.
+@MainActor
+final class PhonePassLibrary: LampSyncPassLibrary {
+    let storage: LibrarySyncPass.Store
+    let source: String
+    /// The bundle as the pass read it, which says what the library holds.
+    var opened: LampSyncSettingsBundle?
+    /// Deletions made here that this pass carries to the manifest.
+    private(set) var carriedDeletions: [SyncPendingManifestChange] = []
+    /// What each module path held here is, as the database knows it: a
+    /// module's file may be named other than by its ID.
+    private var heldModules: [String: (type: ModuleType, id: String)] = [:]
+    /// Paths with a record before this pass: a first install is the only one
+    /// that may be answered from the archive the device already installed.
+    private var recordedPaths: Set<String> = []
+    private let scratch: URL
+
+    private var database: ModuleDatabase { .shared }
+    private var modules: ModuleSyncManager { .shared }
+
+    init(storage: LibrarySyncPass.Store, source: String) {
+        self.storage = storage
+        self.source = source
+        scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lamp-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    func cleanUp() {
+        try? FileManager.default.removeItem(at: scratch)
+    }
+
+    /// On iCloud Drive a file's revision is the digest of its bytes, which is
+    /// what the earlier iCloud sync recorded for each module. Taken as the
+    /// revision of a module with no record yet, the first pass compares most
+    /// files without reading them.
+    func seedFolderRevisions(into records: inout LampSyncFileRecords) {
+        recordedPaths = Set(records.sources[source]?.files.keys.map { $0 } ?? [])
+        guard storage is ICloudLibraryStorage else { return }
+        let folderRevision: (String?) -> String? = { hash in
+            guard let hash, hash.count == 64, hash.allSatisfy(\.isHexDigit) else { return nil }
+            return LampSyncDirectoryStore.revision(forDigest: hash.lowercased())
+        }
+        var seeds: [(String, String)] = []
+        for module in (try? database.getAllModules()) ?? [] where module.isEditable {
+            if let revision = folderRevision(module.fileHash) {
+                seeds.append((remotePath(type: module.type, fileName: "\(module.id).lamp"), revision))
+            }
+        }
+        for (type, _, fileName, fileHash) in (try? installedReadOnlyModules()) ?? [] {
+            if let revision = folderRevision(fileHash) {
+                seeds.append((remotePath(type: type, fileName: fileName), revision))
+            }
+        }
+        for (path, revision) in seeds where records.record(path, in: source) == nil {
+            records.recordInstall(path, in: source, revision: revision, digest: nil)
+        }
+    }
+
+    /// Everything this device holds, read after the other devices'
+    /// deletions were applied.
+    func gather() throws -> LampSyncBundlePass.Gathered {
+        var gathered = LampSyncBundlePass.Gathered()
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let manifest = opened?.manifest ?? LampSyncLibraryManifest()
+        heldModules = [:]
+
+        for module in try database.getAllModules() where module.isEditable
+            && [.notes, .devotional, .highlights].contains(module.type) {
+            // A highlights module whose set has gone has nothing to send.
+            if module.type == .highlights, try database.getHighlightSets(forModule: module.id).isEmpty {
+                continue
+            }
+            let path = remotePath(type: module.type, fileName: "\(module.id).lamp")
+            guard case .module(let kind)? = LampSyncFolderLayout.kind(of: path) else { continue }
+            let data = try exportedBytes(module)
+            let url = scratch.appendingPathComponent("\(UUID().uuidString).lamp")
+            try data.write(to: url)
+            gathered.local.append(LampSyncLocalFile(
+                path: path, kind: .module(kind), url: url, digest: LibrarySyncPass.digest(data)
+            ))
+            if let saved = try savedAt(module) { gathered.savedAt[path] = saved }
+            heldModules[path] = (module.type, module.id)
+        }
+
+        for (type, id, fileName, _) in try installedReadOnlyModules() {
+            let path = remotePath(type: type, fileName: fileName)
+            guard heldModules[path] == nil else { continue }
+            gathered.heldWithoutAFile.insert(path)
+            heldModules[path] = (type, id)
+        }
+
+        // Media only for modules in the library: the cache also holds media
+        // for books that came with the app, which are no one's to upload.
+        let libraryModules = Set(heldModules.keys).union(manifest.members.map(\.path))
+        for (path, url) in localMedia() {
+            guard manifest.entry(at: path) != nil
+                    || LibrarySyncPass.modulePath(forMedia: path).map(libraryModules.contains) == true,
+                  let kind = LampSyncFolderLayout.kind(of: path),
+                  let digest = try? LampSyncContentRevision.digest(forFileAt: url) else { continue }
+            gathered.local.append(LampSyncLocalFile(path: path, kind: kind, url: url, digest: digest))
+        }
+
+        carriedDeletions = try database.pendingManifestChanges(source: source).filter { $0.change == .delete }
+        gathered.deletedLocally = Dictionary(
+            carriedDeletions.map { ($0.path, $0.at) }, uniquingKeysWith: { max($0, $1) }
+        )
+        return gathered
+    }
+
+    // MARK: LampSyncPassLibrary
+
+    func install(_ path: String, from url: URL) async throws -> String? {
+        switch LampSyncFolderLayout.kind(of: path) {
+        case .devotionalMedia, .bookMedia:
+            guard let local = localURL(forMedia: path) else { return nil }
+            try FileManager.default.createDirectory(
+                at: local.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try? FileManager.default.removeItem(at: local)
+            try FileManager.default.copyItem(at: url, to: local)
+            return nil
+        case .module:
+            return try await installModule(path, from: url)
+        default:
+            return nil
+        }
+    }
+
+    /// Both sides changed: each is merged by value into the library, and
+    /// what the merge leaves goes back up, as the Mac sends back its own.
+    func reconcile(_ downloaded: [String: URL]) async throws -> [String: URL] {
+        var republish: [String: URL] = [:]
+        for (path, url) in downloaded.sorted(by: { $0.key < $1.key }) {
+            _ = try await installModule(path, from: url)
+            guard let id = heldModules[path]?.id ?? LampSyncFolderLayout.remoteModuleID(of: path),
+                  let module = try database.getModule(id: id) else { continue }
+            let merged = scratch.appendingPathComponent("\(UUID().uuidString).lamp")
+            try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+            try exportedBytes(module).write(to: merged)
+            republish[path] = merged
+        }
+        return republish
+    }
+
+    /// Deleted on another device after this copy was saved.
+    func deleteLocally(_ path: String) async throws {
+        switch LampSyncFolderLayout.kind(of: path) {
+        case .devotionalMedia, .bookMedia:
+            if let url = localURL(forMedia: path) { try? FileManager.default.removeItem(at: url) }
+        case .module:
+            guard let held = heldModules[path] else { return }
+            if held.type == .translation {
+                try database.deleteTranslation(id: held.id)
+            } else {
+                try database.deleteAllEntriesForModule(moduleId: held.id)
+                try database.deleteModule(id: held.id)
+            }
+        default:
+            return
+        }
+    }
+
+    // MARK: Taking a module in
+
+    /// Returns what this device holds at the path afterwards, as it would
+    /// publish it, for an editable collection taken in whole; nil when that
+    /// is the bytes that arrived.
+    private func installModule(_ path: String, from url: URL) async throws -> String? {
+        guard let type = LibrarySyncPass.moduleType(of: path),
+              let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
+        let fileName = String(path.dropFirst(storage.directoryName(for: type).count + 1))
+        let data = try Data(contentsOf: url, options: .alwaysMapped)
+        let editable = [ModuleType.notes, .devotional, .highlights].contains(type)
+        // The first pass after the switch has no records, so every installed
+        // module arrives once. Most are the very bytes the archive already
+        // installed; reinstalling would rewrite every verse and its search
+        // index for nothing.
+        if !editable, !recordedPaths.contains(path), heldModules[path] != nil,
+           let installed = Self.archivedDigests()[id], installed == LibrarySyncPass.digest(data) {
+            return nil
+        }
+        let fileInfo = ModuleFileInfo(id: id, type: type, filePath: fileName, fileHash: nil, modificationDate: nil)
+        try await modules.importRemoteModuleSnapshot(
+            fileInfo: fileInfo, type: type,
+            snapshot: LampSyncRemoteFile(data: data, revision: nil), storage: storage
+        )
+        guard editable, let module = try database.getModule(id: id),
+              !(try database.pendingModulePublications(type: type).contains(id)) else { return nil }
+        // This device spells the same content its own way; recording the
+        // other device's bytes as what it holds would have it send its own
+        // spelling back, and the other device answer with its own, for ever.
+        return LibrarySyncPass.digest(try exportedBytes(module))
+    }
+
+    /// What the archive import installed, by module: the digest of each
+    /// module's bytes as they were in the archive.
+    static func archivedDigests() -> [String: String] {
+        guard let data = UserDefaults.standard.data(forKey: ModuleSyncManager.portableArchiveImportStateKey),
+              let state = try? JSONDecoder().decode(
+                ModuleSyncManager.PortableArchiveImportState.self, from: data
+              ) else { return [:] }
+        return Dictionary(state.modules.map { ($0.id, $0.digest) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    // MARK: The library
+
+    /// This device's own export of an editable module, as a pass would send it.
+    func exportDigest(_ module: Module) throws -> String {
+        LibrarySyncPass.digest(try exportedBytes(module))
+    }
+
+    private func remotePath(type: ModuleType, fileName: String) -> String {
+        "\(storage.directoryName(for: type))/\(fileName)"
+    }
+
+    private func exportedBytes(_ module: Module) throws -> Data {
+        switch module.type {
+        case .notes: try modules.exportNoteModuleToSQLite(module)
+        case .devotional: try modules.exportDevotionalModuleToSQLite(module)
+        case .highlights: try modules.exportHighlightModuleToSQLite(module)
+        default: throw ModuleSyncError.moduleNotEditable(module.id)
         }
     }
 
@@ -386,6 +595,19 @@ struct LibrarySyncPass {
         return media
     }
 
+    private func localURL(forMedia path: String) -> URL? {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        switch LampSyncFolderLayout.kind(of: path) {
+        case .devotionalMedia:
+            return documents.appendingPathComponent(path)
+        case .bookMedia:
+            let rest = path.dropFirst(LampSyncFolderLayout.bookMediaDirectory.count + 1)
+            return documents.appendingPathComponent("ModuleMediaCache").appendingPathComponent(String(rest))
+        default:
+            return nil
+        }
+    }
+
     private func savedAt(_ module: Module) throws -> Int64? {
         let seconds: Int? = try database.read { db in
             switch module.type {
@@ -401,314 +623,16 @@ struct LibrarySyncPass {
         }
         return seconds.map { Int64($0) * 1_000 }
     }
-
-    // MARK: - Carrying out the plan
-
-    private func remotePath(type: ModuleType, fileName: String) -> String {
-        "\(storage.directoryName(for: type))/\(fileName)"
-    }
-
-    static func moduleType(of path: String) -> ModuleType? {
-        guard case .module(let kind) = LampSyncFolderLayout.kind(of: path) else { return nil }
-        switch kind {
-        case .translations: return .translation
-        case .dictionaries: return .dictionary
-        case .commentaries: return .commentary
-        case .books: return .book
-        case .devotionals: return .devotional
-        case .notes: return .notes
-        case .plans: return .plan
-        case .highlights: return .highlights
-        case .quizzes: return .quiz
-        default: return nil
-        }
-    }
-
-    private func exportedBytes(_ module: Module) throws -> Data {
-        switch module.type {
-        case .notes: try modules.exportNoteModuleToSQLite(module)
-        case .devotional: try modules.exportDevotionalModuleToSQLite(module)
-        case .highlights: try modules.exportHighlightModuleToSQLite(module)
-        default: throw ModuleSyncError.moduleNotEditable(module.id)
-        }
-    }
-
-    nonisolated static func digest(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func install(_ path: String, revision: String?) async throws {
-        switch LampSyncFolderLayout.kind(of: path) {
-        case .devotionalMedia, .bookMedia:
-            try await installMedia(path)
-        case .module:
-            try await installModule(path, revision: revision)
-            try recordInstall(path)
-        default:
-            return
-        }
-    }
-
-    private func installModule(_ path: String, revision: String?) async throws {
-        guard let type = Self.moduleType(of: path),
-              let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return }
-        let fileName = String(path.dropFirst(storage.directoryName(for: type).count + 1))
-        let fileInfo = ModuleFileInfo(
-            id: id, type: type, filePath: fileName, fileHash: revision, modificationDate: nil
-        )
-        // The first pass after the switch has no folder revisions recorded,
-        // so every installed module is fetched once. Most are the very bytes
-        // the archive already installed; for those, recording the revision
-        // is enough, and reinstalling would rewrite every verse and its
-        // search index for nothing.
-        if ![.notes, .devotional, .highlights].contains(type),
-           try database.syncFileRecord(source: source, path: path) == nil,
-           let installed = Self.archivedDigests()[id] {
-            let snapshot = try await storage.readModuleSnapshot(type: type, fileName: fileName)
-            if Self.digest(snapshot.data) == installed {
-                try recordFileHash(type: type, id: id, revision: snapshot.revision)
-                return
-            }
-            try await modules.importRemoteModuleSnapshot(
-                fileInfo: fileInfo, type: type, snapshot: snapshot, storage: storage
-            )
-            return
-        }
-        try await modules.importModuleFromCloud(fileInfo: fileInfo, type: type, storage: storage)
-    }
-
-    /// What the archive import installed, by module: the digest of each
-    /// module's bytes as they were in the archive.
-    private static func archivedDigests() -> [String: String] {
-        guard let data = UserDefaults.standard.data(forKey: ModuleSyncManager.portableArchiveImportStateKey),
-              let state = try? JSONDecoder().decode(
-                ModuleSyncManager.PortableArchiveImportState.self, from: data
-              ) else { return [:] }
-        return Dictionary(state.modules.map { ($0.id, $0.digest) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    private func recordFileHash(type: ModuleType, id: String, revision: String?) throws {
-        if type == .translation {
-            if var translation = try database.getTranslation(id: id) {
-                translation.fileHash = revision
-                try database.saveTranslation(translation)
-            }
-        } else if var module = try database.getModule(id: id) {
-            module.fileHash = revision
-            try database.saveModule(module)
-        }
-    }
-
-    /// After an install with nothing of this device's own pending, its export
-    /// is what it now agrees with the server on; with something pending, the
-    /// upload record stays, so the change still goes up.
-    private func recordInstall(_ path: String) throws {
-        let revision = try currentRevision(of: path)
-        var exportDigest: String?
-        if let type = Self.moduleType(of: path), [.notes, .devotional, .highlights].contains(type),
-           let id = LampSyncFolderLayout.remoteModuleID(of: path),
-           let module = try database.getModule(id: id),
-           !(try database.pendingModulePublications(type: type).contains(id)) {
-            exportDigest = Self.digest(try exportedBytes(module))
-        }
-        try database.recordSyncInstall(
-            source: source, path: path, revision: revision, exportDigest: exportDigest
-        )
-    }
-
-    private func currentRevision(of path: String) throws -> String? {
-        guard let type = Self.moduleType(of: path),
-              let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
-        if type == .translation {
-            return try database.getAllTranslations(bundledOnly: false).first { $0.id == id }?.fileHash
-        }
-        return try database.getModule(id: id)?.fileHash
-    }
-
-    /// Both sides changed: the import merges by value, with the ledger
-    /// applied, and what that leaves this device holding goes back up under
-    /// the revision it merged.
-    private func merge(_ path: String, revision: String) async throws {
-        try await installModule(path, revision: revision)
-        guard let type = Self.moduleType(of: path),
-              let id = LampSyncFolderLayout.remoteModuleID(of: path),
-              let module = try database.getModule(id: id) else { return }
-        if try database.pendingModulePublications(type: type).contains(id) {
-            try await uploadModule(path, module: module, condition: .ifRevision(revision), replacing: revision)
-        } else {
-            try recordInstall(path)
-        }
-    }
-
-    private func upload(
-        _ path: String, condition: LampSyncWriteCondition, held: Held?
-    ) async throws {
-        guard let held else { return }
-        switch held.origin {
-        case .editable(let module):
-            try await uploadModule(path, module: module, condition: condition, replacing: held.local.lastRevision)
-        case .media(let url):
-            try await uploadMedia(path, from: url)
-        case .installed:
-            // Never planned: an installed module offered is unchanged, and
-            // one the server lacks is not offered.
-            return
-        }
-    }
-
-    private func uploadModule(
-        _ path: String, module: Module, condition: LampSyncWriteCondition, replacing: String?
-    ) async throws {
-        let data = try exportedBytes(module)
-        let revision = try await LampSyncConditionalWrite.write(
-            data, to: path, in: storage, condition: condition, patience: patience
-        ).revision(at: path)
-        var updated = module
-        updated.fileHash = revision
-        updated.filePath = "\(module.id).lamp"
-        updated.lastSynced = Int(Date().timeIntervalSince1970)
-        try database.saveModule(updated)
-        try database.recordSyncUpload(
-            source: source, path: path, digest: Self.digest(data),
-            revision: revision, replacing: replacing
-        )
-        // Its media goes up as files of its own, planned like any other, so
-        // each is recorded in the manifest.
-        try database.clearPendingModulePublication(moduleId: module.id)
-    }
-
-    /// Attachments the writings name that neither this device nor the server
-    /// holds, by library path. Writings still go up with them: every writing
-    /// shares one file, so holding it back would stop them all, and the
-    /// reference mends itself, since an attachment never changes at its path
-    /// and goes up there the day it is back. One missing here but a member of
-    /// the library is on the server, and leaves nothing to fix. The Mac
-    /// reports by the same rule, from the same manifest.
-    func unsuppliedAttachments(manifest: LampSyncLibraryManifest) throws -> [String] {
-        try database.getAllModules()
-            .filter { $0.type == .devotional && $0.isEditable }
-            .flatMap { try modules.devotionalMediaItems(moduleId: $0.id, forExport: true) }
-            .filter {
-                !FileManager.default.fileExists(atPath: $0.localURL.path)
-                    && manifest.entry(at: $0.remotePath)?.isMember != true
-            }
-            .map(\.remotePath)
-            .sorted()
-    }
-
-    // MARK: Media
-
-    private func localURL(forMedia path: String) -> URL? {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        switch LampSyncFolderLayout.kind(of: path) {
-        case .devotionalMedia:
-            return documents.appendingPathComponent(path)
-        case .bookMedia:
-            let rest = path.dropFirst(LampSyncFolderLayout.bookMediaDirectory.count + 1)
-            return documents.appendingPathComponent("ModuleMediaCache").appendingPathComponent(String(rest))
-        default:
-            return nil
-        }
-    }
-
-    /// Media never changes at a path, so a copy is fetched only where this
-    /// device has none, and a 404 means it is not uploaded yet.
-    private func installMedia(_ path: String) async throws {
-        guard let url = localURL(forMedia: path) else { return }
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        guard let file = try await storage.read(path: path, into: url) else { return }
-        try database.recordSyncInstall(source: source, path: path, revision: file.revision, exportDigest: nil)
-    }
-
-    private func uploadMedia(_ path: String, from url: URL) async throws {
-        var revision: String?
-        do {
-            revision = try await storage.write(fileAt: url, to: path, condition: .ifAbsent)
-        } catch where LampSyncConditionalWrite.isRefusal(error) {
-            // Already there: media is the same bytes at a path, so it's done.
-            revision = try await storage.revision(path: path)
-        }
-        // A Synology names no revision for a PUT. Recorded without one, the
-        // next pass would take the file for one never sent, and send it again.
-        if revision == nil {
-            revision = try await storage.revision(path: path)
-        }
-        try database.recordSyncUpload(
-            source: source, path: path, digest: nil, revision: revision, replacing: nil
-        )
-    }
-
-    // MARK: Deletions from elsewhere
-
-    /// Deleted on another device after this copy was saved. Nothing is
-    /// recorded here: the deletion is already in the manifest.
-    private func removeLocally(_ path: String, held: Held?) throws {
-        switch held?.origin {
-        case .editable(let module):
-            try database.deleteAllEntriesForModule(moduleId: module.id)
-            try database.deleteModule(id: module.id)
-        case .installed(let type, let id):
-            if type == .translation {
-                try database.deleteTranslation(id: id)
-            } else {
-                try database.deleteAllEntriesForModule(moduleId: id)
-                try database.deleteModule(id: id)
-            }
-        case .media(let url):
-            try? FileManager.default.removeItem(at: url)
-        case nil:
-            break
-        }
-        try database.removeSyncFileRecord(source: source, path: path)
-    }
 }
 
 // MARK: - Bundle participants
 
-/// Membership: this pass's uploads and this device's deletions, files found
-/// on the server that nobody had recorded, and tombstones whose time is up.
-@MainActor
-struct ManifestParticipant: SettingsBundleParticipant {
-    let source: String
-    /// Read before the write, and cleared only once a written bundle has them.
-    let carried: [SyncPendingManifestChange]
-    let adopt: [String: String]
-    /// What the pass found listed; a pass that did not list prunes nothing.
-    let present: Set<String>?
-
-    func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
-        var manifest = bundle.manifest
-        for (path, revision) in adopt.sorted(by: { $0.key < $1.key }) {
-            manifest = try manifest.adopting(path, revision: revision, at: now)
-        }
-        for change in carried {
-            switch change.change {
-            case .write:
-                manifest = try manifest.recordingWrite(
-                    change.path, revision: change.revision, replacing: change.replacing,
-                    at: max(change.at, now)
-                )
-            case .delete:
-                manifest = try manifest.removing(change.path, at: change.at, revision: change.revision)
-            }
-        }
-        bundle.manifest = present.map { manifest.pruned(now: now, present: $0) } ?? manifest
-    }
-
-    func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
-        try ModuleDatabase.shared.clearPendingManifestChanges(carried)
-    }
-}
-
 /// Item deletions: this device's ledger joined with the bundle's, and what
-/// the join says is gone removed here too.
+/// the join says is gone removed here too. An unreadable ledger is no reason
+/// to stop syncing content, so it is neither applied nor merged; this
+/// device's own records take its place, and with none of its own the device
+/// leaves it alone. The Mac does the same.
 @MainActor
-/// An unreadable ledger is no reason to stop syncing content, so it is
-/// neither applied nor merged; this device's own records take its place,
-/// and with none of its own the device leaves it alone. The Mac does the
-/// same.
 struct DeletionLedgerParticipant: SettingsBundleParticipant {
     let source: String
 
