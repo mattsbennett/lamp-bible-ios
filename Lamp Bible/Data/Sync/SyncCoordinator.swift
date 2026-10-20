@@ -32,6 +32,10 @@ class SyncCoordinator: ObservableObject {
     /// A device on a Lamp Bible older than 1.2.0 is still writing to a library
     /// that has moved to the new sync, and nothing it does is seen.
     @Published var olderDeviceSyncing = false
+    /// Attachments the writings name that neither this device nor the server
+    /// holds, by library path. Their writings sync all the same; on other
+    /// devices these show as missing until the file is back here.
+    @Published var unsuppliedAttachments: [String] = []
     @Published private(set) var settings: SyncSettings
 
     // MARK: - Storage Provider

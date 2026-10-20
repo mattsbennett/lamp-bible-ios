@@ -6436,6 +6436,62 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(outcome, .notMigrated(archiveRevision: revision))
     }
 
+    /// A writing with an attachment.
+    private func saveWritingModule(attachment: String) throws -> DevotionalMediaReference {
+        try database.saveModule(Module(
+            id: moduleId, type: .devotional, name: "My Writings",
+            filePath: "\(moduleId!).lamp", isEditable: true
+        ))
+        let reference = DevotionalMediaReference(id: "A1", type: .image, filename: attachment, mimeType: "image/png")
+        try database.saveDevotionalEntry(DevotionalEntry(
+            from: Devotional(meta: DevotionalMeta(id: "w1", title: "Sunrise", lastModified: 1_788_132_249), media: [reference]),
+            moduleId: moduleId
+        ))
+        return reference
+    }
+
+    /// An attachment on neither this device nor the server is reported, and
+    /// the writing goes up regardless: all writings share one file.
+    func testAWritingWhoseAttachmentNothingHoldsGoesUpAndIsReported() async throws {
+        _ = try saveWritingModule(attachment: "gone.png")
+        SyncCoordinator.shared.unsuppliedAttachments = []
+        defer { SyncCoordinator.shared.unsuppliedAttachments = [] }
+
+        _ = try await pass().run()
+
+        let published = await server.file("Devotionals/\(moduleId!).lamp")
+        XCTAssertNotNil(published)
+        XCTAssertEqual(
+            SyncCoordinator.shared.unsuppliedAttachments.map { ($0 as NSString).lastPathComponent },
+            ["gone.png"]
+        )
+    }
+
+    /// Missing here but a member of the library: it is on the server, so
+    /// there is nothing to report.
+    func testAnAttachmentAlreadyInTheLibraryIsNotReported() async throws {
+        let reference = try saveWritingModule(attachment: "there.png")
+        let mediaPath = try LampPortableDevotionalMedia.iOSRemotePath(
+            moduleID: moduleId, devotionalID: "w1", filename: reference.filename
+        )
+        let revision = await server.seed(mediaPath, Data("image".utf8))
+        _ = try await LampSyncSettingsStore.readOrClaim(from: storage)
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.recordingWrite(
+                mediaPath, revision: revision, replacing: nil, at: ModuleDatabase.nowMilliseconds()
+            )
+        }
+
+        SyncCoordinator.shared.unsuppliedAttachments = ["stale"]
+        defer { SyncCoordinator.shared.unsuppliedAttachments = [] }
+
+        _ = try await pass().run()
+
+        let published = await server.file("Devotionals/\(moduleId!).lamp")
+        XCTAssertNotNil(published)
+        XCTAssertEqual(SyncCoordinator.shared.unsuppliedAttachments, [])
+    }
+
     func testADeletionHereIsTombstonedAndReaped() async throws {
         try saveNotesModule(notes: ["a"])
         _ = try await pass().run()

@@ -4081,7 +4081,7 @@ class ModuleSyncManager: ObservableObject {
         }
     }
 
-    private func devotionalMediaItems(
+    func devotionalMediaItems(
         moduleId: String, forExport: Bool
     ) throws -> [LampSyncReferencedMedia.Item] {
         guard BookMediaPath.isSafeFilename(moduleId) else {

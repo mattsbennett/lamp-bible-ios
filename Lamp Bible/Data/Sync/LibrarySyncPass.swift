@@ -141,7 +141,16 @@ struct LibrarySyncPass {
         for (path, revision) in plan.merge.sorted(by: { $0.key < $1.key }) {
             await attempt("merging \(path)") { try await merge(path, revision: revision) }
         }
-        for (path, condition) in plan.uploads.sorted(by: { $0.key < $1.key }) {
+        // Media before the modules that name them, so a writing never lands
+        // on another device pointing at an attachment not there yet.
+        let uploadOrder = plan.uploads.sorted { left, right in
+            let (leftMedia, rightMedia) = (
+                LampSyncFolderLayout.kind(of: left.key)?.isMedia == true,
+                LampSyncFolderLayout.kind(of: right.key)?.isMedia == true
+            )
+            return leftMedia != rightMedia ? leftMedia : left.key < right.key
+        }
+        for (path, condition) in uploadOrder {
             await attempt("uploading \(path)") {
                 try await upload(path, condition: condition, held: held[path])
             }
@@ -162,6 +171,9 @@ struct LibrarySyncPass {
 
         if await olderDeviceIsWriting() {
             SyncCoordinator.shared.olderDeviceSyncing = true
+        }
+        if let unsupplied = try? unsuppliedAttachments(manifest: written.bundle.manifest) {
+            SyncCoordinator.shared.unsuppliedAttachments = unsupplied
         }
 
         for (path, revision) in plan.reap.sorted(by: { $0.key < $1.key }) {
@@ -552,6 +564,25 @@ struct LibrarySyncPass {
         try database.clearPendingModulePublication(moduleId: module.id)
     }
 
+    /// Attachments the writings name that neither this device nor the server
+    /// holds, by library path. Writings still go up with them: every writing
+    /// shares one file, so holding it back would stop them all, and the
+    /// reference mends itself, since an attachment never changes at its path
+    /// and goes up there the day it is back. One missing here but a member of
+    /// the library is on the server, and leaves nothing to fix. The Mac
+    /// reports by the same rule, from the same manifest.
+    func unsuppliedAttachments(manifest: LampSyncLibraryManifest) throws -> [String] {
+        try database.getAllModules()
+            .filter { $0.type == .devotional && $0.isEditable }
+            .flatMap { try modules.devotionalMediaItems(moduleId: $0.id, forExport: true) }
+            .filter {
+                !FileManager.default.fileExists(atPath: $0.localURL.path)
+                    && manifest.entry(at: $0.remotePath)?.isMember != true
+            }
+            .map(\.remotePath)
+            .sorted()
+    }
+
     // MARK: Media
 
     private func localURL(forMedia path: String) -> URL? {
@@ -866,3 +897,4 @@ extension ModuleSyncManager {
         await LibrarySyncPass.schedule(on: storage)
     }
 }
+

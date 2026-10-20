@@ -337,6 +337,18 @@ struct SettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.orange)
                         }
+
+                        if !syncCoordinator.unsuppliedAttachments.isEmpty {
+                            let names = syncCoordinator.unsuppliedAttachments
+                                .map { ($0 as NSString).lastPathComponent }
+                                .joined(separator: ", ")
+                            Label(
+                                "Your writings refer to attachments that aren't on this device or the server: \(names). Other devices show them as missing until they're added back here.",
+                                systemImage: "paperclip"
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                        }
                     }
                 } header: {
                     Text("Sync")
