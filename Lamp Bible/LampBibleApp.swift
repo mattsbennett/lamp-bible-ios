@@ -150,6 +150,17 @@ struct LampBibleApp: App {
     init() {
         // Initialize UserDatabase first (creates schema if needed)
         _ = UserDatabase.shared
+
+        // Off the main thread, and only what predates this launch, so the
+        // first sync can start making its own files while this runs.
+        let launch = Date()
+        DispatchQueue.global(qos: .utility).async {
+            let swept = TemporaryFileSweeper.removeLeftovers(olderThan: launch)
+            if swept.removed > 0 {
+                print("[TemporaryFiles] removed \(swept.removed) left by earlier runs (\(swept.bytes / 1_000_000) MB)")
+            }
+        }
+        SearchIndexMaintenance.start()
     }
 
     var body: some Scene {

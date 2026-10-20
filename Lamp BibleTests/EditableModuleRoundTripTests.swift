@@ -7,6 +7,7 @@
 //  nothing checking they arrive unchanged.
 //
 
+import CryptoKit
 import GRDB
 import LampCore
 import XCTest
@@ -200,5 +201,55 @@ final class EditableModuleRoundTripTests: XCTestCase {
 
         XCTAssertEqual(try storedHighlights(setId: setId), before)
         XCTAssertEqual(try database.getHighlightCount(setId: setId), 3)
+    }
+
+    // MARK: - Export stability
+
+    /// Whether to upload is decided by comparing this device's own export with
+    /// what it last uploaded. Bytes that follow storage order rather than
+    /// content would re-upload the module on every pass.
+    private func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func testANotesExportIsTheSameBytesUntilANoteChanges() throws {
+        try saveModule(type: .notes, name: "My Notes")
+        for (offset, id) in ["note-a", "note-b", "note-c"].enumerated() {
+            try saveNote(id: id, verseId: 43_001_001 + offset)
+        }
+        let module = try XCTUnwrap(database.getModule(id: moduleId))
+        let export = { [self] in digest(try ModuleSyncManager.shared.exportNoteModuleToSQLite(module)) }
+        let first = try export()
+        XCTAssertEqual(try export(), first)
+
+        // Saved again unchanged: it moves in storage, not in content. More
+        // than once, because a key order that is not fixed can still repeat.
+        for _ in 0..<5 {
+            try database.deleteNoteEntry(id: "note-a")
+            try saveNote(id: "note-a", verseId: 43_001_001)
+            XCTAssertEqual(try export(), first)
+        }
+
+        try saveNote(id: "note-b", verseId: 43_001_002, content: "Edited.")
+        XCTAssertNotEqual(try export(), first)
+    }
+
+    func testAHighlightsExportIsTheSameBytesUntilAHighlightChanges() throws {
+        try saveModule(type: .highlights, name: "My Highlights")
+        let setId = try saveHighlightSet(lastModified: 1_788_132_249)
+        // Three that start at the same place, which the old order left to storage.
+        let tied = try database.saveHighlight(HighlightEntry(setId: setId, ref: 43_003_016, sc: 0, ec: 4))
+        _ = try database.saveHighlight(HighlightEntry(setId: setId, ref: 43_003_016, sc: 0, ec: 30))
+        let module = try XCTUnwrap(database.getModule(id: moduleId))
+        let export = { [self] in digest(try ModuleSyncManager.shared.exportHighlightModuleToSQLite(module)) }
+        let first = try export()
+        XCTAssertEqual(try export(), first)
+
+        try database.deleteHighlight(id: try XCTUnwrap(tied.id))
+        _ = try database.saveHighlight(HighlightEntry(setId: setId, ref: 43_003_016, sc: 0, ec: 4))
+        XCTAssertEqual(try export(), first)
+
+        _ = try database.saveHighlight(HighlightEntry(setId: setId, ref: 1_001_001, sc: 0, ec: 2))
+        XCTAssertNotEqual(try export(), first)
     }
 }

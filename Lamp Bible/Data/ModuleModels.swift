@@ -806,9 +806,9 @@ struct NoteEntry: Codable, FetchableRecord, PersistableRecord, Identifiable {
         self.verse = verseId % 1000
         self.title = title
         self.content = content
-        self.verseRefsJson = verseRefs.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+        self.verseRefsJson = verseRefs.flatMap { StoredJSON.string($0) }
         self.lastModified = lastModified ?? Int(Date().timeIntervalSince1970)
-        self.footnotesJson = footnotes.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+        self.footnotesJson = footnotes.flatMap { StoredJSON.string($0) }
         // Build search text from content + footnotes
         var searchParts = [content]
         if let notes = footnotes {
@@ -1135,6 +1135,23 @@ struct UserNotesMeta: Codable {
         self.id = id
         self.name = name
         self.author = author
+    }
+}
+
+// MARK: - Stored JSON
+
+/// JSON for a column of a module this device publishes.
+///
+/// Keys are sorted so one value is always one text. The default encoder's key
+/// order is not fixed — the same footnote came out `{"id":…,"content":…}` on
+/// one save and the other way round on the next — and an export is compared
+/// byte for byte with this device's last upload, so a note saved again
+/// unchanged read as edited.
+enum StoredJSON {
+    static func string<T: Encodable>(_ value: T) -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) }
     }
 }
 

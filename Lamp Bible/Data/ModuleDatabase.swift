@@ -27,6 +27,10 @@ class ModuleDatabase {
             .appendingPathComponent("usermodules.db")
     }
 
+    /// Where the database lives, for maintenance that works on its own
+    /// connection.
+    var fileURL: URL { databaseURL }
+
     private func setupDatabase() throws {
         // Ensure the Documents directory exists (should always exist, but be safe)
         let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -35,6 +39,10 @@ class ModuleDatabase {
         var config = Configuration()
         // Don't set PRAGMAs in prepareDatabase - can cause issues on fresh install
         // We'll set them after opening instead
+
+        // `SearchIndexRepair` writes on a second connection, in short
+        // transactions. Wait one out rather than failing a write outright.
+        config.busyMode = .timeout(5)
 
         // Try to open the database
         do {
@@ -1399,6 +1407,15 @@ class ModuleDatabase {
                 t.column("module_id", .text).primaryKey()
                 t.column("type", .text).notNull()
             }
+        }
+
+        // The search indexes' delete and update triggers removed rows in a way
+        // an external-content index cannot act on, so every row ever replaced
+        // stayed indexed. Triggers only: the indexes themselves are rebuilt by
+        // `SearchIndexRepair`, off the launch path, because one of them had
+        // grown to gigabytes.
+        migrator.registerMigration("v27_search_index_delete_triggers") { db in
+            try ExternalContentSearchIndex.installTriggers(in: db)
         }
 
         return migrator
@@ -2778,7 +2795,7 @@ class ModuleDatabase {
         try dbQueue.read { db in
             try HighlightSet
                 .filter(Column("module_id") == moduleId)
-                .order(Column("name"))
+                .order(Column("name"), Column("id"))
                 .fetchAll(db)
         }
     }
@@ -2851,7 +2868,9 @@ class ModuleDatabase {
         try dbQueue.read { db in
             try HighlightEntry
                 .filter(Column("set_id") == setId)
-                .order(Column("ref"), Column("sc"))
+                // A total order: the highlights export is compared byte for byte
+                // with the last upload, and ties left to storage would move.
+                .order(Column("ref"), Column("sc"), Column("ec"), Column("style"), Column("color"), Column("id"))
                 .fetchAll(db)
         }
     }
@@ -3140,5 +3159,277 @@ enum TranslationVerseSearch {
                 rank: -(row["rank"] as Double)
             )
         }
+    }
+}
+
+// MARK: - Search Index Maintenance
+
+/// A full-text index that reads its text from another table
+/// (`content='…'`) rather than keeping a copy.
+///
+/// Such an index cannot look up what a row said once the row is gone, so
+/// removing one has to be told: the `'delete'` command, given the old values.
+/// The original triggers issued a plain `DELETE` and an `UPDATE` instead,
+/// which leave the old entries in place. Every translation reinstalled by sync
+/// stayed indexed: one phone held 84.5 million index entries for 155,591
+/// verses, 7.5 GB of a database whose live content was under 1 GB, and
+/// searches matched text that had been deleted or replaced.
+struct ExternalContentSearchIndex: Equatable {
+    let name: String
+    let content: String
+    /// The content table's row identifier, as the index refers to it.
+    let rowid: String
+    let columns: [String]
+    let tokenize: String?
+
+    static let all: [ExternalContentSearchIndex] = [
+        .init(name: "translation_verses_fts", content: "translation_verses", rowid: "id",
+              columns: ["text"], tokenize: "unicode61 remove_diacritics 2"),
+        .init(name: "dictionary_fts", content: "dictionary_entries", rowid: "rowid",
+              columns: ["lemma", "senses_json"], tokenize: nil),
+        .init(name: "commentary_units_fts", content: "commentary_units", rowid: "rowid",
+              columns: ["title", "search_text"], tokenize: nil),
+        .init(name: "note_fts", content: "note_entries", rowid: "rowid",
+              columns: ["title", "search_text"], tokenize: nil),
+    ]
+
+    /// Replaces each index's triggers with ones that keep it exact. Indexes
+    /// whose tables this database does not have are left alone.
+    static func installTriggers(in db: Database) throws {
+        for index in all where try index.exists(in: db) {
+            try index.installTriggers(in: db)
+        }
+    }
+
+    func exists(in db: Database) throws -> Bool {
+        try db.tableExists(name) && db.tableExists(content)
+    }
+
+    func installTriggers(in db: Database) throws {
+        let target = name
+        let columnList = columns.joined(separator: ", ")
+        let newValues = columns.map { "new.\($0)" }.joined(separator: ", ")
+        let oldValues = columns.map { "old.\($0)" }.joined(separator: ", ")
+        // Named for the index they serve, as the originals were.
+        for suffix in ["insert", "update", "delete"] {
+            try db.execute(sql: "DROP TRIGGER IF EXISTS \(name)_\(suffix)")
+        }
+        try db.execute(sql: """
+            CREATE TRIGGER \(name)_insert AFTER INSERT ON \(content) BEGIN
+                INSERT INTO \(target)(rowid, \(columnList))
+                VALUES (new.\(rowid), \(newValues));
+            END
+            """)
+        try db.execute(sql: """
+            CREATE TRIGGER \(name)_update AFTER UPDATE ON \(content) BEGIN
+                INSERT INTO \(target)(\(target), rowid, \(columnList))
+                VALUES ('delete', old.\(rowid), \(oldValues));
+                INSERT INTO \(target)(rowid, \(columnList))
+                VALUES (new.\(rowid), \(newValues));
+            END
+            """)
+        try db.execute(sql: """
+            CREATE TRIGGER \(name)_delete AFTER DELETE ON \(content) BEGIN
+                INSERT INTO \(target)(\(target), rowid, \(columnList))
+                VALUES ('delete', old.\(rowid), \(oldValues));
+            END
+            """)
+    }
+
+    func createIndexSQL(named indexName: String) -> String {
+        var options = columns + ["content='\(content)'", "content_rowid='\(rowid)'"]
+        if let tokenize { options.append("tokenize='\(tokenize)'") }
+        return "CREATE VIRTUAL TABLE \(indexName) USING fts5(\(options.joined(separator: ", ")))"
+    }
+}
+
+/// Rebuilds the search indexes once, now that their triggers keep them exact,
+/// and gives back the space the stale entries held.
+///
+/// It works on its own connection, because the app reads this database on the
+/// main thread and a long write there would freeze it. An index far larger
+/// than its content is rebuilt into a fresh table in batches and swapped in,
+/// so search keeps working throughout; only dropping the old one is a single
+/// long write. The rest are small enough for SQLite's own `'rebuild'`.
+///
+/// A run cut short leaves `<index>_rebuild` or `<index>_stale` behind, and the
+/// next run clears them before anything else.
+enum SearchIndexRepair {
+    struct Options {
+        var batchRows = 5_000
+        /// Compact when at least this much is free, and it is a quarter of the file.
+        var vacuumThreshold: Int64 = 256 * 1024 * 1024
+    }
+
+    struct Report: Equatable {
+        var rebuilt: [String] = []
+        var swapped: [String] = []
+        var bytesBefore: Int64 = 0
+        var bytesAfter: Int64 = 0
+        var vacuumed = false
+    }
+
+    static func repair(
+        _ queue: DatabaseQueue,
+        indexes: [ExternalContentSearchIndex] = ExternalContentSearchIndex.all,
+        options: Options = Options()
+    ) throws -> Report {
+        var report = Report()
+        report.bytesBefore = try fileBytes(queue)
+        for index in indexes {
+            guard try queue.read({ try index.exists(in: $0) }) else { continue }
+            try clearLeftovers(of: index, in: queue, options: options)
+
+            let (entries, rows) = try queue.read { db in
+                (try Int.fetchOne(db, sql: "SELECT count(*) FROM \(index.name)_docsize") ?? 0,
+                 try Int.fetchOne(db, sql: "SELECT count(*) FROM \(index.content)") ?? 0)
+            }
+            if entries > rows + max(1_000, rows / 5) {
+                try rebuildBySwapping(index, in: queue, options: options)
+                report.swapped.append(index.name)
+            } else {
+                try queue.write { db in
+                    try index.installTriggers(in: db)
+                    try db.execute(sql: "INSERT INTO \(index.name)(\(index.name)) VALUES ('rebuild')")
+                }
+            }
+            report.rebuilt.append(index.name)
+        }
+
+        let (pages, free, pageSize) = try queue.read { db in
+            (try Int64.fetchOne(db, sql: "PRAGMA page_count") ?? 0,
+             try Int64.fetchOne(db, sql: "PRAGMA freelist_count") ?? 0,
+             try Int64.fetchOne(db, sql: "PRAGMA page_size") ?? 4096)
+        }
+        if free * pageSize >= options.vacuumThreshold, free * 4 >= pages {
+            try queue.writeWithoutTransaction { db in
+                try db.execute(sql: "VACUUM")
+                try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            }
+            report.vacuumed = true
+        }
+        report.bytesAfter = try fileBytes(queue)
+        return report
+    }
+
+    private static func rebuildBySwapping(
+        _ index: ExternalContentSearchIndex,
+        in queue: DatabaseQueue,
+        options: Options
+    ) throws {
+        let fresh = "\(index.name)_rebuild"
+        let columnList = index.columns.joined(separator: ", ")
+        try queue.write { db in
+            try db.execute(sql: index.createIndexSQL(named: fresh))
+        }
+        var last = Int64.min
+        while true {
+            let copied: Int64? = try queue.write { db in
+                guard let through = try Int64.fetchOne(db, sql: """
+                    SELECT max(\(index.rowid)) FROM (
+                        SELECT \(index.rowid) FROM \(index.content)
+                        WHERE \(index.rowid) > ? ORDER BY \(index.rowid) LIMIT ?
+                    )
+                    """, arguments: [last, options.batchRows]) else { return nil }
+                try db.execute(sql: """
+                    INSERT INTO \(fresh)(rowid, \(columnList))
+                    SELECT \(index.rowid), \(columnList) FROM \(index.content)
+                    WHERE \(index.rowid) > ? AND \(index.rowid) <= ?
+                    """, arguments: [last, through])
+                return through
+            }
+            guard let copied else { break }
+            last = copied
+        }
+
+        // The content may have moved while the copy ran; if it did, the
+        // fresh index is put right before it goes live. Cheap now: what made
+        // the old one slow was its stale entries, which this one never had.
+        try queue.write { db in
+            let entries = try Int.fetchOne(db, sql: "SELECT count(*) FROM \(fresh)_docsize") ?? 0
+            let rows = try Int.fetchOne(db, sql: "SELECT count(*) FROM \(index.content)") ?? 0
+            if entries != rows {
+                try db.execute(sql: "INSERT INTO \(fresh)(\(fresh)) VALUES ('rebuild')")
+            }
+            for suffix in ["insert", "update", "delete"] {
+                try db.execute(sql: "DROP TRIGGER IF EXISTS \(index.name)_\(suffix)")
+            }
+            try db.execute(sql: "ALTER TABLE \(index.name) RENAME TO \(index.name)_stale")
+            try db.execute(sql: "ALTER TABLE \(fresh) RENAME TO \(index.name)")
+            try index.installTriggers(in: db)
+        }
+        try drainStale(index, in: queue, options: options)
+    }
+
+    private static func clearLeftovers(
+        of index: ExternalContentSearchIndex,
+        in queue: DatabaseQueue,
+        options: Options
+    ) throws {
+        // A copy that never went live: it holds no more than the content.
+        if try queue.read({ try $0.tableExists("\(index.name)_rebuild") }) {
+            try queue.write { db in
+                try db.execute(sql: "DROP TABLE \(index.name)_rebuild")
+            }
+        }
+        try drainStale(index, in: queue, options: options)
+    }
+
+    /// Drops a replaced index.
+    ///
+    /// The one long write in the repair, for the index that grew: freeing its
+    /// pages cannot be split up, because iOS's SQLite refuses writes to an
+    /// index's own tables. The app's reads carry on meanwhile, sync is waiting
+    /// on this, and it happens once.
+    private static func drainStale(
+        _ index: ExternalContentSearchIndex,
+        in queue: DatabaseQueue,
+        options: Options
+    ) throws {
+        let stale = "\(index.name)_stale"
+        guard try queue.read({ try $0.tableExists(stale) }) else { return }
+        try queue.write { db in
+            try db.execute(sql: "DROP TABLE \(stale)")
+        }
+    }
+
+    private static func fileBytes(_ queue: DatabaseQueue) throws -> Int64 {
+        try queue.read { db in
+            let pages = try Int64.fetchOne(db, sql: "PRAGMA page_count") ?? 0
+            let size = try Int64.fetchOne(db, sql: "PRAGMA page_size") ?? 4096
+            return pages * size
+        }
+    }
+}
+
+/// Runs `SearchIndexRepair` once per install, in the background, and lets
+/// sync wait for it: sync is what writes the content these indexes read.
+@MainActor
+enum SearchIndexMaintenance {
+    private static let completedKey = "SearchIndexRepair.completed.v1"
+    private static var task: Task<Void, Never>?
+
+    static func start(defaults: UserDefaults = .standard) {
+        guard task == nil, !defaults.bool(forKey: completedKey) else { return }
+        task = Task.detached(priority: .utility) {
+            let url = ModuleDatabase.shared.fileURL
+            do {
+                var config = Configuration()
+                config.busyMode = .timeout(10)
+                let queue = try DatabaseQueue(path: url.path, configuration: config)
+                let started = Date()
+                let report = try SearchIndexRepair.repair(queue)
+                try queue.close()
+                print("[SearchIndex] repaired \(report.rebuilt) (swapped \(report.swapped)) in \(Int(Date().timeIntervalSince(started)))s: \(report.bytesBefore / 1_000_000) MB -> \(report.bytesAfter / 1_000_000) MB\(report.vacuumed ? ", compacted" : "")")
+                defaults.set(true, forKey: completedKey)
+            } catch {
+                // Not marked done: the next launch picks up where this stopped.
+                print("[SearchIndex] repair stopped: \(error)")
+            }
+        }
+    }
+
+    static func waitUntilFinished() async {
+        await task?.value
     }
 }

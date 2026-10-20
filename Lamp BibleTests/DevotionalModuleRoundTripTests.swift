@@ -12,6 +12,7 @@
 import GRDB
 import LampCore
 import LampModuleKit
+import CryptoKit
 import XCTest
 @testable import Lamp_Bible
 
@@ -271,5 +272,29 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
         XCTAssertEqual(module.description, "A module that goes out and comes back")
         XCTAssertTrue(module.isEditable)
         XCTAssertEqual(module.filePath, "\(moduleId!).lamp")
+    }
+
+    /// See EditableModuleRoundTripTests: this device's export is compared with
+    /// its own last upload, so storage order must not reach the bytes.
+    func testAWritingsExportIsTheSameBytesUntilAWritingChanges() throws {
+        let body = #"{"blocks":[{"type":"paragraph","text":"In the beginning"}]}"#
+        for id in ["entry-a", "entry-b", "entry-c"] {
+            // Untitled drafts on one date: tied on everything a reader sorts by.
+            try saveEntry(id: id, title: "", contentJson: body)
+        }
+        let module = try XCTUnwrap(database.getModule(id: moduleId))
+        let digest = { (data: Data) in SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+        let export = { digest(try ModuleSyncManager.shared.exportDevotionalModuleToSQLite(module)) }
+        let first = try export()
+        XCTAssertEqual(try export(), first)
+
+        for _ in 0..<5 {
+            try database.deleteDevotionalEntry(id: "entry-a")
+            try saveEntry(id: "entry-a", title: "", contentJson: body)
+            XCTAssertEqual(try export(), first)
+        }
+
+        try saveEntry(id: "entry-b", title: "Named now", contentJson: body)
+        XCTAssertNotEqual(try export(), first)
     }
 }

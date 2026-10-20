@@ -701,16 +701,17 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
         self.seriesId = devotional.meta.series?.id
         self.seriesName = devotional.meta.series?.name
         self.seriesOrder = devotional.meta.series?.order
-        self.keyScripturesJson = devotional.meta.keyScriptures.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
-        self.summaryJson = devotional.summary.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+        // Sorted keys, so the same writing always exports the same bytes; see StoredJSON.
+        self.keyScripturesJson = devotional.meta.keyScriptures.flatMap { StoredJSON.string($0) }
+        self.summaryJson = devotional.summary.flatMap { StoredJSON.string($0) }
         // Store markdown directly if available, otherwise fall back to JSON-encoded blocks
         if let markdown = devotional.markdownContent, !markdown.isEmpty {
             self.contentJson = markdown
         } else {
-            self.contentJson = (try? JSONEncoder().encode(devotional.content)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            self.contentJson = StoredJSON.string(devotional.content) ?? "{}"
         }
-        self.footnotesJson = devotional.footnotes.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
-        self.mediaJson = devotional.media.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+        self.footnotesJson = devotional.footnotes.flatMap { StoredJSON.string($0) }
+        self.mediaJson = devotional.media.flatMap { StoredJSON.string($0) }
         self.relatedIds = devotional.relatedDevotionals?.joined(separator: ",")
         self.created = devotional.meta.created ?? Int(Date().timeIntervalSince1970)
         self.lastModified = devotional.meta.lastModified ?? Int(Date().timeIntervalSince1970)
@@ -749,13 +750,12 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
         self.seriesName = nil
         self.seriesOrder = nil
         self.keyScripturesJson = verseRefs.flatMap { refs in
-            let scriptures = refs.map { DevotionalKeyScripture(sv: $0, ev: nil, label: nil) }
-            return try? JSONEncoder().encode(scriptures)
-        }.flatMap { String(data: $0, encoding: .utf8) }
+            StoredJSON.string(refs.map { DevotionalKeyScripture(sv: $0, ev: nil, label: nil) })
+        }
         self.summaryJson = nil
         // Store plain text as a single paragraph block
         let block = DevotionalContentBlock(type: .paragraph, content: DevotionalAnnotatedText(text: content))
-        self.contentJson = (try? JSONEncoder().encode(DevotionalContent.blocks([block]))).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        self.contentJson = StoredJSON.string(DevotionalContent.blocks([block])) ?? "{}"
         self.footnotesJson = nil
         self.mediaJson = nil
         self.relatedIds = nil

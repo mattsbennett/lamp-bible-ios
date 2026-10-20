@@ -185,6 +185,13 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
         try await client.read(path: path)
     }
 
+    /// Straight to disk. The archive is the whole library, and holding its
+    /// body in memory beside the decoded entries is what iOS stopped the app
+    /// for, three times in ten minutes.
+    func read(path: String, into url: URL) async throws -> LampSyncDownloadedFile? {
+        try await client.read(path: path, into: url)
+    }
+
     func list(directory: String) async throws -> [LampSyncRemoteEntry]? {
         try await client.list(directory: directory)
     }
@@ -207,6 +214,16 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
     ) async throws -> String? {
         try await ensureParentDirectories(for: path)
         return try await client.write(data, to: path, condition: condition)
+    }
+
+    /// Sent from disk, for the same reason.
+    func write(
+        fileAt url: URL,
+        to path: String,
+        condition: LampSyncWriteCondition
+    ) async throws -> String? {
+        try await ensureParentDirectories(for: path)
+        return try await client.write(fileAt: url, to: path, condition: condition)
     }
 
     func writeFile(path: String, data: Data) async throws {

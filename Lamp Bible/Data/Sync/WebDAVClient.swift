@@ -87,6 +87,10 @@ final class WebDAVClient {
         try await mapped { try await storage.read(path: path) }
     }
 
+    func read(path: String, into url: URL) async throws -> LampSyncDownloadedFile? {
+        try await mapped { try await storage.read(path: path, into: url) }
+    }
+
     func list(directory: String) async throws -> [LampSyncRemoteEntry]? {
         try await mapped { try await storage.list(directory: directory) }
     }
@@ -101,6 +105,14 @@ final class WebDAVClient {
         condition: LampSyncWriteCondition
     ) async throws -> String? {
         try await mapped { try await storage.write(data, to: path, condition: condition) }
+    }
+
+    func write(
+        fileAt url: URL,
+        to path: String,
+        condition: LampSyncWriteCondition
+    ) async throws -> String? {
+        try await mapped { try await storage.write(fileAt: url, to: path, condition: condition) }
     }
 
     func delete(_ path: String) async throws {

@@ -118,6 +118,10 @@ class ModuleSyncManager: ObservableObject {
         complete: () async throws -> Void = {}
     ) async throws {
         guard await storage.isAvailable() else { throw SyncError.notAvailable }
+        // A one-time search index rebuild may be running on its own
+        // connection; importing modules underneath it would hand it content
+        // it has already copied past.
+        await SearchIndexMaintenance.waitUntilFinished()
         guard !isSyncing else {
             // Named, like the settings sync's, so a refused pass can be told
             // apart from one refused there.
@@ -3436,10 +3440,16 @@ class ModuleSyncManager: ObservableObject {
     // MARK: - SQLite Export Functions
 
     /// Export notes module to SQLite+zlib format
-    private func exportNoteModuleToSQLite(_ module: Module) throws -> Data {
+    ///
+    /// The same content must export to the same bytes: whether to upload is
+    /// decided against this device's last upload, so bytes that followed
+    /// storage order would re-upload the module every pass. Rows are read in
+    /// an order that ends on a unique column, as in the other two exports.
+    func exportNoteModuleToSQLite(_ module: Module) throws -> Data {
         let entries = try database.read { db in
             try NoteEntry
                 .filter(Column("module_id") == module.id)
+                .order(Column("id"))
                 .fetchAll(db)
         }
 
@@ -3529,10 +3539,11 @@ class ModuleSyncManager: ObservableObject {
     }
 
     /// Export devotionals module to SQLite+zlib format
-    private func exportDevotionalModuleToSQLite(_ module: Module) throws -> Data {
+    func exportDevotionalModuleToSQLite(_ module: Module) throws -> Data {
         let entries = try database.read { db in
             try DevotionalEntry
                 .filter(Column("module_id") == module.id)
+                .order(Column("id"))
                 .fetchAll(db)
         }
 
@@ -3639,7 +3650,7 @@ class ModuleSyncManager: ObservableObject {
     }
 
     /// Export highlights module to SQLite+zlib format
-    private func exportHighlightModuleToSQLite(_ module: Module) throws -> Data {
+    func exportHighlightModuleToSQLite(_ module: Module) throws -> Data {
         // Get highlight sets for this module
         let sets = try database.getHighlightSets(forModule: module.id)
 

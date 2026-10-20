@@ -5596,3 +5596,275 @@ final class EditableEntryComparisonTests: XCTestCase {
         XCTAssertFalse(ModuleSyncManager.sameDevotionalContent(phone, mac))
     }
 }
+
+final class TemporaryFileSweeperTests: XCTestCase {
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sweeper-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    @discardableResult
+    private func make(_ name: String, folder: Bool = false, modified: Date) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        if folder {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+            try Data(repeating: 1, count: 4096).write(to: url.appendingPathComponent("staging.sqlite"))
+        } else {
+            try Data(repeating: 1, count: 4096).write(to: url)
+        }
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        return url
+    }
+
+    private func remaining() throws -> Set<String> {
+        Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+    }
+
+    func testRemovesWhatAKilledRunLeftAndKeepsEverythingElse() throws {
+        let launch = Date()
+        let earlier = launch.addingTimeInterval(-3600)
+        let id = UUID().uuidString
+        let leftovers = [
+            "\(id).db", "\(id).db-wal", "\(id).db-shm", "\(id).db-journal",
+            "lamp-archive-install-\(UUID().uuidString)",
+            "lamp-settings-\(UUID().uuidString)",
+            UUID().uuidString,
+            "NSIRD_Lamp Bible_Mn4EJg",
+        ]
+        for name in leftovers {
+            try make(name, folder: name.hasPrefix("lamp-") || name.hasPrefix("NSIRD") || UUID(uuidString: name) != nil, modified: earlier)
+        }
+        let kept = [
+            "WebKit", "com.apple.WebKit.Networking",
+            "\(UUID().uuidString).m4a",  // an audio file a sheet is still holding
+            "notes.db", "lamp-archive-install-unfinished",
+        ]
+        for name in kept {
+            try make(name, folder: !name.contains("."), modified: earlier)
+        }
+        // Made by a pass that started after launch: not this sweep's to take.
+        let current = "\(UUID().uuidString).db"
+        try make(current, modified: launch.addingTimeInterval(1))
+
+        let result = TemporaryFileSweeper.removeLeftovers(in: directory, olderThan: launch)
+
+        XCTAssertEqual(try remaining(), Set(kept + [current]))
+        XCTAssertEqual(result.removed, leftovers.count)
+        XCTAssertGreaterThanOrEqual(result.bytes, Int64(leftovers.count * 4096))
+    }
+
+    func testAnEmptyOrMissingDirectoryRemovesNothing() throws {
+        XCTAssertEqual(TemporaryFileSweeper.removeLeftovers(in: directory, olderThan: Date()), .init())
+        let missing = directory.appendingPathComponent("absent", isDirectory: true)
+        XCTAssertEqual(TemporaryFileSweeper.removeLeftovers(in: missing, olderThan: Date()), .init())
+    }
+}
+
+final class SearchIndexRepairTests: XCTestCase {
+    private var url: URL!
+    private var queue: DatabaseQueue!
+
+    override func setUpWithError() throws {
+        url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("search-index-\(UUID().uuidString).sqlite")
+        queue = try DatabaseQueue(path: url.path)
+        try queue.writeWithoutTransaction { try $0.execute(sql: "PRAGMA journal_mode = WAL") }
+    }
+
+    override func tearDownWithError() throws {
+        try queue.close()
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: url.path + suffix)
+        }
+    }
+
+    /// The tables and triggers as migrations v2 and v9 made them.
+    private func makeLegacySchema(dictionary: Bool = true) throws {
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE translation_verses (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL);
+                CREATE VIRTUAL TABLE translation_verses_fts USING fts5(
+                    text, content='translation_verses', content_rowid='id',
+                    tokenize='unicode61 remove_diacritics 2');
+                CREATE TRIGGER translation_verses_fts_insert AFTER INSERT ON translation_verses BEGIN
+                    INSERT INTO translation_verses_fts(rowid, text) VALUES (new.id, new.text);
+                END;
+                CREATE TRIGGER translation_verses_fts_update AFTER UPDATE ON translation_verses BEGIN
+                    UPDATE translation_verses_fts SET text = new.text WHERE rowid = new.id;
+                END;
+                CREATE TRIGGER translation_verses_fts_delete AFTER DELETE ON translation_verses BEGIN
+                    DELETE FROM translation_verses_fts WHERE rowid = old.id;
+                END;
+                """)
+            guard dictionary else { return }
+            try db.execute(sql: """
+                CREATE TABLE dictionary_entries (id TEXT PRIMARY KEY, lemma TEXT NOT NULL, senses_json TEXT);
+                CREATE VIRTUAL TABLE dictionary_fts USING fts5(
+                    lemma, senses_json, content='dictionary_entries', content_rowid='rowid');
+                CREATE TRIGGER dictionary_fts_insert AFTER INSERT ON dictionary_entries BEGIN
+                    INSERT INTO dictionary_fts(rowid, lemma, senses_json)
+                    VALUES (new.rowid, new.lemma, new.senses_json);
+                END;
+                CREATE TRIGGER dictionary_fts_update AFTER UPDATE ON dictionary_entries BEGIN
+                    UPDATE dictionary_fts SET lemma = new.lemma, senses_json = new.senses_json
+                    WHERE rowid = new.rowid;
+                END;
+                CREATE TRIGGER dictionary_fts_delete AFTER DELETE ON dictionary_entries BEGIN
+                    DELETE FROM dictionary_fts WHERE rowid = old.rowid;
+                END;
+                """)
+        }
+    }
+
+    /// What sync did to a phone: reinstall the same translation over and over.
+    private func reinstallTranslation(times: Int, verses: Int = 120) throws {
+        for round in 0..<times {
+            try queue.write { db in
+                try db.execute(sql: "DELETE FROM translation_verses")
+                for verse in 0..<verses {
+                    let word = round == times - 1 ? "light" : "darkness"
+                    try db.execute(
+                        sql: "INSERT INTO translation_verses (text) VALUES (?)",
+                        arguments: ["verse \(verse) of round \(round) speaks of \(word)"]
+                    )
+                }
+            }
+        }
+    }
+
+    private func editDictionary() throws {
+        try queue.write { db in
+            for entry in 0..<40 {
+                try db.execute(
+                    sql: "INSERT INTO dictionary_entries (id, lemma, senses_json) VALUES (?, ?, ?)",
+                    arguments: ["e\(entry)", "lemma\(entry)", "[\"first sense\"]"]
+                )
+            }
+            try db.execute(sql: "UPDATE dictionary_entries SET senses_json = '[\"second sense\"]'")
+            try db.execute(sql: "DELETE FROM dictionary_entries WHERE CAST(substr(id, 2) AS INTEGER) % 2 = 0")
+        }
+    }
+
+    private func counts(_ index: String, _ content: String) throws -> (entries: Int, rows: Int) {
+        try queue.read { db in
+            (try Int.fetchOne(db, sql: "SELECT count(*) FROM \(index)_docsize")!,
+             try Int.fetchOne(db, sql: "SELECT count(*) FROM \(content)")!)
+        }
+    }
+
+    private func assertExact(_ index: String, _ content: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        let (entries, rows) = try counts(index, content)
+        XCTAssertEqual(entries, rows, "\(index) should index each row once", file: file, line: line)
+        // With rank 1 the check compares the index with the content table.
+        XCTAssertNoThrow(try queue.write { db in
+            try db.execute(sql: "INSERT INTO \(index)(\(index), rank) VALUES ('integrity-check', 1)")
+        }, "\(index) should agree with its content", file: file, line: line)
+    }
+
+    private func hits(_ index: String, _ query: String) throws -> Int {
+        try queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM \(index) WHERE \(index) MATCH ?", arguments: [query])!
+        }
+    }
+
+    func testTheOldTriggersLeaveEntriesBehindAndTheRepairClearsThem() throws {
+        try makeLegacySchema()
+        try reinstallTranslation(times: 25)
+        try editDictionary()
+        XCTAssertGreaterThan(try counts("translation_verses_fts", "translation_verses").entries, 25 * 100)
+        XCTAssertGreaterThan(try hits("translation_verses_fts", "darkness"), 0, "deleted verses should still match")
+        XCTAssertGreaterThan(try hits("dictionary_fts", "first"), 0, "replaced senses should still match")
+
+        try queue.write { try ExternalContentSearchIndex.installTriggers(in: $0) }
+        var options = SearchIndexRepair.Options()
+        options.batchRows = 37
+        options.vacuumThreshold = 1
+        let report = try SearchIndexRepair.repair(queue, options: options)
+
+        XCTAssertEqual(report.swapped, ["translation_verses_fts"])
+        XCTAssertEqual(report.rebuilt, ["translation_verses_fts", "dictionary_fts"])
+        XCTAssertTrue(report.vacuumed)
+        XCTAssertLessThan(report.bytesAfter, report.bytesBefore)
+        try assertExact("translation_verses_fts", "translation_verses")
+        try assertExact("dictionary_fts", "dictionary_entries")
+        XCTAssertEqual(try hits("translation_verses_fts", "darkness"), 0)
+        XCTAssertEqual(try hits("translation_verses_fts", "light"), 120)
+        XCTAssertEqual(try hits("dictionary_fts", "first"), 0)
+        XCTAssertEqual(try hits("dictionary_fts", "second"), 20)
+        let leftovers = try queue.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE name LIKE '%_stale%' OR name LIKE '%_rebuild%'")
+        }
+        XCTAssertEqual(leftovers, [])
+
+        // And the new triggers keep it that way.
+        try reinstallTranslation(times: 3)
+        try queue.write { db in
+            try db.execute(sql: "UPDATE translation_verses SET text = 'morning' WHERE id % 3 = 0")
+            try db.execute(sql: "UPDATE dictionary_entries SET lemma = 'renamed'")
+            try db.execute(sql: "DELETE FROM dictionary_entries WHERE id = 'e1'")
+        }
+        try assertExact("translation_verses_fts", "translation_verses")
+        try assertExact("dictionary_fts", "dictionary_entries")
+        XCTAssertEqual(try hits("translation_verses_fts", "morning"), 40)
+        XCTAssertEqual(try hits("dictionary_fts", "renamed"), 19)
+    }
+
+    func testARepairCutShortIsFinishedByTheNextRun() throws {
+        try makeLegacySchema(dictionary: false)
+        try reinstallTranslation(times: 20)
+        try queue.write { db in
+            try ExternalContentSearchIndex.installTriggers(in: db)
+            // Killed after the swap, part way through emptying the old index...
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE translation_verses_fts_stale USING fts5(
+                    text, content='translation_verses', content_rowid='id')
+                """)
+            try db.execute(sql: """
+                INSERT INTO translation_verses_fts_stale(rowid, text)
+                SELECT id, text FROM translation_verses
+                """)
+            // ...or before a copy went live.
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE translation_verses_fts_rebuild USING fts5(
+                    text, content='translation_verses', content_rowid='id')
+                """)
+        }
+
+        _ = try SearchIndexRepair.repair(queue)
+
+        try assertExact("translation_verses_fts", "translation_verses")
+        let leftovers = try queue.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE name LIKE '%_stale%' OR name LIKE '%_rebuild%'")
+        }
+        XCTAssertEqual(leftovers, [])
+    }
+
+    func testTheMigrationLeavesAbsentIndexesAlone() throws {
+        try makeLegacySchema(dictionary: false)
+        try queue.write { try ExternalContentSearchIndex.installTriggers(in: $0) }
+        let triggers = try queue.read { db in
+            try String.fetchAll(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
+        }
+        XCTAssertEqual(triggers.count, 3)
+        XCTAssertEqual(triggers.filter { $0.contains("'delete'") }.count, 2)
+        XCTAssertEqual(try queue.read { try ExternalContentSearchIndex.all[1].exists(in: $0) }, false)
+    }
+}
+
+final class ArchivePassSpacingTests: XCTestCase {
+    func testAnArchivePassWaitsOutTheSpacingAfterTheLast() {
+        let ended = Date(timeIntervalSince1970: 1_800_000_000)
+        let spacing = UserSettingsSyncManager.archivePassSpacing
+        XCTAssertTrue(UserSettingsSyncManager.archivePassIsDue(lastEnded: nil, now: ended))
+        XCTAssertFalse(UserSettingsSyncManager.archivePassIsDue(lastEnded: ended, now: ended))
+        XCTAssertFalse(UserSettingsSyncManager.archivePassIsDue(lastEnded: ended, now: ended.addingTimeInterval(spacing - 1)))
+        XCTAssertTrue(UserSettingsSyncManager.archivePassIsDue(lastEnded: ended, now: ended.addingTimeInterval(spacing)))
+    }
+}

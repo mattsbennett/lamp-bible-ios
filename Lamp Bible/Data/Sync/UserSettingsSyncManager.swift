@@ -56,6 +56,31 @@ class UserSettingsSyncManager {
     private var isRunning = false
     private var syncInProgress = false
 
+    /// When a pass that went to the WebDAV archive last ended.
+    ///
+    /// While settings live inside the library archive, each such pass
+    /// downloads the whole library and, with a change to send, uploads it and
+    /// reads it back: well over a gigabyte for one finished reading. A guest
+    /// working through a plan set one off every thirty seconds. The poll and
+    /// the debounced export leave this much time between them; the
+    /// foreground sync and the reconcile on going to the background do not.
+    /// Design B, which moves settings out of the archive, retires this.
+    private var lastArchivePassEndedAt: Date?
+    static let archivePassSpacing: TimeInterval = 300
+
+    nonisolated static func archivePassIsDue(
+        lastEnded: Date?,
+        now: Date,
+        spacing: TimeInterval = archivePassSpacing
+    ) -> Bool {
+        guard let lastEnded else { return true }
+        return now.timeIntervalSince(lastEnded) >= spacing
+    }
+
+    private var archivePassIsDue: Bool {
+        Self.archivePassIsDue(lastEnded: lastArchivePassEndedAt, now: Date())
+    }
+
     /// UserDefaults key for the last-known remote change token
     private static let remoteChangeTokenKey = "UserSettingsSync.remoteChangeToken"
     private static let readingsBaseKey = "UserSettingsSync.readingsBase.v1"
@@ -220,6 +245,10 @@ class UserSettingsSyncManager {
                 print("[UserSettingsSync] Debounce fired but no storage available")
                 return
             }
+            if storage is any LampSyncRemoteStore, self?.archivePassIsDue == false {
+                print("[UserSettingsSync] Debounce: archive pass held back; the poll will send it")
+                return
+            }
             do {
                 try await self?.syncWithRemote(storage: storage, requireRemote: false)
             } catch {
@@ -241,6 +270,10 @@ class UserSettingsSyncManager {
         // archive revision.
         if storage is any LampSyncRemoteStore {
             if await canSkipUnchangedArchivePoll(storage: storage) { return }
+            guard archivePassIsDue else {
+                print("[UserSettingsSync] Poll: archive pass held back until \(Int(Self.archivePassSpacing))s after the last")
+                return
+            }
             do {
                 try await syncWithRemote(storage: storage, requireRemote: false)
             } catch {
@@ -409,7 +442,12 @@ class UserSettingsSyncManager {
         let task = Task { @MainActor in
             // Cleared here rather than by the caller, so that anyone waiting
             // resumes to find the slot free.
-            defer { self.inFlightSync = nil }
+            defer {
+                self.inFlightSync = nil
+                if storage is any LampSyncRemoteStore {
+                    self.lastArchivePassEndedAt = Date()
+                }
+            }
             try await self.runSyncWithRemote(
                 storage: storage, requireRemote: requireRemote, reusing: candidate
             )
