@@ -115,9 +115,11 @@ struct LibrarySyncPass {
         }
 
         // Decks are the Mac's to publish, and mirrored here as before; the
-        // plan covers modules and their media.
-        let listing = try await LampSyncFilePlan.listing(in: storage, manifest: bundle.manifest)
-            .filter { Self.isPlanned(LampSyncFolderLayout.kind(of: $0.key)) }
+        // plan covers modules and their media. Pruning still sees every
+        // listed file, or a deck's old tombstone would go while its file
+        // waits to be reaped, and the Mac would adopt the deck back.
+        let everything = try await LampSyncFilePlan.listing(in: storage, manifest: bundle.manifest)
+        let listing = everything.filter { Self.isPlanned(LampSyncFolderLayout.kind(of: $0.key)) }
         let held = try heldFiles(manifest: bundle.manifest, listing: listing)
         let plan = LampSyncFilePlan.plan(
             manifest: bundle.manifest,
@@ -164,7 +166,7 @@ struct LibrarySyncPass {
         // ledger, settings and preferences together.
         let carried = try database.pendingManifestChanges(source: source)
         let membership = ManifestParticipant(
-            source: source, carried: carried, adopt: plan.adopt, present: Set(listing.keys)
+            source: source, carried: carried, adopt: plan.adopt, present: Set(everything.keys)
         )
         let written = try await writeBundle(
             fixed: [membership, DeletionLedgerParticipant()], from: snapshot

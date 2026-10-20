@@ -6535,6 +6535,27 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertNotNil(file, "nothing old is deleted")
     }
 
+    /// A deck is the Mac's to sync, but its deletion is the library's: a
+    /// tombstone past its lifetime still waits while the deck's file is on
+    /// the server, or the Mac's next pass would adopt the file back.
+    func testAnOldDeckDeletionWaitsForItsFileToGo() async throws {
+        let deck = "\(LampSyncFolderLayout.decksDirectory)/old.\(LampSyncFolderLayout.deckExtension)"
+        let revision = await server.seed(deck, Data("deck".utf8))
+        _ = try await LampSyncSettingsStore.readOrClaim(from: storage)
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest
+                .recordingWrite(deck, revision: revision, replacing: nil, at: 1_000)
+                .removing(deck, at: 2_000, revision: revision)
+        }
+        // Something of the phone's own, so the pass writes the bundle.
+        try saveNotesModule(notes: ["a"])
+
+        _ = try await pass().run()
+
+        let entry = try await bundle().manifest.entry(at: deck)
+        XCTAssertNotNil(entry?.deletedAt, "the deletion went while its file is still on the server")
+    }
+
     /// A ledger no device can read must not stop the library syncing.
     func testAnUnreadableDeletionLedgerDoesNotStopThePass() async throws {
         try saveNotesModule(notes: ["a"])
