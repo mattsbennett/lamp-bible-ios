@@ -3252,9 +3252,9 @@ class ModuleSyncManager: ObservableObject {
         // If remote storage is configured, also write there for sync.
         let storage = await MainActor.run { getStorage() }
         if let storage, await storage.isAvailable() {
-            if let webDAV = storage as? WebDAVModuleStorage, await LibrarySyncPass.isInUse(at: webDAV) {
+            if let endpoint = libraryEndpoint(for: storage), await LibrarySyncPass.isInUse(at: endpoint) {
                 try await publishImportedFile(
-                    compressedData, type: moduleType, moduleId: moduleId, fileName: fileName, to: webDAV
+                    compressedData, type: moduleType, moduleId: moduleId, fileName: fileName, to: endpoint
                 )
             } else if let webDAV = storage as? WebDAVModuleStorage {
                 let revision = try await webDAV.writeModuleFile(
@@ -3295,12 +3295,12 @@ class ModuleSyncManager: ObservableObject {
         // With the settings bundle in use, the library pass publishes: it
         // records each upload in the manifest, which a write from here
         // would not, and the other devices would not know the file was ours.
-        if let webDAV = storage as? WebDAVModuleStorage, await LibrarySyncPass.isInUse(at: webDAV) {
+        if let endpoint = libraryEndpoint(for: storage), await LibrarySyncPass.isInUse(at: endpoint) {
             guard let module = try database.getModule(id: id) else {
                 throw ModuleSyncError.moduleNotFound(id)
             }
             try database.markPendingModulePublication(moduleId: id, type: module.type)
-            await LibrarySyncPass.schedule(on: webDAV)
+            await LibrarySyncPass.schedule(on: endpoint)
             return
         }
         try await exportModule(id: id, to: storage)

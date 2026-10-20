@@ -11,6 +11,14 @@ import GRDB
 import AVFoundation
 
 struct SettingsView: View {
+    /// "1.2.0 (1)": the marketing version and the build.
+    static var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
     @Environment(\.dismiss) var dismiss
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
     private let settingsChanged = NotificationCenter.default.publisher(for: .userDatabaseDidChange)
@@ -504,7 +512,12 @@ struct SettingsView: View {
                 } header: {
                     Text("About")
                 } footer: {
-                    Text("Privacy disclosures and licence notices for bundled content and software.")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Privacy disclosures and licence notices for bundled content and software.")
+                        // Which build this is decides which sync it speaks, so
+                        // the Mac's migration can ask for it by number.
+                        Text("Version \(Self.appVersion)")
+                    }
                 }
 
 #if DEBUG

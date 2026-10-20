@@ -27,6 +27,32 @@ protocol SettingsBundleParticipant {
     func committed(_ written: LampSyncSettingsStore.Snapshot) throws
 }
 
+/// A sync endpoint the library pass runs against: storage the importers
+/// read modules from, and a remote store with conditional writes.
+protocol LibraryEndpoint: ModuleStorage, LampSyncRemoteStore {
+    /// Names the endpoint in this device's records: a revision or an upload
+    /// recorded at one endpoint means nothing at another.
+    var librarySource: String { get }
+}
+
+extension WebDAVModuleStorage: LibraryEndpoint {
+    var librarySource: String { syncSourceIdentifier }
+}
+
+/// The library endpoint for a provider's storage, where it has one.
+func libraryEndpoint(for storage: ModuleStorage?) -> (any LibraryEndpoint)? {
+    switch storage {
+    case let webDAV as WebDAVModuleStorage:
+        return webDAV
+    case let iCloud as ICloudModuleStorage:
+        // Until the Mac migrates the folder, core reads it as not migrated
+        // and iCloud Drive syncs as before.
+        return iCloud.libraryEndpoint()
+    default:
+        return nil
+    }
+}
+
 @MainActor
 struct LibrarySyncPass {
     enum Outcome: Equatable {
@@ -43,8 +69,11 @@ struct LibrarySyncPass {
     /// mean nothing at any other.
     let source: String
     /// Settings and preferences, which live in the same bundle. Made against
-    /// the bundle as read, and made again if it moves before the write.
-    var makeParticipants: (LampSyncSettingsBundle?) throws -> [any SettingsBundleParticipant] = { _ in [] }
+    /// the bundle as read, with any versions iCloud kept beside it, and made
+    /// again if either moves before the write.
+    var makeParticipants: (
+        LampSyncSettingsBundle?, [LampSyncSettingsStore.Version]
+    ) throws -> [any SettingsBundleParticipant] = { _, _ in [] }
 
     /// A participant prepared against one bundle met a newer one at the
     /// write: prepare again against what is there now.
@@ -54,11 +83,18 @@ struct LibrarySyncPass {
     private var modules: ModuleSyncManager { .shared }
 
     func run(knownArchiveRevision: String? = nil) async throws -> Outcome {
-        let snapshot: LampSyncSettingsStore.Snapshot?
+        var snapshot: LampSyncSettingsStore.Snapshot?
         do {
             snapshot = try await LampSyncSettingsStore.read(
                 from: storage, knownArchiveRevision: knownArchiveRevision
             )
+            if snapshot == nil {
+                // A truly empty library. Its bundle goes first: once a module
+                // file is there without one, core reads the library as an
+                // earlier one waiting for the Mac, and this pass's own bundle
+                // write would be refused.
+                snapshot = try await LampSyncSettingsStore.update(in: storage) { _ in }
+            }
         } catch LampSyncSettingsStore.StoreError.notMigrated(let revision) {
             return .notMigrated(archiveRevision: revision)
         }
@@ -114,7 +150,7 @@ struct LibrarySyncPass {
             source: source, carried: carried, adopt: plan.adopt, present: Set(listing.keys)
         )
         let written = try await writeBundle(
-            fixed: [membership, DeletionLedgerParticipant()], from: snapshot?.bundle
+            fixed: [membership, DeletionLedgerParticipant()], from: snapshot
         )
 
         for (path, revision) in plan.reap.sorted(by: { $0.key < $1.key }) {
@@ -127,22 +163,35 @@ struct LibrarySyncPass {
     }
 
     /// The pass's one bundle write, with every participant in it.
+    ///
+    /// Versions iCloud kept beside the bundle are folded in by core's merge
+    /// and resolved by the write, but only those the participants were
+    /// prepared with: one that landed since would be resolved without this
+    /// device having merged its settings, so the pass prepares again.
     func writeBundle(
         fixed: [any SettingsBundleParticipant],
-        from read: LampSyncSettingsBundle?
+        from read: LampSyncSettingsStore.Snapshot?
     ) async throws -> LampSyncSettingsStore.Snapshot {
         var latest = read
         for _ in 0..<3 {
-            let all = fixed + (try makeParticipants(latest))
+            let versions = latest?.versions ?? []
+            let prepared = Set(versions.map(\.revision))
+            let all = fixed + (try makeParticipants(latest?.bundle, versions))
             do {
-                let written = try await LampSyncSettingsStore.update(in: storage) { bundle in
+                let written = try await LampSyncSettingsStore.update(
+                    in: storage,
+                    mergingVersion: { bundle, version in
+                        guard prepared.contains(version.revision) else { throw BundleMoved() }
+                        try bundle.merge(version: version.bundle)
+                    }
+                ) { bundle in
                     let now = ModuleDatabase.nowMilliseconds()
                     for participant in all { try participant.change(&bundle, now: now) }
                 }
                 for participant in all { try participant.committed(written) }
                 return written
             } catch is BundleMoved {
-                latest = try await LampSyncSettingsStore.read(from: storage)?.bundle
+                latest = try await LampSyncSettingsStore.read(from: storage)
             }
         }
         throw LampSyncSettingsStore.StoreError.tooManyAttempts
@@ -601,8 +650,8 @@ extension LibrarySyncPass {
         defaults.set(revisions, forKey: revisionsKey)
     }
 
-    static func isInUse(at storage: WebDAVModuleStorage) -> Bool {
-        bundleRevision(for: storage.syncSourceIdentifier) != nil
+    static func isInUse(at storage: any LibraryEndpoint) -> Bool {
+        bundleRevision(for: storage.librarySource) != nil
     }
 
     /// The revision of the archive this device last imported, so that until
@@ -619,7 +668,7 @@ extension LibrarySyncPass {
     /// still holds the archive this answers `.notMigrated`, touching nothing,
     /// and the archive pass runs as before.
     @discardableResult
-    static func runIfMigrated(storage: WebDAVModuleStorage) async throws -> Outcome {
+    static func runIfMigrated(storage: any LibraryEndpoint) async throws -> Outcome {
         // A one-time search index rebuild may be running on its own
         // connection, and this pass writes the content it indexes.
         await SearchIndexMaintenance.waitUntilFinished()
@@ -628,13 +677,16 @@ extension LibrarySyncPass {
         modules.isSyncing = true
         defer { modules.isSyncing = false }
 
-        var pass = LibrarySyncPass(storage: storage, source: storage.syncSourceIdentifier)
-        pass.makeParticipants = {
-            try UserSettingsSyncManager.shared.bundleParticipants(for: $0, storage: storage)
+        var pass = LibrarySyncPass(storage: storage, source: storage.librarySource)
+        pass.makeParticipants = { bundle, versions in
+            try UserSettingsSyncManager.shared.bundleParticipants(
+                for: bundle, versions: versions.map(\.bundle), storage: storage
+            )
         }
-        let outcome = try await pass.run(
-            knownArchiveRevision: isInUse(at: storage) ? nil : knownArchiveRevision()
-        )
+        // Only WebDAV ever held the archive; a folder library has none.
+        let archiveRevision = storage is WebDAVModuleStorage && !isInUse(at: storage)
+            ? knownArchiveRevision() : nil
+        let outcome = try await pass.run(knownArchiveRevision: archiveRevision)
         switch outcome {
         case .synced(let revision): remember(revision, for: pass.source)
         case .notMigrated: remember(nil, for: pass.source)
@@ -645,7 +697,7 @@ extension LibrarySyncPass {
 
     /// Whether this device holds anything the server has not seen: settings,
     /// a module waiting to go up, or a membership change.
-    static func hasLocalWork(at storage: WebDAVModuleStorage) -> Bool {
+    static func hasLocalWork(at storage: any LibraryEndpoint) -> Bool {
         let database = ModuleDatabase.shared
         if UserDatabase.shared.hasUnsyncedChanges { return true }
         if SharedPreferenceArchiveSync.hasLocalChanges(
@@ -654,11 +706,11 @@ extension LibrarySyncPass {
         if ModuleType.allCases.contains(where: {
             !((try? database.pendingModulePublications(type: $0).isEmpty) ?? true)
         }) { return true }
-        return !((try? database.pendingManifestChanges(source: storage.syncSourceIdentifier).isEmpty) ?? true)
+        return !((try? database.pendingManifestChanges(source: storage.librarySource).isEmpty) ?? true)
     }
 
     /// A pass a few seconds from now, after a burst of edits settles.
-    static func schedule(on storage: WebDAVModuleStorage, after delay: TimeInterval = 3) {
+    static func schedule(on storage: any LibraryEndpoint, after delay: TimeInterval = 3) {
         scheduled?.cancel()
         scheduled = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -689,9 +741,9 @@ extension ModuleSyncManager {
         type: ModuleType, moduleId: String, fileNames: [String], storage: ModuleStorage?
     ) async {
         guard let storage else { return }
-        if let webDAV = storage as? WebDAVModuleStorage, await LibrarySyncPass.isInUse(at: webDAV) {
-            let source = webDAV.syncSourceIdentifier
-            let folder = webDAV.directoryName(for: type)
+        if let endpoint = libraryEndpoint(for: storage), await LibrarySyncPass.isInUse(at: endpoint) {
+            let source = endpoint.librarySource
+            let folder = endpoint.directoryName(for: type)
             let synced = ((try? ModuleDatabase.shared.syncFileRecords(source: source)) ?? []).map(\.path)
                 .filter {
                     $0.hasPrefix(folder + "/")
@@ -702,7 +754,7 @@ extension ModuleSyncManager {
             for path in synced {
                 try? ModuleDatabase.shared.recordSyncLocalDeletion(source: source, path: path)
             }
-            await LibrarySyncPass.schedule(on: webDAV)
+            await LibrarySyncPass.schedule(on: endpoint)
             return
         }
         for fileName in fileNames {
@@ -721,10 +773,10 @@ extension ModuleSyncManager {
     /// under the revision there now. The upload is recorded for the manifest.
     func publishImportedFile(
         _ data: Data, type: ModuleType, moduleId: String, fileName: String,
-        to storage: WebDAVModuleStorage
+        to storage: any LibraryEndpoint
     ) async throws {
         let path = "\(storage.directoryName(for: type))/\(fileName)"
-        let source = storage.syncSourceIdentifier
+        let source = storage.librarySource
         let current = try await storage.revision(path: path)
         let revision = try await LampSyncConditionalWrite.writeAndConfirm(
             data, to: path, in: storage, condition: current.map { .ifRevision($0) } ?? .ifAbsent

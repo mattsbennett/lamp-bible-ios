@@ -5977,12 +5977,12 @@ private actor LibraryServer {
     }
 
     /// Another device's bundle, written the moment the pass first lists a
-    /// folder: after the pass read the bundle, before it writes.
+    /// module folder: after the pass read the bundle, before it writes.
     private var interloper: Data?
     func writeBundleDuringThePass(_ data: Data) { interloper = data }
 
     func list(_ directory: String) -> [LampSyncRemoteEntry] {
-        if let interloper {
+        if let interloper, !directory.trimmingCharacters(in: CharacterSet(charactersIn: "/")).isEmpty {
             self.interloper = nil
             seed(LampSyncSettingsStore.path, interloper)
         }
@@ -6203,8 +6203,10 @@ final class LibrarySyncPassTests: XCTestCase {
     private func settingsPass() -> LibrarySyncPass {
         var pass = LibrarySyncPass(storage: storage, source: source)
         let storage = self.storage!
-        pass.makeParticipants = {
-            try UserSettingsSyncManager.shared.bundleParticipants(for: $0, storage: storage)
+        pass.makeParticipants = { bundle, versions in
+            try UserSettingsSyncManager.shared.bundleParticipants(
+                for: bundle, versions: versions.map(\.bundle), storage: storage
+            )
         }
         return pass
     }
@@ -6261,6 +6263,94 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertTrue(UserDatabase.shared.isReadingCompleted(theirs))
     }
 
+    /// iCloud kept another device's settings beside the current copy: both
+    /// devices' finished readings survive, whatever base this one recorded.
+    func testSettingsVersionsIcloudKeptAreMergedWithoutTheBase() async throws {
+        keepSettingsState()
+        defer { restoreSettingsState() }
+        _ = try await settingsPass().run()
+        let first = try await bundle()
+        let base = try XCTUnwrap(first.userSettings)
+        let lost = "bundle-lost-\(UUID().uuidString)"
+        let current = "bundle-current-\(UUID().uuidString)"
+        addedReadings += [lost, current]
+        let lostCopy = try adding(reading: lost, to: base)
+        let currentCopy = try adding(reading: current, to: base)
+
+        let participants = try UserSettingsSyncManager.shared.bundleParticipants(
+            for: LampSyncSettingsBundle(userSettings: currentCopy),
+            versions: [LampSyncSettingsBundle(userSettings: lostCopy)],
+            storage: storage
+        )
+        var written = LampSyncSettingsBundle(userSettings: currentCopy)
+        for participant in participants { try participant.change(&written, now: 0) }
+
+        XCTAssertTrue(UserDatabase.shared.isReadingCompleted(lost))
+        XCTAssertTrue(UserDatabase.shared.isReadingCompleted(current))
+        let published = try readings(in: XCTUnwrap(written.userSettings))
+        XCTAssertTrue(published.isSuperset(of: [lost, current]))
+    }
+
+    /// On iCloud Drive, end to end: another device's settings write was kept
+    /// beside the bundle as a conflict version. The pass merges its readings
+    /// in, publishes them, and resolves exactly that version.
+    func testAnIcloudConflictVersionIsMergedAndResolved() async throws {
+        keepSettingsState()
+        defer { restoreSettingsState() }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("icloud-versions-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        final class Staged: @unchecked Sendable {
+            let lock = NSLock()
+            var versions: [URL] = []
+            var resolved: [URL] = []
+        }
+        let staged = Staged()
+        let store = LampSyncDirectoryStore(
+            root: root,
+            conflictVersions: .init(
+                unresolved: { file in
+                    staged.lock.withLock {
+                        file.lastPathComponent == LampSyncSettingsStore.path ? staged.versions : []
+                    }
+                },
+                resolve: { _, urls in
+                    staged.lock.withLock {
+                        staged.resolved += urls
+                        staged.versions.removeAll { urls.map(\.standardizedFileURL).contains($0.standardizedFileURL) }
+                    }
+                }
+            )
+        )
+        let iCloud = ICloudLibraryStorage(store: store)
+        var pass = LibrarySyncPass(storage: iCloud, source: "icloud:test-\(UUID().uuidString)")
+        pass.makeParticipants = { bundle, versions in
+            try UserSettingsSyncManager.shared.bundleParticipants(
+                for: bundle, versions: versions.map(\.bundle), storage: iCloud
+            )
+        }
+        _ = try await pass.run()
+        let bundleURL = root.appendingPathComponent(LampSyncSettingsStore.path)
+        let current = try LampSyncSettingsBundle.decode(Data(contentsOf: bundleURL))
+
+        // Another device's write, lost to this one's and kept as a version.
+        let theirs = "version-\(UUID().uuidString)"
+        addedReadings.append(theirs)
+        var lost = current
+        lost.userSettings = try adding(reading: theirs, to: XCTUnwrap(current.userSettings))
+        let versionURL = root.appendingPathComponent("conflict-\(UUID().uuidString).lampsync")
+        try lost.encoded().write(to: versionURL)
+        staged.lock.withLock { staged.versions = [versionURL] }
+
+        _ = try await pass.run()
+
+        XCTAssertTrue(UserDatabase.shared.isReadingCompleted(theirs))
+        let published = try LampSyncSettingsBundle.decode(Data(contentsOf: bundleURL))
+        XCTAssertTrue(try readings(in: XCTUnwrap(published.userSettings)).contains(theirs))
+        XCTAssertEqual(staged.lock.withLock { staged.resolved.map(\.lastPathComponent) }, [versionURL.lastPathComponent])
+    }
+
     /// Prepared against one bundle, met with a newer one at the write: the
     /// pass prepares again against what is there, rather than writing over it.
     func testABundleThatMovesMidPassIsPreparedAgain() async throws {
@@ -6270,7 +6360,7 @@ final class LibrarySyncPassTests: XCTestCase {
         final class Count { var value = 0 }
         let prepared = Count()
         var pass = LibrarySyncPass(storage: storage, source: source)
-        pass.makeParticipants = { bundle in
+        pass.makeParticipants = { bundle, _ in
             prepared.value += 1
             return [ExpectingParticipant(expected: bundle?.macSettings)]
         }
@@ -6338,4 +6428,59 @@ private struct ExpectingParticipant: SettingsBundleParticipant {
         bundle.userSettings = Data("the phone wrote".utf8)
     }
     func committed(_ written: LampSyncSettingsStore.Snapshot) throws {}
+}
+
+/// The library pass over core's folder store, as iCloud Drive runs it, on a
+/// plain folder: digests as revisions, writes checked under coordination.
+@MainActor
+final class ICloudLibraryPassTests: XCTestCase {
+    private let database = ModuleDatabase.shared
+    private var root: URL!
+    private var moduleId: String!
+    private var storage: ICloudLibraryStorage!
+
+    override func setUp() async throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("icloud-library-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        storage = ICloudLibraryStorage(store: LampSyncDirectoryStore(root: root))
+        moduleId = "icloud-pass-\(UUID().uuidString)"
+    }
+
+    override func tearDown() async throws {
+        try? database.deleteAllEntriesForModule(moduleId: moduleId)
+        try? database.deleteModule(id: moduleId)
+        try? database.write { db in
+            try db.execute(sql: "DELETE FROM sync_file_records WHERE source = ?", arguments: [storage.librarySource])
+            try db.execute(sql: "DELETE FROM sync_pending_manifest_changes WHERE source = ?", arguments: [storage.librarySource])
+        }
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    func testNotesGoUpAsAFileWithABundleAndASecondPassWritesNothing() async throws {
+        try database.saveModule(Module(
+            id: moduleId, type: .notes, name: "My Notes", filePath: "\(moduleId!).lamp", isEditable: true
+        ))
+        try database.saveNoteEntry(NoteEntry(
+            id: "a", moduleId: moduleId, verseId: 43_001_001, title: nil, content: "In the beginning",
+            verseRefs: nil, lastModified: 1_788_132_249, footnotes: nil
+        ))
+        let pass = LibrarySyncPass(storage: storage, source: storage.librarySource)
+
+        guard case .synced(let first) = try await pass.run() else { return XCTFail("expected a synced pass") }
+
+        let notes = root.appendingPathComponent("Notes/\(moduleId!).lamp")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: notes.path))
+        let bundle = try LampSyncSettingsBundle.decode(
+            Data(contentsOf: root.appendingPathComponent(LampSyncSettingsStore.path))
+        )
+        XCTAssertEqual(bundle.manifest.entry(at: "Notes/\(moduleId!).lamp")?.isMember, true)
+        let written = try FileManager.default.attributesOfItem(atPath: notes.path)[.modificationDate] as? Date
+
+        guard case .synced(let second) = try await pass.run() else { return XCTFail("expected a synced pass") }
+
+        XCTAssertEqual(second, first, "nothing changed, so the bundle is not rewritten")
+        let after = try FileManager.default.attributesOfItem(atPath: notes.path)[.modificationDate] as? Date
+        XCTAssertEqual(after, written, "nor is the module")
+    }
 }

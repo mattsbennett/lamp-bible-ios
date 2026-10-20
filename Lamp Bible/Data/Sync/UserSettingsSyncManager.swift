@@ -108,6 +108,9 @@ class UserSettingsSyncManager {
     }
 
     private func syncSource(for storage: ModuleStorage) -> String {
+        if let endpoint = storage as? any LibraryEndpoint {
+            return endpoint.librarySource
+        }
         if let webDAV = storage as? WebDAVModuleStorage {
             return webDAV.syncSourceIdentifier
         }
@@ -245,8 +248,8 @@ class UserSettingsSyncManager {
                 print("[UserSettingsSync] Debounce fired but no storage available")
                 return
             }
-            if let webDAV = storage as? WebDAVModuleStorage, LibrarySyncPass.isInUse(at: webDAV) {
-                LibrarySyncPass.schedule(on: webDAV, after: 0)
+            if let endpoint = libraryEndpoint(for: storage), LibrarySyncPass.isInUse(at: endpoint) {
+                LibrarySyncPass.schedule(on: endpoint, after: 0)
                 return
             }
             if storage is any LampSyncRemoteStore, self?.archivePassIsDue == false {
@@ -271,15 +274,15 @@ class UserSettingsSyncManager {
     func pollForRemoteChanges(storage: ModuleStorage) async {
         // The settings bundle: one HEAD says whether anyone else wrote, and
         // a pass runs only then or with something of this device's to send.
-        if let webDAV = storage as? WebDAVModuleStorage,
-           let revision = LibrarySyncPass.bundleRevision(for: webDAV.syncSourceIdentifier) {
-            var due = LibrarySyncPass.hasLocalWork(at: webDAV)
+        if let endpoint = libraryEndpoint(for: storage),
+           let revision = LibrarySyncPass.bundleRevision(for: endpoint.librarySource) {
+            var due = LibrarySyncPass.hasLocalWork(at: endpoint)
             if !due {
-                due = (try? await LampSyncSettingsStore.hasChanged(since: revision, in: webDAV)) ?? true
+                due = (try? await LampSyncSettingsStore.hasChanged(since: revision, in: endpoint)) ?? true
             }
             guard due else { return }
             do {
-                try await LibrarySyncPass.runIfMigrated(storage: webDAV)
+                try await LibrarySyncPass.runIfMigrated(storage: endpoint)
             } catch {
                 print("[UserSettingsSync] Poll: library pass failed: \(error)")
             }
@@ -458,8 +461,8 @@ class UserSettingsSyncManager {
     ) async throws {
         // Once the server holds the settings bundle, settings travel in it,
         // with the rest of the library pass.
-        if let webDAV = storage as? WebDAVModuleStorage, LibrarySyncPass.isInUse(at: webDAV) {
-            try await LibrarySyncPass.runIfMigrated(storage: webDAV)
+        if let endpoint = libraryEndpoint(for: storage), LibrarySyncPass.isInUse(at: endpoint) {
+            try await LibrarySyncPass.runIfMigrated(storage: endpoint)
             return
         }
         while let running = inFlightSync {
@@ -1379,19 +1382,36 @@ extension UserSettingsSyncManager {
     /// The merge is a SQLite file merge that applies as it goes, so it runs
     /// here, before the write, rather than in `change`, which must only
     /// compute. `change` then checks the bundle still holds what was merged.
+    ///
+    /// `versions` are copies another device wrote that iCloud kept beside
+    /// the current one rather than refusing. One of them may be this
+    /// device's own lost write, recorded as its base when it returned; a
+    /// three-way merge against that base would read the current copy's
+    /// older values as edits and undo it. So with versions present the base
+    /// is set aside: each version, then the current copy, is merged without
+    /// one (readings as a union, settings field by field by time), and the
+    /// result is published, which resolves them.
     func bundleParticipants(
         for bundle: LampSyncSettingsBundle?,
+        versions: [LampSyncSettingsBundle] = [],
         storage: ModuleStorage
     ) throws -> [any SettingsBundleParticipant] {
         let source = bundleSource(for: storage)
         let remote = bundle?.userSettings
         var merged: MergeResult?
-        if let remote {
-            merged = try mergeRemoteData(remote, base: readingsBase(for: source))
+        if versions.isEmpty {
+            if let remote {
+                merged = try mergeRemoteData(remote, base: readingsBase(for: source))
+            }
+        } else {
+            for version in versions {
+                if let data = version.userSettings { _ = try mergeRemoteData(data, base: nil) }
+            }
+            if let remote { merged = try mergeRemoteData(remote, base: nil) }
         }
         try UserDatabase.shared.checkpointForSync()
         let portable = try portableSettingsData(from: UserDatabase.shared.databaseURL)
-        let publishes = remote == nil || merged?.needsPublish == true
+        let publishes = remote == nil || merged?.needsPublish == true || !versions.isEmpty
         let settings = BundleSettingsParticipant(
             source: source,
             mergedAgainst: remote,

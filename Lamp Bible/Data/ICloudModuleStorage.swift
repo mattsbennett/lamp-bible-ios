@@ -574,3 +574,101 @@ class ICloudModuleStorage: ModuleStorage {
         }
     }
 }
+
+// MARK: - Design B
+
+extension ICloudModuleStorage {
+    /// This storage's iCloud Documents as a library endpoint, or nil while
+    /// iCloud is unavailable. Resolving the container can block, so call it
+    /// off the main thread.
+    func libraryEndpoint() -> ICloudLibraryStorage? {
+        documentsURL.map { ICloudLibraryStorage(store: LampSyncDirectoryStore(root: $0)) }
+    }
+}
+
+/// iCloud Drive for the library pass: core's folder store over the app's
+/// iCloud Documents. Evicted files, coordinated access and unresolved
+/// versions are handled there, the same on the phone and the Mac.
+struct ICloudLibraryStorage: LibraryEndpoint, LampSyncVersionedStore {
+    let store: LampSyncDirectoryStore
+
+    var librarySource: String { "icloud:iCloud.com.neus.lamp-bible" }
+
+    // MARK: Remote store
+
+    func list(directory: String) async throws -> [LampSyncRemoteEntry]? {
+        try await store.list(directory: directory)
+    }
+    func read(path: String) async throws -> LampSyncRemoteFile? { try await store.read(path: path) }
+    func read(path: String, into url: URL) async throws -> LampSyncDownloadedFile? {
+        try await store.read(path: path, into: url)
+    }
+    func revision(path: String) async throws -> String? { try await store.revision(path: path) }
+    func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) async throws -> String? {
+        try await store.write(data, to: path, condition: condition)
+    }
+    func write(fileAt url: URL, to path: String, condition: LampSyncWriteCondition) async throws -> String? {
+        try await store.write(fileAt: url, to: path, condition: condition)
+    }
+    func delete(path: String, condition: LampSyncWriteCondition) async throws {
+        try await store.delete(path: path, condition: condition)
+    }
+
+    // MARK: Versions iCloud kept beside a file instead of refusing a write
+
+    func readWithVersions(
+        path: String, into destination: URL
+    ) async throws -> (current: LampSyncDownloadedFile?, versions: [LampSyncDownloadedFile]) {
+        try await store.readWithVersions(path: path, into: destination)
+    }
+    func resolveVersions(
+        of path: String, writing data: Data, ifRevision revision: String, resolving versions: Set<String>
+    ) async throws -> String {
+        try await store.resolveVersions(of: path, writing: data, ifRevision: revision, resolving: versions)
+    }
+    func hasVersions(path: String) async throws -> Bool { try await store.hasVersions(path: path) }
+
+    // MARK: Module storage, as the importers read it
+
+    func isAvailable() async -> Bool { FileManager.default.fileExists(atPath: store.root.path) }
+
+    func readModuleSnapshot(type: ModuleType, fileName: String) async throws -> LampSyncRemoteFile {
+        let path = "\(directoryName(for: type))/\(fileName)"
+        guard let file = try await store.read(path: path) else { throw ModuleStorageError.fileNotFound(path) }
+        return file
+    }
+    func readModuleFile(type: ModuleType, fileName: String) async throws -> Data {
+        try await readModuleSnapshot(type: type, fileName: fileName).data
+    }
+    func readFile(path: String) async throws -> Data {
+        guard let file = try await store.read(path: path) else { throw ModuleStorageError.fileNotFound(path) }
+        return file.data
+    }
+    func listFiles(path: String) async throws -> [StoredFileListing] {
+        (try await store.list(directory: path) ?? [])
+            .filter { !$0.isDirectory }
+            .map { StoredFileListing(name: $0.name, modificationDate: $0.modifiedAt) }
+    }
+    /// The pass lists through `list`; nothing here asks by module type.
+    func listModuleFiles(type: ModuleType) async throws -> [ModuleFileInfo] { [] }
+    func writeModuleFile(type: ModuleType, fileName: String, data: Data) async throws {
+        _ = try await store.write(data, to: "\(directoryName(for: type))/\(fileName)", condition: .unconditional)
+    }
+    func writeFile(path: String, data: Data) async throws {
+        _ = try await store.write(data, to: path, condition: .unconditional)
+    }
+    func deleteModuleFile(type: ModuleType, fileName: String) async throws {
+        let path = "\(directoryName(for: type))/\(fileName)"
+        guard let revision = try await store.revision(path: path) else { return }
+        try await store.delete(path: path, condition: .ifRevision(revision))
+    }
+    func getFileHash(type: ModuleType, fileName: String) async throws -> String? {
+        try await store.revision(path: "\(directoryName(for: type))/\(fileName)")
+    }
+    func getModificationDate(type: ModuleType, fileName: String) async throws -> Date? { nil }
+    func ensureDirectoryExists(type: ModuleType) async throws {}
+    func directoryURL(for type: ModuleType) -> URL? {
+        store.root.appendingPathComponent(directoryName(for: type), isDirectory: true)
+    }
+    func getSyncStatus(type: ModuleType, fileName: String) async -> ModuleSyncStatus { .notAvailable }
+}
