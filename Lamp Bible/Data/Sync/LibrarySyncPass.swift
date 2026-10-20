@@ -83,22 +83,18 @@ struct LibrarySyncPass {
     private var modules: ModuleSyncManager { .shared }
 
     func run(knownArchiveRevision: String? = nil) async throws -> Outcome {
-        var snapshot: LampSyncSettingsStore.Snapshot?
+        let snapshot: LampSyncSettingsStore.Snapshot
         do {
-            snapshot = try await LampSyncSettingsStore.read(
+            // A truly empty library is claimed with an empty bundle before
+            // anything else: once a module file is there without one, core
+            // reads the library as an earlier one waiting for the Mac.
+            snapshot = try await LampSyncSettingsStore.readOrClaim(
                 from: storage, knownArchiveRevision: knownArchiveRevision
             )
-            if snapshot == nil {
-                // A truly empty library. Its bundle goes first: once a module
-                // file is there without one, core reads the library as an
-                // earlier one waiting for the Mac, and this pass's own bundle
-                // write would be refused.
-                snapshot = try await LampSyncSettingsStore.update(in: storage) { _ in }
-            }
         } catch LampSyncSettingsStore.StoreError.notMigrated(let revision) {
             return .notMigrated(archiveRevision: revision)
         }
-        let bundle = snapshot?.bundle ?? LampSyncSettingsBundle()
+        let bundle = snapshot.bundle
 
         // Deletions made elsewhere, before anything here is compared or sent.
         if let data = bundle.personalDeletions {
