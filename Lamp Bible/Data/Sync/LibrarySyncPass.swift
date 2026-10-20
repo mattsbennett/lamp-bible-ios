@@ -133,7 +133,7 @@ struct LibrarySyncPass {
         var records = try database.libraryRecords(source: source)
         library.seedFolderRevisions(into: &records)
         let carried = try database.pendingManifestWrites(source: source)
-        let ledger = DeletionLedgerParticipant(source: source)
+        var ledger = DeletionLedgerParticipant(source: source, contribution: .init(personal: .init()))
         var participants: [any SettingsBundleParticipant] = []
         var prepared: Set<String> = []
 
@@ -160,6 +160,12 @@ struct LibrarySyncPass {
                 patience: patience,
                 receiving: { snapshot in
                     try receive(snapshot.bundle)
+                    // This device's deletions, read here because the update's
+                    // change only computes and may run again on a newer bundle.
+                    ledger = DeletionLedgerParticipant(
+                        source: source,
+                        contribution: .init(personal: try database.personalDeletionLedger())
+                    )
                     library.opened = snapshot.bundle
                     prepared = Set(snapshot.versions.map(\.revision))
                     participants = try makeParticipants(snapshot.bundle, snapshot.versions)
@@ -232,7 +238,7 @@ struct LibrarySyncPass {
     /// read before them would publish what it had just been told was gone.
     /// One no device can read is skipped, as the Mac skips it.
     private func receive(_ bundle: LampSyncSettingsBundle) throws {
-        if let ledger = bundle.personalDeletions.flatMap({ try? LampPersonalDeletionLedger.decode($0) }) {
+        if let ledger = LampSyncBundleLedgers.personalDeletions(in: bundle) {
             try database.mergePersonalDeletionLedger(ledger)
             try database.applyPersonalDeletionLedger()
         }
@@ -632,26 +638,20 @@ final class PhonePassLibrary: LampSyncPassLibrary {
 // MARK: - Bundle participants
 
 /// Item deletions: this device's ledger joined with the bundle's, and what
-/// the join says is gone removed here too. An unreadable ledger is no reason
-/// to stop syncing content, so it is neither applied nor merged; this
-/// device's own records take its place, and with none of its own the device
-/// leaves it alone. The Mac does the same.
+/// the join says is gone removed here too, by the rules both apps share in
+/// `LampSyncBundleLedgers`.
 @MainActor
 struct DeletionLedgerParticipant: SettingsBundleParticipant {
     let source: String
+    /// This device's own records, read before the update.
+    let contribution: LampSyncBundleLedgers.Contribution
 
     func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
-        var ledger = try ModuleDatabase.shared.personalDeletionLedger()
-        if let existing = bundle.personalDeletions.flatMap({ try? LampPersonalDeletionLedger.decode($0) }) {
-            ledger.merge(existing)
-        }
-        guard !ledger.isEmpty else { return }
-        bundle.personalDeletions = try ledger.encoded()
+        try contribution.apply(to: &bundle)
     }
 
     func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
-        guard let data = written.bundle.personalDeletions,
-              let ledger = try? LampPersonalDeletionLedger.decode(data) else { return }
+        guard let ledger = LampSyncBundleLedgers.personalDeletions(in: written.bundle) else { return }
         try ModuleDatabase.shared.mergePersonalDeletionLedger(ledger)
         try ModuleDatabase.shared.applyPersonalDeletionLedger()
         try LibrarySyncPass.settleEmptiedHighlightModules(source: source)
