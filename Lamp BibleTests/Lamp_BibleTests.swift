@@ -3496,6 +3496,44 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertTrue(fetches.isEmpty, "held, not fetched as missing")
     }
 
+    /// Held for an unsettled conflict is still saved here when it was: a
+    /// deletion from another device older than an edit here does not take it.
+    func testAModuleHeldForAConflictSurvivesAnOlderDeletionElsewhere() async throws {
+        try saveNotesModule(notes: ["a"])
+        _ = try await pass().run()
+        let local = NoteEntry(
+            id: "a", moduleId: moduleId, verseId: 43_001_001, title: nil, content: "Mine",
+            verseRefs: nil, lastModified: 1_788_132_249, footnotes: nil
+        )
+        var remote = local
+        remote.content = "Theirs"
+        try database.replacePendingModuleConflicts(
+            moduleId: moduleId, type: .notes,
+            conflicts: [NoteConflict(id: "a", verseId: 43_001_001, localEntry: local, cloudEntry: remote)],
+            key: { $0.id }
+        )
+        defer {
+            try? database.write { db in
+                try db.execute(sql: "DELETE FROM sync_pending_module_conflicts WHERE module_id = ?", arguments: [moduleId])
+            }
+        }
+        // Another device deletes the module; this device edits it after that.
+        let deletedAt = ModuleDatabase.nowMilliseconds() + 60_000
+        try database.saveNoteEntry(NoteEntry(
+            id: "a", moduleId: moduleId, verseId: 43_001_001, title: nil, content: "Mine, edited",
+            verseRefs: nil, lastModified: Int((deletedAt + 60_000) / 1_000), footnotes: nil
+        ))
+        let path = notesPath
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(path, at: deletedAt, revision: nil)
+        }
+
+        _ = try await pass().run()
+
+        XCTAssertNotNil(try database.getModule(id: moduleId), "an older deletion took a module saved after it")
+        XCTAssertEqual(try storedNoteIDs(), ["a"])
+    }
+
     /// A ledger no device can read must not stop the library syncing.
     func testAnUnreadableDeletionLedgerDoesNotStopThePass() async throws {
         try saveNotesModule(notes: ["a"])

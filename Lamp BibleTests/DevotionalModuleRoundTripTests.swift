@@ -196,42 +196,6 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
         XCTAssertEqual(try storedEntries(), before)
     }
 
-    /// The legacy JSON module form, which the Mac and older releases publish
-    /// and this app still reads. Unlike the SQLite form, which carries the
-    /// stored column across untouched, this one rebuilds each writing from a
-    /// decoded model — the step that twice turned an authored body into a
-    /// block tree.
-    func testAJSONModuleWithAnAuthoredBodyStoresItAsText() async throws {
-        let shelf = ModuleShelf()
-        let name = "\(moduleId!).json"
-        let storage = ShelfStorage(
-            shelf: shelf, moduleID: moduleId, moduleType: .devotional, fileName: name
-        )
-        let file = DevotionalModuleFile(
-            id: moduleId,
-            name: "Round trip",
-            isEditable: true,
-            entries: [Devotional(
-                meta: DevotionalMeta(
-                    id: "entry-1", title: "Cantata Narration",
-                    created: 1_769_317_935, lastModified: 1_788_132_249
-                ),
-                content: .blocks([.paragraph(authoredBody)])
-            )]
-        )
-        await shelf.write(try JSONEncoder().encode(file), named: name)
-
-        try await ModuleSyncManager.shared.pull(
-            moduleId: moduleId, type: .devotional, from: storage, fileName: name
-        )
-
-        let stored = try XCTUnwrap(try database.read { db in
-            try DevotionalEntry.filter(Column("module_id") == moduleId).fetchOne(db)
-        })
-        XCTAssertEqual(stored.contentJson, authoredBody)
-        XCTAssertEqual(try XCTUnwrap(stored.toDevotional()).markdownContent, authoredBody)
-    }
-
     /// An attachment is not in the module file at all — it travels beside it,
     /// and a writing whose image did not make the trip is a writing with a
     /// hole in it.

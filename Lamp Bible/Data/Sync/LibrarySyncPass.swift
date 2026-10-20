@@ -419,6 +419,9 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             if try database.hasPendingModuleConflicts(moduleId: module.id) {
                 gathered.heldWithoutAFile.insert(path)
                 heldModules[path] = (module.type, module.id)
+                // Still saved here when it was: an edit after another
+                // device's deletion survives it, held or not.
+                if let saved = try savedAt(module) { gathered.savedAt[path] = saved }
                 continue
             }
             let data = try exportedBytes(module)
