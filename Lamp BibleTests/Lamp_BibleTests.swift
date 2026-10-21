@@ -2976,7 +2976,8 @@ final class LibrarySyncPassTests: XCTestCase {
     }
 
     /// Another device's deletion of the default notes file never takes every
-    /// note here: the file is kept, goes back up, and the pass reads clean.
+    /// note here: the file is kept, the pass reads clean, and the next edit
+    /// supersedes the deletion.
     func testTheDefaultNotesOutliveADeletionElsewhere() async throws {
         let existed = try database.getModule(id: "notes") != nil
         if !existed {
@@ -3011,11 +3012,18 @@ final class LibrarySyncPassTests: XCTestCase {
         _ = try await pass().run()
 
         XCTAssertNotNil(try database.getNoteEntry(id: noteID), "a deletion elsewhere took every note")
-        let back = await server.file(path)
-        XCTAssertNotNil(back, "the notes go back up")
+        let kept = await server.file(path)
+        XCTAssertNotNil(kept, "the notes stay on the server")
+        _ = try await pass().run()
+
+        // The next edit here goes up and supersedes the deletion.
+        try database.saveNoteEntry(NoteEntry(
+            id: noteID, moduleId: "notes", verseId: 43_001_001, title: nil, content: "Kept, edited",
+            verseRefs: nil, lastModified: Int(Date().timeIntervalSince1970), footnotes: nil
+        ))
+        _ = try await pass().run()
         let entry = try await bundle().manifest.entry(at: path)
         XCTAssertEqual(entry?.isMember, true)
-        _ = try await pass().run()
     }
 
     /// Resetting a notes module sends each note's own deletion, so a device
