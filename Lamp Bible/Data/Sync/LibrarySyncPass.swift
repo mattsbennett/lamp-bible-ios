@@ -89,7 +89,35 @@ struct LibrarySyncPass {
         /// person may move it, after updating their other devices. Until
         /// they do, it syncs as before.
         case phoneLibrary
-        case synced(bundleRevision: String)
+        case synced(bundleRevision: String, report: Report)
+    }
+
+    /// What a pass did, by path. A deletion here comes first: removing
+    /// something of the person's is the last thing a pass should do without
+    /// saying so, and without it a pass that deleted a highlight set reads
+    /// exactly like one that did nothing.
+    struct Report: Equatable {
+        var deletedHere: [String] = []
+        var broughtDown: [String] = []
+        var sent: [String] = []
+        var deletionsSent: [String] = []
+        var changedDuringPass: [String] = []
+
+        init(_ outcome: LampSyncBundlePass.Outcome) {
+            deletedHere = outcome.deletedLocally.sorted()
+            broughtDown = (outcome.installed + outcome.reconciled).sorted()
+            sent = outcome.uploaded.sorted()
+            deletionsSent = outcome.tombstoned.sorted()
+            changedDuringPass = outcome.changedDuringPass.sorted()
+        }
+
+        var line: String {
+            let parts = [
+                ("deleted here", deletedHere), ("brought down", broughtDown), ("sent", sent),
+                ("deletions sent", deletionsSent), ("changed during the pass", changedDuringPass),
+            ].filter { !$0.1.isEmpty }.map { "\($0.0) \($0.1.count): \($0.1.joined(separator: ", "))" }
+            return parts.isEmpty ? "nothing to do" : parts.joined(separator: "; ")
+        }
     }
 
     typealias Store = any ModuleStorage & LampSyncRemoteStore
@@ -217,6 +245,8 @@ struct LibrarySyncPass {
         } catch {
             failures.append("mirroring decks: \(error.localizedDescription)")
         }
+        let report = Report(outcome)
+        print("[LibrarySync] \(report.line)")
         for failure in failures { print("[LibrarySync] \(failure)") }
         // A module marked for publishing is settled once what it exports is
         // what the records say was sent. One edited while the pass ran stays
@@ -235,7 +265,7 @@ struct LibrarySyncPass {
             }
         }
         guard failures.isEmpty else { throw LibrarySyncError.incomplete(failures) }
-        return .synced(bundleRevision: written.revision)
+        return .synced(bundleRevision: written.revision, report: report)
     }
 
     /// Deletions made elsewhere, before anything here is gathered: a library
@@ -725,7 +755,7 @@ extension LibrarySyncPass {
             ? knownArchiveRevision() : nil
         let outcome = try await pass.run(knownArchiveRevision: archiveRevision)
         switch outcome {
-        case .synced(let revision): remember(revision, for: pass.source)
+        case .synced(let revision, _): remember(revision, for: pass.source)
         case .notMigrated, .phoneLibrary: remember(nil, for: pass.source)
         }
         print("[LibrarySync] \(outcome)")

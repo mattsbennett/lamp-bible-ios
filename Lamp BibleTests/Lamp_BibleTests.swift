@@ -2957,11 +2957,14 @@ final class LibrarySyncPassTests: XCTestCase {
             )
         }
 
-        _ = try await pass().run()
+        let outcome = try await pass().run()
 
         XCTAssertNil(try database.getModule(id: moduleId))
         let reaped = await server.file(notesPath)
         XCTAssertNil(reaped, "the tombstoned copy is reaped")
+        guard case .synced(_, let report) = outcome else { return XCTFail("expected a synced pass") }
+        XCTAssertEqual(report.deletedHere, [notesPath])
+        XCTAssertEqual(report.line, "deleted here 1: \(notesPath)", "a deletion here is said")
     }
 
     /// This device's default notes and writings land on the two paths core
@@ -3776,7 +3779,7 @@ final class ICloudLibraryPassTests: XCTestCase {
         ))
         let pass = LibrarySyncPass(storage: storage, source: storage.librarySource)
 
-        guard case .synced(let first) = try await pass.run() else { return XCTFail("expected a synced pass") }
+        guard case .synced(let first, _) = try await pass.run() else { return XCTFail("expected a synced pass") }
 
         let notes = root.appendingPathComponent("Notes/\(moduleId!).lamp")
         XCTAssertTrue(FileManager.default.fileExists(atPath: notes.path))
@@ -3786,7 +3789,8 @@ final class ICloudLibraryPassTests: XCTestCase {
         XCTAssertEqual(bundle.manifest.entry(at: "Notes/\(moduleId!).lamp")?.isMember, true)
         let written = try FileManager.default.attributesOfItem(atPath: notes.path)[.modificationDate] as? Date
 
-        guard case .synced(let second) = try await pass.run() else { return XCTFail("expected a synced pass") }
+        guard case .synced(let second, let quiet) = try await pass.run() else { return XCTFail("expected a synced pass") }
+        XCTAssertEqual(quiet.line, "nothing to do")
 
         XCTAssertEqual(second, first, "nothing changed, so the bundle is not rewritten")
         let after = try FileManager.default.attributesOfItem(atPath: notes.path)[.modificationDate] as? Date
