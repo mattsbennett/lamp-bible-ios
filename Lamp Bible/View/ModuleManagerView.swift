@@ -175,6 +175,12 @@ struct ModuleManagerView: View {
     @State private var showingImportSheet: Bool = false
     @State private var showingLampImporter: Bool = false
     @State private var pendingLampImport: Bool = false
+    /// The one file importer serves both module packages and Bibles: two on
+    /// the same view have not reliably both presented.
+    @State private var importingBible: Bool = false
+    @State private var pendingBibleImport: Bool = false
+    @State private var bibleImportProgress: String? = nil
+    @State private var pendingTranslationImport: PendingTranslationImport? = nil
     @State private var alertMessage: String = ""
     @State private var showingAlert: Bool = false
     @State private var showingDuplicateAlert: Bool = false
@@ -363,8 +369,10 @@ struct ModuleManagerView: View {
             }
             // Import module sheet
             .sheet(isPresented: $showingImportSheet, onDismiss: {
-                if pendingLampImport {
+                if pendingLampImport || pendingBibleImport {
+                    importingBible = pendingBibleImport
                     pendingLampImport = false
+                    pendingBibleImport = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         showingLampImporter = true
                     }
@@ -376,6 +384,10 @@ struct ModuleManagerView: View {
                         .compactMap { $0.userModule },
                     onRequestLampImport: {
                         pendingLampImport = true
+                        showingImportSheet = false
+                    },
+                    onRequestBibleImport: {
+                        pendingBibleImport = true
                         showingImportSheet = false
                     },
                     onImportMarkdown: { moduleId, moduleType, content in
@@ -391,13 +403,31 @@ struct ModuleManagerView: View {
                     }
                 )
             }
-            // .lamp file importer (presented after import sheet dismisses)
+            // .lamp or Bible file importer (presented after import sheet dismisses).
+            // USFM has no system type of its own, and a Bible may be a folder
+            // of books; the importer says what it can't read.
             .fileImporter(
                 isPresented: $showingLampImporter,
-                allowedContentTypes: [.lampFile, .json],
+                allowedContentTypes: importingBible ? [.folder, .data] : [.lampFile, .json],
                 allowsMultipleSelection: false
             ) { result in
-                handleLampImport(result)
+                if importingBible {
+                    handleBibleImport(result)
+                } else {
+                    handleLampImport(result)
+                }
+            }
+            .sheet(item: $pendingTranslationImport) { pending in
+                TranslationImportView(pending: pending) { destination, name, abbreviation, language in
+                    importBible(pending, into: destination, name: name, abbreviation: abbreviation, language: language)
+                }
+            }
+            .overlay {
+                if let bibleImportProgress {
+                    ProgressView(bibleImportProgress)
+                        .padding(24)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
             }
             // Create new module
             .sheet(isPresented: $showingCreateModule) {
@@ -454,6 +484,60 @@ struct ModuleManagerView: View {
 
         case .failure(let error):
             print("[ModuleManagerView] File picker error: \(error)")
+        }
+    }
+
+    /// Reading a whole Bible takes a second or more, so it happens off the
+    /// main actor, as does the look at what is installed that the review
+    /// sheet decides with.
+    private func handleBibleImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        bibleImportProgress = "Reading the Bible…"
+        Task {
+            do {
+                let (translation, library) = try await Task.detached(priority: .userInitiated) {
+                    (try LampTranslationImporter().read(url), try ModuleSyncManager.shared.translationImportLibrary())
+                }.value
+                pendingTranslationImport = PendingTranslationImport(
+                    sourceName: url.lastPathComponent,
+                    translation: translation,
+                    library: library
+                )
+            } catch {
+                alertMessage = error.localizedDescription
+                showingAlert = true
+            }
+            bibleImportProgress = nil
+        }
+    }
+
+    private func importBible(
+        _ pending: PendingTranslationImport,
+        into destination: LampTranslationImportDestination,
+        name: String,
+        abbreviation: String,
+        language: String
+    ) {
+        bibleImportProgress = "Importing…"
+        Task {
+            do {
+                try await syncManager.importTranslation(
+                    pending.translation,
+                    into: destination,
+                    name: name,
+                    abbreviation: abbreviation,
+                    language: language
+                )
+                await loadModules()
+                alertMessage = pending.translation.report.completionMessage(
+                    translationName: name,
+                    replaced: destination.replacedModuleID != nil
+                )
+            } catch {
+                alertMessage = "Failed to import the Bible: \(error.localizedDescription)"
+            }
+            bibleImportProgress = nil
+            showingAlert = true
         }
     }
 
@@ -2579,6 +2663,7 @@ struct CreateModuleView: View {
 struct ImportModuleSheet: View {
     let modules: [Module]
     var onRequestLampImport: (() -> Void)?
+    var onRequestBibleImport: (() -> Void)?
     var onImportMarkdown: ((String, ModuleType, String) -> Void)?
     var onImportComplete: (() -> Void)?
 
@@ -2621,6 +2706,30 @@ struct ImportModuleSheet: View {
                     .buttonStyle(.plain)
                 } header: {
                     Text("Module Package")
+                }
+
+                Section {
+                    Button {
+                        onRequestBibleImport?()
+                    } label: {
+                        HStack {
+                            Image(systemName: "text.book.closed")
+                                .foregroundStyle(.accent)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Import a Bible")
+                                    .foregroundStyle(.primary)
+                                Text("A USFM, OSIS or XML Bible you own, as a file, folder or zip")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("Bible")
+                } footer: {
+                    Text("Lamp converts it into a translation in your library. Import only Bibles you have the right to use.")
                 }
 
                 // Markdown import

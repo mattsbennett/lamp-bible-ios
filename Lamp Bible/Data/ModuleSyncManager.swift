@@ -179,6 +179,79 @@ class ModuleSyncManager: ObservableObject {
         )
     }
 
+    // MARK: - Bible import
+
+    /// What reviewing a Bible import needs to know of the translations and
+    /// modules installed here, read once rather than on every keystroke.
+    struct TranslationImportLibrary {
+        /// Translations the user imported; a new import can replace one.
+        let replaceableTranslationIDs: Set<String>
+        /// Everything else, bundled modules included, which an import avoids.
+        let otherModuleIDs: Set<String>
+        let abbreviationsByTranslationID: [String: String]
+        let namesByTranslationID: [String: String]
+
+        func destination(abbreviation: String) -> LampTranslationImportDestination {
+            LampTranslationImporter.destination(
+                abbreviation: abbreviation,
+                replaceableTranslationIDs: replaceableTranslationIDs,
+                otherModuleIDs: otherModuleIDs
+            )
+        }
+
+        /// The translation already shown under `abbreviation`, other than
+        /// the one an import would replace.
+        func nameSharing(abbreviation: String, except destination: LampTranslationImportDestination) -> String? {
+            LampTranslationImporter.translationID(
+                sharingAbbreviation: abbreviation,
+                abbreviationsByTranslationID: abbreviationsByTranslationID,
+                except: destination
+            ).flatMap { namesByTranslationID[$0] }
+        }
+    }
+
+    func translationImportLibrary() throws -> TranslationImportLibrary {
+        let imported = try database.getAllTranslations(bundledOnly: false)
+        let bundled = try BundledModuleDatabase.shared.getAllTranslations()
+        let modules = try database.getAllModules()
+        let translations = bundled + imported
+        return TranslationImportLibrary(
+            replaceableTranslationIDs: Set(imported.map(\.id)),
+            otherModuleIDs: Set(bundled.map(\.id) + modules.map(\.id)),
+            abbreviationsByTranslationID: Dictionary(
+                translations.map { ($0.id, $0.abbreviation) }, uniquingKeysWith: { first, _ in first }
+            ),
+            namesByTranslationID: Dictionary(
+                translations.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }
+            )
+        )
+    }
+
+    /// Installs a Bible read from another format: compiled into a `.lamp`
+    /// and taken in like any module file, which also publishes it to the
+    /// library for the user's other devices.
+    func importTranslation(
+        _ translation: LampImportedTranslation,
+        into destination: LampTranslationImportDestination,
+        name: String,
+        abbreviation: String,
+        language: String
+    ) async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lamp-translation-import-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let compiled = try translation.compile(
+            into: temporaryDirectory,
+            id: destination.moduleID,
+            name: name,
+            abbreviation: abbreviation,
+            language: language
+        )
+        try await importModuleFromFile(url: compiled.outputURL, moduleType: .translation)
+    }
+
     func importRemoteModuleSnapshot(
         fileInfo: ModuleFileInfo,
         type: ModuleType,

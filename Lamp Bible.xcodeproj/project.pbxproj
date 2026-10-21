@@ -90,6 +90,7 @@
 		B885E4282ADB47ED0066F0A0 /* Lamp_BibleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */; };
 		B885E4322ADB47ED0066F0A0 /* Lamp_BibleUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */; };
 		B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229562F05FE2100A58F81 /* ModuleManagerView.swift */; };
+		80795CED3EF8DE8F3904D038 /* TranslationImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E2B3859553A4C0CF0CCDD93 /* TranslationImportView.swift */; };
 		B89229592F05FE3100A58F81 /* MarkdownConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229582F05FE3100A58F81 /* MarkdownConverter.swift */; };
 		B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */; };
 		B892295D2F05FE4200A58F81 /* ModuleDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */; };
@@ -98,6 +99,7 @@
 		B89229632F05FE5600A58F81 /* ModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229622F05FE5600A58F81 /* ModuleStorage.swift */; };
 		B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */; };
 		B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */; };
+		D9BA20FA077BADFF0AB7A744 /* TranslationImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30C12C21B9AF1748ECBF8362 /* TranslationImportTests.swift */; };
 		AA11C0DE2F0600000000A002 /* PlanMetaDataResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11C0DE2F0600000000A001 /* PlanMetaDataResolutionTests.swift */; };
 		B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */; };
 		B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */; };
@@ -265,6 +267,7 @@
 		B885E4312ADB47ED0066F0A0 /* Lamp_BibleUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lamp_BibleUITests.swift; sourceTree = "<group>"; };
 		B886838B2AF6F0A1007F6924 /* Lamp-Bible-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Lamp-Bible-Info.plist"; sourceTree = SOURCE_ROOT; };
 		B89229562F05FE2100A58F81 /* ModuleManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleManagerView.swift; sourceTree = "<group>"; };
+		0E2B3859553A4C0CF0CCDD93 /* TranslationImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslationImportView.swift; sourceTree = "<group>"; };
 		B89229582F05FE3100A58F81 /* MarkdownConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownConverter.swift; sourceTree = "<group>"; };
 		B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudModuleStorage.swift; sourceTree = "<group>"; };
 		B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleDatabase.swift; sourceTree = "<group>"; };
@@ -273,6 +276,7 @@
 		B89229622F05FE5600A58F81 /* ModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleStorage.swift; sourceTree = "<group>"; };
 		B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSyncManager.swift; sourceTree = "<group>"; };
 		B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceParsingTests.swift; sourceTree = "<group>"; };
+		30C12C21B9AF1748ECBF8362 /* TranslationImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslationImportTests.swift; sourceTree = "<group>"; };
 		AA11C0DE2F0600000000A001 /* PlanMetaDataResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanMetaDataResolutionTests.swift; sourceTree = "<group>"; };
 		B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSettingsView.swift; sourceTree = "<group>"; };
 		B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentaryRenderer.swift; sourceTree = "<group>"; };
@@ -448,6 +452,7 @@
 				B851FFD02B79D1AA00C74C1D /* ConditionalStack.swift */,
 				B885E4182ADB47E50066F0A0 /* ContentView.swift */,
 				B89229562F05FE2100A58F81 /* ModuleManagerView.swift */,
+				0E2B3859553A4C0CF0CCDD93 /* TranslationImportView.swift */,
 				B85B89A82F1F11E1004B4F61 /* WaveformView.swift */,
 				B89229962F16A00000A58F81 /* NoteConflictView.swift */,
 				B87B2AD02F008237006DC53D /* ToolPanelView.swift */,
@@ -554,6 +559,7 @@
 			children = (
 				B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */,
 				B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */,
+				30C12C21B9AF1748ECBF8362 /* TranslationImportTests.swift */,
 				AA11C0DE2F0600000000A001 /* PlanMetaDataResolutionTests.swift */,
 				B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */,
 				C1A100182FE1000000000001 /* PresentationDeckSyncTests.swift */,
@@ -820,6 +826,7 @@
 				B85B89A72F1F11CC004B4F61 /* ImportPreviewSheet.swift in Sources */,
 				B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */,
 				B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */,
+				80795CED3EF8DE8F3904D038 /* TranslationImportView.swift in Sources */,
 				B84968D42AF72D5F00955089 /* PlanView.swift in Sources */,
 				B85B89852F19F216004B4F61 /* DevotionalPickerView.swift in Sources */,
 				B85B89862F19F216004B4F61 /* DevotionalBlockRenderer.swift in Sources */,
@@ -866,6 +873,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */,
+				D9BA20FA077BADFF0AB7A744 /* TranslationImportTests.swift in Sources */,
 				AA11C0DE2F0600000000A002 /* PlanMetaDataResolutionTests.swift in Sources */,
 				B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */,
 				C1A1000B2FE1000000000001 /* PresentationDeckSyncTests.swift in Sources */,
