@@ -181,6 +181,8 @@ struct ModuleManagerView: View {
     @State private var pendingBibleImport: Bool = false
     @State private var bibleImportProgress: String? = nil
     @State private var pendingTranslationImport: PendingTranslationImport? = nil
+    @State private var bibleUnlockRequest: TranslationUnlockRequest? = nil
+    @State private var bibleUnlockKey: String = ""
     @State private var alertMessage: String = ""
     @State private var showingAlert: Bool = false
     @State private var showingDuplicateAlert: Bool = false
@@ -422,6 +424,30 @@ struct ModuleManagerView: View {
                     importBible(pending, into: destination, name: name, abbreviation: abbreviation, language: language)
                 }
             }
+            .alert(
+                "Unlock Module",
+                isPresented: Binding(
+                    get: { bibleUnlockRequest != nil },
+                    set: { if !$0 { bibleUnlockRequest = nil } }
+                ),
+                presenting: bibleUnlockRequest
+            ) { request in
+                TextField("Unlock key", text: $bibleUnlockKey)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Unlock") {
+                    let key = bibleUnlockKey
+                    bibleUnlockKey = ""
+                    bibleUnlockRequest = nil
+                    readBible(at: request.url, unlockKey: key)
+                }
+                Button("Cancel", role: .cancel) {
+                    bibleUnlockKey = ""
+                    bibleUnlockRequest = nil
+                }
+            } message: { request in
+                Text(request.prompt)
+            }
             .overlay {
                 if let bibleImportProgress {
                     ProgressView(bibleImportProgress)
@@ -492,17 +518,28 @@ struct ModuleManagerView: View {
     /// sheet decides with.
     private func handleBibleImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
+        readBible(at: url, unlockKey: nil)
+    }
+
+    /// A locked SWORD module comes back as a request for its key, and is
+    /// read again with it.
+    private func readBible(at url: URL, unlockKey: String?) {
         bibleImportProgress = "Reading the Bible…"
         Task {
             do {
                 let (translation, library) = try await Task.detached(priority: .userInitiated) {
-                    (try LampTranslationImporter().read(url), try ModuleSyncManager.shared.translationImportLibrary())
+                    (
+                        try LampTranslationImporter().read(url, unlockKey: unlockKey),
+                        try ModuleSyncManager.shared.translationImportLibrary()
+                    )
                 }.value
                 pendingTranslationImport = PendingTranslationImport(
                     sourceName: url.lastPathComponent,
                     translation: translation,
                     library: library
                 )
+            } catch let error as LampTranslationImportError where error.unlockPrompt != nil {
+                bibleUnlockRequest = TranslationUnlockRequest(url: url, prompt: error.unlockPrompt ?? "")
             } catch {
                 alertMessage = error.localizedDescription
                 showingAlert = true
@@ -2719,7 +2756,7 @@ struct ImportModuleSheet: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Import a Bible")
                                     .foregroundStyle(.primary)
-                                Text("A USFM, OSIS or XML Bible you own, as a file, folder or zip")
+                                Text("A USFM, OSIS, XML or SWORD Bible you own, as a file, folder or zip")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -2729,7 +2766,7 @@ struct ImportModuleSheet: View {
                 } header: {
                     Text("Bible")
                 } footer: {
-                    Text("Lamp converts it into a translation in your library. Import only Bibles you have the right to use.")
+                    Text("Lamp converts it into a translation in your library. For a SWORD module, choose its zip or folder; a locked one opens with the key you bought. Import only Bibles you have the right to use.")
                 }
 
                 // Markdown import
