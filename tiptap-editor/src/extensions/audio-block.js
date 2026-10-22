@@ -13,8 +13,10 @@ export const AudioBlock = Node.create({
 
   addAttributes() {
     return {
-      mediaId: { default: null },
-      caption: { default: 'Audio' },
+      // Read from the attributes the block is written with: by default an
+      // attribute is read under its own name, which no audio block has.
+      mediaId: { default: null, parseHTML: el => el.getAttribute('data-media-id') },
+      caption: { default: 'Audio', parseHTML: el => el.getAttribute('data-caption') || 'Audio' },
     }
   },
 

@@ -1,7 +1,7 @@
 import './editor.css'
 import { Editor } from '@tiptap/core'
+import { EditorState } from '@tiptap/pm/state'
 import { StarterKit } from '@tiptap/starter-kit'
-import { Link } from '@tiptap/extension-link'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Table } from '@tiptap/extension-table'
 import { TableRow } from '@tiptap/extension-table-row'
@@ -113,6 +113,8 @@ let currentViewMode = 'edit' // 'edit', 'read', or 'present'
 let debounceTimer = null
 let currentMarkdown = ''
 let savedSelection = null // { from, to } saved before sheet opens
+let placeholderText = 'Start writing…'
+let reportsHeight = false
 
 // ---- Swift Bridge ----
 
@@ -139,15 +141,19 @@ function initEditor() {
   editor = new Editor({
     element: editorEl,
     extensions: [
+      // StarterKit brings Link; configured here rather than added again.
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
-        }),
-      Link.configure({
-        openOnClick: false,
-        HTMLAttributes: { rel: null, target: null },
+        link: {
+          openOnClick: false,
+          HTMLAttributes: { rel: null, target: null },
+          // The apps' own links, to a verse or a Strong's entry. Link keeps
+          // only web schemes otherwise, and drops the rest as it parses.
+          protocols: ['lampbible'],
+        },
       }),
       Placeholder.configure({
-        placeholder: 'Start writing…',
+        placeholder: () => placeholderText,
       }),
       Table.configure({
         resizable: false,
@@ -261,6 +267,30 @@ function initEditor() {
   postToSwift('ready', {})
 }
 
+// Markdown as the editor parses it: media, audio, quoted line breaks and
+// footnotes turned into the HTML the extensions read.
+function resolveForEditor(md) {
+  let resolved = resolveMediaPaths(md)
+  resolved = resolveAudioBlocks(resolved)
+  resolved = resolveBlockquoteLineBreaks(resolved)
+  return resolveFootnotes(resolved)
+}
+
+// The editor's height to its last line, measured from the top of the page so
+// a margin above it counts, for a host that sizes the view to its text.
+function reportContentHeight() {
+  if (!reportsHeight) return
+  const root = document.getElementById('tiptap-editor')
+  postToSwift('contentHeight', {
+    height: Math.ceil(root.getBoundingClientRect().bottom + window.scrollY),
+  })
+}
+
+function cancelContentUpdate() {
+  if (debounceTimer) clearTimeout(debounceTimer)
+  debounceTimer = null
+}
+
 function scheduleContentUpdate() {
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
@@ -346,13 +376,7 @@ window.editorAPI = {
   setContent(markdown) {
     currentMarkdown = markdown || ''
     if (currentMode === 'richtext') {
-      // Convert custom elements to HTML before parsing
-      let resolved = resolveMediaPaths(currentMarkdown)
-      resolved = resolveAudioBlocks(resolved)
-
-      resolved = resolveBlockquoteLineBreaks(resolved)
-      resolved = resolveFootnotes(resolved)
-      editor.commands.setContent(resolved, false)
+      editor.commands.setContent(resolveForEditor(currentMarkdown), { emitUpdate: false })
     } else {
       markdownTextarea.value = currentMarkdown
     }
@@ -360,6 +384,65 @@ window.editorAPI = {
 
   getContent() {
     return getMarkdownContent()
+  },
+
+  // Replaces the document with another, for an editor handed from one note
+  // or writing to the next. Nothing is reported back as an edit: a change
+  // the previous document had not yet reported is dropped rather than
+  // arriving at the next one's host as its own. And the undo history starts
+  // afresh, so nothing can be undone back into the previous document.
+  load(markdown) {
+    cancelContentUpdate()
+    savedSelection = null
+    currentMarkdown = markdown || ''
+    markdownTextarea.value = currentMarkdown
+    editor.commands.setContent(resolveForEditor(currentMarkdown), { emitUpdate: false })
+    editor.view.updateState(EditorState.create({
+      doc: editor.state.doc,
+      plugins: editor.state.plugins,
+    }))
+    if (currentMode === 'richtext') reportSelectionState()
+    // A document the same height as the last fires no resize, and the host
+    // it was handed to would never learn its height.
+    reportContentHeight()
+  },
+
+  // Sizes the page to the text, for a host laying the editor out among
+  // other views, and reports its height whenever it changes, and whether
+  // anything in the page has focus.
+  setReportsHeight(on) {
+    if (reportsHeight || !on) return
+    reportsHeight = true
+    const style = document.createElement('style')
+    style.id = 'lamp-compact-layout'
+    style.textContent = `
+      html, body { height: auto !important; }
+      #tiptap-editor { min-height: 0 !important; padding: 10px 12px !important; }
+      #tiptap-editor .tiptap { min-height: 0 !important; }
+    `
+    document.head.appendChild(style)
+    new ResizeObserver(reportContentHeight).observe(document.getElementById('tiptap-editor'))
+    document.addEventListener('focusin', () => postToSwift('focusChanged', { focused: true }))
+    document.addEventListener('focusout', () => postToSwift('focusChanged', { focused: false }))
+    reportContentHeight()
+  },
+
+  // The page behind the text, in either theme: the stylesheet's dark theme
+  // is pure black, darker than the host's own surfaces.
+  setBackgroundColor(css) {
+    let style = document.getElementById('lamp-host-background')
+    if (!style) {
+      style = document.createElement('style')
+      style.id = 'lamp-host-background'
+      document.head.appendChild(style)
+    }
+    style.textContent = css ? `body, body.dark { --bg-color: ${css} !important; }` : ''
+  },
+
+  setPlaceholder(text) {
+    placeholderText = text || ''
+    // Placeholder decorations are drawn per transaction.
+    editor.view.dispatch(editor.state.tr)
   },
 
   toggleBold() {
@@ -516,11 +599,7 @@ window.editorAPI = {
     currentMode = 'richtext'
     // Convert current markdown and load into TipTap with pre-processing
     currentMarkdown = markdownTextarea.value
-    let resolved = resolveMediaPaths(currentMarkdown)
-    resolved = resolveAudioBlocks(resolved)
-    resolved = resolveBlockquoteLineBreaks(resolved)
-    resolved = resolveFootnotes(resolved)
-    editor.commands.setContent(resolved, false)
+    editor.commands.setContent(resolveForEditor(currentMarkdown), { emitUpdate: false })
     markdownTextarea.style.display = 'none'
     document.getElementById('tiptap-editor').style.display = 'block'
   },

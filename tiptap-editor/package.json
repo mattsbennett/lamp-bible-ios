@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node src/footnote-numbering.test.mjs"
+    "test": "node src/footnote-numbering.test.mjs",
+    "test:webkit": "vite build --outDir ../.webkit-check --emptyOutDir && swiftc -O -framework AppKit -framework WebKit webkit/check.swift -o .webkit-check/check && .webkit-check/check .webkit-check/index.html"
   },
   "dependencies": {
     "@tiptap/core": "^3.0.0",

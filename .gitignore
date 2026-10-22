@@ -10,3 +10,4 @@ xcuserdata
 prompts/**
 tiptap-editor/node_modules
 build/
+tiptap-editor/.webkit-check/
