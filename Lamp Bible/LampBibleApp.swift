@@ -132,6 +132,11 @@ private struct ContentBootstrapView: View {
             RealmMigrator.migrateIfNeeded()
             WidgetDataService.shared.writeAll()
             isReady = true
+
+            // The note editor's page, loaded once the app is up rather than
+            // when someone first opens a note.
+            try? await Task.sleep(for: .seconds(2))
+            TipTapPagePool.shared.warmUp(.note)
         }
     }
 }

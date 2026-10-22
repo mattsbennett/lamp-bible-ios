@@ -94,6 +94,18 @@ struct SplitReaderView: View {
 
     // Divider position tracking for overlay alignment
     @State private var dividerY: CGFloat = 0
+    /// While a note is being typed with the keyboard up, the space above the
+    /// keyboard is too little for both panes, and the notes take it.
+    @ObservedObject private var noteEditorFocus = NoteEditorFocus.shared
+    @State private var keyboardHeight: CGFloat = 0
+
+    /// The bottom panel takes the whole space above the keyboard: the split
+    /// then lays itself out around the keyboard, so the panel inside it does
+    /// not make room for the keyboard a second time.
+    private var notesTakeTheSpace: Bool {
+        (noteEditorFocus.isEditing && keyboardHeight > 0 || noteEditorFocus.isAwaitingSheet)
+            && effectiveOrientation != "right"
+    }
 
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
 
@@ -223,23 +235,42 @@ struct SplitReaderView: View {
                     }
                 } else {
                     VStack(spacing: 0) {
+                        // Kept, at no height, so it is where it was when the
+                        // keyboard goes down.
                         readerContent
-                            .frame(height: geometry.size.height - bottomPanelHeight - 12)
+                            .frame(height: notesTakeTheSpace ? 0 : max(0, geometry.size.height - bottomPanelHeight - 12))
+                            .opacity(notesTakeTheSpace ? 0 : 1)
+                            .clipped()
+                            .allowsHitTesting(!notesTakeTheSpace)
 
                         // Divider with integrated drag handle
-                        BottomPanelDivider(
-                            panelHeight: $bottomPanelHeight,
-                            containerHeight: geometry.size.height,
-                            minPanelSize: minPanelSize,
-                            maxPanelRatio: maxPanelRatio,
-                            onDragEnd: {
-                                storedBottomPanelHeight = Double(bottomPanelHeight)
-                            }
-                        )
+                        if !notesTakeTheSpace {
+                            BottomPanelDivider(
+                                panelHeight: $bottomPanelHeight,
+                                containerHeight: geometry.size.height,
+                                minPanelSize: minPanelSize,
+                                maxPanelRatio: maxPanelRatio,
+                                onDragEnd: {
+                                    storedBottomPanelHeight = Double(bottomPanelHeight)
+                                }
+                            )
+                        }
 
                         toolPanelContent
-                            .frame(height: bottomPanelHeight)
+                            // Off the top edge by a point: touching it, the
+                            // panel's list would run on up under the status bar
+                            // and start behind the panel's own header.
+                            .padding(.top, notesTakeTheSpace ? 1 : 0)
+                            .frame(height: notesTakeTheSpace
+                                   ? max(minPanelSize, geometry.size.height - keyboardHeight)
+                                   : bottomPanelHeight)
+                            .clipped()
+
+                        if notesTakeTheSpace {
+                            Spacer(minLength: keyboardHeight)
+                        }
                     }
+                    .animation(.easeInOut(duration: 0.25), value: notesTakeTheSpace)
                 }
 
                 // Layer 2: Interactive Drag Overlay (only for right panel - bottom uses inline handle)
@@ -258,6 +289,15 @@ struct SplitReaderView: View {
                 }
             }
             .coordinateSpace(name: "splitContainer")
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+                guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+                // How far up the screen the keyboard reaches.
+                let screen = UIScreen.main.bounds
+                keyboardHeight = frame.minY >= screen.maxY ? 0 : max(0, screen.maxY - frame.minY)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                keyboardHeight = 0
+            }
             .onPreferenceChange(DividerPositionKey.self) { value in
                 dividerY = value
             }
@@ -291,6 +331,8 @@ struct SplitReaderView: View {
                 }
             }
         }
+        // Laid out around the keyboard by hand while the notes take the space.
+        .ignoresSafeArea(notesTakeTheSpace ? .keyboard : [], edges: .bottom)
     }
 
     /// Full-width collapsed header for horizontal split mode

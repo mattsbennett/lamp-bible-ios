@@ -6,6 +6,7 @@
 //
 
 import XCTest
+import WebKit
 import GRDB
 import LampCore
 import LampModuleKit
@@ -3795,5 +3796,205 @@ final class ICloudLibraryPassTests: XCTestCase {
         XCTAssertEqual(second, first, "nothing changed, so the bundle is not rewritten")
         let after = try FileManager.default.attributesOfItem(atPath: notes.path)[.modificationDate] as? Date
         XCTAssertEqual(after, written, "nor is the module")
+    }
+}
+
+/// A note's Markdown drawn natively: as the notes editor reads it, a line
+/// break typed in a note is a break.
+final class NoteMarkdownTests: XCTestCase {
+    private func render(_ markdown: String) -> NSAttributedString {
+        NoteMarkdown.render(markdown, fontSize: 16).text
+    }
+
+    private func traits(_ text: NSAttributedString, at word: String) -> UIFontDescriptor.SymbolicTraits {
+        let range = (text.string as NSString).range(of: word)
+        let font = text.attribute(.font, at: range.location, effectiveRange: nil) as? UIFont
+        return font?.fontDescriptor.symbolicTraits ?? []
+    }
+
+    func testAPlainTextNoteReadsAsItWasTyped() {
+        let note = "Line one\nLine two\n\nAfter a gap"
+        XCTAssertEqual(render(note).string, note)
+    }
+
+    func testEmphasisIsDrawnRatherThanShown() {
+        let text = render("Some **strong** and *gentle* words")
+        XCTAssertEqual(text.string, "Some strong and gentle words")
+        XCTAssertTrue(traits(text, at: "strong").contains(.traitBold))
+        XCTAssertTrue(traits(text, at: "gentle").contains(.traitItalic))
+        XCTAssertFalse(traits(text, at: "words").contains(.traitBold))
+    }
+
+    func testListsQuotesAndHeadingsLoseTheirMarkers() {
+        XCTAssertEqual(render("- one\n- two").string, "•\tone\n•\ttwo")
+        XCTAssertEqual(render("1. first\n2. second").string, "1.\tfirst\n2.\tsecond")
+        XCTAssertEqual(render("> The wind blows").string, "The wind blows")
+        let heading = render("## Notes on John 3")
+        XCTAssertEqual(heading.string, "Notes on John 3")
+        XCTAssertTrue(traits(heading, at: "Notes").contains(.traitBold))
+    }
+
+    func testANestedItemIsIndentedFurther() {
+        let text = render("- outer\n    - inner")
+        let ns = text.string as NSString
+        let outer = text.attribute(.paragraphStyle, at: ns.range(of: "outer").location, effectiveRange: nil) as? NSParagraphStyle
+        let inner = text.attribute(.paragraphStyle, at: ns.range(of: "inner").location, effectiveRange: nil) as? NSParagraphStyle
+        XCTAssertGreaterThan(inner?.headIndent ?? 0, outer?.headIndent ?? 0)
+    }
+
+    func testAnEscapeShowsTheCharacterItKeeps() {
+        XCTAssertEqual(render("5 \\* 3 = 15").string, "5 * 3 = 15")
+    }
+
+    func testAVerseLinkIsFoundWhereItsTextLands() {
+        let rendered = NoteMarkdown.render("- See [verse 16](lampbible://verse/43003016/43003017) here", fontSize: 16)
+        XCTAssertEqual(rendered.text.string, "•\tSee verse 16 here")
+        XCTAssertEqual(rendered.verseLinks.count, 1)
+        let link = rendered.verseLinks[0]
+        XCTAssertEqual((rendered.text.string as NSString).substring(with: link.range), "verse 16")
+        XCTAssertEqual(link.verseId, 43_003_016)
+        XCTAssertEqual(link.endVerseId, 43_003_017)
+    }
+
+    func testAFootnoteMarkerIsLeftForItsOwnStyling() {
+        XCTAssertEqual(render("Born again[^1] from above").string, "Born again[^1] from above")
+    }
+}
+
+/// The note editor's page, borrowed and handed back as a person moves from
+/// section to section, in WebKit itself.
+@MainActor
+final class NoteEditorPageTests: XCTestCase {
+    private var window: UIWindow!
+
+    override func setUp() async throws {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        window = scene.map { UIWindow(windowScene: $0) } ?? UIWindow(frame: UIScreen.main.bounds)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 800)
+        window.makeKeyAndVisible()
+    }
+
+    override func tearDown() async throws {
+        window.isHidden = true
+        window = nil
+    }
+
+    private func host() -> NoteEditorHostView {
+        let view = NoteEditorHostView(frame: CGRect(x: 0, y: 0, width: 360, height: 200))
+        window.addSubview(view)
+        return view
+    }
+
+    /// Waits for a condition the page brings about, in its own time.
+    private func eventually(_ what: String, timeout: TimeInterval = 10, _ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { return XCTFail("timed out waiting for \(what)") }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    private func run(_ js: String, on view: NoteEditorHostView) {
+        let handle = NoteEditorHandle()
+        handle.attachForTesting(view)
+        handle.run(js)
+    }
+
+    func testAnOpenedSectionReportsItsHeightAndItsEdits() async {
+        let view = host()
+        var heights: [CGFloat] = []
+        var contents: [String] = []
+        view.onHeight = { heights.append($0) }
+        view.onContent = { contents.append($0) }
+        view.attach(key: "test|height", markdown: "Line one\nLine two", fontSize: 16)
+
+        await eventually("a height") { heights.contains { $0 > 0 } }
+        run("insertFootnoteRef('1')", on: view)
+        await eventually("the edit") { contents.last?.contains("[^1]") == true }
+        XCTAssertEqual(contents.last?.contains("Line one\nLine two"), true, "single line breaks are kept: \(contents)")
+        view.detach()
+    }
+
+    func testTypingNotYetReportedIsHandedBackWhenTheEditorLetsGo() async {
+        let view = host()
+        var contents: [String] = []
+        view.onContent = { contents.append($0) }
+        view.attach(key: "test|flush", markdown: "Before", fontSize: 16)
+        await eventually("the page") { view.isShowingDocument }
+
+        // Inside the page's report delay, then let go at once.
+        run("insertFootnoteRef('2')", on: view)
+        view.detach()
+
+        await eventually("the handed-back text") { contents.last?.contains("[^2]") == true }
+    }
+
+    func testAMessageAboutTheLastSectionNeverReachesTheNext() async {
+        let first = host()
+        var firstContents: [String] = []
+        first.onContent = { firstContents.append($0) }
+        first.attach(key: "test|first", markdown: "First section", fontSize: 16)
+        await eventually("the first page") { first.isShowingDocument }
+        run("insertFootnoteRef('3')", on: first)
+        first.detach()
+
+        let second = host()
+        var secondContents: [String] = []
+        second.onContent = { secondContents.append($0) }
+        second.attach(key: "test|second", markdown: "Second section", fontSize: 16)
+        await eventually("the first section's text") { firstContents.last?.contains("[^3]") == true }
+        try? await Task.sleep(for: .milliseconds(600))
+
+        XCTAssertTrue(secondContents.allSatisfy { !$0.contains("First") }, "\(secondContents)")
+        second.detach()
+    }
+
+    func testASectionGivenItsPageBackKeepsWhatThePageHas() async {
+        let view = host()
+        view.onContent = { _ in }
+        view.attach(key: "test|same", markdown: "Kept", fontSize: 16)
+        await eventually("the page") { view.isShowingDocument }
+        run("insertFootnoteRef('4')", on: view)
+        try? await Task.sleep(for: .milliseconds(100))
+        view.detach()
+
+        // Rebuilt around the same section, with the text it had before the
+        // edit reached it.
+        let again = host()
+        var contents: [String] = []
+        again.onContent = { contents.append($0) }
+        again.attach(key: "test|same", markdown: "Kept", fontSize: 16)
+        await eventually("the page's own text") { contents.last?.contains("[^4]") == true }
+        again.detach()
+    }
+}
+
+/// The keyboard patch replaces a private WebKit method. A release that
+/// renames it leaves the patch inert, which this notices.
+final class NoteEditorKeyboardTests: XCTestCase {
+    @MainActor
+    func testThisIOSHasTheMethodTheKeyboardPatchReplaces() {
+        _ = WKWebView(frame: .zero)
+        XCTAssertTrue(TipTapKeyboard.isAvailable, "a note would again need a second tap to raise the keyboard")
+    }
+}
+
+/// The catalog the notes editor finds verse references by is the one the
+/// app finds them by where it draws a note.
+final class VerseCatalogTests: XCTestCase {
+    func testTheCatalogHasTheBooksAndVerseCountsOfTheTranslation() throws {
+        let translationId = UserDatabase.shared.getSettings().readerTranslationId
+        let started = Date()
+        let catalog = VerseReferenceParser.shared.editorCatalog(translationId: translationId)
+        print("verse catalog for \(translationId) in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+
+        let names = try XCTUnwrap(catalog["names"] as? [String: Int])
+        let abbreviations = try XCTUnwrap(catalog["abbreviations"] as? [String: Int])
+        let verses = try XCTUnwrap(catalog["verses"] as? [String: [Int]])
+        XCTAssertEqual(names["john"], 43)
+        XCTAssertEqual(abbreviations["jn"], 43)
+        XCTAssertEqual(verses["43"]?.count, 21, "John has 21 chapters")
+        XCTAssertEqual(verses["43"]?[2], 36, "John 3 has 36 verses")
+        XCTAssertNotNil(try JSONSerialization.data(withJSONObject: catalog))
     }
 }

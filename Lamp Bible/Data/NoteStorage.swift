@@ -50,6 +50,23 @@ struct NoteSection: Identifiable {
     }
 }
 
+extension NoteSection {
+    /// The section an ID names: "general", "v3" or "v16-17".
+    init?(id: String, content: String, footnotes: [UserNotesFootnote]? = nil) {
+        if id == "general" {
+            self = .general(content: content, footnotes: footnotes)
+            return
+        }
+        guard id.hasPrefix("v") else { return nil }
+        let verses = id.dropFirst().split(separator: "-").compactMap { Int($0) }
+        switch verses.count {
+        case 1: self = .verse(verses[0], content: content, footnotes: footnotes)
+        case 2: self = .verseRange(start: verses[0], end: verses[1], content: content, footnotes: footnotes)
+        default: return nil
+        }
+    }
+}
+
 // MARK: - Verse Action
 
 /// Actions available when selecting a verse

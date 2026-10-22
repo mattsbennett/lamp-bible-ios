@@ -933,9 +933,12 @@ struct CommentaryUnitCell: View {
 // MARK: - Notes Cell Data
 
 /// Gap info for verse gaps in notes
-struct NoteGapInfo: Equatable {
-    let gapStart: Int
-    let gapEnd: Int
+/// Whose notes are in memory: what a save writes to, and what an edit
+/// arriving late is checked against.
+struct NotesScope: Equatable {
+    let moduleId: String
+    let book: Int
+    let chapter: Int
 }
 
 /// Data for a single note section in the UIKit list
@@ -943,14 +946,13 @@ struct NoteSectionData: Equatable {
     let verse: Int  // verseStart or 0 for general section
     let section: NoteSection
     let sectionIndex: Int
-    let gapBefore: NoteGapInfo?  // Gap to show before this section
 
     static func == (lhs: NoteSectionData, rhs: NoteSectionData) -> Bool {
         lhs.verse == rhs.verse &&
         lhs.sectionIndex == rhs.sectionIndex &&
         lhs.section.id == rhs.section.id &&
         lhs.section.content == rhs.section.content &&
-        lhs.gapBefore == rhs.gapBefore &&
+
         lhs.section.footnotes?.count == rhs.section.footnotes?.count &&
         lhs.section.footnotes?.map { $0.id } == rhs.section.footnotes?.map { $0.id } &&
         lhs.section.footnotes?.map { $0.content.plainText } == rhs.section.footnotes?.map { $0.content.plainText }
@@ -960,192 +962,157 @@ struct NoteSectionData: Equatable {
 /// Cell view for notes in UIKit list - creates binding from callbacks
 struct NoteSectionCell: View {
     let data: NoteSectionData
-    let isReadOnly: Bool
     let fontSize: Int
     let translationId: String
-    let lastCursorPosition: Int?  // Last known cursor position for this section
+    /// The section across rebuilds of the list, for the editor.
+    let editorKey: String
+    /// This section is the one open in the editor.
+    let isEditorOpen: Bool
+    let noteEditor: NoteEditorHandle
+    /// The passage the note is about, as its heading reads while it is
+    /// written, when the reader may be out of sight.
+    let passageReference: String?
 
     // Callbacks
-    let onAddGap: ((Int, Int) -> Void)?  // (gapStart, gapEnd)
-    let onContentChange: (Int, String) -> Void  // (sectionIndex, newContent)
-    let onCursorPositionChange: ((Int, Int) -> Void)?  // (sectionIndex, cursorPosition)
+    /// With where the section was tapped, for the caret.
+    let onOpenEditor: ((CGPoint) -> Void)?
+    let onEditorContent: ((String) -> Void)?
     let onNavigateToVerse: ((Int) -> Void)?
     let onNavigateToVerseId: ((Int) -> Void)?
     let onEditVerseRange: ((Int) -> Void)?  // (sectionIndex)
     let onShowFootnotePicker: ((Int, Int?) -> Void)?  // (sectionIndex, cursorPosition?)
     let onEditFootnote: ((Int, UserNotesFootnote) -> Void)?  // (sectionIndex, footnote)
+    let onDelete: ((Int) -> Void)?  // (sectionIndex)
+    /// Opens the passage, with what surrounds it, in a sheet.
+    let onShowPassage: ((Int) -> Void)?
+
+    /// The editor's page sets its text this far in from the section's edges;
+    /// the note drawn here does the same, so a tap on it carries over.
+    private static let textInset = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Gap button before this section
-            if let gap = data.gapBefore, !isReadOnly {
-                Button {
-                    onAddGap?(gap.gapStart, gap.gapEnd)
-                } label: {
-                    HStack {
-                        Image(systemName: "plus.circle")
-                        if gap.gapStart == gap.gapEnd {
-                            Text("Add note for verse \(gap.gapStart)")
-                        } else {
-                            Text("Add note for verses \(gap.gapStart)-\(gap.gapEnd)")
-                        }
-                    }
-                    .font(.subheadline)
-                    .foregroundColor(.accentColor)
-                }
-                .padding(.vertical, 4)
-            }
+        VStack(alignment: .leading, spacing: 4) {
+            header
 
-            // Section header
-            if !data.section.displayTitle.isEmpty {
-                HStack(alignment: .center, spacing: 12) {
-                    Text(data.section.displayTitle)
-                        .font(.system(size: CGFloat(fontSize)))
-                        .foregroundColor(.secondary)
-
-                    if !isReadOnly {
-                        Spacer()
-
-                        Button {
-                            onShowFootnotePicker?(data.sectionIndex, lastCursorPosition)
-                        } label: {
-                            Image(systemName: "note.text.badge.plus")
-                                .font(.system(size: CGFloat(fontSize)))
-                                .foregroundColor(.secondary)
-                        }
-
-                        // Only show verse range edit for non-general sections
-                        if !data.section.isGeneral {
-                            Button {
-                                onEditVerseRange?(data.sectionIndex)
-                            } label: {
-                                Image(systemName: "square.and.pencil")
-                                    .font(.system(size: CGFloat(fontSize)))
-                                    .foregroundColor(.secondary)
-                                    .offset(y: -2.5)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Content
-            if isReadOnly {
-                let placeholder = data.section.isGeneral ? "No introduction notes" : "No notes"
-                if data.section.content.isEmpty {
-                    Text(placeholder)
-                        .font(.system(size: CGFloat(fontSize)))
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    InteractiveNoteContentView(
-                        content: data.section.content,
-                        fontSize: fontSize,
-                        translationId: translationId,
-                        onNavigateToVerse: onNavigateToVerseId
-                    )
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-            } else {
-                // For editing, use a binding created from callback
-                NoteTextEditorCell(
+            if isEditorOpen {
+                NoteSectionEditor(
+                    key: editorKey,
                     content: data.section.content,
-                    sectionIndex: data.sectionIndex,
                     fontSize: CGFloat(fontSize),
-                    onContentChange: onContentChange,
-                    onCursorPositionChange: onCursorPositionChange.map { callback in
-                        { cursorPosition in callback(data.sectionIndex, cursorPosition) }
-                    },
-                    onShowFootnotePicker: onShowFootnotePicker.map { callback in
-                        { cursorPosition in callback(data.sectionIndex, cursorPosition) }
+                    handle: noteEditor,
+                    onContent: { onEditorContent?($0) },
+                    onFootnote: { onShowFootnotePicker?(data.sectionIndex, nil) }
+                )
+            } else if data.section.content.isEmpty {
+                Text(data.section.isGeneral ? "Add a note on this chapter…" : "Add a note…")
+                    .font(.system(size: CGFloat(fontSize)))
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(Self.textInset)
+                    .contentShape(Rectangle())
+                    .onTapGesture(coordinateSpace: .local) { point in onOpenEditor?(point) }
+                    .accessibilityAddTraits(.isButton)
+            } else {
+                // A tap on a verse it names opens the verse; anywhere else, the
+                // note opens in the editor with the caret where the tap was.
+                InteractiveNoteContentView(
+                    content: data.section.content,
+                    fontSize: fontSize,
+                    translationId: translationId,
+                    onNavigateToVerse: onNavigateToVerseId,
+                    onPlainTap: { point in
+                        onOpenEditor?(CGPoint(x: point.x + Self.textInset.leading, y: point.y + Self.textInset.top))
                     }
                 )
-                .frame(maxWidth: .infinity, minHeight: 60)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(Self.textInset)
+                .accessibilityHint("Double-tap to edit this note")
             }
 
-            // Footnotes section
-            let footnotes = data.section.footnotes ?? []
-            if !footnotes.isEmpty || !isReadOnly {
-                VStack(alignment: .leading, spacing: 4) {
-                    if !footnotes.isEmpty {
-                        Divider()
-                            .padding(.vertical, 4)
-                    }
-
-                    ForEach(footnotes) { footnote in
-                        HStack(alignment: .top, spacing: 4) {
-                            Text("[\(footnote.id)]")
-                                .font(.system(size: CGFloat(fontSize) * 0.8))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 24, alignment: .trailing)
-                            InteractiveNoteContentView(
-                                content: footnote.content.plainText,
-                                fontSize: Int(Double(fontSize) * 0.9),
-                                translationId: translationId,
-                                onNavigateToVerse: onNavigateToVerse
-                            )
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if !isReadOnly {
-                                onEditFootnote?(data.sectionIndex, footnote)
-                            }
-                        }
-                    }
-                }
-            }
+            footnotes
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-    }
-}
-
-/// TextEditor wrapper that uses callbacks instead of binding
-struct NoteTextEditorCell: View {
-    let content: String
-    let sectionIndex: Int
-    let fontSize: CGFloat
-    let onContentChange: (Int, String) -> Void
-    let onCursorPositionChange: ((Int) -> Void)?  // (cursorPosition)
-    let onShowFootnotePicker: ((Int) -> Void)?  // (cursorPosition)
-
-    @State private var localContent: String
-
-    init(content: String, sectionIndex: Int, fontSize: CGFloat,
-         onContentChange: @escaping (Int, String) -> Void,
-         onCursorPositionChange: ((Int) -> Void)?,
-         onShowFootnotePicker: ((Int) -> Void)?) {
-        self.content = content
-        self.sectionIndex = sectionIndex
-        self.fontSize = fontSize
-        self.onContentChange = onContentChange
-        self.onCursorPositionChange = onCursorPositionChange
-        self.onShowFootnotePicker = onShowFootnotePicker
-        self._localContent = State(initialValue: content)
+        .padding(.vertical, 6)
     }
 
-    var body: some View {
-        NoteTextEditor(
-            text: Binding(
-                get: { localContent },
-                set: { newValue in
-                    localContent = newValue
-                    onContentChange(sectionIndex, newValue)
+    private var header: some View {
+        HStack(alignment: .center, spacing: 8) {
+            if data.section.isGeneral {
+                Text(data.section.displayTitle)
+                    .font(.system(size: CGFloat(fontSize) * 0.85, weight: .medium))
+                    .foregroundStyle(.secondary)
+            } else {
+                // The verses the note is about, a tap away, in the blue every
+                // verse reference has: open, while the reader may be out of
+                // sight, it names them in full.
+                Button {
+                    onShowPassage?(data.sectionIndex)
+                } label: {
+                    Text(isEditorOpen ? passageReference ?? data.section.displayTitle : data.section.displayTitle)
+                        .font(.system(size: CGFloat(fontSize) * 0.85, weight: .medium))
+                        .foregroundStyle(Color(uiColor: .systemBlue))
                 }
-            ),
-            fontSize: fontSize,
-            placeholder: "Add your notes...",
-            onTextChange: {},
-            onCursorPositionChange: onCursorPositionChange,
-            onShowFootnotePicker: onShowFootnotePicker
-        )
-        .onChange(of: content) { _, newContent in
-            // Sync external changes (e.g., from footnote insertion)
-            if newContent != localContent {
-                localContent = newContent
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows the passage")
             }
+            Spacer(minLength: 0)
+            // An empty chapter note has nothing to change or delete.
+            if !data.section.isGeneral || !data.section.content.isEmpty || data.section.hasFootnotes {
+                Menu {
+                    if !data.section.isGeneral {
+                        Button {
+                            onEditVerseRange?(data.sectionIndex)
+                        } label: {
+                            Label("Change Verses…", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        }
+                        Divider()
+                    }
+                    Button(role: .destructive) {
+                        onDelete?(data.sectionIndex)
+                    } label: {
+                        Label("Delete Note", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: CGFloat(fontSize) * 0.85))
+                        .frame(width: 32, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .tint(.secondary)
+                .accessibilityLabel("Note options")
+            }
+        }
+        .padding(.leading, Self.textInset.leading)
+    }
+
+    @ViewBuilder
+    private var footnotes: some View {
+        let footnotes = data.section.footnotes ?? []
+        if !footnotes.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(footnotes) { footnote in
+                    HStack(alignment: .top, spacing: 4) {
+                        Text("[\(footnote.id)]")
+                            .font(.system(size: CGFloat(fontSize) * 0.8))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, alignment: .trailing)
+                        InteractiveNoteContentView(
+                            content: footnote.content.plainText,
+                            fontSize: Int(Double(fontSize) * 0.9),
+                            translationId: translationId,
+                            onNavigateToVerse: onNavigateToVerse
+                        )
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        onEditFootnote?(data.sectionIndex, footnote)
+                    }
+                }
+            }
+            .padding(.horizontal, Self.textInset.leading)
+            .padding(.top, 2)
         }
     }
 }
@@ -1218,10 +1185,23 @@ struct ToolPanelView: View {
     @State private var footnoteInsertMode: FootnoteInsertMode = .createNew
     @State private var selectedExistingFootnoteId: String? = nil
     @State private var pendingFootnoteInsertCursor: Int? = nil
-    @State private var lastCursorPositions: [Int: Int] = [:]  // sectionIndex -> cursorPosition
+    /// The footnote picker is open over the section in the editor, so the
+    /// reference goes in at the editor's caret.
+    @State private var footnoteGoesThroughEditor = false
+
+    // The note editor: the section open in it, and whose notes are in memory
+    @StateObject private var noteEditor = NoteEditorHandle()
+    @State private var editingNoteSectionId: String? = nil
+    @State private var loadedNotes: NotesScope? = nil
+    @State private var hasUnsavedNotes = false
 
     // Edit state
-    @AppStorage("notesIsReadOnly") private var isReadOnly: Bool = true
+    @ObservedObject private var noteEditorFocus = NoteEditorFocus.shared
+    /// A note's passage, open in a sheet.
+    @State private var passagePreview: PreviewSheetState? = nil
+    @AppStorage("notesPassageContext") private var notesPassageContext: SearchContextAmount = .threeVerses
+    /// A note waiting to be confirmed for deletion, by section index.
+    @State private var noteToDelete: Int? = nil
     @State private var isProgrammaticScroll: Bool = false
 
     // Keyboard state (to disable scroll-linking while editing)
@@ -1528,7 +1508,7 @@ struct ToolPanelView: View {
                             Button {
                                 showingOptionsMenu = false
                                 if panelMode == .notes {
-                                    isReadOnly = true
+                                    editingNoteSectionId = nil
                                 }
                                 notesPanelVisible = false
                             } label: {
@@ -1623,6 +1603,26 @@ struct ToolPanelView: View {
         .sheet(isPresented: $showingConflictSheet) {
             NoteConflictView()
         }
+        .sheet(item: Binding(
+            get: { isMaximized ? nil : passagePreview },
+            set: { passagePreview = $0 }
+        ), onDismiss: {
+            if editingNoteSectionId != nil { noteEditor.resumeTyping() }
+        }) { _ in
+            notePassageSheet
+        }
+        .confirmationDialog(
+            "Delete this note?",
+            isPresented: Binding(get: { !isMaximized && noteToDelete != nil }, set: { if !$0 { noteToDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Note", role: .destructive) {
+                if let index = noteToDelete { deleteNote(at: index) }
+                noteToDelete = nil
+            }
+        } message: {
+            Text("Its footnotes go with it.")
+        }
         .task {
             await loadNote()
         }
@@ -1656,6 +1656,19 @@ struct ToolPanelView: View {
                 scrollPosition = currentVerse
             }
         }
+        .onChange(of: passagePreview != nil || showingFootnoteEditor) { _, sheetIsUp in
+            noteEditorFocus.isAwaitingSheet = sheetIsUp && editingNoteSectionId != nil
+        }
+        .onChange(of: noteEditorFocus.isEditing) { _, editing in
+            // Done typing: the note goes back to being drawn, unless a sheet
+            // opened from it took the focus and will hand it back, or the
+            // note that stopped is not this one but the last, handing over.
+            if !editing && !showingFootnoteEditor && passagePreview == nil,
+               let open = editingNoteSectionId,
+               noteEditorFocus.lastBlurredKey == editorKey(for: open) {
+                editingNoteSectionId = nil
+            }
+        }
         .onChange(of: notesModuleId) { _, _ in
             // Reload notes when module changes
             Task {
@@ -1669,12 +1682,10 @@ struct ToolPanelView: View {
             }
         }
         .onChange(of: requestAddNoteForVerse) { _, newValue in
-            // External trigger to add note for a specific verse
+            // Add Note on a verse in the passage: straight into its note.
             if let verse = newValue {
                 panelMode = .notes
-                newVerseStart = verse
-                newVerseEnd = nil
-                showingAddVerseSheet = true
+                openNote(forVerse: verse)
                 requestAddNoteForVerse = nil  // Reset the trigger
             }
         }
@@ -1706,7 +1717,6 @@ struct ToolPanelView: View {
             scrollCoordinator.isPaused = false
         }
         .onAppear {
-            isReadOnly = true // Default to read-only when panel opens
             userSettings = UserDatabase.shared.getSettings()
         }
         .task {
@@ -1756,54 +1766,34 @@ struct ToolPanelView: View {
         }
     }
 
+    /// Adding a note. Notes are written where they are shown; this is for
+    /// one that isn't there yet.
     @ViewBuilder
     private var notesHeaderButton: some View {
-        let hasGeneralNote = sections.contains { $0.isGeneral && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        let hasVerseGaps = !verseGaps().isEmpty
-
         Menu {
-            // Edit/Read-only toggle
             Button {
-                isReadOnly.toggle()
+                openNote(forVerse: currentVerse)
             } label: {
-                Label(
-                    isReadOnly ? "Edit Notes" : "Read-Only",
-                    systemImage: isReadOnly ? "square.and.pencil" : "book"
-                )
+                Label("Note on Verse \(currentVerse)", systemImage: "text.badge.plus")
             }
-
-            // Add options (only when something can be added)
-            if !hasGeneralNote || hasVerseGaps {
-                Divider()
-
-                if !hasGeneralNote {
-                    Button {
-                        // Add empty general note and switch to edit mode
-                        if !sections.contains(where: { $0.isGeneral }) {
-                            sections.insert(.general(content: ""), at: 0)
-                        }
-                        isReadOnly = false
-                    } label: {
-                        Label("Add General Note", systemImage: "doc.text")
-                    }
-                }
-
-                if hasVerseGaps {
-                    Button {
-                        newVerseStart = currentVerse
-                        newVerseEnd = nil
-                        isReadOnly = false
-                        showingAddVerseSheet = true
-                    } label: {
-                        Label("Add Verse Note", systemImage: "text.badge.plus")
-                    }
-                }
+            Button {
+                newVerseStart = currentVerse
+                newVerseEnd = nil
+                showingAddVerseSheet = true
+            } label: {
+                Label("Note on Verses…", systemImage: "text.line.first.and.arrowtriangle.forward")
+            }
+            Button {
+                openChapterNote()
+            } label: {
+                Label("Chapter Note", systemImage: "doc.text")
             }
         } label: {
-            Image(systemName: isReadOnly ? "square.and.pencil" : "book")
+            Image(systemName: "plus")
                 .frame(width: 22, height: 22)
                 .contentShape(Circle())
         }
+        .accessibilityLabel("Add a note")
         .buttonBorderShape(.circle)
         .modifier(ConditionalGlassButtonStyle())
     }
@@ -1876,16 +1866,26 @@ struct ToolPanelView: View {
                             Image(systemName: "arrow.down.right.and.arrow.up.left")
                         }
                     }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button {
-                            isReadOnly.toggle()
-                        } label: {
-                            Image(systemName: isReadOnly ? "square.and.pencil" : "book")
-                        }
-                    }
                 }
                 .sheet(isPresented: $showingAddVerseSheet) {
                     addVerseSheet
+                }
+                .confirmationDialog(
+                    "Delete this note?",
+                    isPresented: Binding(get: { noteToDelete != nil }, set: { if !$0 { noteToDelete = nil } }),
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete Note", role: .destructive) {
+                        if let index = noteToDelete { deleteNote(at: index) }
+                        noteToDelete = nil
+                    }
+                } message: {
+                    Text("Its footnotes go with it.")
+                }
+                .sheet(item: $passagePreview, onDismiss: {
+                    if editingNoteSectionId != nil { noteEditor.resumeTyping() }
+                }) { _ in
+                    notePassageSheet
                 }
                 .sheet(item: $editingSection) { _ in
                     editVerseSheet
@@ -1903,30 +1903,10 @@ struct ToolPanelView: View {
             ProgressView()
             Spacer()
         } else {
-            let gaps = verseGaps()
-
-            // Build items for UIKit list with gap info
-            let items: [(verse: Int, data: NoteSectionData)] = sections.enumerated().compactMap { index, section in
-                // Calculate gap before this section
-                var gapBefore: NoteGapInfo? = nil
-                if !isReadOnly && !section.isGeneral {
-                    if let gap = gaps.first(where: { $0.after == nil && section.verseStart == $0.gapEnd + 1 }) {
-                        gapBefore = NoteGapInfo(gapStart: gap.gapStart, gapEnd: gap.gapEnd)
-                    } else if let prevIndex = sections.prefix(index).lastIndex(where: { !$0.isGeneral }),
-                              let prevEnd = sections[prevIndex].verseEnd ?? sections[prevIndex].verseStart,
-                              let gap = gaps.first(where: { $0.after == prevEnd }) {
-                        gapBefore = NoteGapInfo(gapStart: gap.gapStart, gapEnd: gap.gapEnd)
-                    }
-                }
-
+            let items: [(verse: Int, data: NoteSectionData)] = sections.enumerated().map { index, section in
                 let verseNum = section.verseStart ?? 0
                 let verse = book * 1000000 + chapter * 1000 + verseNum
-                return (verse: verse, data: NoteSectionData(
-                    verse: verseNum,
-                    section: section,
-                    sectionIndex: index,
-                    gapBefore: gapBefore
-                ))
+                return (verse: verse, data: NoteSectionData(verse: verseNum, section: section, sectionIndex: index))
             }
 
             VStack(spacing: 0) {
@@ -1957,138 +1937,28 @@ struct ToolPanelView: View {
                 }
 
                 // Main content
-                // Check if there's any content to show (including general notes with content)
-                let hasContent = sections.contains { section in
-                    if section.isGeneral {
-                        return !section.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    }
-                    return true
-                }
-                if sections.isEmpty || (isReadOnly && !hasContent) {
-                    VStack(spacing: 12) {
-                        Image(systemName: "note.text")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.tertiary)
-                        Text("No verse notes")
-                            .font(.system(size: CGFloat(toolFontSize)))
-                            .foregroundStyle(.tertiary)
-                        if !isReadOnly {
-                            Button {
-                                showingAddVerseSheet = true
-                            } label: {
-                                HStack {
-                                    Image(systemName: "plus.circle")
-                                    Text("Add verse note")
-                                }
-                                .foregroundColor(.accentColor)
-                            }
-                            .padding(.top, 8)
-                        }
-                    }
-                    .centeredInVisibleSpace()
+                if sections.isEmpty {
+                    ProgressView().centeredInVisibleSpace()
                 } else {
                     // UIKit-based notes list for performance and scroll sync
                     UIKitVerseList(
                         items: items,
-                        cellContent: { data in
-                            NoteSectionCell(
-                                data: data,
-                                isReadOnly: isReadOnly,
-                                fontSize: toolFontSize,
-                                translationId: userSettings.readerTranslationId,
-                                lastCursorPosition: lastCursorPositions[data.sectionIndex],
-                                onAddGap: { gapStart, gapEnd in
-                                    addVerseSectionWithRange(start: gapStart, end: gapEnd > gapStart ? gapEnd : nil)
-                                },
-                                onContentChange: { sectionIndex, newContent in
-                                    if sectionIndex < sections.count {
-                                        sections[sectionIndex].content = newContent
-                                        scheduleSave()
-                                    }
-                                },
-                                onCursorPositionChange: { sectionIndex, cursorPosition in
-                                    lastCursorPositions[sectionIndex] = cursorPosition
-                                },
-                                onNavigateToVerse: { verse in
-                                    if isMaximized { isMaximized = false }
-                                    let verseId = book * 1000000 + chapter * 1000 + verse
-                                    onNavigateToVerse?(verseId)
-                                },
-                                onNavigateToVerseId: { verseId in
-                                    if isMaximized { isMaximized = false }
-                                    onNavigateToVerse?(verseId)
-                                },
-                                onEditVerseRange: { sectionIndex in
-                                    if sectionIndex < sections.count && !sections[sectionIndex].isGeneral {
-                                        startEditingSection(sections[sectionIndex], at: sectionIndex)
-                                    }
-                                },
-                                onShowFootnotePicker: { sectionIndex, cursorPosition in
-                                    showFootnotePicker(forSectionAt: sectionIndex, cursorPosition: cursorPosition)
-                                },
-                                onEditFootnote: { sectionIndex, footnote in
-                                    editFootnote(footnote, inSectionAt: sectionIndex)
-                                }
-                            )
-                        },
-                        listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(isReadOnly)_\(sections.count)",
+                        cellContent: { data in noteSectionCell(data) },
+                        listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(sections.count)",
                         additionalTopOffset: hideHeader && isHeaderCollapsed ? 36 : 0,
                         topInset: hideHeader ? 0 : headerBarHeight,
-                        onToolbarCollapseChange: { collapsed in
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                toolbarsCollapsed = collapsed
-                            }
-                        },
+                        // Notes are written here: scrolling them keeps the
+                        // headers, as scrolling the passage does not.
+                        onToolbarCollapseChange: nil,
                         toolbarsCollapsed: toolbarsCollapsed
                     )
                     .ignoresSafeArea(.container, edges: hideHeader ? [] : .top)
 
-                    // Trailing gap button (after last verse section)
-                    if !isReadOnly {
-                        if let lastVerseSection = sections.last(where: { !$0.isGeneral }),
-                           let lastEnd = lastVerseSection.verseEnd ?? lastVerseSection.verseStart,
-                           let gap = gaps.first(where: { $0.after == lastEnd }) {
-                            Button {
-                                addVerseSectionWithRange(start: gap.gapStart, end: gap.gapEnd > gap.gapStart ? gap.gapEnd : nil)
-                            } label: {
-                                HStack {
-                                    Image(systemName: "plus.circle")
-                                    if gap.gapStart == gap.gapEnd {
-                                        Text("Add note for verse \(gap.gapStart)")
-                                    } else {
-                                        Text("Add note for verses \(gap.gapStart)-\(gap.gapEnd)")
-                                    }
-                                }
-                                .font(.subheadline)
-                                .foregroundColor(.accentColor)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                        }
-                    }
                 }
             }
         }
     }
 
-    @ViewBuilder
-    private func gapAddButton(gapStart: Int, gapEnd: Int) -> some View {
-        Button {
-            addVerseSectionWithRange(start: gapStart, end: gapEnd > gapStart ? gapEnd : nil)
-        } label: {
-            HStack {
-                Image(systemName: "plus.circle")
-                if gapStart == gapEnd {
-                    Text("Add note for verse \(gapStart)")
-                } else {
-                    Text("Add note for verses \(gapStart)-\(gapEnd)")
-                }
-            }
-            .font(.subheadline)
-            .foregroundColor(.accentColor)
-        }
-        .padding(.vertical, 4)
-    }
 
     // MARK: - Commentary Content
 
@@ -2637,6 +2507,15 @@ struct ToolPanelView: View {
     }
 
     private func loadNote() async {
+        // Notes edited a moment ago are saved to the chapter they belong to
+        // before another chapter's take their place.
+        if hasUnsavedNotes, let scope = loadedNotes {
+            saveTask?.cancel()
+            hasUnsavedNotes = false
+            await save(sections, in: scope)
+        }
+        editingNoteSectionId = nil
+
         isLoading = true
         saveState = .idle
 
@@ -2660,7 +2539,7 @@ struct ToolPanelView: View {
             print("[Notes] Failed to load notes: \(error)")
             sections = [.general(content: "")]
         }
-
+        loadedNotes = NotesScope(moduleId: notesModuleId, book: book, chapter: chapter)
         isLoading = false
 
         // Check sync status
@@ -2698,7 +2577,7 @@ struct ToolPanelView: View {
     }
 
     /// Convert NoteSection array back to NoteEntry records for storage
-    private func convertSectionsToEntries(_ sections: [NoteSection]) -> [NoteEntry] {
+    private func convertSectionsToEntries(_ sections: [NoteSection], in scope: NotesScope) -> [NoteEntry] {
         var entries: [NoteEntry] = []
 
         for section in sections {
@@ -2721,14 +2600,14 @@ struct ToolPanelView: View {
                 endVerse = nil
             }
 
-            let verseId = book * 1000000 + chapter * 1000 + verse
+            let verseId = scope.book * 1000000 + scope.chapter * 1000 + verse
 
             // Generate stable ID based on module + verse
-            let entryId = "\(notesModuleId):\(verseId)"
+            let entryId = "\(scope.moduleId):\(verseId)"
 
             let entry = NoteEntry(
                 id: entryId,
-                moduleId: notesModuleId,
+                moduleId: scope.moduleId,
                 verseId: verseId,
                 title: section.displayTitle.isEmpty ? nil : section.displayTitle,
                 content: content,
@@ -2754,6 +2633,7 @@ struct ToolPanelView: View {
     private func scheduleSave() {
         saveTask?.cancel()
         saveState = .idle
+        hasUnsavedNotes = true
 
         saveTask = Task {
             // Debounce: wait 1 second before saving
@@ -2765,17 +2645,24 @@ struct ToolPanelView: View {
         }
     }
 
+    /// Saves the notes in memory to the chapter they were loaded from. A save
+    /// is only ever scheduled by an edit, so one still pending when the panel
+    /// turns read-only, or the chapter changes, is still made.
     private func saveNote() async {
-        guard !isReadOnly else { return } // Don't save in read-only mode
+        guard let scope = loadedNotes else { return }
+        hasUnsavedNotes = false
+        await save(sections, in: scope)
+    }
 
+    private func save(_ sections: [NoteSection], in scope: NotesScope) async {
         saveState = .saving
 
         do {
             // Convert sections to NoteEntry records
-            let entries = convertSectionsToEntries(sections)
+            let entries = convertSectionsToEntries(sections, in: scope)
 
             // Delete existing entries for this chapter first
-            let existingEntries = try moduleDatabase.getNotesForChapter(moduleId: notesModuleId, book: book, chapter: chapter)
+            let existingEntries = try moduleDatabase.getNotesForChapter(moduleId: scope.moduleId, book: scope.book, chapter: scope.chapter)
             for entry in existingEntries {
                 try moduleDatabase.deleteNoteEntry(id: entry.id)
             }
@@ -2786,7 +2673,7 @@ struct ToolPanelView: View {
             }
 
             // Export to cloud storage
-            try await moduleSyncManager.exportModule(id: notesModuleId)
+            try await moduleSyncManager.exportModule(id: scope.moduleId)
 
             saveState = .saved
 
@@ -2801,6 +2688,172 @@ struct ToolPanelView: View {
         } catch {
             saveState = .error("Save failed")
             print("Failed to save notes: \(error)")
+        }
+    }
+
+    private func noteSectionCell(_ data: NoteSectionData) -> NoteSectionCell {
+        let scope = loadedNotes
+        let sectionId = data.section.id
+        return NoteSectionCell(
+            data: data,
+            fontSize: toolFontSize,
+            translationId: userSettings.readerTranslationId,
+            editorKey: editorKey(for: sectionId),
+            isEditorOpen: editingNoteSectionId == sectionId,
+            noteEditor: noteEditor,
+            passageReference: passageReference(for: data.section),
+            onOpenEditor: { point in
+                noteEditor.focusOnOpen = point
+                editingNoteSectionId = sectionId
+            },
+            onEditorContent: { content in
+                noteEditorWrote(content, section: sectionId, in: scope)
+            },
+            onNavigateToVerse: { verse in
+                if isMaximized { isMaximized = false }
+                let verseId = book * 1000000 + chapter * 1000 + verse
+                onNavigateToVerse?(verseId)
+            },
+            onNavigateToVerseId: { verseId in
+                if isMaximized { isMaximized = false }
+                onNavigateToVerse?(verseId)
+            },
+            onEditVerseRange: { sectionIndex in
+                if sectionIndex < sections.count && !sections[sectionIndex].isGeneral {
+                    startEditingSection(sections[sectionIndex], at: sectionIndex)
+                }
+            },
+            onShowFootnotePicker: { sectionIndex, cursorPosition in
+                showFootnotePicker(forSectionAt: sectionIndex, cursorPosition: cursorPosition)
+            },
+            onEditFootnote: { sectionIndex, footnote in
+                editFootnote(footnote, inSectionAt: sectionIndex)
+            },
+            onDelete: { sectionIndex in
+                noteToDelete = sectionIndex
+            },
+            onShowPassage: { sectionIndex in
+                showPassage(ofSectionAt: sectionIndex)
+            }
+        )
+    }
+
+    private var notePassageSheet: some View {
+        PreviewSheet(
+            state: $passagePreview,
+            translationId: userSettings.readerTranslationId,
+            onNavigateToVerse: { verseId in
+                if isMaximized { isMaximized = false }
+                onNavigateToVerse?(verseId)
+            },
+            contextChoice: $notesPassageContext
+        )
+    }
+
+    private func passageReference(for section: NoteSection) -> String? {
+        guard let start = section.verseStart else { return nil }
+        let end = section.verseEnd ?? start
+        return start == end ? "\(bookName) \(chapter):\(start)" : "\(bookName) \(chapter):\(start)–\(end)"
+    }
+
+    /// The verses a note is about, with what surrounds them, in a sheet. The
+    /// note keeps its caret, and typing carries on when the sheet closes.
+    private func showPassage(ofSectionAt index: Int) {
+        guard index < sections.count, let start = sections[index].verseStart else { return }
+        let end = sections[index].verseEnd ?? start
+        let first = book * 1_000_000 + chapter * 1000 + start
+        let last = book * 1_000_000 + chapter * 1000 + end
+        if sections[index].id == editingNoteSectionId { noteEditor.saveSelection() }
+        let item = PreviewItem.verse(
+            index: 0, verseId: first, endVerseId: last == first ? nil : last,
+            displayText: passageReference(for: sections[index]) ?? ""
+        )
+        passagePreview = PreviewSheetState(currentItem: item, allItems: [item])
+    }
+
+    /// Opens the note on a verse in the editor, the keyboard up and the caret
+    /// at its end, adding one if there is none.
+    private func openNote(forVerse verse: Int) {
+        let id: String
+        if let existing = sections.first(where: { section in
+            guard let start = section.verseStart else { return false }
+            return (start...(section.verseEnd ?? start)).contains(verse)
+        }) {
+            id = existing.id
+        } else {
+            let section = NoteSection.verse(verse, content: "")
+            let index = sections.firstIndex { ($0.verseStart ?? 0) > verse } ?? sections.count
+            sections.insert(section, at: max(index, sections.first?.isGeneral == true ? 1 : 0))
+            id = section.id
+        }
+        openEditor(on: id)
+    }
+
+    private func openChapterNote() {
+        if !sections.contains(where: { $0.isGeneral }) {
+            sections.insert(.general(content: ""), at: 0)
+        }
+        openEditor(on: "general")
+    }
+
+    private func openEditor(on sectionId: String) {
+        // Past the end of any text: the caret goes after the last word.
+        noteEditor.focusOnOpen = CGPoint(x: 100_000, y: 100_000)
+        editingNoteSectionId = sectionId
+    }
+
+    /// Deletes a verse note; the chapter note is emptied, as it is always there.
+    private func deleteNote(at index: Int) {
+        guard index < sections.count else { return }
+        if sections[index].id == editingNoteSectionId { editingNoteSectionId = nil }
+        if sections[index].isGeneral {
+            sections[index].content = ""
+            sections[index].footnotes = nil
+        } else {
+            sections.remove(at: index)
+        }
+        scheduleSave()
+    }
+
+    /// Names a section to the editor, across rebuilds of the list.
+    private func editorKey(for sectionId: String) -> String {
+        "\(loadedNotes?.moduleId ?? "")|\(loadedNotes?.book ?? 0)|\(loadedNotes?.chapter ?? 0)|\(sectionId)"
+    }
+
+    /// What the person typed in a section, from the editor. The editor hands
+    /// back its last few keystrokes as it lets go, which can be after the
+    /// notes on screen have changed; those are saved to the notes they were
+    /// typed in.
+    private func noteEditorWrote(_ content: String, section sectionId: String, in scope: NotesScope?) {
+        guard let scope else { return }
+        if scope == loadedNotes, let index = sections.firstIndex(where: { $0.id == sectionId }) {
+            guard sections[index].content != content else { return }
+            sections[index].content = content
+            scheduleSave()
+        } else {
+            Task { await saveSection(sectionId, content: content, in: scope) }
+        }
+    }
+
+    private func saveSection(_ sectionId: String, content: String, in scope: NotesScope) async {
+        do {
+            let entries = try moduleDatabase.getNotesForChapter(
+                moduleId: scope.moduleId, book: scope.book, chapter: scope.chapter
+            )
+            var stored = convertEntriesToSections(entries)
+            if let index = stored.firstIndex(where: { $0.id == sectionId }) {
+                guard stored[index].content != content else { return }
+                stored[index].content = content
+            } else if let section = NoteSection(id: sectionId, content: content) {
+                // A section never saved before, being new and empty.
+                stored.append(section)
+                stored.sort { ($0.verseStart ?? 0) < ($1.verseStart ?? 0) }
+            } else {
+                return
+            }
+            await save(stored, in: scope)
+        } catch {
+            print("[Notes] Failed to save a late edit: \(error)")
         }
     }
 
@@ -2827,10 +2880,10 @@ struct ToolPanelView: View {
         }
 
         sections.insert(newSection, at: insertIndex)
-        scheduleSave()
 
         showingAddVerseSheet = false
         resetAddVerseForm()
+        openEditor(on: newSection.id)
     }
 
     private func resetAddVerseForm() {
@@ -3211,7 +3264,9 @@ struct ToolPanelView: View {
         let marker = "[^\(footnoteId)]"
 
         // Insert marker at cursor position or end of content
-        if let cursor = pendingFootnoteInsertCursor {
+        if footnoteGoesThroughEditor {
+            noteEditor.insertFootnoteRef(footnoteId)
+        } else if let cursor = pendingFootnoteInsertCursor {
             var content = sections[sectionIndex].content
             let insertIndex = content.index(content.startIndex, offsetBy: min(cursor, content.count))
             content.insert(contentsOf: marker, at: insertIndex)
@@ -3250,6 +3305,10 @@ struct ToolPanelView: View {
     /// Show footnote editor to insert existing or create new footnote
     private func showFootnotePicker(forSectionAt index: Int, cursorPosition: Int? = nil) {
         guard index < sections.count else { return }
+        // The section in the editor takes the reference at its caret, kept
+        // while the sheet has the focus; any other has it added at its end.
+        footnoteGoesThroughEditor = sections[index].id == editingNoteSectionId
+        if footnoteGoesThroughEditor { noteEditor.saveSelection() }
         editingFootnoteSectionIndex = index
         editingFootnoteId = nil
         footnoteContent = ""
@@ -3313,7 +3372,9 @@ struct ToolPanelView: View {
 
             // Insert footnote marker at cursor position or end of content
             let marker = "[^\(newId)]"
-            if let cursor = pendingFootnoteInsertCursor {
+            if footnoteGoesThroughEditor {
+                noteEditor.insertFootnoteRef(newId)
+            } else if let cursor = pendingFootnoteInsertCursor {
                 var content = sections[sectionIndex].content
                 let insertIndex = content.index(content.startIndex, offsetBy: min(cursor, content.count))
                 content.insert(contentsOf: marker, at: insertIndex)
@@ -3340,6 +3401,7 @@ struct ToolPanelView: View {
         footnoteInsertMode = .createNew
         selectedExistingFootnoteId = nil
         pendingFootnoteInsertCursor = nil
+        footnoteGoesThroughEditor = false
     }
 
     private func updateFootnoteMarkersInContent(sectionIndex: Int, deletedId: String) {
@@ -3423,125 +3485,6 @@ struct ToolPanelView: View {
         newVerseEnd = end
         overlappingSection = nil
         showingAddVerseSheet = true
-    }
-}
-
-struct NoteSectionView: View {
-    @Binding var section: NoteSection
-    let isReadOnly: Bool
-    let fontSize: Int
-    let translationId: String
-    let onContentChange: () -> Void
-    var onNavigateToVerse: ((Int) -> Void)?
-    var onNavigateToVerseId: ((Int) -> Void)?
-    var onEditVerseRange: (() -> Void)?
-    var onShowFootnotePicker: (() -> Void)?  // Shows picker to insert existing or create new
-    var onEditFootnote: ((UserNotesFootnote) -> Void)?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Section header
-            if !section.displayTitle.isEmpty {
-                HStack(alignment: .center, spacing: 12) {
-                    Text(section.displayTitle)
-                        .font(.system(size: CGFloat(fontSize)))
-                        .foregroundColor(.secondary)
-
-                    if !section.isGeneral && !isReadOnly {
-                        Spacer()
-
-                        if let onFootnote = onShowFootnotePicker {
-                            Button {
-                                onFootnote()
-                            } label: {
-                                Image(systemName: "note.text.badge.plus")
-                                    .font(.system(size: CGFloat(fontSize)))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-
-                        if let onEdit = onEditVerseRange {
-                            Button {
-                                onEdit()
-                            } label: {
-                                Image(systemName: "square.and.pencil")
-                                    .font(.system(size: CGFloat(fontSize)))
-                                    .foregroundColor(.secondary)
-                                    .padding(.bottom, 2)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Text editor or read-only text
-            if isReadOnly {
-                let placeholder = section.isGeneral ? "No introduction notes" : "No notes"
-                if section.content.isEmpty {
-                    Text(placeholder)
-                        .font(.system(size: CGFloat(fontSize)))
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    InteractiveNoteContentView(
-                        content: section.content,
-                        fontSize: fontSize,
-                        translationId: translationId,
-                        onNavigateToVerse: onNavigateToVerseId
-                    )
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-            } else {
-                NoteTextEditor(
-                    text: $section.content,
-                    fontSize: CGFloat(fontSize),
-                    placeholder: "Add your notes...",
-                    onTextChange: onContentChange,
-                    onShowFootnotePicker: nil  // Not used here - header button triggers picker
-                )
-                .frame(maxWidth: .infinity, minHeight: 60)
-            }
-
-            // Footnotes section
-            let footnotes = section.footnotes ?? []
-            if !footnotes.isEmpty || !isReadOnly {
-                VStack(alignment: .leading, spacing: 4) {
-                    if !footnotes.isEmpty {
-                        Divider()
-                            .padding(.vertical, 4)
-                    }
-
-                    ForEach(footnotes) { footnote in
-                        HStack(alignment: .top, spacing: 4) {
-                            Text("[\(footnote.id)]")
-                                .font(.system(size: CGFloat(fontSize) * 0.8))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 24, alignment: .trailing)
-                            InteractiveNoteContentView(
-                                content: footnote.content.plainText,
-                                fontSize: Int(Double(fontSize) * 0.9),
-                                translationId: translationId,
-                                onNavigateToVerse: onNavigateToVerse
-                            )
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if !isReadOnly {
-                                onEditFootnote?(footnote)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    /// Count the number of verse references in this section's content
-    var referenceCount: Int {
-        VerseReferenceParser.shared.parse(section.content).count
     }
 }
 
@@ -3796,6 +3739,23 @@ class VerseReferenceParser {
         return references
     }
 
+    /// The books and verse counts the notes editor finds references by
+    /// (`tiptap-editor/src/verse-references.js`), so it marks the ones this
+    /// parser finds where a note is drawn: the same names and abbreviations,
+    /// and each chapter's verses in the translation, for the same check that
+    /// a verse exists.
+    func editorCatalog(translationId: String) -> [String: Any] {
+        var verses: [String: [Int]] = [:]
+        for bookId in Set(bookNameToId.values) {
+            let chapters = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: bookId)) ?? 0
+            guard chapters > 0 else { continue }
+            verses[String(bookId)] = (1...chapters).map {
+                (try? TranslationDatabase.shared.getVerseCount(translationId: translationId, book: bookId, chapter: $0)) ?? 0
+            }
+        }
+        return ["names": bookNameToId, "abbreviations": bookAbbrevToId, "verses": verses]
+    }
+
     private func resolveBookId(_ bookStr: String) -> Int? {
         let normalized = bookStr.lowercased()
 
@@ -3833,78 +3793,71 @@ private struct NoteContentRenderer {
         let previewItems: [PreviewItem]
     }
 
-    /// Render note content with verse references and footnote styling
-    static func render(
-        _ content: String,
-        fontSize: CGFloat,
-        references: [ParsedVerseReference]
-    ) -> RenderResult {
-        let result = NSMutableAttributedString()
-        var previewItems: [PreviewItem] = []
+    private static let cache = NSCache<NSString, Box>()
+    private final class Box { let result: RenderResult; init(_ r: RenderResult) { result = r } }
 
-        let refs = references.sorted(by: { $0.range.lowerBound < $1.range.lowerBound })
-        var currentIndex = content.startIndex
-
-        // Base attributes
-        let baseFont = UIFont.systemFont(ofSize: fontSize)
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = fontSize * 0.35
-
-        let baseAttributes: [NSAttributedString.Key: Any] = [
-            .font: baseFont,
-            .foregroundColor: UIColor.label,
-            .paragraphStyle: paragraphStyle
-        ]
-
-        for (index, ref) in refs.enumerated() {
-            // Add text before this reference (with footnote styling)
-            if currentIndex < ref.range.lowerBound {
-                let textBefore = String(content[currentIndex..<ref.range.lowerBound])
-                let styledText = renderFootnoteText(textBefore, fontSize: fontSize, baseAttributes: baseAttributes)
-                result.append(styledText)
-            }
-
-            // Add the verse reference as a tappable item
-            let verseAttr = NSMutableAttributedString(string: ref.displayText)
-            let verseRange = NSRange(location: 0, length: verseAttr.length)
-            verseAttr.addAttributes(baseAttributes, range: verseRange)
-            verseAttr.addAttribute(.foregroundColor, value: UIColor.systemBlue, range: verseRange)
-            verseAttr.addAttribute(NoteTappableIndexKey, value: index, range: verseRange)
-            result.append(verseAttr)
-
-            // Track for prev/next navigation
-            previewItems.append(PreviewItem.verse(
-                index: index,
-                verseId: ref.verseId,
-                endVerseId: ref.endVerseId,
-                displayText: ref.displayText
-            ))
-
-            currentIndex = ref.range.upperBound
-        }
-
-        // Add remaining text after last reference
-        if currentIndex < content.endIndex {
-            let textAfter = String(content[currentIndex..<content.endIndex])
-            let styledText = renderFootnoteText(textAfter, fontSize: fontSize, baseAttributes: baseAttributes)
-            result.append(styledText)
-        }
-
-        return RenderResult(attributedString: result, previewItems: previewItems)
+    /// The note as the reader sees it, worked out once for each text and size:
+    /// the text view and the preview sheet read the same references.
+    static func cached(_ content: String, fontSize: CGFloat) -> RenderResult {
+        let key = "\(fontSize)|\(content)" as NSString
+        if let hit = cache.object(forKey: key) { return hit.result }
+        let result = render(content, fontSize: fontSize)
+        cache.setObject(Box(result), forKey: key)
+        return result
     }
 
-    /// Render text with footnote markers [^n] styled as superscript [n]
-    private static func renderFootnoteText(
-        _ text: String,
-        fontSize: CGFloat,
-        baseAttributes: [NSAttributedString.Key: Any]
-    ) -> NSAttributedString {
-        let result = NSMutableAttributedString(string: text, attributes: baseAttributes)
+    /// Render note content: its Markdown, then every verse it refers to as a
+    /// tappable reference, whether written out ("John 3:16") or linked, and
+    /// footnote markers as superscript.
+    static func render(_ content: String, fontSize: CGFloat) -> RenderResult {
+        let rendered = NoteMarkdown.render(content, fontSize: fontSize)
+        let text = rendered.text
+        let plain = text.string
+
+        struct Tappable { let range: NSRange; let verseId: Int; let endVerseId: Int?; let displayText: String?; let shown: String }
+        var tappables = rendered.verseLinks.map {
+            Tappable(range: $0.range, verseId: $0.verseId, endVerseId: $0.endVerseId, displayText: nil,
+                     shown: (plain as NSString).substring(with: $0.range))
+        }
+        for ref in VerseReferenceParser.shared.parse(plain) {
+            let range = NSRange(ref.range, in: plain)
+            guard !tappables.contains(where: { NSIntersectionRange($0.range, range).length > 0 }) else { continue }
+            tappables.append(Tappable(range: range, verseId: ref.verseId, endVerseId: ref.endVerseId,
+                                      displayText: ref.displayText, shown: ref.displayText))
+        }
+        tappables.sort { $0.range.location < $1.range.location }
+
+        // From the end, so a reference written out in its reading form leaves
+        // the ranges before it where they were.
+        for (index, tappable) in tappables.enumerated().reversed() {
+            var range = tappable.range
+            if let display = tappable.displayText {
+                let attributes = text.attributes(at: range.location, effectiveRange: nil)
+                text.replaceCharacters(in: range, with: NSAttributedString(string: display, attributes: attributes))
+                range.length = (display as NSString).length
+            }
+            text.addAttribute(.foregroundColor, value: UIColor.systemBlue, range: range)
+            text.addAttribute(NoteTappableIndexKey, value: index, range: range)
+        }
+        let previewItems = tappables.enumerated().map { index, tappable in
+            PreviewItem.verse(
+                index: index,
+                verseId: tappable.verseId,
+                endVerseId: tappable.endVerseId,
+                displayText: tappable.shown
+            )
+        }
+
+        styleFootnotes(in: text, fontSize: fontSize)
+        return RenderResult(attributedString: text, previewItems: previewItems)
+    }
+
+    /// Footnote markers [^n] as a superscript [n]
+    private static func styleFootnotes(in result: NSMutableAttributedString, fontSize: CGFloat) {
+        let text = result.string
 
         let pattern = "\\[\\^(\\d+)\\]"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return result
-        }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
 
         let nsText = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
@@ -3926,14 +3879,13 @@ private struct NoteContentRenderer {
 
             result.replaceCharacters(in: fullRange, with: styledRef)
         }
-
-        return result
     }
 }
 
 /// Custom UITextView that uses tap gestures for note content
 private class TappableNoteTextView: UITextView {
     var onTappableIndexTap: ((Int) -> Void)?
+    var onPlainTap: ((CGPoint) -> Void)?
 
     // Use TextKit 1 for reliable character index calculation
     private let textKit1LayoutManager = NSLayoutManager()
@@ -3971,11 +3923,16 @@ private class TappableNoteTextView: UITextView {
             fractionOfDistanceBetweenInsertionPoints: nil
         )
 
-        guard characterIndex < textKit1TextStorage.length else { return }
+        guard characterIndex < textKit1TextStorage.length else {
+            onPlainTap?(location)
+            return
+        }
 
         let attributes = textKit1TextStorage.attributes(at: characterIndex, effectiveRange: nil)
         if let tappableIndex = attributes[NoteTappableIndexKey] as? Int {
             onTappableIndexTap?(tappableIndex)
+        } else {
+            onPlainTap?(location)
         }
     }
 
@@ -3990,7 +3947,11 @@ private class TappableNoteTextView: UITextView {
 private struct NoteContentTextViewRepresentable: UIViewRepresentable {
     let content: String
     let fontSize: CGFloat
-    let references: [ParsedVerseReference]
+    let rendered: NoteContentRenderer.RenderResult
+    /// Off where a tap means something to the view around it, as on a note
+    /// section that opens in the editor when tapped.
+    var interactive: Bool = true
+    var onPlainTap: ((CGPoint) -> Void)? = nil
     let onTap: (Int) -> Void
 
     func makeUIView(context: Context) -> TappableNoteTextView {
@@ -4012,6 +3973,8 @@ private struct NoteContentTextViewRepresentable: UIViewRepresentable {
 
     func updateUIView(_ textView: TappableNoteTextView, context: Context) {
         textView.onTappableIndexTap = onTap
+        textView.onPlainTap = onPlainTap
+        textView.isUserInteractionEnabled = interactive
 
         // Only re-render if content or fontSize changed
         let cacheKey = "\(content.hashValue)_\(fontSize)"
@@ -4019,9 +3982,7 @@ private struct NoteContentTextViewRepresentable: UIViewRepresentable {
             context.coordinator.lastCacheKey = cacheKey
             context.coordinator.cachedSize = nil
 
-            let renderResult = NoteContentRenderer.render(content, fontSize: fontSize, references: references)
-            textView.attributedText = renderResult.attributedString
-            context.coordinator.cachedPreviewItems = renderResult.previewItems
+            textView.attributedText = rendered.attributedString
             textView.invalidateIntrinsicContentSize()
         }
     }
@@ -4052,7 +4013,6 @@ private struct NoteContentTextViewRepresentable: UIViewRepresentable {
     class Coordinator {
         var lastCacheKey: String = ""
         var cachedSize: CGSize?
-        var cachedPreviewItems: [PreviewItem] = []
     }
 }
 
@@ -4063,41 +4023,23 @@ struct InteractiveNoteContentView: View {
     let fontSize: Int
     let translationId: String
     var onNavigateToVerse: ((Int) -> Void)?
+    /// Off on a note section that opens in the editor when tapped.
+    var interactive: Bool = true
+    /// A tap anywhere but on a verse, with where it was in the text.
+    var onPlainTap: ((CGPoint) -> Void)? = nil
 
     @State private var previewState: PreviewSheetState? = nil
-    @State private var parsedData: (content: String, refs: [ParsedVerseReference], items: [PreviewItem])?
-
-    // Get or compute cached references
-    private var references: [ParsedVerseReference] {
-        if let data = parsedData, data.content == content {
-            return data.refs
-        }
-        return VerseReferenceParser.shared.parse(content)
-    }
-
-    // Get or compute cached preview items
-    private var previewItems: [PreviewItem] {
-        if let data = parsedData, data.content == content {
-            return data.items
-        }
-        return references.enumerated().map { index, ref in
-            PreviewItem.verse(
-                index: index,
-                verseId: ref.verseId,
-                endVerseId: ref.endVerseId,
-                displayText: ref.displayText
-            )
-        }
-    }
 
     var body: some View {
-        let refs = references  // Compute once per body evaluation
+        let rendered = NoteContentRenderer.cached(content, fontSize: CGFloat(fontSize))
         NoteContentTextViewRepresentable(
             content: content,
             fontSize: CGFloat(fontSize),
-            references: refs,
+            rendered: rendered,
+            interactive: interactive,
+            onPlainTap: onPlainTap,
             onTap: { index in
-                let items = previewItems
+                let items = rendered.previewItems
                 if index < items.count {
                     previewState = PreviewSheetState(
                         currentItem: items[index],
@@ -4106,12 +4048,6 @@ struct InteractiveNoteContentView: View {
                 }
             }
         )
-        .onAppear {
-            updateCacheIfNeeded()
-        }
-        .onChange(of: content) { _, _ in
-            updateCacheIfNeeded()
-        }
         .sheet(item: $previewState) { _ in
             PreviewSheet(
                 state: $previewState,
@@ -4121,24 +4057,9 @@ struct InteractiveNoteContentView: View {
         }
     }
 
-    private func updateCacheIfNeeded() {
-        if parsedData?.content != content {
-            let refs = VerseReferenceParser.shared.parse(content)
-            let items = refs.enumerated().map { index, ref in
-                PreviewItem.verse(
-                    index: index,
-                    verseId: ref.verseId,
-                    endVerseId: ref.endVerseId,
-                    displayText: ref.displayText
-                )
-            }
-            parsedData = (content, refs, items)
-        }
-    }
-
     /// Count the number of verse references in this content
     var referenceCount: Int {
-        references.count
+        NoteContentRenderer.cached(content, fontSize: CGFloat(fontSize)).previewItems.count
     }
 }
 
@@ -4281,9 +4202,9 @@ struct VerseSheetContent: View {
         // Helper to check if a verse ref is within the primary range
         let isPrimary: (Int) -> Bool = { ref in ref >= verseId && ref <= endId }
 
-        // For cross-chapter ranges or whole-chapter context, just return primary verses without context
+        // For cross-chapter ranges, just return primary verses without context
         // (adding context to multi-chapter ranges gets complicated)
-        if endChapter != startChapter || contextAmount == .chapter {
+        if endChapter != startChapter {
             return primaryVerses.map { ($0, false) }
         }
 
@@ -4652,6 +4573,8 @@ struct PreviewSheet: View {
     var contextAmount: SearchContextAmount? = nil
     var highlightQuery: String? = nil
     var highlightMode: SearchMode? = nil
+    /// How much of the passage around the verse to show, chosen in the sheet.
+    var contextChoice: Binding<SearchContextAmount>? = nil
 
     private var item: PreviewItem? { state?.currentItem }
 
@@ -4667,7 +4590,7 @@ struct PreviewSheet: View {
                             endVerseId: endVerseId,
                             translationId: itemTranslationId ?? translationId,
                             onNavigate: nil,
-                            contextAmount: contextAmount,
+                            contextAmount: contextChoice?.wrappedValue ?? contextAmount,
                             highlightQuery: highlightQuery,
                             highlightMode: highlightMode
                         )
@@ -4703,6 +4626,18 @@ struct PreviewSheet: View {
                             } label: {
                                 Image(systemName: "arrow.up.right")
                             }
+                        }
+                    }
+                }
+                .toolbar {
+                    if let contextChoice, item.verseId != nil {
+                        ToolbarItem(placement: .bottomBar) {
+                            Picker("Context", selection: contextChoice) {
+                                ForEach(SearchContextAmount.allCases, id: \.self) { amount in
+                                    Text(amount.label).tag(amount)
+                                }
+                            }
+                            .pickerStyle(.segmented)
                         }
                     }
                 }
@@ -4766,251 +4701,6 @@ private struct StrongsSheetContent: View {
 }
 
 // MARK: - Note Text Editor with Cursor Tracking
-
-/// UITextView wrapper that supports cursor position tracking and edit menu footnote insertion
-struct NoteTextEditor: UIViewRepresentable {
-    @Binding var text: String
-    let fontSize: CGFloat
-    let placeholder: String
-    var onTextChange: (() -> Void)?
-    var onCursorPositionChange: ((Int) -> Void)?  // Reports cursor position changes
-    var onShowFootnotePicker: ((Int) -> Void)?  // (cursorPosition) - shows picker to insert existing or new
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    func makeUIView(context: Context) -> NoteTextView {
-        let textView = NoteTextView()
-        textView.delegate = context.coordinator
-        textView.font = .systemFont(ofSize: fontSize)
-        textView.backgroundColor = .clear
-        textView.layer.cornerRadius = 8
-        textView.layer.borderWidth = 1
-        textView.layer.borderColor = UIColor.separator.cgColor
-        textView.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
-        textView.isScrollEnabled = false
-        textView.alwaysBounceVertical = false
-        textView.keyboardDismissMode = .none
-
-        // Enable text wrapping by making text container track text view width
-        textView.textContainer.widthTracksTextView = true
-        textView.textContainer.heightTracksTextView = false
-
-        // Allow horizontal compression for proper width constraints
-        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        // Store coordinator reference for menu actions
-        textView.coordinator = context.coordinator
-        context.coordinator.textView = textView
-
-        return textView
-    }
-
-    func updateUIView(_ textView: NoteTextView, context: Context) {
-        // Update parent reference
-        context.coordinator.parent = self
-
-        // Only update if text actually changed (avoid cursor jump)
-        if textView.text != text {
-            let selectedRange = textView.selectedRange
-            textView.attributedText = styledAttributedText(from: text)
-            // Try to restore cursor position
-            if selectedRange.location <= text.count {
-                textView.selectedRange = selectedRange
-            }
-        }
-
-        // Update placeholder visibility
-        context.coordinator.updatePlaceholder()
-    }
-
-    /// Creates attributed text with styled footnote references
-    func styledAttributedText(from text: String) -> NSAttributedString {
-        let baseAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: fontSize),
-            .foregroundColor: UIColor.label
-        ]
-
-        let attributedString = NSMutableAttributedString(string: text, attributes: baseAttributes)
-
-        // Style footnote references [^n] as superscript with secondary color
-        let pattern = "\\[\\^(\\d+)\\]"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return attributedString
-        }
-
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-
-        for match in matches {
-            // Style the visible parts [n] as superscript
-            let footnoteAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: fontSize * 0.7),
-                .foregroundColor: UIColor.secondaryLabel,
-                .baselineOffset: fontSize * 0.35
-            ]
-            attributedString.addAttributes(footnoteAttributes, range: match.range)
-
-            // Hide the ^ by making it invisible (zero-width)
-            let caretLocation = match.range.location + 1  // Position after [
-            let caretRange = NSRange(location: caretLocation, length: 1)
-            attributedString.addAttributes([
-                .font: UIFont.systemFont(ofSize: 0.01),
-                .foregroundColor: UIColor.clear
-            ], range: caretRange)
-        }
-
-        return attributedString
-    }
-
-    class Coordinator: NSObject, UITextViewDelegate {
-        var parent: NoteTextEditor
-        weak var textView: NoteTextView?
-        private var placeholderLabel: UILabel?
-
-        init(_ parent: NoteTextEditor) {
-            self.parent = parent
-        }
-
-        func textViewDidChange(_ textView: UITextView) {
-            let plainText = textView.text ?? ""
-            parent.text = plainText
-            parent.onTextChange?()
-            updatePlaceholder()
-
-            // Reapply footnote styling after edit
-            let selectedRange = textView.selectedRange
-            textView.attributedText = parent.styledAttributedText(from: plainText)
-            textView.selectedRange = selectedRange
-        }
-
-        func textViewDidBeginEditing(_ textView: UITextView) {
-            updatePlaceholder()
-        }
-
-        func textViewDidEndEditing(_ textView: UITextView) {
-            updatePlaceholder()
-        }
-
-        func textViewDidChangeSelection(_ textView: UITextView) {
-            // Report cursor position changes
-            let cursorPosition = textView.selectedRange.location
-            parent.onCursorPositionChange?(cursorPosition)
-        }
-
-        func updatePlaceholder() {
-            guard let textView = textView else { return }
-
-            if placeholderLabel == nil {
-                let label = UILabel()
-                label.text = parent.placeholder
-                label.font = .systemFont(ofSize: parent.fontSize)
-                label.textColor = UIColor.tertiaryLabel
-                label.translatesAutoresizingMaskIntoConstraints = false
-                textView.addSubview(label)
-                NSLayoutConstraint.activate([
-                    label.topAnchor.constraint(equalTo: textView.topAnchor, constant: 8),
-                    label.leadingAnchor.constraint(equalTo: textView.leadingAnchor, constant: 8)
-                ])
-                placeholderLabel = label
-            }
-
-            placeholderLabel?.isHidden = !textView.text.isEmpty || textView.isFirstResponder
-        }
-
-        // MARK: - Edit Menu Customization (iOS 16+)
-
-        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-            guard parent.onShowFootnotePicker != nil else {
-                return UIMenu(children: suggestedActions)
-            }
-
-            let insertAction = UIAction(title: "Insert Footnote", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
-                self?.showFootnotePicker()
-            }
-
-            // Insert at the beginning - system actions come after
-            return UIMenu(children: [insertAction] + suggestedActions)
-        }
-
-        func showFootnotePicker() {
-            guard let textView = textView else { return }
-
-            // Get current cursor position (or start of selection)
-            let cursorPosition = textView.selectedRange.location
-
-            // Show the picker - parent will handle inserting the marker
-            parent.onShowFootnotePicker?(cursorPosition)
-        }
-    }
-}
-
-/// Custom UITextView subclass that supports the Insert Footnote menu action
-class NoteTextView: UITextView {
-    weak var coordinator: NoteTextEditor.Coordinator?
-
-    override init(frame: CGRect, textContainer: NSTextContainer?) {
-        super.init(frame: frame, textContainer: textContainer)
-        setupKeyboardToolbar()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setupKeyboardToolbar()
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        // Set text container width for proper text wrapping
-        let insets = textContainerInset
-        let containerWidth = bounds.width - insets.left - insets.right - textContainer.lineFragmentPadding * 2
-        if containerWidth > 0 && textContainer.size.width != containerWidth {
-            textContainer.size.width = containerWidth
-        }
-        invalidateIntrinsicContentSize()
-    }
-
-    override var intrinsicContentSize: CGSize {
-        let fixedWidth = bounds.width
-        guard fixedWidth > 0 else { return super.intrinsicContentSize }
-        let size = sizeThatFits(CGSize(width: fixedWidth, height: .greatestFiniteMagnitude))
-        return CGSize(width: fixedWidth, height: max(size.height, 60))
-    }
-
-    private func setupKeyboardToolbar() {
-        let toolbar = UIToolbar()
-        toolbar.sizeToFit()
-
-        let flexSpace = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-        let doneButton = UIBarButtonItem(
-            image: UIImage(systemName: "keyboard.chevron.compact.down"),
-            style: .plain,
-            target: self,
-            action: #selector(dismissKeyboardAction)
-        )
-        doneButton.tintColor = .label
-
-        toolbar.items = [flexSpace, doneButton]
-        self.inputAccessoryView = toolbar
-    }
-
-    @objc private func dismissKeyboardAction() {
-        self.resignFirstResponder()
-    }
-
-    // Override to show Insert Footnote even without text selection
-    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(insertFootnoteAction) {
-            return coordinator?.parent.onShowFootnotePicker != nil
-        }
-        return super.canPerformAction(action, withSender: sender)
-    }
-
-    @objc func insertFootnoteAction() {
-        coordinator?.showFootnotePicker()
-    }
-}
 
 #Preview {
     ToolPanelView(
