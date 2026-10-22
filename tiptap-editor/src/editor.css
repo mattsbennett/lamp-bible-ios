@@ -403,3 +403,8 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
   line-height: 1.6;
   -webkit-text-size-adjust: 100%;
 }
+
+/* Verse references, as the host draws them (setVerseCatalog) */
+.verse-reference {
+  color: var(--footnote-color);
+}

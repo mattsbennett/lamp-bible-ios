@@ -1,7 +1,9 @@
 import './editor.css'
-import { Editor } from '@tiptap/core'
-import { EditorState } from '@tiptap/pm/state'
+import { Editor, Extension } from '@tiptap/core'
+import { EditorState, Plugin, PluginKey } from '@tiptap/pm/state'
+import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { StarterKit } from '@tiptap/starter-kit'
+import { HardBreak } from '@tiptap/extension-hard-break'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Table } from '@tiptap/extension-table'
 import { TableRow } from '@tiptap/extension-table-row'
@@ -17,6 +19,7 @@ import {
   markerPattern,
 } from './footnote-numbering.js'
 import { AudioBlock } from './extensions/audio-block.js'
+import { findVerseReferences } from './verse-references.js'
 import { ImageBlock } from './extensions/image-caption.js'
 
 // Media map for resolving media/id to file URLs
@@ -115,13 +118,87 @@ let currentMarkdown = ''
 let savedSelection = null // { from, to } saved before sheet opens
 let placeholderText = 'Start writing…'
 let reportsHeight = false
+// Names the document loaded last, so a host can tell a message about it from
+// one the previous document sent just before the editor changed hands.
+let documentToken = null
+// Whether a single line break in the Markdown is a break in the text, as in a
+// note typed as plain text, rather than a space, as Markdown otherwise reads it.
+let lineBreaks = false
+
+// Books and verse counts for finding verse references (setVerseCatalog);
+// none until a host gives them, and then none are looked for.
+let verseCatalog = null
+const verseReferenceKey = new PluginKey('verseReferences')
+
+function verseReferenceDecorations(doc) {
+  if (!verseCatalog) return DecorationSet.empty
+  const decorations = []
+  doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true
+    // A footnote reference or a line break stands for one place, as in the
+    // document, so an offset in this text is a position there.
+    let text = ''
+    node.forEach(child => { text += child.isText ? child.text : '\uFFFC' })
+    for (const { start, end } of findVerseReferences(text, verseCatalog)) {
+      decorations.push(Decoration.inline(pos + 1 + start, pos + 1 + end, { class: 'verse-reference' }))
+    }
+    return false
+  })
+  return DecorationSet.create(doc, decorations)
+}
+
+// Verse references shown as the host shows them where it draws the text: a
+// mark on the screen only, so what is written is the Markdown as typed.
+const VerseReferences = Extension.create({
+  name: 'verseReferences',
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      key: verseReferenceKey,
+      state: {
+        init: (_, state) => verseReferenceDecorations(state.doc),
+        apply: (tr, old) => (tr.docChanged || tr.getMeta(verseReferenceKey))
+          ? verseReferenceDecorations(tr.doc)
+          : old.map(tr.mapping, tr.doc),
+      },
+      props: {
+        decorations: state => verseReferenceKey.getState(state),
+      },
+    })]
+  },
+})
+
+// A break within a block, written as Markdown's backslash break, or, where
+// single line breaks are breaks, as the plain line break it was read from.
+// Only between content, as tiptap-markdown writes it: one at the end of a
+// block says nothing.
+const LineHardBreak = HardBreak.extend({
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state, node, parent, index) {
+          for (let i = index + 1; i < parent.childCount; i++) {
+            if (parent.child(i).type != node.type) {
+              if (state.inTable) state.write('<br>')
+              else if (lineBreaks) state.text('\n', false)
+              else state.write('\\\n')
+              return
+            }
+          }
+        },
+        parse: {},
+      },
+    }
+  },
+})
 
 // ---- Swift Bridge ----
 
 function postToSwift(type, payload) {
   try {
     if (window.webkit?.messageHandlers?.tiptapBridge) {
-      window.webkit.messageHandlers.tiptapBridge.postMessage({ type, ...payload })
+      const message = { type, ...payload }
+      if (documentToken !== null) message.token = documentToken
+      window.webkit.messageHandlers.tiptapBridge.postMessage(message)
     }
   } catch (e) {
     console.log('Swift bridge not available:', e)
@@ -144,6 +221,7 @@ function initEditor() {
       // StarterKit brings Link; configured here rather than added again.
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
+        hardBreak: false,
         link: {
           openOnClick: false,
           HTMLAttributes: { rel: null, target: null },
@@ -172,6 +250,8 @@ function initEditor() {
           size: 4,
         },
       }),
+      LineHardBreak,
+      VerseReferences,
       FootnoteRef,
       FootnoteDefinition,
       AudioBlock,
@@ -188,6 +268,7 @@ function initEditor() {
     onSelectionUpdate({ editor }) {
       if (currentMode !== 'richtext') return
       reportSelectionState()
+      reportCaret()
     },
 
     onFocus() {
@@ -283,6 +364,22 @@ function reportContentHeight() {
   const root = document.getElementById('tiptap-editor')
   postToSwift('contentHeight', {
     height: Math.ceil(root.getBoundingClientRect().bottom + window.scrollY),
+  })
+}
+
+// Where the caret is, from the top of the page, for a host that scrolls the
+// page itself and has to keep the caret in sight.
+function reportCaret() {
+  if (!reportsHeight || currentMode !== 'richtext') return
+  let coords
+  try {
+    coords = editor.view.coordsAtPos(editor.state.selection.head)
+  } catch (e) {
+    return
+  }
+  postToSwift('caret', {
+    top: Math.floor(coords.top + window.scrollY),
+    bottom: Math.ceil(coords.bottom + window.scrollY),
   })
 }
 
@@ -391,8 +488,11 @@ window.editorAPI = {
   // the previous document had not yet reported is dropped rather than
   // arriving at the next one's host as its own. And the undo history starts
   // afresh, so nothing can be undone back into the previous document.
-  load(markdown) {
+  //
+  // `token`, if given, comes back on every message about this document.
+  load(markdown, token) {
     cancelContentUpdate()
+    documentToken = token ?? null
     savedSelection = null
     currentMarkdown = markdown || ''
     markdownTextarea.value = currentMarkdown
@@ -405,6 +505,32 @@ window.editorAPI = {
     // A document the same height as the last fires no resize, and the host
     // it was handed to would never learn its height.
     reportContentHeight()
+    reportCaret()
+  },
+
+  // The books and verse counts verse references are found by: the host's
+  // own, so the editor marks the references the host would. Null stops it.
+  setVerseCatalog(catalog) {
+    verseCatalog = catalog || null
+    editor.view.dispatch(editor.state.tr.setMeta(verseReferenceKey, true))
+  },
+
+  // Single line breaks as breaks, for documents written as plain text, such
+  // as a note. Applies to the next document loaded.
+  setLineBreaks(on) {
+    lineBreaks = on === true
+    editor.storage.markdown.parser.md.set({ breaks: lineBreaks })
+  },
+
+  // A reference to a footnote the host keeps outside the document, at the
+  // caret, or where the caret was when saveSelection was called.
+  insertFootnoteRef(id) {
+    const chain = editor.chain().focus()
+    if (savedSelection) {
+      chain.setTextSelection(savedSelection)
+      savedSelection = null
+    }
+    chain.insertContent({ type: 'footnoteRef', attrs: { id: String(id) } }).run()
   },
 
   // Sizes the page to the text, for a host laying the editor out among
@@ -656,6 +782,21 @@ window.editorAPI = {
       editor.commands.focus()
     } else {
       markdownTextarea.focus()
+    }
+  },
+
+  // Focuses the editor with the caret at a point in the page, as near as the
+  // text allows: where a host's own drawing of the document was tapped.
+  focusAt(x, y) {
+    // A page handed from one document to the next can still hold the last
+    // one's focus; focusing it again would be no focus at all, and a host
+    // waiting on one to raise the keyboard would wait.
+    if (editor.view.hasFocus()) editor.view.dom.blur()
+    const found = editor.view.posAtCoords({ left: x, top: y - window.scrollY })
+    if (found) {
+      editor.chain().focus().setTextSelection(found.pos).run()
+    } else {
+      editor.commands.focus('end')
     }
   },
 
