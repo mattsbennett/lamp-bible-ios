@@ -12,6 +12,8 @@
   --audio-bg: rgba(0, 0, 0, 0.06);
   --audio-border: rgba(0, 0, 0, 0.12);
   --footnote-color: #007AFF;
+  --search-match: rgba(255, 204, 0, 0.35);
+  --search-match-current: rgb(255, 204, 0);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -26,6 +28,8 @@
     --image-caption-color: rgba(255, 255, 255, 0.5);
     --audio-bg: rgba(255, 255, 255, 0.08);
     --audio-border: rgba(255, 255, 255, 0.15);
+    --search-match: rgba(255, 214, 10, 0.35);
+    --search-match-current: rgb(255, 214, 10);
   }
 }
 
@@ -40,6 +44,8 @@ body.dark {
   --image-caption-color: rgba(255, 255, 255, 0.5);
   --audio-bg: rgba(255, 255, 255, 0.08);
   --audio-border: rgba(255, 255, 255, 0.15);
+  --search-match: rgba(255, 214, 10, 0.35);
+  --search-match-current: rgb(255, 214, 10);
 }
 
 * {
@@ -407,4 +413,16 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
 /* Verse references, as the host draws them (setVerseCatalog) */
 .verse-reference {
   color: var(--footnote-color);
+}
+
+/* Find: every match, and the current one solid, as Safari marks them */
+.search-match {
+  background-color: var(--search-match);
+  border-radius: 2px;
+}
+
+.search-match.search-match-current,
+.search-match.search-match-current * {
+  background-color: var(--search-match-current);
+  color: #000;
 }

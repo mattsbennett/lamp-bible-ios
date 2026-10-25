@@ -1,7 +1,8 @@
 import './editor.css'
 import { Editor, Extension } from '@tiptap/core'
-import { EditorState, Plugin, PluginKey } from '@tiptap/pm/state'
+import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { closeHistory } from '@tiptap/pm/history'
 import { StarterKit } from '@tiptap/starter-kit'
 import { HardBreak } from '@tiptap/extension-hard-break'
 import { Placeholder } from '@tiptap/extension-placeholder'
@@ -20,6 +21,7 @@ import {
 } from './footnote-numbering.js'
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
+import { searchPattern, findMatches } from './search.js'
 import { ImageBlock } from './extensions/image-caption.js'
 
 // Media map for resolving media/id to file URLs
@@ -130,19 +132,26 @@ let lineBreaks = false
 let verseCatalog = null
 const verseReferenceKey = new PluginKey('verseReferences')
 
+// Each textblock's text, with where it starts in the document. A footnote
+// reference or a line break stands for one place, as in the document, so an
+// offset in this text is a position there.
+function eachTextblock(doc, visit) {
+  doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true
+    let text = ''
+    node.forEach(child => { text += child.isText ? child.text : '\uFFFC' })
+    visit(text, pos + 1)
+    return false
+  })
+}
+
 function verseReferenceDecorations(doc) {
   if (!verseCatalog) return DecorationSet.empty
   const decorations = []
-  doc.descendants((node, pos) => {
-    if (!node.isTextblock) return true
-    // A footnote reference or a line break stands for one place, as in the
-    // document, so an offset in this text is a position there.
-    let text = ''
-    node.forEach(child => { text += child.isText ? child.text : '\uFFFC' })
-    for (const { start, end } of findVerseReferences(text, verseCatalog)) {
-      decorations.push(Decoration.inline(pos + 1 + start, pos + 1 + end, { class: 'verse-reference' }))
+  eachTextblock(doc, (text, start) => {
+    for (const reference of findVerseReferences(text, verseCatalog)) {
+      decorations.push(Decoration.inline(start + reference.start, start + reference.end, { class: 'verse-reference' }))
     }
-    return false
   })
   return DecorationSet.create(doc, decorations)
 }
@@ -166,6 +175,96 @@ const VerseReferences = Extension.create({
     })]
   },
 })
+
+// ---- Find ----
+
+// What is being looked for (setSearch), kept apart from any one document so
+// a search carries on into the next document loaded; null while none is.
+let searchQuery = null
+const searchKey = new PluginKey('search')
+const noSearch = { matches: [], current: -1, decorations: DecorationSet.empty }
+
+// Every match in the document, and which is current: the first at or after
+// `at`, or the first of all.
+function searchIn(doc, at) {
+  if (!searchQuery) return noSearch
+  const matches = []
+  eachTextblock(doc, (text, start) => {
+    for (const match of findMatches(text, searchQuery)) {
+      matches.push({ from: start + match.start, to: start + match.end })
+    }
+  })
+  if (matches.length === 0) return { ...noSearch }
+  const after = matches.findIndex(match => match.from >= at)
+  return withCurrent(doc, matches, after === -1 ? 0 : after)
+}
+
+function withCurrent(doc, matches, current) {
+  const decorations = matches.map((match, index) => Decoration.inline(match.from, match.to, {
+    class: index === current ? 'search-match search-match-current' : 'search-match',
+  }))
+  return { matches, current, decorations: DecorationSet.create(doc, decorations) }
+}
+
+// Matches are found again whenever the document changes, so a count and a
+// current match never go stale. The current one stays where it was, or, if
+// it was edited away, moves to the next. A transaction can say where the
+// current match is to be found from instead (`at`), or which it is (`current`).
+const Search = Extension.create({
+  name: 'search',
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      key: searchKey,
+      state: {
+        init: (_, state) => searchIn(state.doc, state.selection.from),
+        apply(tr, old) {
+          const meta = tr.getMeta(searchKey)
+          if (meta?.at !== undefined) return searchIn(tr.doc, meta.at)
+          if (meta?.current !== undefined) return withCurrent(tr.doc, old.matches, meta.current)
+          if (!tr.docChanged) return old
+          const at = old.current === -1
+            ? tr.selection.from
+            : tr.mapping.map(old.matches[old.current].from, -1)
+          return searchIn(tr.doc, at)
+        },
+      },
+      props: {
+        decorations: state => searchKey.getState(state).decorations,
+      },
+      // A host showing "3 of 12" hears whenever the document changes it.
+      view: () => ({
+        update(view, previous) {
+          if (searchQuery && view.state.doc !== previous.doc) postToSwift('searchChanged', searchResult())
+        },
+      }),
+    })]
+  },
+})
+
+function searchResult() {
+  if (!searchQuery || currentMode !== 'richtext') return { count: 0, current: 0 }
+  const { matches, current } = searchKey.getState(editor.state)
+  return { count: matches.length, current: current + 1 }
+}
+
+// The current match brought into sight, where it is out of sight, without
+// moving the selection or taking focus from the host's find field.
+function revealCurrentMatch() {
+  const match = editor.view.dom.querySelector('.search-match-current')
+  if (!match) return
+  const box = match.getBoundingClientRect()
+  if (box.top >= 0 && box.bottom <= window.innerHeight) return
+  match.scrollIntoView({ block: 'center', inline: 'nearest' })
+}
+
+// Replaced as typed over it: the text takes the marks of what it replaces,
+// so a bold word stays bold. Nothing for a replacement deletes the match.
+function replaceMatch(tr, match, replacement) {
+  if (!replacement) return tr.delete(match.from, match.to)
+  const $from = tr.doc.resolve(match.from)
+  const marks = $from.marksAcross(tr.doc.resolve(match.to)) ?? []
+  return tr.replaceWith(match.from, match.to, editor.schema.text(replacement, marks))
+}
 
 // A break within a block, written as Markdown's backslash break, or, where
 // single line breaks are breaks, as the plain line break it was read from.
@@ -252,6 +351,7 @@ function initEditor() {
       }),
       LineHardBreak,
       VerseReferences,
+      Search,
       FootnoteRef,
       FootnoteDefinition,
       AudioBlock,
@@ -571,6 +671,79 @@ window.editorAPI = {
     editor.view.dispatch(editor.state.tr)
   },
 
+  // Find, in the rich-text editor only. The query is literal text, found
+  // within a block: options are { caseSensitive, wholeWord }. Every match is
+  // marked, and the current one, the first at or after the selection, is
+  // brought into sight. Nothing, or an empty query, ends the search. Each
+  // call returns { count, current }, current counting from 1, 0 for none;
+  // and while a search is set, every change to the document posts
+  // `searchChanged` with the same.
+  setSearch(query, options) {
+    if (currentMode !== 'richtext') return { count: 0, current: 0 }
+    searchQuery = searchPattern(query, options || {})
+    editor.view.dispatch(editor.state.tr.setMeta(searchKey, { at: editor.state.selection.from }))
+    revealCurrentMatch()
+    return searchResult()
+  },
+
+  clearSearch() {
+    if (!searchQuery) return
+    searchQuery = null
+    editor.view.dispatch(editor.state.tr.setMeta(searchKey, { at: 0 }))
+  },
+
+  findNext() {
+    return moveCurrentMatch(1)
+  },
+
+  findPrevious() {
+    return moveCurrentMatch(-1)
+  },
+
+  // The current match replaced, as one step to undo, and the next match
+  // after it made current. A document that cannot be edited is left alone.
+  replaceCurrent(replacement) {
+    if (!searchQuery || currentMode !== 'richtext' || !editor.isEditable) return searchResult()
+    const { matches, current } = searchKey.getState(editor.state)
+    if (current === -1) return searchResult()
+    const match = matches[current]
+    const tr = replaceMatch(editor.state.tr, match, replacement || '')
+    tr.setMeta(searchKey, { at: match.from + (replacement || '').length })
+    editor.view.dispatch(closeHistory(tr))
+    revealCurrentMatch()
+    return searchResult()
+  },
+
+  // Every match replaced at once, undone at once. Returns how many were.
+  replaceAll(replacement) {
+    if (!searchQuery || currentMode !== 'richtext' || !editor.isEditable) return 0
+    const { matches } = searchKey.getState(editor.state)
+    if (matches.length === 0) return 0
+    const tr = editor.state.tr
+    // From the last, so each match's place is still where it was found.
+    for (let index = matches.length - 1; index >= 0; index--) {
+      replaceMatch(tr, matches[index], replacement || '')
+    }
+    editor.view.dispatch(closeHistory(tr))
+    return matches.length
+  },
+
+  // The current match selected, with the editor focused: what a find bar
+  // leaves behind as it closes. Focused at once, not as TipTap focuses, a
+  // frame later and not at all if the page's focus is still on the editor,
+  // as it can be while the host's find field has the keyboard.
+  selectCurrentMatch() {
+    if (!searchQuery || currentMode !== 'richtext') return
+    const { matches, current } = searchKey.getState(editor.state)
+    if (current === -1) return
+    const match = matches[current]
+    editor.view.dispatch(editor.state.tr.setSelection(
+      TextSelection.create(editor.state.doc, match.from, match.to)
+    ))
+    editor.view.focus()
+    revealCurrentMatch()
+  },
+
   toggleBold() {
     editor.chain().focus().toggleBold().run()
     reportSelectionState()
@@ -825,6 +998,16 @@ window.editorAPI = {
     editor.chain().focus().setTextSelection(savedSelection).run()
     savedSelection = null
   },
+}
+
+function moveCurrentMatch(step) {
+  if (!searchQuery || currentMode !== 'richtext') return searchResult()
+  const { matches, current } = searchKey.getState(editor.state)
+  if (matches.length === 0) return searchResult()
+  const next = (current + step + matches.length) % matches.length
+  editor.view.dispatch(editor.state.tr.setMeta(searchKey, { current: next }))
+  revealCurrentMatch()
+  return searchResult()
 }
 
 function escapeHtmlContent(str) {

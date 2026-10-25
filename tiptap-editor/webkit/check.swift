@@ -21,6 +21,7 @@ final class Probe: NSObject, WKScriptMessageHandler {
     var heights: [Int] = []
     var carets: [(top: Int, bottom: Int)] = []
     var tokens: [String: [String?]] = [:]
+    var searches: [(count: Int, current: Int, token: String?)] = []
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         guard let body = m.body as? [String: Any], let type = body["type"] as? String else { return }
         tokens[type, default: []].append(body["token"] as? String)
@@ -28,6 +29,7 @@ final class Probe: NSObject, WKScriptMessageHandler {
         if type == "contentChanged" { changes.append(body["markdown"] as? String ?? "") }
         if type == "contentHeight" { heights.append(body["height"] as? Int ?? -1) }
         if type == "caret" { carets.append((body["top"] as? Int ?? -1, body["bottom"] as? Int ?? -1)) }
+        if type == "searchChanged" { searches.append((body["count"] as? Int ?? -1, body["current"] as? Int ?? -1, body["token"] as? String)) }
     }
 }
 let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: 420, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -135,7 +137,7 @@ func references() {
             let marked = parts.first as? [String] ?? []
             check(marked == ["John 3:3", "Jn. 3:16"], "the references are marked, after a footnote too (read: \(marked))")
             check((parts.last as? String) == note, "and the Markdown is as written (read: \(String(describing: parts.last)))")
-            exit(failed ? 1 : 0)
+            js("window.editorAPI.setVerseCatalog(null)") { _ in find() }
         }
     }
 }
@@ -242,6 +244,197 @@ func notes() {
                     }
                 }
             }
+        }
+    }
+}
+
+// Find and replace, for a host's find bar: what is found, the current match
+// moved and wrapped, and a replacement that keeps its marks and undoes as one.
+func found(_ r: Any?) -> [Int] {
+    let d = r as? [String: Any] ?? [:]
+    return [d["count"] as? Int ?? -1, d["current"] as? Int ?? -1]
+}
+// This window is never key, so focus never lands in it: what is checked is
+// whether the editor asks for it, by the calls to its element's focus(). Nor
+// is it ever drawn, so it gets no animation frames, which TipTap focuses on:
+// a timer stands in for them, so a focus TipTap asks for is counted too.
+let countFocus = """
+    window.requestAnimationFrame = callback => setTimeout(() => callback(performance.now()), 16);
+    var editorElement = document.querySelector('.ProseMirror');
+    var focusRequests = 0;
+    var elementFocus = editorElement.focus;
+    editorElement.focus = function () { focusRequests += 1; return elementFocus.apply(this, arguments) };
+    """
+func find() {
+    print("-- find")
+    js("""
+        \(countFocus)
+        window.editorAPI.load('grace upon Grace and gracefully grace');
+        var first = window.editorAPI.setSearch('grace', {});
+        window.editorAPI.findNext(); window.editorAPI.findPrevious();
+        [first, document.querySelectorAll('.search-match').length,
+         document.querySelector('.search-match-current').textContent,
+         focusRequests === 0,
+         window.editorAPI.getContent()]
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(found(parts.first) == [4, 1], "setSearch counts every match and the first is current (read: \(found(parts.first)))")
+        check((parts.count > 1 ? parts[1] as? Int : nil) == 4, "every match is marked")
+        check((parts.count > 2 ? parts[2] as? String : nil) == "grace", "the current match is marked as such")
+        check((parts.count > 3 ? parts[3] as? Bool : nil) == true, "setSearch, findNext and findPrevious ask for no focus")
+        check((parts.last as? String) == "grace upon Grace and gracefully grace", "the marks are not written into the Markdown")
+        js("""
+            var a = window.editorAPI;
+            [a.findNext(), a.findNext(), a.findNext(), a.findNext(), a.findPrevious(),
+             a.setSearch('grace', { caseSensitive: true }), a.setSearch('grace', { wholeWord: true }),
+             a.setSearch('race', { wholeWord: true }), a.setSearch('', {}),
+             document.querySelectorAll('.search-match').length]
+            """) { r in
+            let parts = r as? [Any] ?? []
+            let moves = parts.prefix(5).map(found)
+            check(moves == [[4, 2], [4, 3], [4, 4], [4, 1], [4, 4]], "next and previous move the current match and wrap (read: \(moves))")
+            check(parts.count > 5 && found(parts[5]) == [3, 1], "case is matched when asked (read: \(parts.count > 5 ? found(parts[5]) : []))")
+            check(parts.count > 6 && found(parts[6]) == [3, 1], "a whole word is not found inside a longer one (read: \(parts.count > 6 ? found(parts[6]) : []))")
+            check(parts.count > 7 && found(parts[7]) == [0, 0], "nor is part of a word (read: \(parts.count > 7 ? found(parts[7]) : []))")
+            check(parts.count > 9 && found(parts[8]) == [0, 0] && parts[9] as? Int == 0, "an empty query ends the search")
+            replaced()
+        }
+    }
+}
+
+func replaced() {
+    print("-- replace")
+    js("""
+        var a = window.editorAPI;
+        a.load('**Grace** upon grace and grace');
+        a.focus();
+        a.setSearch('grace', {});
+        var current = [a.replaceCurrent('Mercy'), a.getContent()];
+        var next = [a.replaceCurrent('love'), a.getContent()];
+        [current, next]
+        """) { r in
+        let parts = r as? [[Any]] ?? []
+        let current = parts.first ?? [], next = parts.last ?? []
+        check(current.first.map(found) == [2, 1], "replaceCurrent makes the next match current (read: \(current.first.map(found) ?? []))")
+        check(current.last as? String == "**Mercy** upon grace and grace", "the replacement keeps the match's marks (read: \(String(describing: current.last)))")
+        check(next.last as? String == "**Mercy** upon love and grace", "and the next replace replaces the next (read: \(String(describing: next.last)))")
+        js("window.editorAPI.focus(); \(undo); window.editorAPI.getContent()") { r in
+            check(r as? String == "**Mercy** upon grace and grace", "Undo undoes one replacement at a time (read: \(String(describing: r)))")
+            js("""
+                var a = window.editorAPI;
+                a.load('grace and grace and grace');
+                a.focus();
+                a.setSearch('grace', {});
+                [a.replaceAll('love'), a.getContent(), a.findNext()]
+                """) { r in
+                let parts = r as? [Any] ?? []
+                check(parts.first as? Int == 3 && parts.count > 1 && parts[1] as? String == "love and love and love", "replaceAll replaces every match (read: \(parts.prefix(2)))")
+                check(parts.count > 2 && found(parts[2]) == [0, 0], "and leaves none to find")
+                js("window.editorAPI.focus(); \(undo); window.editorAPI.getContent()") { r in
+                    check(r as? String == "grace and grace and grace", "a single Undo undoes replaceAll (read: \(String(describing: r)))")
+                    js("""
+                        var a = window.editorAPI;
+                        a.load('grace and grace');
+                        a.setSearch('grace', {});
+                        [a.replaceCurrent('grace upon grace'), a.getContent()]
+                        """) { r in
+                        let parts = r as? [Any] ?? []
+                        check(parts.first.map(found) == [3, 3] && parts.last as? String == "grace upon grace and grace", "a replacement that holds the query is passed over, not found again (read: \(parts))")
+                        // An edit just before, and touching the match, would
+                        // otherwise be undone with it.
+                        js("""
+                            var a = window.editorAPI;
+                            a.load('grace');
+                            a.focus();
+                            a.insertFootnoteRef('1');
+                            a.setSearch('grace', {});
+                            a.replaceCurrent('mercy');
+                            a.focus();
+                            \(undo);
+                            a.getContent()
+                            """) { r in
+                            check(r as? String == "[^1]grace", "Undo undoes the replacement alone, after an edit beside it (read: \(String(describing: r)))")
+                            across()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+func across() {
+    print("-- find within a block")
+    js("""
+        var a = window.editorAPI;
+        a.load('gra[^1]ce and grace\\n\\ngra\\\\\\nce\\n\\n[^1]: a note on grace');
+        var result = a.setSearch('grace', {});
+        [result, a.replaceAll('mercy'), a.getContent()]
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(found(parts.first) == [2, 1], "no match runs across a footnote reference or a line break, and a footnote is searched (read: \(found(parts.first)))")
+        let md = parts.last as? String ?? ""
+        check(md.contains("[^1]: a note on mercy") && md.contains("gra[^1]ce and mercy"), "a replaced footnote is written back (read: \(md.debugDescription))")
+        reported()
+    }
+}
+
+func reported() {
+    print("-- searchChanged")
+    js("window.editorAPI.setSearch('grace', {}); window.editorAPI.load('a grace', 'doc-9')") { _ in
+        after(100) {
+            let loaded = probe.searches.last
+            check(loaded.map { [$0.count, $0.current] } == [1, 1] && loaded?.token == "doc-9", "load() reports the search in the next document, with its token (\(String(describing: loaded)))")
+            probe.searches = []
+            js("window.editorAPI.focus(); window.editorAPI.insertScriptureQuote('John 1:16', 'grace for grace')") { _ in
+                after(100) {
+                    let typed = probe.searches.last
+                    // The quote goes in before the match that was current, which stays so.
+                    check(typed.map { [$0.count, $0.current] } == [3, 3], "an edit reports the new count, and the current match stays current (\(probe.searches))")
+                    probe.searches = []
+                    js("window.editorAPI.clearSearch(); window.editorAPI.insertScriptureQuote('John 1:17', 'grace and truth'); document.querySelectorAll('.search-match').length") { r in
+                        after(100) {
+                            check(probe.searches.isEmpty && r as? Int == 0, "nothing is reported or marked once the search ends (\(probe.searches))")
+                            selected()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+func selected() {
+    print("-- select the current match")
+    js("""
+        var a = window.editorAPI;
+        a.load('one grace two grace');
+        a.setSearch('grace', {});
+        a.findNext();
+        focusRequests = 0;
+        a.selectCurrentMatch();
+        var asked = focusRequests > 0;
+        a.clearSearch();
+        """) { _ in
+        after(100) {
+        js("[window.editorAPI.getSelectedText(), asked]") { r in
+        let parts = r as? [Any] ?? []
+        check(parts.first as? String == "grace" && parts.last as? Bool == true, "selectCurrentMatch selects it and focuses the editor (read: \(parts))")
+        js("""
+            var a = window.editorAPI;
+            a.load('read only grace');
+            a.setMode('read');
+            a.setSearch('grace', {});
+            var result = [a.replaceAll('x'), a.getContent()];
+            a.clearSearch();
+            a.setMode('edit');
+            result
+            """) { r in
+            let parts = r as? [Any] ?? []
+            check(parts.first as? Int == 0 && parts.last as? String == "read only grace", "a document that cannot be edited is not replaced in (read: \(parts))")
+            exit(failed ? 1 : 0)
+        }
+        }
         }
     }
 }
