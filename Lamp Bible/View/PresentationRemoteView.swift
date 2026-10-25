@@ -2,10 +2,130 @@ import LampCore
 import LampPresentationUI
 import SwiftUI
 
+/// How the presenter's slide and notes share the space: side by side where
+/// the space is wider than it is tall, stacked where it is taller, and split
+/// between them where the presenter last dragged the handle between them.
+///
+/// Chosen by the shape of the space rather than its size class: an iPad held
+/// upright is regular in width, and would put the notes in a narrow column
+/// beside a slide filling the screen; an iPhone on its side is compact, and
+/// would stack a slide taller than the screen above notes out of sight.
+///
+/// The split is kept as the notes' share of the space, one for each
+/// arrangement, since one divides a width and the other a height. What is
+/// shown is that share held within each side's minimum, without changing
+/// the share kept, so a split chosen with room for it comes back when the
+/// room does, after the device is turned or the window narrowed.
+struct PresenterLayout: Equatable {
+    /// Whether the notes are beside the slide, rather than beneath it.
+    var isSideBySide: Bool
+    /// The length the split divides, less the handle between the sides.
+    var available: CGFloat
+    /// The notes' part of it.
+    var notes: CGFloat
+
+    /// The handle's breadth between the sides.
+    static let gap: CGFloat = 20
+    static let standardWideShare = 0.45
+    static let standardTallShare = 0.5
+    /// The least either side is given: room for the notes' heading and a
+    /// few lines, and for a slide still legible as one.
+    static let notesMinimum = CGSize(width: 220, height: 150)
+    static let slideMinimum = CGSize(width: 200, height: 120)
+
+    init(size: CGSize, wideShare: Double, tallShare: Double) {
+        isSideBySide = size.width > size.height
+        available = max((isSideBySide ? size.width : size.height) - Self.gap, 0)
+        notes = 0
+        notes = clamped((available * (isSideBySide ? wideShare : tallShare)).rounded())
+    }
+
+    var slide: CGFloat { available - notes }
+
+    /// The notes' share the split stands at, to be kept.
+    var share: Double { available > 0 ? Double(notes / available) : 0 }
+
+    /// The split after the handle is dragged `translation` toward the notes,
+    /// which gives them that much less.
+    func dragged(by translation: CGFloat) -> PresenterLayout {
+        var layout = self
+        layout.notes = clamped(notes - translation)
+        return layout
+    }
+
+    /// Whether the slide's column, in `size`, has room for the next slide
+    /// beneath the current one at little cost to it: the current slide kept
+    /// at `nextSlideCost` or more of the width it would have alone. Where it
+    /// has not, the current slide takes the column, being what the room sees.
+    func showsNext(in size: CGSize, aspectRatio: CGFloat) -> Bool {
+        let column = isSideBySide
+            ? CGSize(width: slide, height: size.height)
+            : CGSize(width: size.width, height: slide)
+        let nextRow = Self.nextThumbnailWidth / aspectRatio + Self.columnSpacing
+        let alone = min(column.width, column.height * aspectRatio)
+        let withNext = min(column.width, max(column.height - nextRow, 0) * aspectRatio)
+        return alone > 0 && withNext >= alone * Self.nextSlideCost
+    }
+
+    static let nextSlideCost: CGFloat = 0.85
+
+    /// How wide the current slide is drawn in `size`: as wide as its column,
+    /// or as the column's height allows, less the next slide's row where
+    /// that is shown.
+    func slideWidth(in size: CGSize, aspectRatio: CGFloat) -> CGFloat {
+        let column = isSideBySide
+            ? CGSize(width: slide, height: size.height)
+            : CGSize(width: size.width, height: slide)
+        let nextRow = showsNext(in: size, aspectRatio: aspectRatio)
+            ? Self.nextThumbnailWidth / aspectRatio + Self.columnSpacing
+            : 0
+        return min(column.width, max(column.height - nextRow, 0) * aspectRatio)
+    }
+
+    /// Below this width a slide is drawn as a thumbnail is, its type held
+    /// legible and its words kept from crowding one another; above it,
+    /// exactly as the room sees it.
+    static let thumbnailWidth: CGFloat = 320
+
+    /// The next slide's thumbnail, and the space above it.
+    static let nextThumbnailWidth: CGFloat = 132
+    static let columnSpacing: CGFloat = 12
+
+    private func clamped(_ extent: CGFloat) -> CGFloat {
+        let notesMinimum = isSideBySide ? Self.notesMinimum.width : Self.notesMinimum.height
+        let slideMinimum = isSideBySide ? Self.slideMinimum.width : Self.slideMinimum.height
+        // Too little room for both minimums: halves.
+        guard available - slideMinimum >= notesMinimum else { return (available / 2).rounded() }
+        return min(max(extent, notesMinimum), available - slideMinimum)
+    }
+}
+
+/// The sizes presenter notes can be read at, stepped through by the notes'
+/// own buttons: kept on the device holding the remote, since what suits is a
+/// matter of how far it is held from the eyes. Each is the size at the
+/// standard text size, and scales with the reader's own text size, as the
+/// body text it begins as does.
+enum PresenterNotesSize {
+    static let sizes: [Double] = [13, 15, 17, 20, 24, 28, 34, 40]
+    static let standard: Double = 17
+
+    /// The size `steps` along from `size`: from the nearest, if `size` is not
+    /// one of them, and no further than the smallest or largest.
+    static func stepped(_ size: Double, by steps: Int) -> Double {
+        let nearest = sizes.indices.min { abs(sizes[$0] - size) < abs(sizes[$1] - size) } ?? 0
+        return sizes[min(max(nearest + steps, 0), sizes.count - 1)]
+    }
+}
+
 struct PresentationRemoteView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var client = PresentationRemoteClient()
+    @AppStorage("presenterNotesFontSize") private var notesFontSize = PresenterNotesSize.standard
+    @AppStorage("presenterNotesWidthShare") private var notesWidthShare = PresenterLayout.standardWideShare
+    @AppStorage("presenterNotesHeightShare") private var notesHeightShare = PresenterLayout.standardTallShare
+    /// How far the handle between slide and notes has been dragged, toward
+    /// the notes, while it is.
+    @GestureState private var splitDrag: CGFloat = 0
     @State private var pairingCode = ""
     @State private var showingScanner = false
     @State private var scannerError: String?
@@ -246,24 +366,39 @@ struct PresentationRemoteView: View {
     private var presenterView: some View {
         Group {
             if let state = client.presentationState {
-                ScrollView {
-                    VStack(spacing: 18) {
-                        if horizontalSizeClass == .regular {
-                            HStack(alignment: .top, spacing: 20) {
-                                slideColumn(state)
-                                    .frame(maxWidth: .infinity)
-                                notesCard(state)
-                                    .frame(width: 330)
-                            }
-                        } else {
-                            VStack(spacing: 16) {
-                                slideColumn(state)
-                                notesCard(state)
-                            }
+                // Nothing scrolls but the notes, so they keep their share of
+                // the space however long they run.
+                GeometryReader { geometry in
+                    let resting = PresenterLayout(
+                        size: geometry.size,
+                        wideShare: notesWidthShare,
+                        tallShare: notesHeightShare
+                    )
+                    let layout = resting.dragged(by: splitDrag)
+                    let showsNext = layout.showsNext(in: geometry.size, aspectRatio: state.aspectRatio.ratio)
+                    let compact = layout.slideWidth(in: geometry.size, aspectRatio: state.aspectRatio.ratio)
+                        < PresenterLayout.thumbnailWidth
+                    if layout.isSideBySide {
+                        HStack(spacing: 0) {
+                            slideColumn(state, showsNext: showsNext, compact: compact)
+                                .frame(width: layout.slide, alignment: .topLeading)
+                                .frame(maxHeight: .infinity, alignment: .top)
+                            splitHandle(resting)
+                            notesCard(state)
+                                .frame(width: layout.notes)
+                        }
+                    } else {
+                        VStack(spacing: 0) {
+                            slideColumn(state, showsNext: showsNext, compact: compact)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                                .frame(height: layout.slide, alignment: .top)
+                            splitHandle(resting)
+                            notesCard(state)
+                                .frame(height: layout.notes)
                         }
                     }
-                    .padding()
                 }
+                .padding()
             } else {
                 VStack(spacing: 14) {
                     ProgressView()
@@ -321,27 +456,68 @@ struct PresentationRemoteView: View {
         .accessibilityLabel("Choose slide")
     }
 
-    private func slideColumn(_ state: LampPresentationRemoteState) -> some View {
+    /// The handle between slide and notes: dragged, it moves the split, and
+    /// the notes' share it is left at is kept for this arrangement.
+    private func splitHandle(_ resting: PresenterLayout) -> some View {
+        let sideBySide = resting.isSideBySide
+        return ZStack {
+            Capsule()
+                .fill(Color.secondary.opacity(0.45))
+                .frame(width: sideBySide ? 5 : 40, height: sideBySide ? 40 : 5)
+        }
+        .frame(width: sideBySide ? PresenterLayout.gap : nil, height: sideBySide ? nil : PresenterLayout.gap)
+        .frame(maxWidth: sideBySide ? nil : .infinity, maxHeight: sideBySide ? .infinity : nil)
+        // A touch's breadth either side, over the edges of the sides.
+        .contentShape(Rectangle().inset(by: -12))
+        .zIndex(1)
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .updating($splitDrag) { value, drag, _ in
+                    drag = sideBySide ? value.translation.width : value.translation.height
+                }
+                .onEnded { value in
+                    let moved = resting.dragged(by: sideBySide ? value.translation.width : value.translation.height)
+                    keep(moved)
+                }
+        )
+        .accessibilityElement()
+        .accessibilityLabel("Notes size")
+        .accessibilityValue("\(Int((resting.share * 100).rounded())) percent")
+        .accessibilityAdjustableAction { direction in
+            let step = resting.available * 0.05
+            keep(resting.dragged(by: direction == .increment ? -step : step))
+        }
+    }
+
+    private func keep(_ layout: PresenterLayout) {
+        if layout.isSideBySide {
+            notesWidthShare = layout.share
+        } else {
+            notesHeightShare = layout.share
+        }
+    }
+
+    private func slideColumn(_ state: LampPresentationRemoteState, showsNext: Bool, compact: Bool) -> some View {
         // The same renderer the Mac presents with, so what the remote shows is
         // what the room sees rather than an approximation of it.
         let style = LampPresentationSlideStyle(
             theme: state.theme,
             aspectRatio: state.aspectRatio
         )
-        return VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: PresenterLayout.columnSpacing) {
             if let slide = state.currentSlide {
-                LampPresentationSlideCanvas(slide: slide, style: style)
+                LampPresentationSlideCanvas(slide: slide, style: style, compact: compact)
                     .aspectRatio(state.aspectRatio.ratio, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
             }
 
-            if let next = state.nextSlide {
+            if showsNext, let next = state.nextSlide {
                 HStack(spacing: 12) {
                     LampPresentationSlideCanvas(slide: next, style: style, compact: true)
                         .aspectRatio(state.aspectRatio.ratio, contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 7))
-                        .frame(width: 132)
+                        .frame(width: PresenterLayout.nextThumbnailWidth)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("UP NEXT")
                             .font(.caption2.bold())
@@ -358,25 +534,56 @@ struct PresentationRemoteView: View {
 
     private func notesCard(_ state: LampPresentationRemoteState) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Presenter Notes", systemImage: "note.text")
-                .font(.headline)
+            HStack {
+                Label("Presenter Notes", systemImage: "note.text")
+                    .font(.headline)
+                Spacer()
+                notesSizeButtons
+            }
 
             Divider()
 
-            if let notes = state.currentSlide?.speakerNotes,
-               !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(notes)
-                    .font(.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            } else {
-                Text("No notes for this slide.")
-                    .foregroundStyle(.secondary)
+            ScrollView {
+                if let notes = state.currentSlide?.speakerNotes,
+                   !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(notes)
+                        .font(.system(size: UIFontMetrics(forTextStyle: .body).scaledValue(for: notesFontSize)))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                } else {
+                    Text("No notes for this slide.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
+            // A new slide's notes are read from their start.
+            .id(state.currentSlide?.id)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var notesSizeButtons: some View {
+        HStack(spacing: 14) {
+            Button {
+                notesFontSize = PresenterNotesSize.stepped(notesFontSize, by: -1)
+            } label: {
+                Image(systemName: "textformat.size.smaller")
+            }
+            .disabled(notesFontSize <= PresenterNotesSize.sizes[0])
+            .accessibilityLabel("Smaller notes")
+
+            Button {
+                notesFontSize = PresenterNotesSize.stepped(notesFontSize, by: 1)
+            } label: {
+                Image(systemName: "textformat.size.larger")
+            }
+            .disabled(notesFontSize >= PresenterNotesSize.sizes[PresenterNotesSize.sizes.count - 1])
+            .accessibilityLabel("Larger notes")
+        }
+        .buttonStyle(.borderless)
+        .font(.body)
     }
 
     @ToolbarContentBuilder

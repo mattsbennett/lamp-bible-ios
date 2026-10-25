@@ -3998,3 +3998,90 @@ final class VerseCatalogTests: XCTestCase {
         XCTAssertNotNil(try JSONSerialization.data(withJSONObject: catalog))
     }
 }
+
+final class PresenterLayoutTests: XCTestCase {
+    private func layout(_ width: CGFloat, _ height: CGFloat, wide: Double = PresenterLayout.standardWideShare, tall: Double = PresenterLayout.standardTallShare) -> PresenterLayout {
+        PresenterLayout(size: CGSize(width: width, height: height), wideShare: wide, tallShare: tall)
+    }
+
+    func testTheShapeOfTheSpaceChoosesNotTheSizeClass() {
+        // An iPad held upright (regular width) stacks; an iPhone on its side
+        // (compact width) sets the notes beside the slide.
+        XCTAssertFalse(layout(788, 1_050).isSideBySide)
+        XCTAssertTrue(layout(700, 280).isSideBySide)
+        XCTAssertFalse(layout(361, 640).isSideBySide)
+        XCTAssertTrue(layout(1_150, 760).isSideBySide)
+    }
+
+    func testTheNotesBeginWithHalfTheHeightAndNearlyHalfTheWidth() {
+        let upright = layout(361, 640)
+        XCTAssertEqual(upright.available, 620)
+        XCTAssertEqual(upright.notes, 310)
+        XCTAssertEqual(upright.slide, 310)
+        let onItsSide = layout(700, 280)
+        XCTAssertEqual(onItsSide.notes, 306)
+    }
+
+    func testNeitherSideGoesUnderItsMinimum() {
+        XCTAssertEqual(layout(361, 640, tall: 0.98).notes, 620 - PresenterLayout.slideMinimum.height)
+        XCTAssertEqual(layout(361, 640, tall: 0.02).notes, PresenterLayout.notesMinimum.height)
+        XCTAssertEqual(layout(1_150, 760, wide: 0.02).notes, PresenterLayout.notesMinimum.width)
+        // Too little room for both: halves.
+        XCTAssertEqual(layout(200, 230).notes, 105)
+    }
+
+    func testADragMovesTheSplitAndKeepsWithinTheMinimums() {
+        let upright = layout(361, 640)
+        XCTAssertEqual(upright.dragged(by: 100).notes, 210)
+        XCTAssertEqual(upright.dragged(by: -100).notes, 410)
+        XCTAssertEqual(upright.dragged(by: 1_000).notes, PresenterLayout.notesMinimum.height)
+        XCTAssertEqual(upright.dragged(by: -100).share, 410.0 / 620.0, accuracy: 0.0001)
+    }
+
+    func testAShareHeldInByTheSpaceIsKeptForWhenThereIsRoom() {
+        // Kept at 80% of the height: held in on a short window, there again
+        // on a tall one, since only a drag changes what is kept.
+        let short = layout(500, 600, tall: 0.8)
+        XCTAssertEqual(short.notes, 580 - PresenterLayout.slideMinimum.height)
+        let tall = layout(500, 1_020, tall: 0.8)
+        XCTAssertEqual(tall.notes, 800)
+    }
+
+    func testTheNextSlideIsShownOnlyWhereItCostsTheSlideLittle() {
+        let widescreen: CGFloat = 16.0 / 9.0
+        // Upright on a phone: a column 310 tall holds a full-width slide
+        // (203) and the next (74 + 12).
+        XCTAssertTrue(layout(361, 640).showsNext(in: CGSize(width: 361, height: 640), aspectRatio: widescreen))
+        // An iPad upright: the next costs the slide a tenth of its width.
+        XCTAssertTrue(layout(1_000, 1_250).showsNext(in: CGSize(width: 1_000, height: 1_250), aspectRatio: widescreen))
+        // A phone on its side: it would cost more than a quarter.
+        XCTAssertFalse(layout(700, 240).showsNext(in: CGSize(width: 700, height: 240), aspectRatio: widescreen))
+        // An iPad on its side has room for both.
+        XCTAssertTrue(layout(1_150, 760).showsNext(in: CGSize(width: 1_150, height: 760), aspectRatio: widescreen))
+        // Notes dragged to take most of an upright phone: the slide alone.
+        let dragged = layout(361, 640).dragged(by: -150)
+        XCTAssertFalse(dragged.showsNext(in: CGSize(width: 361, height: 640), aspectRatio: widescreen))
+    }
+
+    func testTheSlideIsDrawnAsAThumbnailOnlyWhenSmall() {
+        let widescreen: CGFloat = 16.0 / 9.0
+        // Upright on a phone, the full column's width.
+        XCTAssertEqual(layout(361, 640).slideWidth(in: CGSize(width: 361, height: 640), aspectRatio: widescreen), 361)
+        // On its side, as the height allows, with no next slide beneath.
+        let side = layout(700, 240)
+        XCTAssertEqual(side.slideWidth(in: CGSize(width: 700, height: 240), aspectRatio: widescreen), 374)
+        // Notes taking most of an upright phone: smaller than a thumbnail's limit.
+        let dragged = layout(361, 640).dragged(by: -200)
+        XCTAssertLessThan(dragged.slideWidth(in: CGSize(width: 361, height: 640), aspectRatio: widescreen), PresenterLayout.thumbnailWidth)
+    }
+
+    func testNotesSizesStepAndStopAtTheEnds() {
+        XCTAssertEqual(PresenterNotesSize.stepped(17, by: 1), 20)
+        XCTAssertEqual(PresenterNotesSize.stepped(17, by: -1), 15)
+        XCTAssertEqual(PresenterNotesSize.stepped(13, by: -1), 13)
+        XCTAssertEqual(PresenterNotesSize.stepped(40, by: 1), 40)
+        // From the nearest, if the size kept is not one of them.
+        XCTAssertEqual(PresenterNotesSize.stepped(18, by: 1), 20)
+        XCTAssertEqual(PresenterNotesSize.stepped(100, by: -1), 34)
+    }
+}
