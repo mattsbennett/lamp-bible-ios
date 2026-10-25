@@ -1,6 +1,6 @@
 import { Node, mergeAttributes, elementFromString } from '@tiptap/core'
-import { DOMParser } from '@tiptap/pm/model'
-import { decodeLabels, shownDefinitionPattern, writtenLabel } from '../footnote-numbering.js'
+import { DOMParser, Fragment } from '@tiptap/pm/model'
+import { decodeLabels, shownDefinitionPattern, unindented, writtenLabel } from '../footnote-numbering.js'
 
 /**
  * Inline footnote reference: renders as superscript [^1]
@@ -92,6 +92,13 @@ export const FootnoteDefinition = Node.create({
         parseHTML: el => el.getAttribute('data-sources') || '',
         renderHTML: attrs => (attrs.sources ? { 'data-sources': attrs.sources } : {}),
       },
+      // Whether the definitions are written apart, a blank line between each,
+      // as they were found (readFootnotes) and as the apps' own writer writes.
+      spaced: {
+        default: true,
+        parseHTML: el => el.getAttribute('data-spaced') !== 'false',
+        renderHTML: attrs => (attrs.spaced ? {} : { 'data-spaced': 'false' }),
+      },
     }
   },
 
@@ -100,9 +107,11 @@ export const FootnoteDefinition = Node.create({
       markdown: {
         serialize(state, node) {
           const { editor } = this
-          const defs = writtenDefinitions(node, (content, source) => definitionMarkdown(editor, content, source))
+          const defs = writtenDefinitions(node, (lines, source) => definitionMarkdown(editor, lines, source))
           if (defs.length > 0) {
-            state.write('\n' + defs.join('\n'))
+            // After the blank line that closes the block before, as the
+            // Markdown had it, and no further one.
+            state.write(defs.join(node.attrs.spaced ? '\n\n' : '\n'))
             state.closeBlock(node)
           }
         },
@@ -119,6 +128,7 @@ export const FootnoteDefinition = Node.create({
       getAttrs: el => ({
         labels: el.getAttribute('data-labels') || '',
         sources: el.getAttribute('data-sources') || '',
+        spaced: el.getAttribute('data-spaced') !== 'false',
       }),
     }]
   },
@@ -129,26 +139,33 @@ export const FootnoteDefinition = Node.create({
 })
 
 /**
- * The definitions in a block as they are written back, `[^label]: text`: one
- * for each line shown as `[n] text`, the text after the number turned into
- * Markdown by `toMarkdown(content, source)`, with what that definition was
- * read from, if it was.
+ * The definitions in a block as they are written back, `[^label]: text`. A
+ * line shown as `[n] text` begins one; any other line carries on the one
+ * above it, as a footnote's later lines are shown, indented
+ * (CONTINUATION_INDENT). Each definition's lines are turned into Markdown by
+ * `toMarkdown(lines, source)`, with what it was read from, if it was: the
+ * first line from after its number.
  */
 export function writtenDefinitions(node, toMarkdown) {
   const labels = decodeLabels(node.attrs.labels)
   const sources = decodeLabels(node.attrs.sources)
   const shownDefinition = shownDefinitionPattern()
-  const defs = []
+  const definitions = []
   for (const line of definitionLines(node)) {
     // A footnote reference stands for one place, so an offset in this text
     // is a place in the line.
-    const match = line.textBetween(0, line.size, '', '\uFFFC').match(shownDefinition)
-    if (!match) continue
-    const content = line.cut(match[0].length - match[2].length)
-    const markdown = toMarkdown(content, sources.get(match[1]))
-    defs.push(`[^${writtenLabel(labels, match[1])}]:${markdown ? ` ${markdown}` : ''}`)
+    const text = line.textBetween(0, line.size, '', '\uFFFC')
+    const match = text.match(shownDefinition)
+    if (match) {
+      definitions.push({ shown: match[1], lines: [line.cut(match[0].length - match[2].length)] })
+    } else if (definitions.length > 0) {
+      definitions[definitions.length - 1].lines.push(line)
+    }
   }
-  return defs
+  return definitions.map(({ shown, lines }) => {
+    const markdown = toMarkdown(lines, sources.get(shown))
+    return `[^${writtenLabel(labels, shown)}]:${markdown ? ` ${markdown}` : ''}`
+  })
 }
 
 // The block's lines: what lies between its line breaks.
@@ -164,23 +181,54 @@ function definitionLines(node) {
   return lines
 }
 
-/** A definition's Markdown as the editor shows it: its emphasis, code and links. */
+/**
+ * How a footnote's later lines are set in, under its first: by no-break
+ * spaces, which the page keeps, so a later line cannot read as a definition
+ * of its own, whatever it begins with.
+ */
+export const CONTINUATION_INDENT = '\u00A0'.repeat(4)
+
+/**
+ * A definition's Markdown as the editor shows it: its emphasis, code and
+ * links, and each later line on a line of its own, set in.
+ */
 export function definitionHTML(editor, markdown) {
-  return editor.storage.markdown.parser.md.renderInline(markdown)
+  const { md } = editor.storage.markdown.parser
+  return markdown.split('\n')
+    .map((line, index) => index === 0 ? md.renderInline(line) : CONTINUATION_INDENT + md.renderInline(unindented(line)))
+    .join('<br>')
 }
 
-// A definition's text as Markdown. One that still reads as it was read is
-// written as it was read: the serializer has its own style, and a footnote
-// merely opened would come back restyled.
-function definitionMarkdown(editor, content, source) {
+// A definition as Markdown. One that still reads as it was read is written
+// as it was read: the serializer has its own style, and a footnote merely
+// opened would come back restyled. One that does not is written as the apps'
+// own writer writes one, its later lines set in four spaces.
+function definitionMarkdown(editor, lines, source) {
   const { schema } = editor
   if (source !== undefined) {
+    const shown = []
+    lines.forEach((line, index) => {
+      if (index > 0) shown.push(schema.nodes.hardBreak.create())
+      line.forEach(node => shown.push(node))
+    })
     const read = DOMParser.fromSchema(schema).parse(
       elementFromString(definitionHTML(editor, source)),
       { topNode: schema.nodes.footnoteDefinition.create() },
     )
-    if (read.content.eq(content)) return source
+    if (read.content.eq(Fragment.from(shown))) return source
   }
+  const written = lines.map((line, index) => inlineMarkdown(editor, index === 0 ? line : withoutIndent(line)))
+  while (written.length > 1 && written[written.length - 1] === '') written.pop()
+  return written.map((line, index) => (index === 0 ? line : `    ${line}`)).join('\n')
+}
+
+function withoutIndent(line) {
+  const text = line.textBetween(0, line.size, '', '\uFFFC')
+  return line.cut(text.match(/^\s*/)[0].length)
+}
+
+function inlineMarkdown(editor, content) {
+  const { schema } = editor
   const doc = schema.topNodeType.create(null, schema.nodes.paragraph.create(null, content))
   return editor.storage.markdown.serializer.serialize(doc)
 }

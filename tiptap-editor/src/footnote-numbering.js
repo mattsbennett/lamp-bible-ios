@@ -33,6 +33,20 @@ export function markerPattern() {
 const DEFINITION = new RegExp(String.raw`^\s{0,3}\[\^(${LABEL})\]:[ \t]*(.*)$`)
 
 /**
+ * A line carrying on the definition above it: indented four spaces or a tab,
+ * as Markdown indents a footnote's later lines, and as the apps' own writer
+ * does (LampPersonalMarkdownWriter.footnoteDefinitions). Left in the body, it
+ * would be read there as code.
+ */
+const CONTINUATION = /^(?: {4}|\t)/
+const BLANK = /^[ \t]*$/
+
+/** A definition's later line without the indent that made it one. */
+export function unindented(line) {
+  return BLANK.test(line) ? '' : line.replace(CONTINUATION, '')
+}
+
+/**
  * A definition line as the editor shows it — `[1] content`, numbered and
  * without the caret: `$1` what it is shown as, `$2` the content.
  */
@@ -52,11 +66,40 @@ export function shownDefinitionPattern() {
 export function readFootnotes(markdown) {
   const body = []
   const definitions = []
-  for (const line of markdown.split('\n')) {
+  const lines = markdown.split('\n')
+  // The definition indented lines carry on, until something else comes.
+  let open = null
+  // The blank lines since the last definition, while only blank lines have
+  // come since: the gap before the next one, if a definition comes next.
+  let since = null
+  const gaps = []
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
     const match = line.match(DEFINITION)
     if (match) {
-      definitions.push({ id: match[1], content: match[2] })
+      if (since !== null) gaps.push(since)
+      open = { id: match[1], content: match[2] }
+      definitions.push(open)
+      since = 0
+    } else if (open && CONTINUATION.test(line)) {
+      // Kept as written, indent and all, so it can be written back so.
+      open.content += '\n' + line
+    } else if (BLANK.test(line)) {
+      // Blank lines are the footnote's own when it carries on below them,
+      // as a second paragraph does; otherwise they are the body's.
+      let end = index
+      while (end < lines.length && BLANK.test(lines[end]) && !(open && CONTINUATION.test(lines[end]))) end++
+      const blanks = lines.slice(index, end)
+      if (open && end < lines.length && CONTINUATION.test(lines[end])) {
+        open.content += '\n' + blanks.join('\n')
+      } else {
+        body.push(...blanks)
+        if (since !== null) since += blanks.length
+      }
+      index = end - 1
     } else {
+      open = null
+      since = null
       body.push(line)
     }
   }
@@ -72,7 +115,12 @@ export function readFootnotes(markdown) {
     if (!numbers.has(definition.id)) numbers.set(definition.id, numbers.size + 1)
   }
 
-  return { content, definitions, numbers }
+  // Whether the definitions are set apart by blank lines, as the apps' own
+  // writer sets them, or follow one another line by line, as the editor did:
+  // written back as they were found, and set apart where nothing says.
+  const spaced = !(gaps.length > 0 && gaps.every(gap => gap === 0))
+
+  return { content, definitions, numbers, spaced }
 }
 
 /** What a footnote is shown as: its number, or its label when it has none. */

@@ -111,8 +111,9 @@ function resolveFootnotes(md) {
   ).join('<br>')
   const labels = escapeHtmlAttribute(encodeLabels(ordered))
   const sources = escapeHtmlAttribute(encodeSources(ordered))
+  const spacing = read.spaced ? '' : ' data-spaced="false"'
   return content
-    + `\n<div class="footnote-definition" data-labels="${labels}" data-sources="${sources}">${defsHtml}</div>`
+    + `\n<div class="footnote-definition" data-labels="${labels}" data-sources="${sources}"${spacing}>${defsHtml}</div>`
 }
 
 let editor = null

@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict'
 import { Schema } from '@tiptap/pm/model'
-import { writtenDefinitions } from './extensions/footnote.js'
+import { writtenDefinitions, CONTINUATION_INDENT } from './extensions/footnote.js'
 import {
   readFootnotes,
   shownLabel,
@@ -17,6 +17,7 @@ import {
   encodeSources,
   decodeLabels,
   writtenLabel,
+  unindented,
 } from './footnote-numbering.js'
 
 let failures = 0
@@ -193,9 +194,10 @@ function block(shownLines, labels, sources = '') {
 }
 
 const asText = content => content.textBetween(0, content.size, '', '\uFFFC')
+const linesAsText = lines => lines.map(asText).join('\n')
 
 function serialized(shownLines, labels) {
-  return writtenDefinitions(block(shownLines, labels), asText).join('\n')
+  return writtenDefinitions(block(shownLines, labels), linesAsText).join('\n')
 }
 
 test('the definition block writes back the labels it was given', () => {
@@ -222,14 +224,14 @@ test('a definition typed into the block is written as it reads', () => {
   )
 })
 
-test('each line is turned into Markdown after its number, with what it was read from', () => {
+test('each definition is turned into Markdown after its number, with what it was read from', () => {
   const read = readFootnotes('A[^lewis] b[^2a].\n[^lewis]: Lewis, **p. 26**.\n[^2a]: Second.')
   const ordered = orderedDefinitions(read)
   const seen = []
-  const node = block(['[1] Lewis, p. 26.', '[2]   Second.', '', '[3] Added since.'], encodeLabels(ordered), encodeSources(ordered))
-  const written = writtenDefinitions(node, (content, source) => {
-    seen.push([asText(content), source])
-    return asText(content)
+  const node = block(['[1] Lewis, p. 26.', '[2]   Second.', '[3] Added since.'], encodeLabels(ordered), encodeSources(ordered))
+  const written = writtenDefinitions(node, (lines, source) => {
+    seen.push([linesAsText(lines), source])
+    return linesAsText(lines)
   })
   assert.deepEqual(seen, [
     ['Lewis, p. 26.', 'Lewis, **p. 26**.'],
@@ -239,13 +241,23 @@ test('each line is turned into Markdown after its number, with what it was read 
   assert.deepEqual(written, ['[^lewis]: Lewis, p. 26.', '[^2a]: Second.', '[^3]: Added since.'])
 })
 
+test('a line that begins no definition carries on the one above it', () => {
+  const lines = []
+  const node = block(['before anything', '[1] first', `${CONTINUATION_INDENT}[sic] second`, '', 'typed on', '[2] next'], '')
+  writtenDefinitions(node, given => { lines.push(given.map(asText)); return '' })
+  assert.deepEqual(lines, [
+    ['first', `${CONTINUATION_INDENT}[sic] second`, '', 'typed on'],
+    ['next'],
+  ])
+})
+
 test('a line keeps what is marked in it, and a reference in it', () => {
   const bold = schema.marks.bold.create()
   const node = schema.nodes.footnoteDefinition.create({}, [
     schema.text('[1] See '), schema.text('this', [bold]), schema.nodes.footnoteRef.create({ id: 'x' }), schema.text('.'),
   ])
   let content = null
-  writtenDefinitions(node, c => { content = c; return '' })
+  writtenDefinitions(node, lines => { content = lines[0]; return '' })
   assert.equal(content.childCount, 4)
   assert.equal(content.child(0).text, 'See ')
   assert.ok(bold.isInSet(content.child(1).marks))
@@ -254,6 +266,58 @@ test('a line keeps what is marked in it, and a reference in it', () => {
 
 test('an empty definition is written with nothing after its colon', () => {
   assert.deepEqual(writtenDefinitions(block(['[1]'], ''), () => ''), ['[^1]:'])
+})
+
+// ---- Footnotes over more than one line ----
+//
+// As the apps' own writer writes them (LampPersonalMarkdownWriter): later
+// lines set in four spaces, an empty one as four spaces, and a blank line
+// between definitions.
+
+const written = '[^1]: first line\n    second **bold** line\n    \n    fourth line\n\n[^2]: single'
+
+test('a definition takes the lines set in beneath it', () => {
+  const read = readFootnotes('Grace[^1] and faith[^2].\n\n' + written)
+  assert.deepEqual(read.definitions, [
+    { id: '1', content: 'first line\n    second **bold** line\n    \n    fourth line' },
+    { id: '2', content: 'single' },
+  ])
+  assert.equal(read.content.trim(), 'Grace[^1] and faith[^2].')
+  assert.equal(read.spaced, true)
+})
+
+test('a tab sets a line in as four spaces do', () => {
+  assert.deepEqual(readFootnotes('[^1]: a\n\tb').definitions, [{ id: '1', content: 'a\n\tb' }])
+})
+
+test('blank lines are the footnote\'s own when it carries on below them', () => {
+  const read = readFootnotes('Body[^1].\n\n[^1]: para one\n\n    para two\n\nAfter.')
+  assert.deepEqual(read.definitions, [{ id: '1', content: 'para one\n\n    para two' }])
+  assert.equal(read.content, 'Body[^1].\n\n\nAfter.')
+})
+
+test('what comes after the footnotes, not set in, is the body\'s', () => {
+  const read = readFootnotes('Body[^1].\n\n[^1]: note\n    more\n\nAfter the footnotes.\nNext[^2].\n[^2]: two\nNot set in.')
+  assert.deepEqual(read.definitions.map(d => d.content), ['note\n    more', 'two'])
+  assert.ok(read.content.includes('After the footnotes.\nNext[^2].'))
+  assert.ok(read.content.endsWith('Not set in.'))
+})
+
+test('blank lines between definitions are remembered', () => {
+  assert.equal(readFootnotes('A[^1].\n[^1]: a\n[^2]: b').spaced, false)
+  assert.equal(readFootnotes('A[^1].\n[^1]: a\n\n[^2]: b').spaced, true)
+  assert.equal(readFootnotes('A[^1].\n[^1]: a').spaced, true)
+  assert.equal(readFootnotes('A[^1].\n[^1]: a\n[^2]: b\n\n[^3]: c').spaced, true)
+  // Definitions apart, with prose between, say nothing either way.
+  assert.equal(readFootnotes('[^1]: a\nProse.\n[^2]: b').spaced, true)
+})
+
+test('a later line loses the indent that made it one', () => {
+  assert.equal(unindented('    x'), 'x')
+  assert.equal(unindented('\tx'), 'x')
+  assert.equal(unindented('      x'), '  x')
+  assert.equal(unindented('    '), '')
+  assert.equal(unindented('  '), '')
 })
 
 test('what a definition was read from survives any text', () => {

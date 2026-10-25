@@ -461,8 +461,7 @@ func footnoteMarkdown() {
         guard parts.count == 5 else { check(false, "footnote formatting read (read: \(String(describing: r)))"); exit(1) }
         check(parts[0] == "this" && parts[1] == "that", "bold and italic in a footnote are shown as such (read: \(parts[0]), \(parts[1]))")
         check(parts[2] == "lampbible://verse/43003016 lampbible://strongs/0/H157", "and its verse and Strong's links are links (read: \(parts[2]))")
-        let definitions = "\(first)\n[^a]: plain\n\(strongs)"
-        check(parts[3].hasPrefix("See[^1] and[^a], love[^s].") && parts[3].hasSuffix(definitions), "an unedited document gives its footnotes back as they were written (read: \(parts[3].debugDescription))")
+        check(parts[3] == doc, "an unedited document comes back as it was written (read: \(parts[3].debugDescription))")
         check(parts[4] == parts[3], "and reads back the same a second time")
         js("""
             var a = window.editorAPI;
@@ -494,7 +493,72 @@ func footnoteMarkdown() {
                     """) { r in
                     let parts = r as? [Any] ?? []
                     check(parts.count == 3 && (parts[1] as? String)?.hasSuffix("2 * 3 * 4 and _x_") == true && parts[2] as? Int == 0, "what is typed into a footnote reads back as typed, not as Markdown (read: \(parts))")
-                    exit(failed ? 1 : 0)
+                    longFootnotes()
+                }
+            }
+        }
+    }
+}
+
+// Footnotes over more than one line, as the apps' own writer writes them
+// (LampPersonalMarkdownWriter.footnoteDefinitions): later lines set in four
+// spaces, an empty one as four spaces, a blank line between definitions.
+func longFootnotes() {
+    print("-- footnotes over more than one line")
+    let core = "Grace[^1] and faith[^2].\n\n[^1]: first line\n    second **bold** line\n    \n    fourth line\n\n[^2]: single"
+    let trailing = "Body[^1].\n\n[^1]: note\n    [sic] more\n\nAfter the footnotes."
+    let literal = String(data: try! JSONSerialization.data(withJSONObject: [core, trailing]), encoding: .utf8)!
+    js("""
+        var a = window.editorAPI;
+        var docs = \(literal);
+        a.load(docs[0]);
+        var d = document.querySelector('.footnote-definition');
+        var shown = [d.innerText, d.querySelectorAll('br').length, d.querySelector('strong')?.textContent ?? ''];
+        var back = a.getContent();
+        a.load(docs[1]);
+        var body = [a.getContent(), document.querySelectorAll('.tiptap pre').length,
+                    Array.from(document.querySelectorAll('.tiptap > p')).map(p => p.textContent).filter(t => t)];
+        [shown, back, body]
+        """) { r in
+        let parts = r as? [Any] ?? []
+        guard parts.count == 3, let shown = parts[0] as? [Any], let body = parts[2] as? [Any] else { check(false, "long footnotes read (read: \(String(describing: r)))"); exit(1) }
+        let text = shown.first as? String ?? ""
+        let indent = String(repeating: "\u{00A0}", count: 4)
+        check(text.contains("[1] first line\n\(indent)second bold line\n\(indent)\n\(indent)fourth line\n[2] single"), "a footnote's later lines are shown beneath its first, set in (read: \(text.debugDescription))")
+        check(shown.count == 3 && shown[1] as? Int == 4 && shown[2] as? String == "bold", "each on its own line, its marks shown (read: \(shown.dropFirst()))")
+        check(parts[1] as? String == core, "the writer's own footnotes come back as written (read: \(String(describing: parts[1]).debugDescription))")
+        let md = body.first as? String ?? ""
+        check(md == "Body[^1].\n\nAfter the footnotes.\n\n[^1]: note\n    [sic] more", "what follows the footnotes stays in the body, and a later line beginning [sic] stays in its footnote (read: \(md.debugDescription))")
+        check(body.count == 3 && body[1] as? Int == 0 && (body[2] as? [String]) == ["Body[1].", "After the footnotes."], "and nothing set in reads as code (read: \(body.dropFirst()))")
+        js("""
+            var a = window.editorAPI;
+            a.load(docs[0]);
+            a.setSearch('fourth', {}); a.selectCurrentMatch(); a.clearSearch();
+            a.toggleBold();
+            var bolded = a.getContent();
+            a.load(docs[1]);
+            a.setSearch('note', { wholeWord: true }); a.selectCurrentMatch(); a.clearSearch();
+            a.toggleItalic();
+            [bolded, a.getContent()]
+            """) { r in
+            let parts = r as? [String] ?? []
+            check(parts.first == "Grace[^1] and faith[^2].\n\n[^1]: first line\n    second **bold** line\n    \n    **fourth** line\n\n[^2]: single", "a word bolded on a later line is written as the writer writes it (read: \(String(describing: parts.first).debugDescription))")
+            check(parts.last == "Body[^1].\n\nAfter the footnotes.\n\n[^1]: *note*\n    \\[sic\\] more", "a later line beginning [sic] is still one when its footnote is changed (read: \(String(describing: parts.last).debugDescription))")
+            js("""
+                var a = window.editorAPI;
+                a.load('One[^1].\\n\\n[^1]: first');
+                a.focus();
+                a.insertFootnote('2', 'added *here*');
+                1
+                """) { _ in
+                // The page's own edit reaches the document as the editor
+                // observes it, a moment later.
+                after(150) {
+                    js("window.editorAPI.getContent()") { r in
+                        // Its reference goes in at the caret, here the start.
+                        check(r as? String == "[^2]One[^1].\n\n[^1]: first\n\n[^2]: added \\*here\\*", "a footnote the phone adds is written beneath the others (read: \(String(describing: r).debugDescription))")
+                        exit(failed ? 1 : 0)
+                    }
                 }
             }
         }
