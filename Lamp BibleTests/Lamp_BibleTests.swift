@@ -4085,3 +4085,141 @@ final class PresenterLayoutTests: XCTestCase {
         XCTAssertEqual(PresenterNotesSize.stepped(100, by: -1), 34)
     }
 }
+
+final class PresentationRemoteMemoryTests: XCTestCase {
+    private final class InMemorySecrets: PresenterSecretStorage {
+        var items: [String: Data] = [:]
+        func load() -> [String: Data] { items }
+        func save(_ data: Data, for id: String) { items[id] = data }
+        func delete(_ id: String) { items[id] = nil }
+    }
+
+    private var storage: InMemorySecrets!
+    private var memory: PresentationRemoteMemory!
+    private let secret = LampPresentationRemotePairing.generatePresenterSecret()
+    private let deviceCode = LampPresentationRemotePairing.generateCode()
+
+    override func setUp() {
+        storage = InMemorySecrets()
+        memory = PresentationRemoteMemory(storage: storage)
+    }
+
+    private func hint(_ challenge: String, secret: String? = nil) -> String {
+        LampPresentationRemotePairing.presenterHint(secret: secret ?? self.secret, challenge: challenge)!
+    }
+
+    /// Paired once by QR code: what the presenter sent on accepting is kept.
+    private func pairedOnce() -> RememberedPresenter {
+        var flow = PresentationRemotePairingFlow(memory: memory)
+        XCTAssertEqual(flow.challenge(hint: nil, challenge: "first"), .askForCode(notice: nil))
+        XCTAssertEqual(flow.accepted(deviceCode: deviceCode, presenterSecret: secret, presenterName: "Study Mac"), .presenting)
+        return memory.presenters[0]
+    }
+
+    func testAPresenterPairedByQRCodeIsRemembered() {
+        let presenter = pairedOnce()
+        XCTAssertEqual(presenter.name, "Study Mac")
+        XCTAssertEqual(presenter.deviceCode, deviceCode)
+        XCTAssertEqual(presenter.presenterSecret, secret)
+    }
+
+    func testARecognisedPresenterIsOfferedItsSavedCode() {
+        let presenter = pairedOnce()
+        var flow = PresentationRemotePairingFlow(memory: memory)
+        XCTAssertEqual(flow.challenge(hint: hint("second"), challenge: "second"), .offer(presenter))
+        XCTAssertEqual(flow.offered, presenter)
+        XCTAssertEqual(flow.accepted(deviceCode: nil, presenterSecret: nil, presenterName: "Study Mac"), .presenting)
+        XCTAssertEqual(memory.presenters, [presenter])
+    }
+
+    func testAPresenterNotRecognisedAsksForTheCode() {
+        _ = pairedOnce()
+        var flow = PresentationRemotePairingFlow(memory: memory)
+        // No hint, an old Mac's; a hint from another secret, a Mac that has
+        // forgotten its remotes; a hint for another challenge, replayed.
+        XCTAssertEqual(flow.challenge(hint: nil, challenge: "c"), .askForCode(notice: nil))
+        let other = LampPresentationRemotePairing.generatePresenterSecret()
+        XCTAssertEqual(flow.challenge(hint: hint("c", secret: other), challenge: "c"), .askForCode(notice: nil))
+        XCTAssertEqual(flow.challenge(hint: hint("yesterday"), challenge: "today"), .askForCode(notice: nil))
+        XCTAssertEqual(flow.challenge(hint: "not base64 at all", challenge: "c"), .askForCode(notice: nil))
+    }
+
+    func testASavedCodeTurnedAwayIsForgottenAndPairedAgain() {
+        _ = pairedOnce()
+        for refuse in [
+            { (flow: inout PresentationRemotePairingFlow) in flow.savedCodeUnanswered() },
+            { (flow: inout PresentationRemotePairingFlow) in flow.rejected("Not paired.") },
+            { (flow: inout PresentationRemotePairingFlow) in flow.unreadableReply() },
+            { (flow: inout PresentationRemotePairingFlow) in flow.closedBeforeAccepted(byPresenter: true, reason: nil) },
+        ] {
+            if memory.presenters.isEmpty { _ = pairedOnce() }
+            var flow = PresentationRemotePairingFlow(memory: memory)
+            guard case .offer = flow.challenge(hint: hint("again"), challenge: "again") else {
+                return XCTFail("the presenter was not recognised")
+            }
+            XCTAssertEqual(refuse(&flow), .pairAgain(notice: PresentationRemotePairingFlow.refusedNotice))
+            XCTAssertTrue(memory.presenters.isEmpty, "a refused code is forgotten")
+            // So the next connection asks for the QR code, and says why,
+            // rather than offering the refused code again.
+            var next = PresentationRemotePairingFlow(memory: memory)
+            XCTAssertEqual(
+                next.challenge(hint: hint("next"), challenge: "next", notice: PresentationRemotePairingFlow.refusedNotice),
+                .askForCode(notice: PresentationRemotePairingFlow.refusedNotice)
+            )
+        }
+    }
+
+    func testAConnectionLostKeepsTheSavedCode() {
+        let presenter = pairedOnce()
+        var flow = PresentationRemotePairingFlow(memory: memory)
+        _ = flow.challenge(hint: hint("lost"), challenge: "lost")
+        XCTAssertEqual(flow.closedBeforeAccepted(byPresenter: false, reason: "The network is down."), .failed("The network is down."))
+        XCTAssertEqual(memory.presenters, [presenter])
+    }
+
+    func testARefusalOfAQRCodeForgetsNothing() {
+        let presenter = pairedOnce()
+        var flow = PresentationRemotePairingFlow(memory: memory)
+        _ = flow.challenge(hint: nil, challenge: "qr")
+        XCTAssertEqual(flow.rejected("That pairing code is not correct."), .askForCode(notice: "That pairing code is not correct."))
+        XCTAssertEqual(flow.closedBeforeAccepted(byPresenter: true, reason: nil), .failed(PresentationRemotePairingFlow.pairingFailed))
+        XCTAssertEqual(memory.presenters, [presenter])
+    }
+
+    func testPairingTheSameMacAgainReplacesWhatWasKept() {
+        let first = pairedOnce()
+        let newer = LampPresentationRemotePairing.generateCode()
+        memory.remember(name: "Study Mac", deviceCode: newer, presenterSecret: secret)
+        XCTAssertEqual(memory.presenters.map(\.id), [first.id])
+        XCTAssertEqual(memory.presenters.first?.deviceCode, newer)
+        // A Mac that has forgotten its remotes has a new secret: a second entry.
+        memory.remember(name: "Study Mac", deviceCode: newer, presenterSecret: LampPresentationRemotePairing.generatePresenterSecret())
+        XCTAssertEqual(memory.presenters.count, 2)
+    }
+
+    func testAnAcceptanceWithoutAProperCodeKeepsNothing() {
+        var flow = PresentationRemotePairingFlow(memory: memory)
+        _ = flow.challenge(hint: nil, challenge: "c")
+        XCTAssertEqual(flow.accepted(deviceCode: "short", presenterSecret: secret, presenterName: "Mac"), .presenting)
+        XCTAssertEqual(flow.accepted(deviceCode: deviceCode, presenterSecret: nil, presenterName: "Mac"), .presenting)
+        XCTAssertTrue(memory.presenters.isEmpty)
+    }
+
+    func testTheKeychainKeepsAndForgetsOnThisDeviceOnly() throws {
+        let keychain = KeychainPresenterSecrets(service: "com.neus.Lamp-Bible.tests.\(UUID().uuidString)")
+        let memory = PresentationRemoteMemory(storage: keychain)
+        let kept = memory.remember(name: "Mac", deviceCode: deviceCode, presenterSecret: secret)
+        XCTAssertEqual(memory.presenters, [kept])
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: kept.id,
+            kSecReturnAttributes as String: true,
+        ]
+        var result: CFTypeRef?
+        XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, &result), errSecSuccess)
+        let attributes = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(attributes[kSecAttrAccessible as String] as? String, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        memory.forget(kept.id)
+        XCTAssertTrue(memory.presenters.isEmpty)
+    }
+}

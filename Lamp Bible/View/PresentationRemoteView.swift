@@ -253,6 +253,26 @@ struct PresentationRemoteView: View {
             } footer: {
                 Text("Both devices must be on the same local network. Nearby peer-to-peer discovery is also supported.")
             }
+
+            if !client.rememberedPresenters.isEmpty {
+                Section {
+                    ForEach(client.rememberedPresenters) { presenter in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(presenter.name)
+                            Text("Paired \(presenter.pairedAt.formatted(date: .abbreviated, time: .omitted))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .swipeActions {
+                            Button("Forget", role: .destructive) { client.forget(presenter) }
+                        }
+                    }
+                } header: {
+                    Text("Paired Macs")
+                } footer: {
+                    Text("These Macs let this device in without pairing again. Forgetting one here leaves this device on the Mac’s list until it is removed there.")
+                }
+            }
         }
         .refreshable { client.startBrowsing() }
     }
@@ -265,10 +285,13 @@ struct PresentationRemoteView: View {
                 .font(.system(size: 52))
                 .foregroundStyle(.tint)
 
+            // Connecting, or offering a code saved from pairing before, is
+            // waiting on the Mac: nothing to scan yet.
+            let connecting = client.phase == .connecting || client.isOfferingSavedCode
             VStack(spacing: 8) {
-                Text(client.phase == .connecting ? "Connecting…" : "Pair with the Mac")
+                Text(connecting ? "Connecting…" : "Pair with the Mac")
                     .font(.title2.bold())
-                Text(client.phase == .connecting
+                Text(connecting
                      ? client.selectedPresenterName
                      : "Scan the code shown in the Mac presenter controls. The manual code is available as a fallback.")
                     .foregroundStyle(.secondary)
@@ -276,7 +299,7 @@ struct PresentationRemoteView: View {
                     .frame(maxWidth: 420)
             }
 
-            if client.phase == .connecting {
+            if connecting {
                 ProgressView()
                     .controlSize(.large)
             } else {
