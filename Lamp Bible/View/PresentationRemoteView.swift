@@ -510,6 +510,16 @@ struct PresentationRemoteView: View {
                     .aspectRatio(state.aspectRatio.ratio, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
+                    // A tap on the slide moves on, as a click on the screen
+                    // presenting it does: the largest target there is, for a
+                    // presenter whose eyes are on the room.
+                    .contentShape(RoundedRectangle(cornerRadius: 14))
+                    .onTapGesture {
+                        if state.canGoNext { client.send(.init(action: .next)) }
+                    }
+                    .accessibilityAction(named: Text("Next Slide")) {
+                        if state.canGoNext { client.send(.init(action: .next)) }
+                    }
             }
 
             if showsNext, let next = state.nextSlide {
