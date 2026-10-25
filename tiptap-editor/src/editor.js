@@ -11,12 +11,13 @@ import { TableRow } from '@tiptap/extension-table-row'
 import { TableCell } from '@tiptap/extension-table-cell'
 import { TableHeader } from '@tiptap/extension-table-header'
 import { Markdown } from 'tiptap-markdown'
-import { FootnoteRef, FootnoteDefinition } from './extensions/footnote.js'
+import { FootnoteRef, FootnoteDefinition, definitionHTML } from './extensions/footnote.js'
 import {
   readFootnotes,
   shownLabel,
   orderedDefinitions,
   encodeLabels,
+  encodeSources,
   markerPattern,
 } from './footnote-numbering.js'
 import { AudioBlock } from './extensions/audio-block.js'
@@ -102,13 +103,16 @@ function resolveFootnotes(md) {
 
   if (read.definitions.length === 0) return content
 
+  // Each definition's own Markdown shown as the body's is, bold as bold; and
+  // what it was read from kept with it, to be written back as it was.
   const ordered = orderedDefinitions(read)
   const defsHtml = ordered.map(d =>
-    `<span class="footnote-label">[${escapeHtmlContent(d.shown)}]</span> ${escapeHtmlContent(d.content)}`
+    `<span class="footnote-label">[${escapeHtmlContent(d.shown)}]</span> ${definitionHTML(editor, d.content)}`
   ).join('<br>')
   const labels = escapeHtmlAttribute(encodeLabels(ordered))
+  const sources = escapeHtmlAttribute(encodeSources(ordered))
   return content
-    + `\n<div class="footnote-definition" data-labels="${labels}">${defsHtml}</div>`
+    + `\n<div class="footnote-definition" data-labels="${labels}" data-sources="${sources}">${defsHtml}</div>`
 }
 
 let editor = null

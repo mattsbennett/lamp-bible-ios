@@ -432,9 +432,71 @@ func selected() {
             """) { r in
             let parts = r as? [Any] ?? []
             check(parts.first as? Int == 0 && parts.last as? String == "read only grace", "a document that cannot be edited is not replaced in (read: \(parts))")
-            exit(failed ? 1 : 0)
+            footnoteMarkdown()
         }
         }
+        }
+    }
+}
+
+// A footnote's own Markdown is shown as the body's is, and given back as it
+// was read while it reads the same; one changed is written from what is shown.
+func footnoteMarkdown() {
+    print("-- footnote formatting")
+    let first = "[^1]: See **this**, _that_ and [John 3:16](lampbible://verse/43003016)."
+    let strongs = "[^s]: Love, [H157](lampbible://strongs/0/H157)."
+    let doc = "See[^1] and[^a], love[^s].\n\n\(first)\n[^a]: plain\n\(strongs)"
+    let literal = String(data: try! JSONSerialization.data(withJSONObject: [doc]), encoding: .utf8)!.dropFirst().dropLast()
+    js("""
+        var a = window.editorAPI;
+        a.load(\(literal));
+        var d = document.querySelector('.footnote-definition');
+        var shown = [d.querySelector('strong')?.textContent ?? '', d.querySelector('em')?.textContent ?? '',
+         Array.from(d.querySelectorAll('a')).map(l => l.getAttribute('href')).join(' ')];
+        var back = a.getContent();
+        a.load(back);
+        shown.concat([back, a.getContent()])
+        """) { r in
+        let parts = r as? [String] ?? []
+        guard parts.count == 5 else { check(false, "footnote formatting read (read: \(String(describing: r)))"); exit(1) }
+        check(parts[0] == "this" && parts[1] == "that", "bold and italic in a footnote are shown as such (read: \(parts[0]), \(parts[1]))")
+        check(parts[2] == "lampbible://verse/43003016 lampbible://strongs/0/H157", "and its verse and Strong's links are links (read: \(parts[2]))")
+        let definitions = "\(first)\n[^a]: plain\n\(strongs)"
+        check(parts[3].hasPrefix("See[^1] and[^a], love[^s].") && parts[3].hasSuffix(definitions), "an unedited document gives its footnotes back as they were written (read: \(parts[3].debugDescription))")
+        check(parts[4] == parts[3], "and reads back the same a second time")
+        js("""
+            var a = window.editorAPI;
+            a.setSearch('plain', {}); a.selectCurrentMatch(); a.clearSearch();
+            a.toggleBold();
+            a.getContent()
+            """) { r in
+            let md = r as? String ?? ""
+            check(md.hasSuffix("\(first)\n[^a]: **plain**\n\(strongs)"), "a word bolded in a footnote is written in bold, and the footnotes around it as they were (read: \(md.debugDescription))")
+            js("""
+                var a = window.editorAPI;
+                a.setSearch('See', { caseSensitive: true }); a.findNext(); a.selectCurrentMatch(); a.clearSearch();
+                a.toggleBold();
+                var md = a.getContent();
+                a.load(md);
+                [md, document.querySelectorAll('.footnote-definition strong').length, document.querySelector('.footnote-definition a')?.getAttribute('href') ?? '']
+                """) { r in
+                let parts = r as? [Any] ?? []
+                let md = parts.first as? String ?? ""
+                check(md.contains("[^1]: **See** **this**, *that* and [John 3:16](lampbible://verse/43003016)."), "a footnote changed is written from what is shown, its link kept (read: \(md.debugDescription))")
+                check(parts.count == 3 && parts[1] as? Int == 3 && parts[2] as? String == "lampbible://verse/43003016", "and reads back as it was shown (read: \(parts.dropFirst()))")
+                js("""
+                    var a = window.editorAPI;
+                    a.load('A note[^1].\\n\\n[^1]: plain');
+                    a.setSearch('plain', {}); a.replaceCurrent('2 * 3 * 4 and _x_'); a.clearSearch();
+                    var md = a.getContent();
+                    a.load(md);
+                    [md, document.querySelector('.footnote-definition').textContent, document.querySelectorAll('.footnote-definition em').length]
+                    """) { r in
+                    let parts = r as? [Any] ?? []
+                    check(parts.count == 3 && (parts[1] as? String)?.hasSuffix("2 * 3 * 4 and _x_") == true && parts[2] as? Int == 0, "what is typed into a footnote reads back as typed, not as Markdown (read: \(parts))")
+                    exit(failed ? 1 : 0)
+                }
+            }
         }
     }
 }

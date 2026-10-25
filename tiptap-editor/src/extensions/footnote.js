@@ -1,4 +1,5 @@
-import { Node, mergeAttributes } from '@tiptap/core'
+import { Node, mergeAttributes, elementFromString } from '@tiptap/core'
+import { DOMParser } from '@tiptap/pm/model'
 import { decodeLabels, shownDefinitionPattern, writtenLabel } from '../footnote-numbering.js'
 
 /**
@@ -84,6 +85,13 @@ export const FootnoteDefinition = Node.create({
         parseHTML: el => el.getAttribute('data-labels') || '',
         renderHTML: attrs => (attrs.labels ? { 'data-labels': attrs.labels } : {}),
       },
+      // The Markdown each definition was read from, by the number it is shown
+      // as (encodeSources): written back as it was while it reads the same.
+      sources: {
+        default: '',
+        parseHTML: el => el.getAttribute('data-sources') || '',
+        renderHTML: attrs => (attrs.sources ? { 'data-sources': attrs.sources } : {}),
+      },
     }
   },
 
@@ -91,19 +99,8 @@ export const FootnoteDefinition = Node.create({
     return {
       markdown: {
         serialize(state, node) {
-          // Use textBetween so hardBreak nodes produce '\n' (textContent doesn't)
-          const text = node.textBetween(0, node.content.size, '', '\n') || ''
-          const lines = text.split('\n').filter(l => l.trim())
-          const labels = decodeLabels(node.attrs.labels)
-          const shownDefinition = shownDefinitionPattern()
-          const defs = []
-          for (const line of lines) {
-            const match = line.match(shownDefinition)
-            if (match) {
-              const label = writtenLabel(labels, match[1])
-              defs.push(`[^${label}]:${match[2] ? ` ${match[2]}` : ''}`)
-            }
-          }
+          const { editor } = this
+          const defs = writtenDefinitions(node, (content, source) => definitionMarkdown(editor, content, source))
           if (defs.length > 0) {
             state.write('\n' + defs.join('\n'))
             state.closeBlock(node)
@@ -119,7 +116,10 @@ export const FootnoteDefinition = Node.create({
   parseHTML() {
     return [{
       tag: 'div.footnote-definition',
-      getAttrs: el => ({ labels: el.getAttribute('data-labels') || '' }),
+      getAttrs: el => ({
+        labels: el.getAttribute('data-labels') || '',
+        sources: el.getAttribute('data-sources') || '',
+      }),
     }]
   },
 
@@ -127,3 +127,60 @@ export const FootnoteDefinition = Node.create({
     return ['div', mergeAttributes(HTMLAttributes, { class: 'footnote-definition' }), 0]
   },
 })
+
+/**
+ * The definitions in a block as they are written back, `[^label]: text`: one
+ * for each line shown as `[n] text`, the text after the number turned into
+ * Markdown by `toMarkdown(content, source)`, with what that definition was
+ * read from, if it was.
+ */
+export function writtenDefinitions(node, toMarkdown) {
+  const labels = decodeLabels(node.attrs.labels)
+  const sources = decodeLabels(node.attrs.sources)
+  const shownDefinition = shownDefinitionPattern()
+  const defs = []
+  for (const line of definitionLines(node)) {
+    // A footnote reference stands for one place, so an offset in this text
+    // is a place in the line.
+    const match = line.textBetween(0, line.size, '', '\uFFFC').match(shownDefinition)
+    if (!match) continue
+    const content = line.cut(match[0].length - match[2].length)
+    const markdown = toMarkdown(content, sources.get(match[1]))
+    defs.push(`[^${writtenLabel(labels, match[1])}]:${markdown ? ` ${markdown}` : ''}`)
+  }
+  return defs
+}
+
+// The block's lines: what lies between its line breaks.
+function definitionLines(node) {
+  const lines = []
+  let start = 0
+  node.content.forEach((child, offset) => {
+    if (child.type.name !== 'hardBreak') return
+    lines.push(node.content.cut(start, offset))
+    start = offset + child.nodeSize
+  })
+  lines.push(node.content.cut(start))
+  return lines
+}
+
+/** A definition's Markdown as the editor shows it: its emphasis, code and links. */
+export function definitionHTML(editor, markdown) {
+  return editor.storage.markdown.parser.md.renderInline(markdown)
+}
+
+// A definition's text as Markdown. One that still reads as it was read is
+// written as it was read: the serializer has its own style, and a footnote
+// merely opened would come back restyled.
+function definitionMarkdown(editor, content, source) {
+  const { schema } = editor
+  if (source !== undefined) {
+    const read = DOMParser.fromSchema(schema).parse(
+      elementFromString(definitionHTML(editor, source)),
+      { topNode: schema.nodes.footnoteDefinition.create() },
+    )
+    if (read.content.eq(content)) return source
+  }
+  const doc = schema.topNodeType.create(null, schema.nodes.paragraph.create(null, content))
+  return editor.storage.markdown.serializer.serialize(doc)
+}

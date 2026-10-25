@@ -107,6 +107,28 @@ export function encodeLabels(ordered) {
     .join(',')
 }
 
+/**
+ * How a definition block remembers the Markdown each definition was read from,
+ * by the number it is shown as: `1:See%20**this**`. A definition still reading
+ * as it did is written back as it was read, so opening a writing does not
+ * rewrite its footnotes in the editor's own style, `_that_` as `*that*`.
+ * Read back with decodeLabels.
+ */
+export function encodeSources(ordered) {
+  return ordered
+    .map(d => {
+      try {
+        return `${d.shown}:${encodeURIComponent(d.content)}`
+      } catch {
+        // Text that cannot be encoded (a lone surrogate) is written as the
+        // editor reads it instead.
+        return null
+      }
+    })
+    .filter(Boolean)
+    .join(',')
+}
+
 export function decodeLabels(value) {
   const labels = new Map()
   for (const pair of (value || '').split(',')) {

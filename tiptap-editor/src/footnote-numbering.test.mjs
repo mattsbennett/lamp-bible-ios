@@ -7,12 +7,14 @@
  * someone's draft would be far worse than labels shown out of order.
  */
 import assert from 'node:assert/strict'
-import { FootnoteDefinition } from './extensions/footnote.js'
+import { Schema } from '@tiptap/pm/model'
+import { writtenDefinitions } from './extensions/footnote.js'
 import {
   readFootnotes,
   shownLabel,
   orderedDefinitions,
   encodeLabels,
+  encodeSources,
   decodeLabels,
   writtenLabel,
 } from './footnote-numbering.js'
@@ -167,22 +169,33 @@ test('a label cannot carry a quotation mark into an attribute unescaped', () => 
 //
 // The definition block reads its lines back out of what is displayed, which is
 // where numbering could quietly rewrite a writing's labels. This runs the
-// extension's real serializer — it needs no DOM — over a stub of the node and
-// the serializer state ProseMirror would hand it.
+// block's real reading of its lines — it needs no DOM — over a block built as
+// the editor builds it, with each line's text taken as it stands.
 
-const serialize = FootnoteDefinition.config.addStorage.call({}).markdown.serialize
+const schema = new Schema({
+  nodes: {
+    doc: { content: 'block+' },
+    text: { group: 'inline' },
+    hardBreak: { inline: true, group: 'inline' },
+    footnoteRef: { inline: true, group: 'inline', atom: true, attrs: { id: {} } },
+    footnoteDefinition: { group: 'block', content: 'inline*', attrs: { labels: { default: '' }, sources: { default: '' } } },
+  },
+  marks: { bold: {} },
+})
+
+function block(shownLines, labels, sources = '') {
+  const content = []
+  shownLines.forEach((line, index) => {
+    if (index > 0) content.push(schema.nodes.hardBreak.create())
+    if (line) content.push(schema.text(line))
+  })
+  return schema.nodes.footnoteDefinition.create({ labels, sources }, content)
+}
+
+const asText = content => content.textBetween(0, content.size, '', '\uFFFC')
 
 function serialized(shownLines, labels) {
-  const written = []
-  serialize(
-    { write: text => written.push(text), closeBlock: () => {} },
-    {
-      attrs: { labels },
-      content: { size: shownLines.length },
-      textBetween: () => shownLines.join('\n'),
-    }
-  )
-  return written.join('').replace(/^\n/, '')
+  return writtenDefinitions(block(shownLines, labels), asText).join('\n')
 }
 
 test('the definition block writes back the labels it was given', () => {
@@ -207,6 +220,56 @@ test('a definition typed into the block is written as it reads', () => {
     serialized(['[1] Lewis, p. 26.', '[sontag] Added since.'], encodeLabels(ordered)),
     '[^lewis]: Lewis, p. 26.\n[^sontag]: Added since.'
   )
+})
+
+test('each line is turned into Markdown after its number, with what it was read from', () => {
+  const read = readFootnotes('A[^lewis] b[^2a].\n[^lewis]: Lewis, **p. 26**.\n[^2a]: Second.')
+  const ordered = orderedDefinitions(read)
+  const seen = []
+  const node = block(['[1] Lewis, p. 26.', '[2]   Second.', '', '[3] Added since.'], encodeLabels(ordered), encodeSources(ordered))
+  const written = writtenDefinitions(node, (content, source) => {
+    seen.push([asText(content), source])
+    return asText(content)
+  })
+  assert.deepEqual(seen, [
+    ['Lewis, p. 26.', 'Lewis, **p. 26**.'],
+    ['Second.', 'Second.'],
+    ['Added since.', undefined],
+  ])
+  assert.deepEqual(written, ['[^lewis]: Lewis, p. 26.', '[^2a]: Second.', '[^3]: Added since.'])
+})
+
+test('a line keeps what is marked in it, and a reference in it', () => {
+  const bold = schema.marks.bold.create()
+  const node = schema.nodes.footnoteDefinition.create({}, [
+    schema.text('[1] See '), schema.text('this', [bold]), schema.nodes.footnoteRef.create({ id: 'x' }), schema.text('.'),
+  ])
+  let content = null
+  writtenDefinitions(node, c => { content = c; return '' })
+  assert.equal(content.childCount, 4)
+  assert.equal(content.child(0).text, 'See ')
+  assert.ok(bold.isInSet(content.child(1).marks))
+  assert.equal(content.child(2).type.name, 'footnoteRef')
+})
+
+test('an empty definition is written with nothing after its colon', () => {
+  assert.deepEqual(writtenDefinitions(block(['[1]'], ''), () => ''), ['[^1]:'])
+})
+
+test('what a definition was read from survives any text', () => {
+  const ordered = [
+    { shown: '1', id: 'a', content: 'See **this**, _that_ and [John 3:16](lampbible://verse/43003016).' },
+    { shown: '2', id: 'b', content: 'commas, colons: 100% \\ and ünïcode 😀' },
+    { shown: '3', id: 'c', content: '' },
+  ]
+  const sources = decodeLabels(encodeSources(ordered))
+  for (const d of ordered) assert.equal(sources.get(d.shown), d.content)
+})
+
+test('text that cannot be encoded is left out, not thrown on', () => {
+  const sources = decodeLabels(encodeSources([{ shown: '1', id: 'a', content: 'lone \ud800' }, { shown: '2', id: 'b', content: 'fine' }]))
+  assert.equal(sources.get('1'), undefined)
+  assert.equal(sources.get('2'), 'fine')
 })
 
 console.log(failures === 0 ? '\nall passed' : `\n${failures} failed`)
