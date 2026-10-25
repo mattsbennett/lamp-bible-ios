@@ -279,6 +279,13 @@ final class PresentationRemoteClient: ObservableObject {
     /// as turned away: its answer is immediate where it knows the code.
     static let savedCodeWait: TimeInterval = 6
 
+    /// What this device calls itself to the presenter, which the Mac shows
+    /// in its list of remembered remotes. Since iOS 16 that is the model,
+    /// "iPhone" or "iPad", rather than the name the owner gave the device,
+    /// which an app reads only with Apple's device-name entitlement: two
+    /// iPhones are told apart on the Mac by when they were paired.
+    static var clientName: String { UIDevice.current.name }
+
     init(memory: PresentationRemoteMemory = .shared) {
         self.memory = memory
         flow = PresentationRemotePairingFlow(memory: memory)
@@ -399,7 +406,7 @@ final class PresentationRemoteClient: ObservableObject {
         pairingError = nil
         activePairingCode = normalized
         phase = .pairing
-        sendSecure(.hello(clientName: UIDevice.current.name), over: connection)
+        sendSecure(.hello(clientName: Self.clientName), over: connection)
         sendSecure(.pair(code: normalized, challenge: pairingChallenge), over: connection)
     }
 
@@ -544,7 +551,7 @@ final class PresentationRemoteClient: ObservableObject {
             // proof opened under.
             activePairingCode = saved.deviceCode
             phase = .pairing
-            sendSecure(.hello(clientName: UIDevice.current.name), over: connection)
+            sendSecure(.hello(clientName: Self.clientName), over: connection)
             sendSecure(.pair(code: saved.deviceCode, challenge: pairingChallenge), over: connection)
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.savedCodeWait) { [weak self, weak connection] in
                 guard let self, let connection, self.connection === connection,
