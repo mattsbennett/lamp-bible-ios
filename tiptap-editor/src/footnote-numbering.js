@@ -62,24 +62,37 @@ export function shownDefinitionPattern() {
  * referred to, in the order it was written: it is still the writer's note.
  * A marker nothing defines keeps its label — numbering it as though it had a
  * note, or dropping it, would hide the mistake.
+ *
+ * Definitions are read in runs, each one those written together, with only
+ * blank lines between them: `runs` says where each was in the body, as the
+ * line it came before, so it can be put back there, and the prose after it
+ * stays after it.
  */
 export function readFootnotes(markdown) {
   const body = []
   const definitions = []
   const lines = markdown.split('\n')
+  const runs = []
+  let run = null
   // The definition indented lines carry on, until something else comes.
   let open = null
   // The blank lines since the last definition, while only blank lines have
-  // come since: the gap before the next one, if a definition comes next.
+  // come since: the gap before the next one, if a definition comes next and
+  // so carries its run on.
   let since = null
-  const gaps = []
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]
     const match = line.match(DEFINITION)
     if (match) {
-      if (since !== null) gaps.push(since)
+      if (since === null) {
+        run = { at: body.length, definitions: [], gaps: [] }
+        runs.push(run)
+      } else {
+        run.gaps.push(since)
+      }
       open = { id: match[1], content: match[2] }
       definitions.push(open)
+      run.definitions.push(open)
       since = 0
     } else if (open && CONTINUATION.test(line)) {
       // Kept as written, indent and all, so it can be written back so.
@@ -115,12 +128,16 @@ export function readFootnotes(markdown) {
     if (!numbers.has(definition.id)) numbers.set(definition.id, numbers.size + 1)
   }
 
-  // Whether the definitions are set apart by blank lines, as the apps' own
-  // writer sets them, or follow one another line by line, as the editor did:
-  // written back as they were found, and set apart where nothing says.
-  const spaced = !(gaps.length > 0 && gaps.every(gap => gap === 0))
+  // Whether a run's definitions are set apart by blank lines, as the apps'
+  // own writer sets them, or follow one another line by line, as the editor
+  // did: written back as they were found, and set apart where nothing says.
+  const placed = runs.map(({ at, definitions, gaps }) => ({
+    at,
+    definitions,
+    spaced: !(gaps.length > 0 && gaps.every(gap => gap === 0)),
+  }))
 
-  return { content, definitions, numbers, spaced }
+  return { content, definitions, numbers, runs: placed }
 }
 
 /** What a footnote is shown as: its number, or its label when it has none. */

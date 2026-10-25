@@ -528,7 +528,7 @@ func longFootnotes() {
         check(shown.count == 3 && shown[1] as? Int == 4 && shown[2] as? String == "bold", "each on its own line, its marks shown (read: \(shown.dropFirst()))")
         check(parts[1] as? String == core, "the writer's own footnotes come back as written (read: \(String(describing: parts[1]).debugDescription))")
         let md = body.first as? String ?? ""
-        check(md == "Body[^1].\n\nAfter the footnotes.\n\n[^1]: note\n    [sic] more", "what follows the footnotes stays in the body, and a later line beginning [sic] stays in its footnote (read: \(md.debugDescription))")
+        check(md == trailing, "what follows the footnotes stays after them, and a later line beginning [sic] stays in its footnote (read: \(md.debugDescription))")
         check(body.count == 3 && body[1] as? Int == 0 && (body[2] as? [String]) == ["Body[1].", "After the footnotes."], "and nothing set in reads as code (read: \(body.dropFirst()))")
         js("""
             var a = window.editorAPI;
@@ -543,7 +543,7 @@ func longFootnotes() {
             """) { r in
             let parts = r as? [String] ?? []
             check(parts.first == "Grace[^1] and faith[^2].\n\n[^1]: first line\n    second **bold** line\n    \n    **fourth** line\n\n[^2]: single", "a word bolded on a later line is written as the writer writes it (read: \(String(describing: parts.first).debugDescription))")
-            check(parts.last == "Body[^1].\n\nAfter the footnotes.\n\n[^1]: *note*\n    \\[sic\\] more", "a later line beginning [sic] is still one when its footnote is changed (read: \(String(describing: parts.last).debugDescription))")
+            check(parts.last == "Body[^1].\n\n[^1]: *note*\n    \\[sic\\] more\n\nAfter the footnotes.", "a later line beginning [sic] is still one when its footnote is changed (read: \(String(describing: parts.last).debugDescription))")
             js("""
                 var a = window.editorAPI;
                 a.load('One[^1].\\n\\n[^1]: first');
@@ -557,7 +557,76 @@ func longFootnotes() {
                     js("window.editorAPI.getContent()") { r in
                         // Its reference goes in at the caret, here the start.
                         check(r as? String == "[^2]One[^1].\n\n[^1]: first\n\n[^2]: added \\*here\\*", "a footnote the phone adds is written beneath the others (read: \(String(describing: r).debugDescription))")
-                        exit(failed ? 1 : 0)
+                        placedFootnotes()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Footnotes stay where they were written: prose after them stays after them,
+// and runs of them through a writing each stay in their place.
+func placedFootnotes() {
+    print("-- footnotes where they were written")
+    let docs = [
+        "Before.[^1]\n\n[^1]: Note\n\nAfter the note.",
+        "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n\nEnd.",
+        "[^1]: first\n\nBody[^1].",
+    ]
+    let literal = String(data: try! JSONSerialization.data(withJSONObject: docs), encoding: .utf8)!
+    js("""
+        var a = window.editorAPI;
+        var docs = \(literal);
+        var back = docs.map(d => { a.load(d); return a.getContent() });
+        a.load(docs[1]);
+        var blocks = Array.from(document.querySelectorAll('.footnote-definition'));
+        var shown = blocks.map(b => b.innerText);
+        var order = Array.from(document.querySelector('.tiptap').children).map(c => c.className === 'footnote-definition' ? 'notes' : c.textContent).filter(t => t);
+        var scrolled = [];
+        var scrollIntoView = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = function () { scrolled.push(blocks.indexOf(this)) };
+        a.scrollToFootnote('3'); a.scrollToFootnote('1');
+        Element.prototype.scrollIntoView = scrollIntoView;
+        [back, shown, order, scrolled]
+        """) { r in
+        let parts = r as? [Any] ?? []
+        guard parts.count == 4, let back = parts[0] as? [String] else { check(false, "placed footnotes read (read: \(String(describing: r)))"); exit(1) }
+        for (doc, out) in zip(docs, back) {
+            check(out == doc, "kept in place: \(doc.debugDescription) (read: \(out.debugDescription))")
+        }
+        check((parts[1] as? [String]) == ["[1] one", "[2] two\n[3] three"], "each run is a block of its own, numbered through the writing (read: \(String(describing: parts[1])))")
+        check((parts[2] as? [String]) == ["A[1].", "notes", "B[2] and C[3].", "notes", "End."], "in its place among the paragraphs (read: \(String(describing: parts[2])))")
+        check((parts[3] as? [Int]) == [1, 0], "a tapped reference goes to the block holding its footnote (read: \(String(describing: parts[3])))")
+        js("""
+            var a = window.editorAPI;
+            a.load(docs[1]);
+            a.setSearch('three', {}); a.selectCurrentMatch(); a.clearSearch();
+            a.toggleBold();
+            var bolded = a.getContent();
+            a.load('One.');
+            a.focus();
+            a.insertFootnote('1', 'new');
+            a.load(docs[1]);
+            a.focus();
+            a.insertFootnote('4', 'four');
+            bolded
+            """) { r in
+            check(r as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: **three**\n\nEnd.", "a footnote changed changes only its own line, in its place (read: \(String(describing: r).debugDescription))")
+            after(150) {
+                js("window.editorAPI.getContent()") { r in
+                    check(r as? String == "[^4]A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n[^4]: four\n\nEnd.", "a footnote added goes with the last of them (read: \(String(describing: r).debugDescription))")
+                    js("var a = window.editorAPI; a.load('One.'); a.focus(); a.insertFootnote('1', 'new'); a.getContent()") { r in
+                        check(r as? String == "[^1]One.\n\n[^1]: new", "and where there are none, at the end (read: \(String(describing: r).debugDescription))")
+                        // Written close, with no blank line either side: the
+                        // block still stands apart, and the prose after it is
+                        // still prose.
+                        js("var a = window.editorAPI; a.load('Before.[^1]\\n[^1]: Note\\nAfter **it**.'); [a.getContent(), Array.from(document.querySelectorAll('.tiptap > p')).map(p => p.innerHTML).filter(t => t)]") { r in
+                            let parts = r as? [Any] ?? []
+                            check(parts.first as? String == "Before.[^1]\n\n[^1]: Note\n\nAfter **it**.", "footnotes written close to prose keep their place (read: \(String(describing: parts.first).debugDescription))")
+                            check((parts.last as? [String])?.last == "After <strong>it</strong>.", "and the prose after them is read as prose (read: \(String(describing: parts.last)))")
+                            exit(failed ? 1 : 0)
+                        }
                     }
                 }
             }

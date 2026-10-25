@@ -101,19 +101,29 @@ function resolveFootnotes(md) {
       + ` data-number="${escapeHtmlAttribute(shown)}">[${escapeHtmlContent(shown)}]</sup>`
   })
 
-  if (read.definitions.length === 0) return content
+  if (read.runs.length === 0) return content
 
-  // Each definition's own Markdown shown as the body's is, bold as bold; and
-  // what it was read from kept with it, to be written back as it was.
-  const ordered = orderedDefinitions(read)
+  // Each run of definitions where it was written, a block of its own, apart
+  // from what is around it so the Markdown reads it as a block.
+  const lines = content.split('\n')
+  for (const run of [...read.runs].reverse()) {
+    lines.splice(run.at, 0, '', definitionsBlock(run, numbers), '')
+  }
+  return lines.join('\n')
+}
+
+// A run's definitions, numbered in reading order: each one's own Markdown
+// shown as the body's is, bold as bold, and what it was read from kept with
+// it, to be written back as it was.
+function definitionsBlock(run, numbers) {
+  const ordered = orderedDefinitions({ definitions: run.definitions, numbers })
   const defsHtml = ordered.map(d =>
     `<span class="footnote-label">[${escapeHtmlContent(d.shown)}]</span> ${definitionHTML(editor, d.content)}`
   ).join('<br>')
   const labels = escapeHtmlAttribute(encodeLabels(ordered))
   const sources = escapeHtmlAttribute(encodeSources(ordered))
-  const spacing = read.spaced ? '' : ' data-spaced="false"'
-  return content
-    + `\n<div class="footnote-definition" data-labels="${labels}" data-sources="${sources}"${spacing}>${defsHtml}</div>`
+  const spacing = run.spaced ? '' : ' data-spaced="false"'
+  return `<div class="footnote-definition" data-labels="${labels}" data-sources="${sources}"${spacing}>${defsHtml}</div>`
 }
 
 let editor = null
@@ -826,9 +836,9 @@ window.editorAPI = {
       attrs: { id },
     }).run()
 
-    // Find or create footnote definition block at end
-    const html = editor.getHTML()
-    const defBlock = document.querySelector('.footnote-definition')
+    // Added to the last of the definitions, or a block of them at the end
+    const blocks = document.querySelectorAll('.footnote-definition')
+    const defBlock = blocks[blocks.length - 1]
     if (defBlock) {
       // Append to existing definitions
       defBlock.innerHTML += `<br><span class="footnote-label">[${escapeHtmlContent(id)}]</span> ${escapeHtmlContent(content)}`
@@ -932,8 +942,15 @@ window.editorAPI = {
     }
   },
 
+  // To the definitions holding the footnote labelled `id`, wherever they
+  // were written, or else the first.
   scrollToFootnote(id) {
-    const def = document.querySelector('.footnote-definition')
+    const blocks = Array.from(document.querySelectorAll('.footnote-definition'))
+    const reference = Array.from(document.querySelectorAll('sup.footnote-ref'))
+      .find(sup => sup.getAttribute('data-id') === String(id))
+    const shown = reference?.getAttribute('data-number') ?? String(id)
+    const def = blocks.find(block => block.innerText.split('\n').some(line => line.startsWith(`[${shown}]`)))
+      ?? blocks[0]
     if (def) {
       def.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }

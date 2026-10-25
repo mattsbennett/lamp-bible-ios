@@ -283,7 +283,8 @@ test('a definition takes the lines set in beneath it', () => {
     { id: '2', content: 'single' },
   ])
   assert.equal(read.content.trim(), 'Grace[^1] and faith[^2].')
-  assert.equal(read.spaced, true)
+  assert.equal(read.runs.length, 1)
+  assert.equal(read.runs[0].spaced, true)
 })
 
 test('a tab sets a line in as four spaces do', () => {
@@ -304,12 +305,38 @@ test('what comes after the footnotes, not set in, is the body\'s', () => {
 })
 
 test('blank lines between definitions are remembered', () => {
-  assert.equal(readFootnotes('A[^1].\n[^1]: a\n[^2]: b').spaced, false)
-  assert.equal(readFootnotes('A[^1].\n[^1]: a\n\n[^2]: b').spaced, true)
-  assert.equal(readFootnotes('A[^1].\n[^1]: a').spaced, true)
-  assert.equal(readFootnotes('A[^1].\n[^1]: a\n[^2]: b\n\n[^3]: c').spaced, true)
-  // Definitions apart, with prose between, say nothing either way.
-  assert.equal(readFootnotes('[^1]: a\nProse.\n[^2]: b').spaced, true)
+  const spaced = markdown => readFootnotes(markdown).runs.map(run => run.spaced)
+  assert.deepEqual(spaced('A[^1].\n[^1]: a\n[^2]: b'), [false])
+  assert.deepEqual(spaced('A[^1].\n[^1]: a\n\n[^2]: b'), [true])
+  assert.deepEqual(spaced('A[^1].\n[^1]: a'), [true])
+  assert.deepEqual(spaced('A[^1].\n[^1]: a\n[^2]: b\n\n[^3]: c'), [true])
+  // Definitions apart, with prose between, are runs of their own.
+  assert.deepEqual(spaced('[^1]: a\nProse.\n[^2]: b'), [true, true])
+})
+
+// ---- Where the definitions were ----
+
+test('a run of definitions is placed where it was written', () => {
+  const read = readFootnotes('Before.[^1]\n\n[^1]: Note\n    more\n\nAfter.')
+  const body = read.content.split('\n')
+  assert.deepEqual(read.runs.map(run => [run.at, run.definitions.map(d => d.id)]), [[2, ['1']]])
+  assert.deepEqual(body.slice(0, 2), ['Before.[^1]', ''])
+  assert.ok(body.slice(2).includes('After.'))
+})
+
+test('definitions written apart are runs apart, each in its place', () => {
+  const read = readFootnotes('A[^1].\n\n[^1]: one\n\nB[^2][^3].\n\n[^2]: two\n[^3]: three\n\nC.')
+  const body = read.content.split('\n')
+  assert.deepEqual(read.runs.map(run => run.definitions.map(d => d.id)), [['1'], ['2', '3']])
+  assert.equal(body[read.runs[0].at - 2], 'A[^1].')
+  assert.equal(body[read.runs[1].at - 2], 'B[^2][^3].')
+  assert.deepEqual(read.runs.map(run => run.spaced), [true, false])
+  // Numbered across the whole writing, in reading order.
+  assert.deepEqual(['1', '2', '3'].map(id => shownLabel(read.numbers, id)), ['1', '2', '3'])
+})
+
+test('definitions at the very start are placed before everything', () => {
+  assert.deepEqual(readFootnotes('[^1]: first\n\nBody[^1].').runs.map(run => run.at), [0])
 })
 
 test('a later line loses the indent that made it one', () => {
