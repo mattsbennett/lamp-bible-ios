@@ -207,11 +207,14 @@ struct ReadingsView: View {
                     Button {
                         openExternally(reading, in: app)
                     } label: {
-                        Label("Open in \(app.name)", systemImage: "arrow.up.forward.app")
+                        // The arrow says it opens another app; each card
+                        // repeating "Open in" said it louder than it needed.
+                        Label(app.name, systemImage: "arrow.up.forward.app")
                             .font(.footnote.weight(.medium))
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .accessibilityLabel("Open \(reading.description) in \(app.name)")
                 }
             }
             .frame(minHeight: 32)
