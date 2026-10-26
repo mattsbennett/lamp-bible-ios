@@ -2,6 +2,7 @@ import './editor.css'
 import { Editor, Extension } from '@tiptap/core'
 import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { Fragment } from '@tiptap/pm/model'
 import { closeHistory } from '@tiptap/pm/history'
 import { StarterKit } from '@tiptap/starter-kit'
 import { HardBreak } from '@tiptap/extension-hard-break'
@@ -14,6 +15,7 @@ import { Markdown } from 'tiptap-markdown'
 import { FootnoteRef, FootnoteDefinition, definitionHTML, noteLines, noteSpan, noteMarkdown, noteContent } from './extensions/footnote.js'
 import {
   readFootnotes,
+  decodeLabels,
   shownLabel,
   orderedDefinitions,
   encodeLabels,
@@ -220,7 +222,15 @@ function openNotePopover(view, markerPos, shown) {
   panel.setAttribute('aria-label', `Note ${shown}`)
   const heading = document.createElement('div')
   heading.className = 'note-popover-heading'
-  heading.textContent = `Note ${shown}`
+  const title = document.createElement('span')
+  title.textContent = `Note ${shown}`
+  // Takes the footnote out, marker and note together; Undo brings it back.
+  const remove = document.createElement('button')
+  remove.type = 'button'
+  remove.className = 'note-popover-remove'
+  remove.textContent = 'Remove'
+  remove.setAttribute('aria-label', `Remove footnote ${shown}`)
+  heading.append(title, remove)
   const field = document.createElement('textarea')
   field.className = 'note-popover-text'
   field.value = noteMarkdown(editor, found.node, shown) ?? ''
@@ -234,6 +244,18 @@ function openNotePopover(view, markerPos, shown) {
   field.addEventListener('input', () => {
     writeNote(shown, field.value)
     fitNotePopover(field)
+  })
+  remove.addEventListener('click', () => {
+    const marker = editor.state.doc.nodeAt(notePopover?.markerPos ?? -1)
+    const label = marker?.type.name === 'footnoteRef' ? marker.attrs.id : null
+    const at = notePopover?.markerPos ?? null
+    closeNotePopover(false)
+    if (label === null) return
+    removeFootnote(label)
+    // The caret where the marker was.
+    const pos = Math.min(at, editor.state.doc.content.size)
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.near(editor.state.doc.resolve(pos))))
+    editor.view.focus()
   })
   field.addEventListener('keydown', event => {
     if (event.key === 'Escape' || (event.key === 'Enter' && event.metaKey)) {
@@ -266,6 +288,54 @@ function placeNotePopover(view, panel, markerPos) {
     : below
   panel.style.left = `${left + window.scrollX}px`
   panel.style.top = `${top + window.scrollY}px`
+}
+
+// Every marker for the footnote labelled `label`, and its note where the
+// page holds it, out as one edit. Whether the note was found.
+function removeFootnote(label) {
+  const { state } = editor
+  const markers = []
+  let shown = null
+  state.doc.descendants((node, pos) => {
+    if (node.type.name === 'footnoteRef' && node.attrs.id === label) {
+      markers.push(pos)
+      shown = shown ?? shownNumber(node)
+    }
+    return true
+  })
+  if (shown === null) {
+    // A note nothing refers to any more: its number from the block's own
+    // record of which label each number stands for, or else its label.
+    state.doc.descendants(node => {
+      if (node.type.name !== 'footnoteDefinition') return true
+      for (const [number, written] of decodeLabels(node.attrs.labels)) {
+        if (written === label) shown = shown ?? number
+      }
+      return false
+    })
+    shown = shown ?? label
+  }
+  const tr = state.tr
+  const found = noteBlock(state.doc, shown)
+  const span = found && noteSpan(found.node, shown)
+  if (span) {
+    const lines = noteLines(found.node)
+    const onlyNote = lines.every(line => line.shown === null || line.shown === shown)
+    if (onlyNote) {
+      tr.delete(found.pos, found.pos + found.node.nodeSize)
+    } else {
+      // With the line break before it, or after it for the first note.
+      const start = found.pos + 1 + span.from
+      const end = found.pos + 1 + span.to
+      tr.delete(span.from > 0 ? start - 1 : start, span.from > 0 ? end : Math.min(end + 1, found.pos + found.node.nodeSize - 1))
+    }
+  }
+  for (const pos of markers.reverse()) {
+    const at = tr.mapping.map(pos)
+    tr.delete(at, at + 1)
+  }
+  if (tr.docChanged) editor.view.dispatch(tr)
+  return Boolean(span)
 }
 
 // Writes the note's Markdown into its lines in the document.
@@ -1039,27 +1109,46 @@ window.editorAPI = {
     editor.chain().focus().extendMarkRange('link').unsetLink().run()
   },
 
+  // A footnote at the caret: its marker, and its note after the last of
+  // the notes, or in a block of its own at the end where there are none.
+  // One edit, so it goes out, and undoes, as one. A host editing notes by
+  // their markers (setFootnoteClicks('popover')) gets the new note open by
+  // its marker, to write in straight away.
   insertFootnote(id, content) {
-    // Insert footnote reference at cursor
-    editor.chain().focus().insertContent({
-      type: 'footnoteRef',
-      attrs: { id },
-    }).run()
-
-    // Added to the last of the definitions, or a block of them at the end
-    const blocks = document.querySelectorAll('.footnote-definition')
-    const defBlock = blocks[blocks.length - 1]
-    if (defBlock) {
-      // Append to existing definitions
-      defBlock.innerHTML += `<br><span class="footnote-label">[${escapeHtmlContent(id)}]</span> ${escapeHtmlContent(content)}`
-    } else {
-      // Create new definition block at end
-      editor.commands.insertContentAt(editor.state.doc.content.size, {
-        type: 'footnoteDefinition',
-        attrs: { definitions: `[^${id}]: ${content}` },
-        content: [{ type: 'text', text: `[${id}] ${content}` }],
+    const label = String(id)
+    let markerPos = null
+    editor.chain().focus().command(({ tr }) => {
+      tr.replaceSelectionWith(editor.schema.nodes.footnoteRef.create({ id: label }), false)
+      markerPos = tr.selection.from - 1
+      const steps = tr.steps.length
+      // The text as given, not Markdown: what the phone's footnote sheet
+      // takes is written back escaped, as it always has been.
+      const note = Fragment.from(editor.schema.text(`[${label}] ${content || ''}`))
+      let last = null
+      tr.doc.descendants((node, pos) => {
+        if (node.type.name === 'footnoteDefinition') last = { node, pos }
+        return node.isBlock
       })
+      if (last) {
+        const end = last.pos + last.node.nodeSize - 1
+        tr.insert(end, Fragment.from(editor.schema.nodes.hardBreak.create()).append(note))
+      } else {
+        tr.insert(tr.doc.content.size, editor.schema.nodes.footnoteDefinition.create(null, note))
+      }
+      markerPos = tr.mapping.slice(steps).map(markerPos)
+      return true
+    }).run()
+    if (footnoteClicks === 'popover' && markerPos !== null) {
+      openNotePopover(editor.view, markerPos, label)
     }
+  },
+
+  // Takes out the footnote labelled `id`: every marker for it, and its note
+  // where the page holds it, as one edit. Whether the page held the note,
+  // so a host keeping notes apart from the writing knows to take out its
+  // own copy.
+  removeFootnote(id) {
+    return removeFootnote(String(id))
   },
 
   insertScriptureQuote(citation, text) {

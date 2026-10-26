@@ -553,8 +553,8 @@ func longFootnotes() {
                 a.insertFootnote('2', 'added *here*');
                 1
                 """) { _ in
-                // The page's own edit reaches the document as the editor
-                // observes it, a moment later.
+                // One edit, there at once; the wait is only to be sure
+                // nothing arrives after it.
                 after(150) {
                     js("window.editorAPI.getContent()") { r in
                         // Its reference goes in at the caret, here the start.
@@ -714,7 +714,7 @@ func notePopovers() {
         press(document.querySelector('sup.footnote-ref[data-id="3"]'), 'mouse');
         var panel = document.querySelector('.note-popover');
         var field = panel && panel.querySelector('textarea');
-        var opened = [!!panel, panel ? panel.querySelector('.note-popover-heading').textContent : null, field ? field.value : null, document.activeElement === field];
+        var opened = [!!panel, panel ? panel.querySelector('.note-popover-heading span').textContent : null, field ? field.value : null, document.activeElement === field];
         if (field) {
             field.value = 'three, edited\\nand a second line';
             field.dispatchEvent(new Event('input', {bubbles: true}));
@@ -736,7 +736,72 @@ func notePopovers() {
         check(parts[1] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three, edited\n    and a second line\n\nEnd.", "what's typed goes into the note, a later line set in (read: \(String(describing: parts[1]).debugDescription))")
         check(parts[2] as? Bool == true, "Escape closes it")
         check(parts[3] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3][^7].\n\n[^2]: two\n[^3]: three, edited\n    and a second line\n\nEnd.", "and the caret is back just after the marker (read: \(String(describing: parts[3]).debugDescription))")
-        exit(failed ? 1 : 0)
+        after(600) { addingAndRemoving() }
+    }
+}
+
+// A footnote added is one edit, its marker and its note together, there to
+// read at once and undone as one; a footnote removed takes both out.
+func addingAndRemoving() {
+    print("-- adding and removing a footnote")
+    let original = "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n\nEnd."
+    js("""
+        var a = window.editorAPI;
+        a.load(doc); a.focus();
+        a.insertFootnote('4', 'four');
+        var added = a.getContent();
+        \(undo);
+        var undone = a.getContent();
+        a.setFootnoteClicks('popover');
+        a.load(doc); a.focus();
+        a.insertFootnote('4', '');
+        var panel = document.querySelector('.note-popover');
+        var field = panel && panel.querySelector('textarea');
+        var opened = [!!panel, panel ? panel.querySelector('.note-popover-heading span').textContent : null, field ? field.value : null, document.activeElement === field];
+        if (field) { field.value = 'four'; field.dispatchEvent(new Event('input', {bubbles: true})); }
+        var written = a.getContent();
+        if (field) field.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+        a.setFootnoteClicks('jump');
+        a.load(doc);
+        var removed = [a.removeFootnote('2'), a.getContent()];
+        \(undo);
+        var restored = a.getContent();
+        var missing = [a.removeFootnote('nope'), a.getContent()];
+        var whole = [a.removeFootnote('1'), a.getContent()];
+        [added, undone, opened, written, removed, restored, missing, whole]
+        """) { r in
+        let parts = r as? [Any] ?? []
+        guard parts.count == 8 else { check(false, "adding and removing read (read: \(String(describing: r)))"); exit(1) }
+        check(parts[0] as? String == "[^4]A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n[^4]: four\n\nEnd.", "a footnote added is in the writing at once, after the last note (read: \(String(describing: parts[0]).debugDescription))")
+        check(parts[1] as? String == original, "and one Undo takes out both marker and note (read: \(String(describing: parts[1]).debugDescription))")
+        let opened = parts[2] as? [Any] ?? []
+        check(opened.count == 4 && opened[0] as? Bool == true && opened[1] as? String == "Note 4" && opened[2] as? String == "" && opened[3] as? Bool == true, "with notes edited by their markers, a footnote added opens ready to write (read: \(opened))")
+        check(parts[3] as? String == "[^4]A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n[^4]: four\n\nEnd.", "and what's written goes into it (read: \(String(describing: parts[3]).debugDescription))")
+        let removed = parts[4] as? [Any] ?? []
+        check(removed.first as? Bool == true && removed.last as? String == "A[^1].\n\n[^1]: one\n\nB and C[^3].\n\n[^3]: three\n\nEnd.", "a footnote removed takes out its marker and its note (read: \(removed))")
+        check(parts[5] as? String == original, "and Undo brings both back (read: \(String(describing: parts[5]).debugDescription))")
+        let missing = parts[6] as? [Any] ?? []
+        check(missing.first as? Bool == false && missing.last as? String == original, "a footnote that isn't there reports so and changes nothing (read: \(missing))")
+        let whole = parts[7] as? [Any] ?? []
+        check(whole.first as? Bool == true && whole.last as? String == "A.\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n\nEnd.", "the only note in its block takes the block with it (read: \(whole))")
+        after(600) {
+            js("""
+                var a = window.editorAPI;
+                a.setFootnoteClicks('popover');
+                a.load(doc);
+                press(document.querySelector('sup.footnote-ref[data-id="3"]'), 'mouse');
+                var button = document.querySelector('.note-popover-remove');
+                if (button) button.click();
+                var result = [!!button, !document.querySelector('.note-popover'), a.getContent()];
+                a.setFootnoteClicks('jump');
+                result
+                """) { r in
+                let parts = r as? [Any] ?? []
+                check(parts.first as? Bool == true && (parts.count > 1 && parts[1] as? Bool == true), "the open note's Remove closes it (read: \(String(describing: r)))")
+                check(parts.last as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C.\n\n[^2]: two\n\nEnd.", "and takes the footnote out, marker and note (read: \(String(describing: parts.last).debugDescription))")
+                exit(failed ? 1 : 0)
+            }
+        }
     }
 }
 

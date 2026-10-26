@@ -455,11 +455,29 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
 }
 
 .note-popover-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 0.72em;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--image-caption-color);
   margin-bottom: 4px;
+}
+
+.note-popover-remove {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--image-caption-color);
+  cursor: pointer;
+}
+
+.note-popover-remove:hover,
+.note-popover-remove:focus-visible {
+  color: var(--text-color);
 }
 
 .note-popover-text {
