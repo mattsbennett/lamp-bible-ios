@@ -424,7 +424,7 @@ struct SettingsView: View {
                         Text("Reading Plan Settings").padding(.bottom, 8).padding(.top, 15)
                     }
                 } footer: {
-                    Text("Show the ") + Text(Image(systemName: "book.fill")) + Text(" button to open readings in the in-app Bible")
+                    Text("Tapping a reading opens it in Lamp Bible’s reader, and Start Reading goes through the day’s readings in order.")
                 }
                 .headerProminence(.increased)
 
@@ -448,7 +448,7 @@ struct SettingsView: View {
                 } header: {
                     Text("External Bible")
                 } footer: {
-                    Text("Show the ") + Text(Image("book.and.external.fill")) + Text(" button to open readings in the selected Bible app.")
+                    Text("Each reading gets an Open in button for this app. With the in-app Bible off, tapping a reading opens it here instead.")
                 }
 
                 Section {

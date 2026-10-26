@@ -31,6 +31,9 @@ struct SplitReaderView: View {
     var initialVerseId: Int? = nil
     var initialTranslationId: String? = nil  // GRDB translation ID
     var initialToolbarMode: BottomToolbarMode? = nil
+    /// The plan `initialVerseId` was chosen from, in plan mode: plans can
+    /// share a passage, and the reading opens in the one it was tapped in.
+    var initialPlanId: String? = nil
 
     @State private var requestScrollToVerseId: Int? = nil
     @State private var requestScrollAnimated: Bool = true
@@ -384,6 +387,7 @@ struct SplitReaderView: View {
             readingMetaData: readingMetaData,
             translationId: initialTranslationId,
             initialVerseId: initialVerseId,
+            initialPlanId: initialPlanId,
             onVerseAction: handleVerseAction,
             requestScrollToVerseId: $requestScrollToVerseId,
             requestScrollAnimated: $requestScrollAnimated,

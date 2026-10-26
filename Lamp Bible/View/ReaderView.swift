@@ -1728,6 +1728,8 @@ struct ReaderView: View {
     // Initial verse to scroll to on load (handled internally with proper timing)
     private let initialVerseId: Int?
     @State private var hasAppliedInitialVerseId: Bool = false
+    /// The plan to look for `initialVerseId` in first, in plan mode.
+    private let initialPlanId: String?
 
     // Initial translation to use on load (overrides SceneStorage)
     private let initialTranslationId: String?
@@ -1750,6 +1752,7 @@ struct ReaderView: View {
         readingMetaData: [ReadingMetaData]? = nil,
         translationId: String? = nil,
         initialVerseId: Int? = nil,
+        initialPlanId: String? = nil,
         onVerseAction: ((Int, VerseAction) -> Void)? = nil,
         requestScrollToVerseId: Binding<Int?> = .constant(nil),
         requestScrollAnimated: Binding<Bool> = .constant(true),
@@ -1782,6 +1785,7 @@ struct ReaderView: View {
         self.devotionalsModules = devotionalsModules
 
         self.initialVerseId = initialVerseId
+        self.initialPlanId = initialPlanId
         self.initialTranslationId = translationId
         _date = date
         _readingMetaData = State(initialValue: readingMetaData)
@@ -3036,9 +3040,13 @@ struct ReaderView: View {
             if let verseId = initialVerseId, !hasAppliedInitialVerseId {
                 hasAppliedInitialVerseId = true
 
-                // If in plan mode, find and load the matching reading
+                // If in plan mode, find and load the matching reading: in the
+                // plan it was chosen from first, since plans can share one.
                 if toolbarMode == .plan, !plansWithReadings.isEmpty {
-                    for (planIdx, plan) in plansWithReadings.enumerated() {
+                    let plans = Array(plansWithReadings.enumerated())
+                    let chosenFirst = plans.filter { $0.element.id == initialPlanId }
+                        + plans.filter { $0.element.id != initialPlanId }
+                    for (planIdx, plan) in chosenFirst {
                         if let readingIdx = plan.readings.firstIndex(where: { $0.sv == verseId }) {
                             selectedPlanIndex = planIdx
                             currentReadingIndex = readingIdx

@@ -385,7 +385,11 @@ struct PlanView: View {
                 }
                 .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 20))
 
-            readingsContent(planMetaData: planMetaData, geometry: geometry)
+            if !readings.isEmpty {
+                readingsContent(planMetaData: planMetaData, geometry: geometry)
+            } else {
+                Spacer().frame(height: 20)
+            }
 
             if plan.id != userSettings.planIds.last {
                 Divider()
@@ -397,53 +401,15 @@ struct PlanView: View {
 
     @ViewBuilder
     private func planHeader(plan: Plan, planMetaData: PlanMetaData, readings: [ReadingMetaData]) -> some View {
-        VStack(alignment: .leading) {
-            HStack {
-                VStack(alignment: .leading) {
-                    Text(plan.name)
-                        .font(.title2)
-                        .fontWeight(.black)
+        VStack(alignment: .leading, spacing: 10) {
+            Text(plan.name)
+                .font(.title2)
+                .fontWeight(.black)
 
-                    if readings.count > 0 {
-                        readingsRow(planMetaData: planMetaData)
-                    } else {
-                        Text("No readings for today")
-                            .padding(EdgeInsets(top: 10, leading: 0, bottom: 0, trailing: 0))
-                            .foregroundStyle(Color.secondary)
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Readings Row
-
-    @ViewBuilder
-    private func readingsRow(planMetaData: PlanMetaData) -> some View {
-        HStack {
-            if userSettings.planInAppBible {
-                NavigationLink(
-                    destination: SplitReaderView(
-                        date: $date,
-                        initialToolbarMode: .plan
-                    )
-                ) {
-                    VStack {
-                        Image(systemName: "book.circle.fill")
-                            .font(.system(size: 52))
-                            .frame(width: 57, height: 57)
-                            .foregroundColor(.accentColor)
-                    }
-                }
-            }
-            VStack(alignment: .leading) {
-                Text(planMetaData.description)
-                    .font(.system(size: 16))
-                Label("\(planMetaData.readingTime)", systemImage: "clock")
-                    .font(.caption)
+            if readings.isEmpty {
+                Text("No readings for today")
                     .foregroundStyle(Color.secondary)
             }
-            .frame(minHeight: 44)
         }
         .padding(.bottom, 10)
     }
@@ -454,6 +420,7 @@ struct PlanView: View {
     private func readingsContent(planMetaData: PlanMetaData, geometry: GeometryProxy) -> some View {
         if geometry.size.width < 600 {
             ReadingsView(
+                date: $date,
                 planMetaData: planMetaData,
                 stackHorizontally: false
             )
@@ -461,6 +428,7 @@ struct PlanView: View {
             .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
         } else {
             ReadingsView(
+                date: $date,
                 planMetaData: planMetaData,
                 stackHorizontally: true
             )
@@ -468,17 +436,6 @@ struct PlanView: View {
         }
     }
 
-}
-
-// MARK: - Trailing Icon Label Style
-
-struct TrailingIconLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack {
-            configuration.title
-            configuration.icon
-        }
-    }
 }
 
 #Preview {

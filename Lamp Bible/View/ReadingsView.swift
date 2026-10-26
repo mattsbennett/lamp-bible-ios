@@ -7,100 +7,50 @@
 
 import SwiftUI
 
+/// A day's readings in one plan: how much there is, a way through all of it
+/// in order, and each reading on its own.
+///
+/// Every way into a reading says where it goes. The plan's button and each
+/// reading itself open the in-app Bible, where that is on; the Bible app
+/// chosen in Settings has a button of its own on each reading, named for it,
+/// as the one thing here that leaves Lamp. The circle beside a reading only
+/// marks it read, so the passage's name, what people tap, opens it rather
+/// than ticking it off.
 struct ReadingsView: View {
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
     @State private var completedReadingIds: Set<String> = UserDatabase.shared.getCompletedReadingIds()
     @State private var readerCount: Int = UserDatabase.shared.getSettings().planReaderCount
+    @Binding var date: Date
     let planMetaData: PlanMetaData
     let stackHorizontally: Bool
 
+    private var readings: [ReadingMetaData] { planMetaData.readingMetaData }
+
+    /// The Bible app chosen in Settings to open readings in, if one is.
+    private var externalApp: ExternalBibleApp? {
+        guard let name = userSettings.planExternalBible else { return nil }
+        return externalBibleApps.first { $0.name == name && $0.application != nil }
+    }
+
+    private func isRead(_ reading: ReadingMetaData) -> Bool {
+        completedReadingIds.contains(reading.id)
+    }
+
     var body: some View {
-        ConditionalStack(isHorizonalStack: stackHorizontally) {
-            let readings = planMetaData.readingMetaData
-            ForEach(Array(readings.enumerated()), id: \.element.id) { index, readingMetaData in
-                VStack(alignment: .leading) {
-                    HStack {
-                        let readingId = readingMetaData.id
-
-                        Button {
-                            if completedReadingIds.contains(readingId) {
-                                try? UserDatabase.shared.removeCompletedReading(readingId)
-                                completedReadingIds.remove(readingId)
-                            } else {
-                                try? UserDatabase.shared.addCompletedReading(readingId)
-                                completedReadingIds.insert(readingId)
-                            }
-                            WidgetDataService.shared.refreshWidget()
-                        } label: {
-                            HStack {
-                                if completedReadingIds.contains(readingId) {
-                                    Image(systemName: "checkmark").frame(width: 17)
-                                } else {
-                                    Image(systemName: "circle").frame(width: 17)
-                                }
-                                Text(readingMetaData.description).font(.body).foregroundStyle(Color.primary)
-                            }
-                        }
-                        Spacer()
-                        if userSettings.planExternalBible != nil && userSettings.planExternalBible != "None" {
-                            Button {
-                                let app = externalBibleApps.first(where: { $0.name == userSettings.planExternalBible })
-                                if let url = app?.getFullUrl(sv: readingMetaData.sv, ev: readingMetaData.ev) {
-                                    if UIApplication.shared.canOpenURL(url) {
-                                        UIApplication.shared.open(url)
-
-                                        if !completedReadingIds.contains(readingId) {
-                                            try? UserDatabase.shared.addCompletedReading(readingId)
-                                            completedReadingIds.insert(readingId)
-                                            WidgetDataService.shared.refreshWidget()
-                                        }
-                                    }
-                                }
-                            } label: {
-                                ZStack {
-                                    Circle()
-                                        .stroke(Color.accentColor, lineWidth: 2)
-                                    Image("book.and.external.fill")
-                                        .foregroundColor(Color.accentColor)
-                                        .font(.title3)
-                                }
-                            }
-                            .frame(width: 57, height: 57)
-                            .clipShape(Circle())
-                            .foregroundColor(.accentColor)
-                        }
-                    }
-                    .padding(.bottom, 10)
-                    Spacer()
-                    HStack {
-                        Label("\(readingMetaData.genre)", systemImage: "bookmark.fill")
-                        Spacer()
-                        ReaderSplitControl(
-                            chapterVerseCounts: readingMetaData.chapterVerseCounts,
-                            isResolved: readingMetaData.isResolved,
-                            readerCount: $readerCount
-                        )
-                        Spacer()
-                        Label("\(readingMetaData.readingTime)", systemImage: "clock").labelStyle(TrailingIconLabelStyle())
-                    }
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary)
-                }
-                .id(index)
-                .padding()
+        VStack(alignment: .leading, spacing: 14) {
+            summary
+                .padding(.horizontal, 5)
+            readThroughButton
                 .if(stackHorizontally) { view in
-                    view.frame(width: 325)
+                    view.frame(maxWidth: 325)
                 }
-                .background(
-                    RoundedRectangle(cornerRadius: 15)
-                        .fill(Color.clear)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 15)
-                                .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
-                        )
-                )
+            ConditionalStack(isHorizonalStack: stackHorizontally) {
+                ForEach(Array(readings.enumerated()), id: \.element.id) { index, reading in
+                    card(reading)
+                        .id(index)
+                }
+                Spacer()
             }
-            Spacer()
         }
         .onAppear {
             syncFromDatabase()
@@ -112,6 +62,234 @@ struct ReadingsView: View {
             // Guard against writing back a value we just read from the database
             guard newValue != userSettings.planReaderCount else { return }
             try? UserDatabase.shared.updateSettings { $0.planReaderCount = newValue }
+        }
+    }
+
+    // MARK: - Summary
+
+    private var summary: some View {
+        let readCount = readings.filter(isRead).count
+        return HStack(spacing: 6) {
+            Text("^[\(readings.count) reading](inflect: true)")
+            if planMetaData.isFullyResolved {
+                Text("·")
+                Text("\(planMetaData.readingTime) min")
+            }
+            Spacer()
+            if readCount == readings.count {
+                Label("All read", systemImage: "checkmark")
+                    .foregroundStyle(.tint)
+            } else if readCount > 0 {
+                Text("\(readCount) of \(readings.count) read")
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+    }
+
+    // MARK: - Read Through
+
+    /// Through the day's readings in order, from the first not yet read: in
+    /// the in-app Bible, or, with that off, one at a time in the Bible app
+    /// chosen in Settings, named on the button.
+    @ViewBuilder
+    private var readThroughButton: some View {
+        let firstUnread = readings.first { !isRead($0) }
+        let next = firstUnread ?? readings.first
+        let allRead = firstUnread == nil
+        let started = readings.contains(where: isRead)
+        if userSettings.planInAppBible {
+            readThroughStyle(allRead: allRead) {
+                NavigationLink {
+                    reader(at: next)
+                } label: {
+                    Label(
+                        allRead ? "Read Again" : started ? "Continue Reading" : "Start Reading",
+                        systemImage: "book.fill"
+                    )
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        } else if let app = externalApp, let next {
+            readThroughStyle(allRead: allRead) {
+                Button {
+                    openExternally(next, in: app)
+                } label: {
+                    Label(
+                        allRead ? "Read Again in \(app.name)"
+                            : started ? "Continue in \(app.name)" : "Start in \(app.name)",
+                        systemImage: "arrow.up.forward.app"
+                    )
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+    }
+
+    /// Prominent while there's reading left; once all is read it steps back,
+    /// leaving the day's readings to say they're done.
+    @ViewBuilder
+    private func readThroughStyle<Content: View>(allRead: Bool, @ViewBuilder content: () -> Content) -> some View {
+        if allRead {
+            content()
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+        } else {
+            content()
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+        }
+    }
+
+    private func reader(at reading: ReadingMetaData?) -> some View {
+        SplitReaderView(
+            date: $date,
+            initialVerseId: reading?.sv,
+            initialToolbarMode: .plan,
+            initialPlanId: planMetaData.id
+        )
+    }
+
+    // MARK: - Reading Card
+
+    private func card(_ reading: ReadingMetaData) -> some View {
+        let read = isRead(reading)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Button {
+                    toggleRead(reading)
+                } label: {
+                    Image(systemName: read ? "checkmark.circle.fill" : "circle")
+                        .font(.title2)
+                        .foregroundStyle(.tint)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(reading.description)
+                .accessibilityValue(read ? "Read" : "Not read")
+                .accessibilityHint(read ? "Marks this reading unread" : "Marks this reading read")
+
+                opener(for: reading) {
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(reading.description)
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(read ? .secondary : .primary)
+                            Text(details(reading))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        if let glyph = openerGlyph {
+                            Image(systemName: glyph)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+            }
+
+            HStack {
+                ReaderSplitControl(
+                    chapterVerseCounts: reading.chapterVerseCounts,
+                    isResolved: reading.isResolved,
+                    readerCount: $readerCount
+                )
+                Spacer()
+                // The way out to the other app, named so it's plain where it
+                // goes, beside the in-app Bible's way in: the reading itself.
+                if let app = externalApp {
+                    Button {
+                        openExternally(reading, in: app)
+                    } label: {
+                        Label("Open in \(app.name)", systemImage: "arrow.up.forward.app")
+                            .font(.footnote.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .frame(minHeight: 32)
+            .padding(.leading, 48)
+        }
+        .padding(EdgeInsets(top: 6, leading: 4, bottom: 10, trailing: 14))
+        .if(stackHorizontally) { view in
+            view.frame(width: 325)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 15)
+                .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
+        )
+    }
+
+    private func details(_ reading: ReadingMetaData) -> String {
+        reading.isResolved ? "\(reading.genre) · \(reading.readingTime) min" : reading.genre
+    }
+
+    /// What tapping a reading does: opens it in the in-app Bible, or else in
+    /// the Bible app chosen in Settings, or else, with nowhere to open it,
+    /// marks it as the circle does.
+    @ViewBuilder
+    private func opener<Label: View>(for reading: ReadingMetaData, @ViewBuilder label: () -> Label) -> some View {
+        if userSettings.planInAppBible {
+            NavigationLink {
+                reader(at: reading)
+            } label: {
+                label()
+            }
+            .buttonStyle(.plain)
+        } else if let app = externalApp {
+            Button {
+                openExternally(reading, in: app)
+            } label: {
+                label()
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens in \(app.name)")
+        } else {
+            Button {
+                toggleRead(reading)
+            } label: {
+                label()
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// The sign at a reading's end of where tapping it goes: further into
+    /// Lamp, or out to another app.
+    private var openerGlyph: String? {
+        if userSettings.planInAppBible { return "chevron.right" }
+        if externalApp != nil { return "arrow.up.forward.app" }
+        return nil
+    }
+
+    // MARK: - Actions
+
+    private func toggleRead(_ reading: ReadingMetaData) {
+        if completedReadingIds.contains(reading.id) {
+            try? UserDatabase.shared.removeCompletedReading(reading.id)
+            completedReadingIds.remove(reading.id)
+        } else {
+            try? UserDatabase.shared.addCompletedReading(reading.id)
+            completedReadingIds.insert(reading.id)
+        }
+        WidgetDataService.shared.refreshWidget()
+    }
+
+    private func openExternally(_ reading: ReadingMetaData, in app: ExternalBibleApp) {
+        guard let url = app.getFullUrl(sv: reading.sv, ev: reading.ev),
+              UIApplication.shared.canOpenURL(url) else { return }
+        UIApplication.shared.open(url)
+        if !completedReadingIds.contains(reading.id) {
+            try? UserDatabase.shared.addCompletedReading(reading.id)
+            completedReadingIds.insert(reading.id)
+            WidgetDataService.shared.refreshWidget()
         }
     }
 
