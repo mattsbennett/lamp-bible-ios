@@ -625,12 +625,48 @@ func placedFootnotes() {
                             let parts = r as? [Any] ?? []
                             check(parts.first as? String == "Before.[^1]\n\n[^1]: Note\n\nAfter **it**.", "footnotes written close to prose keep their place (read: \(String(describing: parts.first).debugDescription))")
                             check((parts.last as? [String])?.last == "After <strong>it</strong>.", "and the prose after them is read as prose (read: \(String(describing: parts.last)))")
-                            exit(failed ? 1 : 0)
+                            markerClicks()
                         }
                     }
                 }
             }
         }
+    }
+}
+
+// While writing, a click on a footnote's marker goes to its note, leaving the
+// selection where it was; a tap on a touch screen still only places the caret.
+func markerClicks() {
+    print("-- a click on a marker while writing")
+    js("""
+        var a = window.editorAPI;
+        a.load('A[^1].\\n\\n[^1]: one\\n\\nB[^2] and C[^3].\\n\\n[^2]: two\\n[^3]: three\\n\\nEnd.');
+        var blocks = Array.from(document.querySelectorAll('.footnote-definition'));
+        var marker = document.querySelector('sup.footnote-ref[data-id="3"]');
+        var scrolled = [];
+        var scrollIntoView = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = function () { scrolled.push(blocks.indexOf(this)) };
+        function press(kind) {
+            marker.dispatchEvent(new PointerEvent('pointerdown', {pointerType: kind, bubbles: true}));
+            var down = new MouseEvent('mousedown', {button: 0, bubbles: true, cancelable: true});
+            marker.dispatchEvent(down);
+            marker.dispatchEvent(new MouseEvent('mouseup', {button: 0, bubbles: true, cancelable: true}));
+            return down.defaultPrevented;
+        }
+        var clicked = press('mouse');
+        var afterClick = scrolled.slice();
+        var selected = !!document.querySelector('.ProseMirror-selectednode');
+        var tapped = press('touch');
+        Element.prototype.scrollIntoView = scrollIntoView;
+        [clicked, afterClick, selected, tapped, scrolled, a.getContent()]
+        """) { r in
+        let parts = r as? [Any] ?? []
+        guard parts.count == 6 else { check(false, "marker clicks read (read: \(String(describing: r)))"); exit(1) }
+        check(parts[0] as? Bool == true && (parts[1] as? [Int]) == [1], "a click on a marker goes to the block holding its note (read: \(String(describing: parts[1])))")
+        check(parts[2] as? Bool == false, "and leaves the marker unselected, so typing can't replace it")
+        check(parts[3] as? Bool == false && (parts[4] as? [Int]) == [1], "a tap on a touch screen doesn't go anywhere (read: \(String(describing: parts[4])))")
+        check(parts[5] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n\nEnd.", "and nothing in the writing changes (read: \(String(describing: parts[5]).debugDescription))")
+        exit(failed ? 1 : 0)
     }
 }
 

@@ -135,6 +135,22 @@ let currentMarkdown = ''
 let savedSelection = null // { from, to } saved before sheet opens
 let placeholderText = 'Start writing…'
 let reportsHeight = false
+// 'mouse', 'pen' or 'touch': what last pressed on the page.
+let lastPointerType = 'mouse'
+
+// To the definitions holding the footnote labelled `id`, wherever they were
+// written, or else the first.
+function scrollToFootnote(id) {
+  const blocks = Array.from(document.querySelectorAll('.footnote-definition'))
+  const reference = Array.from(document.querySelectorAll('sup.footnote-ref'))
+    .find(sup => sup.getAttribute('data-id') === String(id))
+  const shown = reference?.getAttribute('data-number') ?? String(id)
+  const def = blocks.find(block => block.innerText.split('\n').some(line => line.startsWith(`[${shown}]`)))
+    ?? blocks[0]
+  if (def) {
+    def.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+}
 // Names the document loaded last, so a host can tell a message about it from
 // one the previous document sent just before the editor changed hands.
 let documentToken = null
@@ -375,6 +391,24 @@ function initEditor() {
     content: '',
     autofocus: false,
 
+    editorProps: {
+      handleDOMEvents: {
+        // While writing, a click on a footnote's marker goes to its note, as
+        // a tap does when reading. A tap on a touch screen doesn't: a
+        // fingertip putting the caret beside a marker would be sent away
+        // from it. The marker is still there to select or delete, from the
+        // keyboard or with a shift-click.
+        mousedown(view, event) {
+          if (!view.editable || event.button !== 0 || event.shiftKey || lastPointerType === 'touch') return false
+          const marker = event.target.closest?.('sup.footnote-ref')
+          if (!marker) return false
+          event.preventDefault()
+          scrollToFootnote(marker.getAttribute('data-id'))
+          return true
+        },
+      },
+    },
+
     onUpdate({ editor }) {
       if (currentMode !== 'richtext') return
       scheduleContentUpdate()
@@ -413,6 +447,12 @@ function initEditor() {
       postToSwift('focusChanged', { focused: false })
     }
   })
+
+  // What last pressed on the page: a click and a tap mean different things
+  // on a footnote marker while writing.
+  editorEl.addEventListener('pointerdown', (e) => {
+    lastPointerType = e.pointerType
+  }, true)
 
   // Click handler for non-editable modes (read/present)
   editorEl.addEventListener('click', (e) => {
@@ -942,18 +982,8 @@ window.editorAPI = {
     }
   },
 
-  // To the definitions holding the footnote labelled `id`, wherever they
-  // were written, or else the first.
   scrollToFootnote(id) {
-    const blocks = Array.from(document.querySelectorAll('.footnote-definition'))
-    const reference = Array.from(document.querySelectorAll('sup.footnote-ref'))
-      .find(sup => sup.getAttribute('data-id') === String(id))
-    const shown = reference?.getAttribute('data-number') ?? String(id)
-    const def = blocks.find(block => block.innerText.split('\n').some(line => line.startsWith(`[${shown}]`)))
-      ?? blocks[0]
-    if (def) {
-      def.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }
+    scrollToFootnote(id)
   },
 
   setPresentPadding(bottom) {
