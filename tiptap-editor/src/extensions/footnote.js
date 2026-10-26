@@ -232,3 +232,71 @@ function inlineMarkdown(editor, content) {
   const doc = schema.topNodeType.create(null, schema.nodes.paragraph.create(null, content))
   return editor.storage.markdown.serializer.serialize(doc)
 }
+
+/**
+ * Each line of a block of notes, as offsets into its content: where it
+ * starts and ends, the number it shows if it begins a note, and where that
+ * note's text begins, after the number.
+ */
+export function noteLines(block) {
+  const pattern = shownDefinitionPattern()
+  const lines = []
+  let start = 0
+  const add = end => {
+    const match = block.textBetween(start, end, '', '￼').match(pattern)
+    lines.push({
+      start,
+      end,
+      shown: match ? match[1] : null,
+      text: match ? start + match[0].length - match[2].length : null,
+    })
+  }
+  block.content.forEach((child, offset) => {
+    if (child.type.name !== 'hardBreak') return
+    add(offset)
+    start = offset + child.nodeSize
+  })
+  add(block.content.size)
+  return lines
+}
+
+/**
+ * The note shown as `shown` in a block of notes: the offsets its lines run
+ * between, from its number to the end of its last line, and those lines as
+ * they are written, the first from after its number. Null if the block
+ * doesn't hold it.
+ */
+export function noteSpan(block, shown) {
+  const lines = noteLines(block)
+  const first = lines.findIndex(line => line.shown === shown)
+  if (first < 0) return null
+  let last = first
+  while (last + 1 < lines.length && lines[last + 1].shown === null) last += 1
+  return {
+    from: lines[first].start,
+    to: lines[last].end,
+    lines: lines.slice(first, last + 1).map((line, index) =>
+      block.content.cut(index === 0 ? line.text : line.start, line.end)),
+  }
+}
+
+/**
+ * A note's Markdown as a writer edits it: later lines on lines of their own,
+ * without the indent they're written with.
+ */
+export function noteMarkdown(editor, block, shown) {
+  const span = noteSpan(block, shown)
+  if (!span) return null
+  const markdown = definitionMarkdown(editor, span.lines, decodeLabels(block.attrs.sources).get(shown))
+  return markdown.split('\n').map((line, index) => (index === 0 ? line : unindented(line))).join('\n')
+}
+
+/** A note as the block shows it, number and all, from its Markdown. */
+export function noteContent(editor, shown, markdown) {
+  const { schema } = editor
+  const number = String(shown).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  return DOMParser.fromSchema(schema).parse(
+    elementFromString(`[${number}] ${definitionHTML(editor, markdown)}`),
+    { topNode: schema.nodes.footnoteDefinition.create() },
+  ).content
+}

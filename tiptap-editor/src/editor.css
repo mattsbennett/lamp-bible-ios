@@ -15,6 +15,8 @@
      the text are blue, and the caret takes the app's accent. */
   --link-color: #007AFF;
   --accent-color: #DB344A;
+  --popover-bg: #fff;
+  --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
   --search-match: rgba(255, 204, 0, 0.4);
   --search-match-current: rgb(255, 204, 0);
 }
@@ -33,6 +35,8 @@
     --audio-border: rgba(255, 255, 255, 0.15);
     --link-color: #0A84FF;
     --accent-color: #EF4F63;
+    --popover-bg: #2c2c2e;
+    --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.14);
     --search-match: rgba(255, 214, 10, 0.4);
     --search-match-current: rgb(255, 214, 10);
   }
@@ -51,6 +55,8 @@ body.dark {
   --audio-border: rgba(255, 255, 255, 0.15);
   --link-color: #0A84FF;
   --accent-color: #EF4F63;
+  --popover-bg: #2c2c2e;
+  --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.14);
   --search-match: rgba(255, 214, 10, 0.4);
   --search-match-current: rgb(255, 214, 10);
 }
@@ -434,4 +440,40 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
 .search-match.search-match-current * {
   background-color: var(--search-match-current);
   color: #000;
+}
+
+/* A note opened by its marker, to write in there (setFootnoteClicks) */
+.note-popover {
+  position: absolute;
+  z-index: 1000;
+  box-sizing: border-box;
+  width: min(380px, calc(100vw - 16px));
+  padding: 8px 12px 10px;
+  border-radius: 10px;
+  background: var(--popover-bg);
+  box-shadow: var(--popover-shadow);
+}
+
+.note-popover-heading {
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--image-caption-color);
+  margin-bottom: 4px;
+}
+
+.note-popover-text {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text-color);
+  caret-color: var(--accent-color);
+  font: inherit;
+  font-size: 0.9em;
+  line-height: 1.5;
 }

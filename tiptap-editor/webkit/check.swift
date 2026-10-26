@@ -22,6 +22,7 @@ final class Probe: NSObject, WKScriptMessageHandler {
     var carets: [(top: Int, bottom: Int)] = []
     var tokens: [String: [String?]] = [:]
     var searches: [(count: Int, current: Int, token: String?)] = []
+    var footnoteTaps: [(id: String, editing: Bool)] = []
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         guard let body = m.body as? [String: Any], let type = body["type"] as? String else { return }
         tokens[type, default: []].append(body["token"] as? String)
@@ -29,6 +30,7 @@ final class Probe: NSObject, WKScriptMessageHandler {
         if type == "contentChanged" { changes.append(body["markdown"] as? String ?? "") }
         if type == "contentHeight" { heights.append(body["height"] as? Int ?? -1) }
         if type == "caret" { carets.append((body["top"] as? Int ?? -1, body["bottom"] as? Int ?? -1)) }
+        if type == "footnoteTapped" { footnoteTaps.append((body["id"] as? String ?? "", body["editing"] as? Bool ?? false)) }
         if type == "searchChanged" { searches.append((body["count"] as? Int ?? -1, body["current"] as? Int ?? -1, body["token"] as? String)) }
     }
 }
@@ -634,38 +636,106 @@ func placedFootnotes() {
     }
 }
 
-// While writing, a click on a footnote's marker goes to its note, leaving the
-// selection where it was; a tap on a touch screen still only places the caret.
+// While writing, a footnote's marker leads into its note, the caret at the
+// start of its text, by a click or a tap alike; the note's number leads back.
+// Each press is a separate click: two at one spot within half a second are a
+// double-click to ProseMirror.
 func markerClicks() {
-    print("-- a click on a marker while writing")
+    print("-- a marker and its note while writing")
     js("""
-        var a = window.editorAPI;
-        a.load('A[^1].\\n\\n[^1]: one\\n\\nB[^2] and C[^3].\\n\\n[^2]: two\\n[^3]: three\\n\\nEnd.');
-        var blocks = Array.from(document.querySelectorAll('.footnote-definition'));
-        var marker = document.querySelector('sup.footnote-ref[data-id="3"]');
+        var doc = 'A[^1].\\n\\n[^1]: one\\n\\nB[^2] and C[^3].\\n\\n[^2]: two\\n[^3]: three\\n\\nEnd.';
         var scrolled = [];
         var scrollIntoView = Element.prototype.scrollIntoView;
-        Element.prototype.scrollIntoView = function () { scrolled.push(blocks.indexOf(this)) };
-        function press(kind) {
-            marker.dispatchEvent(new PointerEvent('pointerdown', {pointerType: kind, bubbles: true}));
-            var down = new MouseEvent('mousedown', {button: 0, bubbles: true, cancelable: true});
-            marker.dispatchEvent(down);
-            marker.dispatchEvent(new MouseEvent('mouseup', {button: 0, bubbles: true, cancelable: true}));
-            return down.defaultPrevented;
+        Element.prototype.scrollIntoView = function () { scrolled.push(this.closest('.footnote-definition') ? 'note' : 'text') };
+        function press(target, kind, x) {
+            var r = target.getBoundingClientRect();
+            var at = {clientX: x === undefined ? r.left + r.width / 2 : r.left + x, clientY: r.top + r.height / 2, button: 0, bubbles: true, cancelable: true};
+            target.dispatchEvent(new PointerEvent('pointerdown', Object.assign({pointerType: kind}, at)));
+            target.dispatchEvent(new MouseEvent('mousedown', at));
+            target.dispatchEvent(new MouseEvent('mouseup', at));
+            target.dispatchEvent(new MouseEvent('click', at));
         }
-        var clicked = press('mouse');
-        var afterClick = scrolled.slice();
-        var selected = !!document.querySelector('.ProseMirror-selectednode');
-        var tapped = press('touch');
-        Element.prototype.scrollIntoView = scrollIntoView;
-        [clicked, afterClick, selected, tapped, scrolled, a.getContent()]
+        function onMarker(kind) {
+            var a = window.editorAPI;
+            a.load(doc);
+            press(document.querySelector('sup.footnote-ref[data-id="3"]'), kind);
+            var selected = !!document.querySelector('.ProseMirror-selectednode');
+            a.insertFootnoteRef('9');
+            return [a.getContent(), selected];
+        }
+        onMarker('mouse')
+        """) { mouse in
+        after(600) {
+            js("onMarker('touch')") { touch in
+                for (kind, result) in [("click", mouse), ("tap", touch)] {
+                    let parts = result as? [Any] ?? []
+                    check(parts.first as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: [^9]three\n\nEnd.", "a \(kind) on a marker puts the caret at the start of its note (read: \(String(describing: parts.first).debugDescription))")
+                    check(parts.last as? Bool == false, "and leaves the marker unselected, so typing can't replace it (\(kind))")
+                }
+                after(600) {
+                    js("""
+                        var a = window.editorAPI;
+                        a.load(doc);
+                        press(document.querySelectorAll('.footnote-definition')[1], 'mouse', 2);
+                        a.insertFootnoteRef('8');
+                        Element.prototype.scrollIntoView = scrollIntoView;
+                        [a.getContent(), scrolled]
+                        """) { r in
+                        let parts = r as? [Any] ?? []
+                        check(parts.first as? String == "A[^1].\n\n[^1]: one\n\nB[^2][^8] and C[^3].\n\n[^2]: two\n[^3]: three\n\nEnd.", "the note's number leads back to its marker (read: \(String(describing: parts.first).debugDescription))")
+                        check((parts.last as? [String]) == ["note", "note", "text"], "and the page goes with the caret each time (read: \(String(describing: parts.last)))")
+                        // A host can keep the notes apart from the writing:
+                        // then the marker has nothing on the page to go to,
+                        // and the host is told.
+                        after(600) {
+                            js("window.editorAPI.load('Kept apart.[^7]'); press(document.querySelector('sup.footnote-ref'), 'mouse'); window.editorAPI.getContent()") { r in
+                                after(100) {
+                                    check(probe.footnoteTaps.count == 1 && probe.footnoteTaps.first?.id == "7" && probe.footnoteTaps.first?.editing == true, "a marker whose note isn't on the page tells the host, as editing (read: \(probe.footnoteTaps))")
+                                    check(r as? String == "Kept apart.[^7]", "and changes nothing (read: \(String(describing: r).debugDescription))")
+                                    after(600) { notePopovers() }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// For a host that asks (setFootnoteClicks('popover')), a marker opens its
+// note beside it to write in; what's typed goes into the note's lines.
+func notePopovers() {
+    print("-- a note opened by its marker")
+    js("""
+        var a = window.editorAPI;
+        a.setFootnoteClicks('popover');
+        a.load(doc);
+        press(document.querySelector('sup.footnote-ref[data-id="3"]'), 'mouse');
+        var panel = document.querySelector('.note-popover');
+        var field = panel && panel.querySelector('textarea');
+        var opened = [!!panel, panel ? panel.querySelector('.note-popover-heading').textContent : null, field ? field.value : null, document.activeElement === field];
+        if (field) {
+            field.value = 'three, edited\\nand a second line';
+            field.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+        var edited = a.getContent();
+        if (field) field.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+        // Not `closed`: a page-level var of that name is the window's own,
+        // read-only and always false.
+        var dismissed = !document.querySelector('.note-popover') && !panel.isConnected;
+        a.insertFootnoteRef('7');
+        var back = a.getContent();
+        a.setFootnoteClicks('jump');
+        [opened, edited, dismissed, back]
         """) { r in
         let parts = r as? [Any] ?? []
-        guard parts.count == 6 else { check(false, "marker clicks read (read: \(String(describing: r)))"); exit(1) }
-        check(parts[0] as? Bool == true && (parts[1] as? [Int]) == [1], "a click on a marker goes to the block holding its note (read: \(String(describing: parts[1])))")
-        check(parts[2] as? Bool == false, "and leaves the marker unselected, so typing can't replace it")
-        check(parts[3] as? Bool == false && (parts[4] as? [Int]) == [1], "a tap on a touch screen doesn't go anywhere (read: \(String(describing: parts[4])))")
-        check(parts[5] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n\nEnd.", "and nothing in the writing changes (read: \(String(describing: parts[5]).debugDescription))")
+        guard parts.count == 4, let opened = parts[0] as? [Any] else { check(false, "note popover read (read: \(String(describing: r)))"); exit(1) }
+        check(opened.first as? Bool == true && opened[1] as? String == "Note 3", "a click on a marker opens its note by it (read: \(opened))")
+        check(opened[2] as? String == "three" && opened[3] as? Bool == true, "holding the note's text, ready to write in")
+        check(parts[1] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three, edited\n    and a second line\n\nEnd.", "what's typed goes into the note, a later line set in (read: \(String(describing: parts[1]).debugDescription))")
+        check(parts[2] as? Bool == true, "Escape closes it")
+        check(parts[3] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3][^7].\n\n[^2]: two\n[^3]: three, edited\n    and a second line\n\nEnd.", "and the caret is back just after the marker (read: \(String(describing: parts[3]).debugDescription))")
         exit(failed ? 1 : 0)
     }
 }

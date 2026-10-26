@@ -11,7 +11,7 @@ import { TableRow } from '@tiptap/extension-table-row'
 import { TableCell } from '@tiptap/extension-table-cell'
 import { TableHeader } from '@tiptap/extension-table-header'
 import { Markdown } from 'tiptap-markdown'
-import { FootnoteRef, FootnoteDefinition, definitionHTML } from './extensions/footnote.js'
+import { FootnoteRef, FootnoteDefinition, definitionHTML, noteLines, noteSpan, noteMarkdown, noteContent } from './extensions/footnote.js'
 import {
   readFootnotes,
   shownLabel,
@@ -135,9 +135,6 @@ let currentMarkdown = ''
 let savedSelection = null // { from, to } saved before sheet opens
 let placeholderText = 'Start writing…'
 let reportsHeight = false
-// 'mouse', 'pen' or 'touch': what last pressed on the page.
-let lastPointerType = 'mouse'
-
 // To the definitions holding the footnote labelled `id`, wherever they were
 // written, or else the first.
 function scrollToFootnote(id) {
@@ -150,6 +147,166 @@ function scrollToFootnote(id) {
   if (def) {
     def.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
+}
+
+// What a footnote marker shows: its number in reading order, or its label
+// until it has one.
+function shownNumber(marker) {
+  return String(marker.attrs.number ?? marker.attrs.id)
+}
+
+// Where the text of the note shown as `shown` begins, or null where the page
+// doesn't hold it.
+function notePosition(doc, shown) {
+  let found = null
+  doc.descendants((node, pos) => {
+    if (found !== null) return false
+    if (node.type.name !== 'footnoteDefinition') return true
+    const line = noteLines(node).find(line => line.shown === shown)
+    if (line) found = pos + 1 + line.text
+    return false
+  })
+  return found
+}
+
+// Just after the first marker showing `shown`, or null.
+function markerPosition(doc, shown) {
+  let found = null
+  doc.descendants((node, pos) => {
+    if (found !== null) return false
+    if (node.type.name === 'footnoteRef' && shownNumber(node) === shown) found = pos + node.nodeSize
+    return true
+  })
+  return found
+}
+
+// The number of the note whose number is at `offset` in a block of notes,
+// or null where `offset` is anywhere else.
+function labelAt(block, offset) {
+  const line = noteLines(block).find(line => line.shown !== null && offset >= line.start && offset <= line.text)
+  return line ? line.shown : null
+}
+
+// What a click on a footnote's marker does while writing: 'jump' into the
+// note, or open it in a 'popover' by the marker (setFootnoteClicks).
+let footnoteClicks = 'jump'
+// The note open by its marker, if one is: { panel, shown, markerPos }.
+let notePopover = null
+
+// The block of notes holding the note shown as `shown`, and where it is.
+function noteBlock(doc, shown) {
+  let found = null
+  doc.descendants((node, pos) => {
+    if (found !== null) return false
+    if (node.type.name !== 'footnoteDefinition') return true
+    if (noteLines(node).some(line => line.shown === shown)) found = { node, pos }
+    return false
+  })
+  return found
+}
+
+// A note opened by its marker, to write in where it's referred to, as a
+// host asks with setFootnoteClicks('popover'). What's typed goes into the
+// note's own lines as it's typed, so it goes out to the host, and undoes,
+// like any other edit. The panel sits outside the editor's own page, so the
+// editor's keys and clicks leave it alone.
+function openNotePopover(view, markerPos, shown) {
+  closeNotePopover(false)
+  const found = noteBlock(view.state.doc, shown)
+  if (!found) return
+  const panel = document.createElement('div')
+  panel.className = 'note-popover'
+  panel.setAttribute('role', 'dialog')
+  panel.setAttribute('aria-label', `Note ${shown}`)
+  const heading = document.createElement('div')
+  heading.className = 'note-popover-heading'
+  heading.textContent = `Note ${shown}`
+  const field = document.createElement('textarea')
+  field.className = 'note-popover-text'
+  field.value = noteMarkdown(editor, found.node, shown) ?? ''
+  field.spellcheck = true
+  panel.append(heading, field)
+  document.body.appendChild(panel)
+  notePopover = { panel, shown, markerPos }
+  fitNotePopover(field)
+  placeNotePopover(view, panel, markerPos)
+
+  field.addEventListener('input', () => {
+    writeNote(shown, field.value)
+    fitNotePopover(field)
+  })
+  field.addEventListener('keydown', event => {
+    if (event.key === 'Escape' || (event.key === 'Enter' && event.metaKey)) {
+      event.preventDefault()
+      closeNotePopover(true)
+    }
+  })
+  document.addEventListener('mousedown', closeNotePopoverOutside, true)
+  field.focus()
+  field.setSelectionRange(field.value.length, field.value.length)
+}
+
+// Grows the note's box with what's in it, up to a dozen lines.
+function fitNotePopover(field) {
+  field.style.height = 'auto'
+  const line = parseFloat(getComputedStyle(field).lineHeight) || 20
+  field.style.height = Math.min(Math.max(field.scrollHeight, line * 2), line * 12) + 'px'
+}
+
+// Under the marker, or above it where there's no room below, and kept
+// inside the page's width.
+function placeNotePopover(view, panel, markerPos) {
+  const at = view.coordsAtPos(markerPos)
+  const width = panel.offsetWidth
+  const height = panel.offsetHeight
+  const left = Math.min(Math.max(8, at.left - 16), window.innerWidth - width - 8)
+  const below = at.bottom + 6
+  const top = below + height > window.innerHeight - 8 && at.top - height - 6 > 8
+    ? at.top - height - 6
+    : below
+  panel.style.left = `${left + window.scrollX}px`
+  panel.style.top = `${top + window.scrollY}px`
+}
+
+// Writes the note's Markdown into its lines in the document.
+function writeNote(shown, markdown) {
+  const found = noteBlock(editor.state.doc, shown)
+  const span = found && noteSpan(found.node, shown)
+  if (!span) return
+  const from = found.pos + 1 + span.from
+  const to = found.pos + 1 + span.to
+  const content = noteContent(editor, shown, markdown)
+  editor.view.dispatch(editor.state.tr.replaceWith(from, to, content))
+  // Notes written above their marker move it as they grow or shrink.
+  if (notePopover && from < notePopover.markerPos) notePopover.markerPos += content.size - (to - from)
+}
+
+function closeNotePopoverOutside(event) {
+  if (notePopover && !notePopover.panel.contains(event.target)) closeNotePopover(false)
+}
+
+// Closes the open note, if there is one, and with `backToMarker` puts the
+// caret back just after its marker, where the writer was.
+function closeNotePopover(backToMarker) {
+  if (!notePopover) return
+  const { panel, markerPos } = notePopover
+  notePopover = null
+  panel.remove()
+  document.removeEventListener('mousedown', closeNotePopoverOutside, true)
+  if (backToMarker && editor.isEditable) {
+    const after = Math.min(markerPos + 1, editor.state.doc.content.size)
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.state.doc, after)))
+    editor.view.focus()
+  }
+}
+
+// The caret at `pos`, and the page brought round to it.
+function goTo(view, pos) {
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos)))
+  view.focus()
+  const { node } = view.domAtPos(pos)
+  const element = node.nodeType === 1 ? node : node.parentElement
+  element?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 // Names the document loaded last, so a host can tell a message about it from
 // one the previous document sent just before the editor changed hands.
@@ -392,20 +549,37 @@ function initEditor() {
     autofocus: false,
 
     editorProps: {
-      handleDOMEvents: {
-        // While writing, a click on a footnote's marker goes to its note, as
-        // a tap does when reading. A tap on a touch screen doesn't: a
-        // fingertip putting the caret beside a marker would be sent away
-        // from it. The marker is still there to select or delete, from the
-        // keyboard or with a shift-click.
-        mousedown(view, event) {
-          if (!view.editable || event.button !== 0 || event.shiftKey || lastPointerType === 'touch') return false
-          const marker = event.target.closest?.('sup.footnote-ref')
-          if (!marker) return false
-          event.preventDefault()
-          scrollToFootnote(marker.getAttribute('data-id'))
+      // While writing, a footnote's marker leads into its note, the caret at
+      // the start of its text, ready to write in, or, for a host that asks
+      // (setFootnoteClicks), opens the note beside the marker; the note's
+      // number leads back to the marker. The caret goes too, rather than the page alone:
+      // on a phone a tap places the caret itself, and the page follows the
+      // caret. A shift-click keeps the ordinary selection, and the keyboard
+      // still selects or deletes a marker. Where the page doesn't hold the
+      // note, as when a host keeps notes apart from the writing, the host is
+      // told, as it is of a tap when reading.
+      handleClickOn(view, pos, node, nodePos, event) {
+        if (!view.editable || event.shiftKey) return false
+        if (node.type.name === 'footnoteRef') {
+          const shown = shownNumber(node)
+          const note = notePosition(view.state.doc, shown)
+          if (note === null) {
+            postToSwift('footnoteTapped', { id: node.attrs.id, editing: true })
+          } else if (footnoteClicks === 'popover') {
+            openNotePopover(view, nodePos, shown)
+          } else {
+            goTo(view, note)
+          }
           return true
-        },
+        }
+        if (node.type.name === 'footnoteDefinition') {
+          const shown = labelAt(node, pos - nodePos - 1)
+          const marker = shown === null ? null : markerPosition(view.state.doc, shown)
+          if (marker === null) return false
+          goTo(view, marker)
+          return true
+        }
+        return false
       },
     },
 
@@ -447,12 +621,6 @@ function initEditor() {
       postToSwift('focusChanged', { focused: false })
     }
   })
-
-  // What last pressed on the page: a click and a tap mean different things
-  // on a footnote marker while writing.
-  editorEl.addEventListener('pointerdown', (e) => {
-    lastPointerType = e.pointerType
-  }, true)
 
   // Click handler for non-editable modes (read/present)
   editorEl.addEventListener('click', (e) => {
@@ -626,6 +794,7 @@ function reportSelectionState() {
 
 window.editorAPI = {
   setContent(markdown) {
+    closeNotePopover(false)
     currentMarkdown = markdown || ''
     if (currentMode === 'richtext') {
       editor.commands.setContent(resolveForEditor(currentMarkdown), { emitUpdate: false })
@@ -646,6 +815,7 @@ window.editorAPI = {
   //
   // `token`, if given, comes back on every message about this document.
   load(markdown, token) {
+    closeNotePopover(false)
     cancelContentUpdate()
     documentToken = token ?? null
     savedSelection = null
@@ -969,6 +1139,7 @@ window.editorAPI = {
   },
 
   setMode(mode) {
+    closeNotePopover(false)
     currentViewMode = mode
     document.body.classList.remove('mode-edit', 'mode-read', 'mode-present')
     document.body.classList.add('mode-' + mode)
@@ -984,6 +1155,15 @@ window.editorAPI = {
 
   scrollToFootnote(id) {
     scrollToFootnote(id)
+  },
+
+  // What a click on a footnote's marker does while writing: 'jump' into the
+  // note, the default, or 'popover', opening the note by its marker to write
+  // in there. Read mode is the same either way. A note the page doesn't
+  // hold is reported to the host (footnoteTapped, editing) either way.
+  setFootnoteClicks(behaviour) {
+    footnoteClicks = behaviour === 'popover' ? 'popover' : 'jump'
+    closeNotePopover(false)
   },
 
   setPresentPadding(bottom) {
