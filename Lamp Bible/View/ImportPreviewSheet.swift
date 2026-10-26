@@ -111,8 +111,8 @@ struct ImportPreviewSheet: View {
                                                     .font(.caption)
                                                     .padding(.horizontal, 8)
                                                     .padding(.vertical, 4)
-                                                    .background(Color.accentColor.opacity(0.1))
-                                                    .foregroundColor(.accentColor)
+                                                    .background(Color(.tertiarySystemFill))
+                                                    .foregroundColor(.secondary)
                                                     .cornerRadius(6)
                                             }
                                         }

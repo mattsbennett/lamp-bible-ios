@@ -8,6 +8,7 @@
 import Foundation
 import SwiftUI
 import GRDB
+import LampCore
 
 // MARK: - Highlight Style
 
@@ -99,19 +100,20 @@ struct HighlightColor: Codable, Equatable, Hashable, Identifiable {
 
     // MARK: - Default Colors
 
-    static let yellow = HighlightColor(hex: "FFCC00")
-    static let green = HighlightColor(hex: "34C759")
-    static let blue = HighlightColor(hex: "007AFF")
-    static let pink = HighlightColor(hex: "FF2D55")
-    static let orange = HighlightColor(hex: "FF9500")
-    static let purple = HighlightColor(hex: "AF52DE")
-    static let red = HighlightColor(hex: "FF3B30")
-    static let gray = HighlightColor(hex: "8E8E93")
+    // Core's palette, which the Mac offers too.
+    static let yellow = HighlightColor(hex: LampHighlightPalette.yellow.hex)
+    static let green = HighlightColor(hex: LampHighlightPalette.green.hex)
+    static let blue = HighlightColor(hex: LampHighlightPalette.blue.hex)
+    static let pink = HighlightColor(hex: LampHighlightPalette.pink.hex)
+    static let orange = HighlightColor(hex: LampHighlightPalette.orange.hex)
+    static let purple = HighlightColor(hex: LampHighlightPalette.purple.hex)
+    static let red = HighlightColor(hex: LampHighlightPalette.red.hex)
+    static let gray = HighlightColor(hex: LampHighlightPalette.gray.hex)
 
     /// All default colors in display order
-    static let defaultColors: [HighlightColor] = [
-        .yellow, .green, .blue, .pink
-    ]
+    static let defaultColors: [HighlightColor] = LampHighlightPalette.offeredByDefault.map {
+        HighlightColor(hex: $0.hex)
+    }
 }
 
 // MARK: - Highlight Set (Metadata)

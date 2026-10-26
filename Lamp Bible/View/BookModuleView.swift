@@ -792,7 +792,11 @@ private struct BookAnnotatedTextView: View {
     let value: BookAnnotatedText?
 
     var body: some View {
+        // Each link run names its own colour, which SwiftUI draws over the
+        // tint; the tint covers any link that doesn't, which would otherwise
+        // take the accent.
         Text(attributedText)
+            .tint(.lampLink)
     }
 
     private var attributedText: AttributedString {
@@ -816,17 +820,20 @@ private struct BookAnnotatedTextView: View {
                         ?? annotation.data?.references.first?.endReference
                     let endReference = end.map { "/\($0)" } ?? ""
                     result[range].link = URL(string: "lampbible://verse/\(reference)\(endReference)")
+                    result[range].foregroundColor = .lampLink
                     result[range].underlineStyle = .single
                 }
             case "strongs", "greek", "hebrew":
                 if let key = annotation.data?.strongs,
                    let encodedKey = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) {
                     result[range].link = URL(string: "lampbible://strongs/\(encodedKey)")
+                    result[range].foregroundColor = .lampOriginalLanguage
                     result[range].underlineStyle = .single
                 }
             case "link":
                 if let url = annotation.data?.url.flatMap(URL.init(string:)) {
                     result[range].link = url
+                    result[range].foregroundColor = .lampLink
                     result[range].underlineStyle = .single
                 }
             case "emphasis":
@@ -842,6 +849,7 @@ private struct BookAnnotatedTextView: View {
                 if let footnoteID = annotation.data?.footnoteID,
                    let url = bookFootnoteURL(id: footnoteID) {
                     result[range].link = url
+                    result[range].foregroundColor = .lampLink
                     result[range].underlineStyle = .single
                 }
             default:
@@ -856,6 +864,7 @@ private struct BookAnnotatedTextView: View {
             guard let url = bookFootnoteURL(id: reference.id) else { continue }
             var marker = AttributedString(" [\(index + 1)]")
             marker.link = url
+            marker.foregroundColor = .lampLink
             marker.font = .caption
             result.append(marker)
         }

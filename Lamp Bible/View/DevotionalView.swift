@@ -406,7 +406,8 @@ struct DevotionalView: View {
                         .font(.caption)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.1))
+                        .background(category.kindColor.opacity(0.2))
+                        .foregroundColor(category.kindColor)
                         .cornerRadius(4)
                 }
             }
@@ -420,8 +421,8 @@ struct DevotionalView: View {
                             .font(.caption)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(Color.accentColor.opacity(0.1))
-                            .foregroundColor(.accentColor)
+                            .background(Color(.tertiarySystemFill))
+                            .foregroundColor(.secondary)
                             .cornerRadius(8)
                     }
                 }
@@ -436,7 +437,6 @@ struct DevotionalView: View {
                         if let label = scripture.label {
                             Text(label)
                                 .font(.caption)
-                                .foregroundColor(.accentColor)
                         }
                     }
                 }
@@ -1639,7 +1639,6 @@ struct LinkEditorSheet: View {
                         Section("Detected Reference") {
                             HStack {
                                 Text(detected.displayText)
-                                    .foregroundColor(.accentColor)
                                 Spacer()
                                 Button("Use This") {
                                     saveDetectedReference(detected)

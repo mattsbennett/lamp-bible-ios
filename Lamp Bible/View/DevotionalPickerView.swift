@@ -600,8 +600,8 @@ struct DevotionalListRow: View {
                         .font(.caption2)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(categoryColor(category).opacity(0.2))
-                        .foregroundColor(categoryColor(category))
+                        .background(category.kindColor.opacity(0.2))
+                        .foregroundColor(category.kindColor)
                         .cornerRadius(4)
                 }
             }
@@ -658,8 +658,8 @@ struct DevotionalListRow: View {
                                 .font(.caption2)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.accentColor.opacity(0.1))
-                                .foregroundColor(.accentColor)
+                                .background(Color(.tertiarySystemFill))
+                                .foregroundColor(.secondary)
                                 .cornerRadius(4)
                         }
                         if tags.count > 3 {
@@ -672,17 +672,6 @@ struct DevotionalListRow: View {
             }
         }
         .padding(.vertical, 4)
-    }
-
-    private func categoryColor(_ category: DevotionalCategory) -> Color {
-        switch category {
-        case .devotional: return .purple
-        case .exhortation: return .blue
-        case .reflection: return .green
-        case .study: return .orange
-        case .prayer: return .pink
-        case .other: return .gray
-        }
     }
 }
 

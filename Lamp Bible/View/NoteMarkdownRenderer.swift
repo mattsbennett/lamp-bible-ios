@@ -174,7 +174,7 @@ enum NoteMarkdown {
                 runAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             }
             if let url = run.link {
-                runAttributes[.foregroundColor] = UIColor.systemBlue
+                runAttributes[.foregroundColor] = UIColor.lampLink
                 if let verse = verseLink(url) {
                     links.append(InlineLink(
                         range: NSRange(location: out.length, length: (piece as NSString).length),

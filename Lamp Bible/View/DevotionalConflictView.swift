@@ -258,7 +258,8 @@ struct DevotionalPreviewContent: View {
                         .font(.caption)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.2))
+                        .background(category.kindColor.opacity(0.2))
+                        .foregroundColor(category.kindColor)
                         .cornerRadius(4)
                 }
             }

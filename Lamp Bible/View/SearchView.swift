@@ -1000,8 +1000,7 @@ struct SearchView: View {
                             ForEach(availableTags, id: \.self) { tag in
                                 FilterChip(
                                     title: tag,
-                                    isSelected: filterTags.contains(tag),
-                                    color: .orange
+                                    isSelected: filterTags.contains(tag)
                                 ) {
                                     if filterTags.contains(tag) {
                                         filterTags.remove(tag)
@@ -1075,8 +1074,7 @@ struct SearchView: View {
                             ForEach(highlightTranslations, id: \.id) { translation in
                                 FilterChip(
                                     title: translation.abbreviation.uppercased(),
-                                    isSelected: colorSearchTranslationId == translation.id,
-                                    color: .blue
+                                    isSelected: colorSearchTranslationId == translation.id
                                 ) {
                                     if colorSearchTranslationId == translation.id {
                                         colorSearchTranslationId = nil
@@ -1723,7 +1721,7 @@ struct SearchResultRow: View {
                 }
                 // Add highlighted match
                 var highlight = AttributedString(String(text[range]))
-                highlight.foregroundColor = .accentColor
+                highlight.backgroundColor = .lampFindMatch
                 highlight.font = .system(size: CGFloat(fontSize)).bold()
                 result.append(highlight)
                 currentIndex = range.upperBound
@@ -1877,7 +1875,7 @@ struct SearchResultRow: View {
             let startIdx = cleanedText.index(cleanedText.startIndex, offsetBy: hitStart)
             let endIdx = cleanedText.index(cleanedText.startIndex, offsetBy: hitEnd)
             return Text(cleanedText[cleanedText.startIndex..<startIdx])
-                + Text(cleanedText[startIdx..<endIdx]).foregroundColor(.accentColor).bold()
+                + Text.findMatch(cleanedText[startIdx..<endIdx]).bold()
                 + Text(cleanedText[endIdx..<cleanedText.endIndex])
         }
 
@@ -1912,7 +1910,7 @@ struct SearchResultRow: View {
         }
 
         result = result + Text(cleanedText[startIdx..<hitStartIdx])
-        result = result + Text(cleanedText[hitStartIdx..<hitEndIdx]).foregroundColor(.accentColor).bold()
+        result = result + Text.findMatch(cleanedText[hitStartIdx..<hitEndIdx]).bold()
         result = result + Text(cleanedText[hitEndIdx..<endIdx])
 
         if snippetEnd < cleanedText.count {
@@ -1942,8 +1940,7 @@ struct SearchResultRow: View {
                     result = result + Text(text[currentIndex..<range.lowerBound])
                 }
                 // Add highlighted match
-                result = result + Text(text[range])
-                    .foregroundColor(.accentColor)
+                result = result + Text.findMatch(text[range])
                     .bold()
                 currentIndex = range.upperBound
             } else {
@@ -1983,6 +1980,11 @@ struct ModuleSearchResultRow: View {
         case .highlights: return .yellow
         case .quiz: return .indigo
         }
+    }
+
+    /// White reads on every badge but the yellow one.
+    private var typeTextColor: Color {
+        result.moduleType == .highlights ? .black : .white
     }
 
     private var verseReference: String? {
@@ -2136,7 +2138,7 @@ struct ModuleSearchResultRow: View {
                             }
                         } else {
                             // Default search highlighting
-                            attrText.foregroundColor = .accentColor
+                            attrText.backgroundColor = .lampFindMatch
                             attrText.font = .system(size: 15 * scaleFactor).bold()
                         }
                     } else {
@@ -2225,7 +2227,7 @@ struct ModuleSearchResultRow: View {
                 HStack(spacing: 6) {
                     Text(result.moduleType.displayName)
                         .font(.system(size: 11 * scaleFactor, weight: .medium))
-                        .foregroundColor(.white)
+                        .foregroundColor(typeTextColor)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(typeColor)
@@ -2698,7 +2700,7 @@ private struct HighlightedTextUIView: UIViewRepresentable {
 
             while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                 let nsRange = NSRange(range, in: fullString)
-                result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
                 searchStartIndex = range.upperBound
             }
         }
@@ -2760,7 +2762,8 @@ struct DevotionalEntrySheet: View {
                                             .font(.caption)
                                             .padding(.horizontal, 8)
                                             .padding(.vertical, 4)
-                                            .background(Color.orange.opacity(0.2))
+                                            .background(Color(.tertiarySystemFill))
+                                            .foregroundStyle(.secondary)
                                             .clipShape(Capsule())
                                     }
                                 }
@@ -3496,14 +3499,14 @@ struct TranslationSearchPreviewSheet: View {
                 if let markEnd = remaining.range(of: "</mark>") {
                     let marked = String(remaining[..<markEnd.lowerBound])
                     var attrText = AttributedString(marked)
-                    attrText.foregroundColor = .accentColor
+                    attrText.backgroundColor = .lampFindMatch
                     attrText.font = .body.bold()
                     attributedResult.append(attrText)
                     remaining = String(remaining[markEnd.upperBound...])
                 } else {
                     // No closing tag, treat rest as marked
                     var attrText = AttributedString(remaining)
-                    attrText.foregroundColor = .accentColor
+                    attrText.backgroundColor = .lampFindMatch
                     attrText.font = .body.bold()
                     attributedResult.append(attrText)
                     remaining = ""
@@ -3538,7 +3541,7 @@ struct TranslationSearchPreviewSheet: View {
                                 .foregroundStyle(.secondary)
                             Text(strongsKey)
                                 .font(.caption.monospaced())
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(Color.lampOriginalLanguage)
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.horizontal)

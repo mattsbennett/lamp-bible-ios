@@ -714,7 +714,7 @@ struct ChapterTextView: UIViewRepresentable {
 
                             var plainAttributes = verseTextAttributes
                             if isInRedLetter(segmentStart) {
-                                plainAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                                plainAttributes[.foregroundColor] = UIColor.lampWordsOfChrist
                             }
                             result.append(NSAttributedString(string: plainPart, attributes: plainAttributes))
 
@@ -746,7 +746,7 @@ struct ChapterTextView: UIViewRepresentable {
 
                         // Apply red letter color if in red letter range
                         if inRedLetter {
-                            strongsAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                            strongsAttributes[.foregroundColor] = UIColor.lampWordsOfChrist
                         }
 
                         if showStrongsHints {
@@ -764,7 +764,7 @@ struct ChapterTextView: UIViewRepresentable {
                         var addedAttributes = verseTextAttributes
                         addedAttributes[.font] = UIFont.italicSystemFont(ofSize: fontSize)
                         if inRedLetter {
-                            addedAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                            addedAttributes[.foregroundColor] = UIColor.lampWordsOfChrist
                         }
                         result.append(NSAttributedString(string: annotatedText, attributes: addedAttributes))
 
@@ -775,7 +775,7 @@ struct ChapterTextView: UIViewRepresentable {
                             divineNameAttributes[.font] = UIFont(descriptor: descriptor, size: fontSize)
                         }
                         if inRedLetter {
-                            divineNameAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                            divineNameAttributes[.foregroundColor] = UIColor.lampWordsOfChrist
                         }
                         result.append(NSAttributedString(string: annotatedText, attributes: divineNameAttributes))
 
@@ -783,7 +783,7 @@ struct ChapterTextView: UIViewRepresentable {
                         // footnote, selah, variant - render as plain text (with red letter if applicable)
                         var defaultAttributes = verseTextAttributes
                         if inRedLetter {
-                            defaultAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                            defaultAttributes[.foregroundColor] = UIColor.lampWordsOfChrist
                         }
                         result.append(NSAttributedString(string: annotatedText, attributes: defaultAttributes))
                     }
@@ -815,7 +815,7 @@ struct ChapterTextView: UIViewRepresentable {
 
                         var plainAttributes = verseTextAttributes
                         if isInRedLetter(segmentStart) {
-                            plainAttributes[.foregroundColor] = UIColor(red: 0.78, green: 0.32, blue: 0.32, alpha: 1.0)
+                            plainAttributes[.foregroundColor] = UIColor.lampWordsOfChrist
                         }
                         result.append(NSAttributedString(string: plainPart, attributes: plainAttributes))
 
@@ -4231,7 +4231,7 @@ struct QuizSheetView: View {
 
             result.addAttributes([
                 .link: url,
-                .foregroundColor: UIColor.systemBlue
+                .foregroundColor: UIColor.lampLink
             ], range: nsRange)
         }
 

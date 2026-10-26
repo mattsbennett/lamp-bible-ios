@@ -87,7 +87,10 @@ struct LexiconTextRenderer {
 
     struct Style {
         var fontSize: CGFloat = 17
-        var linkColor: UIColor = .tintColor
+        /// Verse references.
+        var linkColor: UIColor = .lampLink
+        /// Strong's and BDB references, which open the lexicon.
+        var originalLanguageColor: UIColor = .lampOriginalLanguage
         var textColor: UIColor = .label
         var lineSpacing: CGFloat = 6
         var paragraphSpacing: CGFloat = 8
@@ -134,14 +137,14 @@ struct LexiconTextRenderer {
                 if let url = URL(string: "lampbible://strongs/\(itemIndex)/\(ref)") {
                     result.append(NSAttributedString(string: ref, attributes: [
                         .font: font,
-                        .foregroundColor: style.linkColor,
+                        .foregroundColor: style.originalLanguageColor,
                         .paragraphStyle: paragraphStyle,
                         .link: url
                     ]))
                 } else {
                     result.append(NSAttributedString(string: ref, attributes: [
                         .font: font,
-                        .foregroundColor: style.linkColor,
+                        .foregroundColor: style.originalLanguageColor,
                         .paragraphStyle: paragraphStyle
                     ]))
                 }
@@ -175,14 +178,14 @@ struct LexiconTextRenderer {
                 if let url = URL(string: "lampbible://lexicon/\(itemIndex)/\(bdbId)") {
                     result.append(NSAttributedString(string: bdbId, attributes: [
                         .font: font,
-                        .foregroundColor: style.linkColor,
+                        .foregroundColor: style.originalLanguageColor,
                         .paragraphStyle: paragraphStyle,
                         .link: url
                     ]))
                 } else {
                     result.append(NSAttributedString(string: bdbId, attributes: [
                         .font: font,
-                        .foregroundColor: style.linkColor,
+                        .foregroundColor: style.originalLanguageColor,
                         .paragraphStyle: paragraphStyle
                     ]))
                 }
@@ -199,7 +202,7 @@ struct LexiconTextRenderer {
                 var searchStart = fullString.startIndex
                 while let range = fullString.range(of: termLower, range: searchStart..<fullString.endIndex) {
                     let nsRange = NSRange(range, in: result.string)
-                    result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
                     searchStart = range.upperBound
                 }
             }
@@ -1767,7 +1770,7 @@ private struct LinkedTextView: UIViewRepresentable {
             case .strongs(let ref):
                 result.append(NSAttributedString(string: ref, attributes: [
                     .font: uiFont,
-                    .foregroundColor: UIColor.tintColor,
+                    .foregroundColor: UIColor.lampOriginalLanguage,
                     .paragraphStyle: paragraphStyle,
                     TappableIndexAttributeKey: popoverIndex
                 ]))
@@ -1777,7 +1780,7 @@ private struct LinkedTextView: UIViewRepresentable {
             case .verseRef(let display, let verseId, let endVerseId, let fullRef):
                 result.append(NSAttributedString(string: display, attributes: [
                     .font: uiFont,
-                    .foregroundColor: UIColor.tintColor,
+                    .foregroundColor: UIColor.lampLink,
                     .paragraphStyle: paragraphStyle,
                     TappableIndexAttributeKey: popoverIndex
                 ]))
@@ -1787,7 +1790,7 @@ private struct LinkedTextView: UIViewRepresentable {
             case .bdbRef(let bdbId):
                 result.append(NSAttributedString(string: bdbId, attributes: [
                     .font: uiFont,
-                    .foregroundColor: UIColor.tintColor,
+                    .foregroundColor: UIColor.lampOriginalLanguage,
                     .paragraphStyle: paragraphStyle,
                     TappableIndexAttributeKey: popoverIndex
                 ]))
@@ -1807,7 +1810,7 @@ private struct LinkedTextView: UIViewRepresentable {
 
                 while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                     let nsRange = NSRange(range, in: fullString)
-                    result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
                     searchStartIndex = range.upperBound
                 }
             }
@@ -2007,8 +2010,8 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         // Use CommentaryRenderer style
         let style = CommentaryRenderer.Style(
             uiBodyFont: UIFont.systemFont(ofSize: fontSize),
-            scriptureColor: .blue,
-            strongsColor: .purple,
+            scriptureColor: .lampLink,
+            strongsColor: .lampOriginalLanguage,
             footnoteColor: Color.secondary,
             abbreviationColor: Color.secondary
         )
@@ -2075,7 +2078,7 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
 
                 while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                     let nsRange = NSRange(range, in: fullString)
-                    mutableAttrString.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    mutableAttrString.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
                     searchStartIndex = range.upperBound
                 }
             }

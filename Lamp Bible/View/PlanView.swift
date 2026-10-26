@@ -278,7 +278,7 @@ struct PlanView: View {
                     .frame(height: 22)
                 Text(title)
                     .font(.caption2)
-                    .foregroundColor(iOS26OrLater ? .primary : .red)
+                    .foregroundColor(iOS26OrLater ? .primary : .accentColor)
                     // Shrink slightly rather than truncate at large text sizes.
                     // Capping Dynamic Type here would be the easier fix but it
                     // overrides an accessibility setting.

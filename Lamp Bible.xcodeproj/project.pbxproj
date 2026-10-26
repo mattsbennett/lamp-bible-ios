@@ -24,6 +24,7 @@
 		B82BBB862B4CF238002248CC /* ReaderBottomToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82BBB852B4CF238002248CC /* ReaderBottomToolbarView.swift */; };
 		B82BBB882B4D0679002248CC /* PlanDateToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */; };
 		B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2222B450B4100E8AC49 /* Extensions.swift */; };
+		2FF8A37F705D44F2AB0765DD /* LampColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 471A3E15F4CF4428BD71A9D6 /* LampColors.swift */; };
 		B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */; };
 		B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */; };
 		B84968D42AF72D5F00955089 /* PlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968D32AF72D5F00955089 /* PlanView.swift */; };
@@ -198,6 +199,7 @@
 		B82BBB852B4CF238002248CC /* ReaderBottomToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderBottomToolbarView.swift; sourceTree = "<group>"; };
 		B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanDateToolbarView.swift; sourceTree = "<group>"; };
 		B82DA2222B450B4100E8AC49 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
+		471A3E15F4CF4428BD71A9D6 /* LampColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampColors.swift; sourceTree = "<group>"; };
 		B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanPickerView.swift; sourceTree = "<group>"; };
 		B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanFooterView.swift; sourceTree = "<group>"; };
 		B84968D32AF72D5F00955089 /* PlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanView.swift; sourceTree = "<group>"; };
@@ -412,6 +414,7 @@
 				B85B89AA2F1F1206004B4F61 /* AudioPlayer.swift */,
 				B85B89AB2F1F1206004B4F61 /* AudioRecorder.swift */,
 				B82DA2222B450B4100E8AC49 /* Extensions.swift */,
+				471A3E15F4CF4428BD71A9D6 /* LampColors.swift */,
 				B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */,
 				B85B898F2F19F248004B4F61 /* MarkdownDevotionalConverter.swift */,
 				B89229582F05FE3100A58F81 /* MarkdownConverter.swift */,
@@ -796,6 +799,7 @@
 				B89229632F05FE5600A58F81 /* ModuleStorage.swift in Sources */,
 				B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */,
 				B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */,
+				2FF8A37F705D44F2AB0765DD /* LampColors.swift in Sources */,
 				B892295D2F05FE4200A58F81 /* ModuleDatabase.swift in Sources */,
 				B87B2AD72F01FAE7006DC53D /* NavigationHistory.swift in Sources */,
 				B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */,

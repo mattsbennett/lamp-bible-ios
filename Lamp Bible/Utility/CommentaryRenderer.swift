@@ -78,8 +78,8 @@ struct CommentaryRenderer {
         var footnoteFont: Font = .footnote
         var greekFont: Font = .body.italic()
         var hebrewFont: Font = .body
-        var scriptureColor: Color = .blue
-        var strongsColor: Color = .purple
+        var scriptureColor: Color = .lampLink
+        var strongsColor: Color = .lampOriginalLanguage
         var footnoteColor: Color = .secondary
         var abbreviationColor: Color = .orange
         var searchTerms: [String] = []  // Search terms to highlight
@@ -137,10 +137,12 @@ struct CommentaryRenderer {
             let range = startIndex..<endIndex
 
             switch annotation.type {
-            case .scripture:
-                result[range].foregroundColor = style.scriptureColor
+            // Blue only where it opens something: a cross-reference that
+            // names its passage opens as any reference does.
+            case .scripture, .crossref:
                 let urlString: String
                 if let sv = annotation.data?.sv {
+                    result[range].foregroundColor = style.scriptureColor
                     if let ev = annotation.data?.ev {
                         urlString = "lampbible://verse/\(sv)/\(ev)"
                     } else {
@@ -191,9 +193,6 @@ struct CommentaryRenderer {
                 if let id = annotation.id {
                     result[range].link = URL(string: "lampbible://footnote/\(id)")
                 }
-
-            case .crossref:
-                result[range].foregroundColor = style.scriptureColor
 
             case .abbrev:
                 result[range].foregroundColor = style.abbreviationColor
@@ -272,10 +271,12 @@ struct CommentaryRenderer {
                 guard let range = getRange(annotation.start, annotation.end) else { continue }
 
                 switch annotation.type {
-                case .scripture:
-                    result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
+                // Blue only where it opens something: a cross-reference that
+                // names its passage opens as any reference does.
+                case .scripture, .crossref:
                     if let sv = annotation.data?.sv {
                         let ev = annotation.data?.ev
+                        result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
                         // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
                         result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.verse(sv: sv, ev: ev), range: range)
                     }
@@ -317,9 +318,6 @@ struct CommentaryRenderer {
                         result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.footnote(id: id), range: range)
                     }
 
-                case .crossref:
-                    result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
-
                 case .abbrev:
                     result.addAttribute(.foregroundColor, value: UIColor(style.abbreviationColor), range: range)
 
@@ -347,7 +345,8 @@ struct CommentaryRenderer {
 
                 case .media:
                     // Media annotations indicate inline media references
-                    // Render with accent color - actual media display handled at view level
+                    // Drawn as a link, since tapping it shows the media; the media
+                    // itself is displayed at view level
                     result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
                     if let mediaId = annotation.data?.mediaId {
                         result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.media(id: mediaId), range: range)
@@ -397,7 +396,7 @@ struct CommentaryRenderer {
 
                 while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                     let nsRange = NSRange(range, in: fullString)
-                    result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
                     searchStartIndex = range.upperBound
                 }
             }
@@ -451,10 +450,12 @@ struct CommentaryRenderer {
                 guard let range = getRange(annotation.start, annotation.end) else { continue }
 
                 switch annotation.type {
-                case .scripture:
-                    result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
+                // Blue only where it opens something: a cross-reference that
+                // names its passage opens as any reference does.
+                case .scripture, .crossref:
                     if let sv = annotation.data?.sv {
                         let ev = annotation.data?.ev
+                        result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
                         // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
                         result.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: range)
                         let displayText = getDisplayText(annotation.start, annotation.end)
@@ -524,9 +525,6 @@ struct CommentaryRenderer {
                         ))
                         itemIndex += 1
                     }
-
-                case .crossref:
-                    result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
 
                 case .abbrev:
                     result.addAttribute(.foregroundColor, value: UIColor(style.abbreviationColor), range: range)
@@ -621,7 +619,7 @@ struct CommentaryRenderer {
 
                 while let searchRange = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                     let nsRange = NSRange(searchRange, in: fullString)
-                    result.addAttribute(.backgroundColor, value: UIColor.yellow.withAlphaComponent(0.4), range: nsRange)
+                    result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
                     searchStartIndex = searchRange.upperBound
                 }
             }

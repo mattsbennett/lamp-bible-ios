@@ -1050,7 +1050,7 @@ struct NoteSectionCell: View {
                 } label: {
                     Text(isEditorOpen ? passageReference ?? data.section.displayTitle : data.section.displayTitle)
                         .font(.system(size: CGFloat(fontSize) * 0.85, weight: .medium))
-                        .foregroundStyle(Color(uiColor: .systemBlue))
+                        .foregroundStyle(Color.lampLink)
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Shows the passage")
@@ -3836,7 +3836,7 @@ private struct NoteContentRenderer {
                 text.replaceCharacters(in: range, with: NSAttributedString(string: display, attributes: attributes))
                 range.length = (display as NSString).length
             }
-            text.addAttribute(.foregroundColor, value: UIColor.systemBlue, range: range)
+            text.addAttribute(.foregroundColor, value: UIColor.lampLink, range: range)
             text.addAttribute(NoteTappableIndexKey, value: index, range: range)
         }
         let previewItems = tappables.enumerated().map { index, tappable in
@@ -4332,7 +4332,7 @@ struct VerseSheetContent: View {
                 }
                 var highlight = AttributedString(String(text[range]))
                 highlight.font = .body.bold()
-                highlight.foregroundColor = .blue
+                highlight.backgroundColor = .lampFindMatch
                 result.append(highlight)
                 currentIndex = range.upperBound
             } else {
@@ -4393,7 +4393,7 @@ struct VerseSheetContent: View {
                 let endIdx = text.index(text.startIndex, offsetBy: end)
                 var highlight = AttributedString(String(text[startIdx..<endIdx]))
                 highlight.font = .body.bold()
-                highlight.foregroundColor = .purple
+                highlight.backgroundColor = .lampFindMatch
                 result.append(highlight)
             }
 

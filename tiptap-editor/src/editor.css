@@ -11,8 +11,11 @@
   --image-caption-color: rgba(0, 0, 0, 0.5);
   --audio-bg: rgba(0, 0, 0, 0.06);
   --audio-border: rgba(0, 0, 0, 0.12);
-  --footnote-color: #007AFF;
-  --search-match: rgba(255, 204, 0, 0.35);
+  /* Lamp's colour roles (core's Documentation/ColorRules.md): links in
+     the text are blue, and the caret takes the app's accent. */
+  --link-color: #007AFF;
+  --accent-color: #DB344A;
+  --search-match: rgba(255, 204, 0, 0.4);
   --search-match-current: rgb(255, 204, 0);
 }
 
@@ -28,7 +31,9 @@
     --image-caption-color: rgba(255, 255, 255, 0.5);
     --audio-bg: rgba(255, 255, 255, 0.08);
     --audio-border: rgba(255, 255, 255, 0.15);
-    --search-match: rgba(255, 214, 10, 0.35);
+    --link-color: #0A84FF;
+    --accent-color: #EF4F63;
+    --search-match: rgba(255, 214, 10, 0.4);
     --search-match-current: rgb(255, 214, 10);
   }
 }
@@ -44,7 +49,9 @@ body.dark {
   --image-caption-color: rgba(255, 255, 255, 0.5);
   --audio-bg: rgba(255, 255, 255, 0.08);
   --audio-border: rgba(255, 255, 255, 0.15);
-  --search-match: rgba(255, 214, 10, 0.35);
+  --link-color: #0A84FF;
+  --accent-color: #EF4F63;
+  --search-match: rgba(255, 214, 10, 0.4);
   --search-match-current: rgb(255, 214, 10);
 }
 
@@ -74,6 +81,7 @@ body {
 .tiptap {
   outline: none;
   min-height: calc(100vh - 136px);
+  caret-color: var(--accent-color);
 }
 
 .tiptap:focus {
@@ -164,9 +172,9 @@ body {
 
 /* Links */
 .tiptap a {
-  color: var(--footnote-color);
+  color: var(--link-color);
   text-decoration: underline;
-  text-decoration-color: rgba(0, 122, 255, 0.3);
+  text-decoration-color: color-mix(in srgb, var(--link-color) 30%, transparent);
 }
 
 /* Code */
@@ -246,7 +254,7 @@ body {
 
 /* Footnote reference */
 .tiptap .footnote-ref {
-  color: var(--footnote-color);
+  color: var(--link-color);
   font-size: 0.75em;
   vertical-align: super;
   cursor: default;
@@ -264,7 +272,7 @@ body {
 
 .tiptap .footnote-definition .footnote-label {
   font-weight: 600;
-  color: var(--footnote-color);
+  color: var(--link-color);
   margin-right: 4px;
 }
 
@@ -402,6 +410,7 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
   font-size: var(--font-size);
   color: var(--text-color);
+  caret-color: var(--accent-color);
   background-color: var(--bg-color);
   border: none;
   outline: none;
@@ -412,7 +421,7 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
 
 /* Verse references, as the host draws them (setVerseCatalog) */
 .verse-reference {
-  color: var(--footnote-color);
+  color: var(--link-color);
 }
 
 /* Find: every match, and the current one solid, as Safari marks them */
