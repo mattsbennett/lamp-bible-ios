@@ -480,6 +480,25 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
   color: var(--text-color);
 }
 
+.note-popover-editor .ProseMirror {
+  outline: none;
+  color: var(--text-color);
+  caret-color: var(--accent-color);
+  font-size: 0.9em;
+  line-height: 1.5;
+  max-height: 18em;
+  overflow-y: auto;
+  min-height: 3em;
+}
+
+.note-popover-editor .ProseMirror p {
+  margin: 0;
+}
+
+.note-popover-editor .ProseMirror a {
+  color: var(--link-color);
+}
+
 .note-popover-text {
   display: block;
   box-sizing: border-box;

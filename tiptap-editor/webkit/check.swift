@@ -711,39 +711,86 @@ func markerClicks() {
 }
 
 // For a host that asks (setFootnoteClicks('popover')), a marker opens its
-// note beside it to write in; what's typed goes into the note's lines.
+// note beside it, drawn as the page draws it, to write in; what's written
+// goes into the note's lines. A note holding more than text opens as its
+// Markdown.
 func notePopovers() {
     print("-- a note opened by its marker")
     js("""
         var a = window.editorAPI;
+        function panelEditor() {
+            var pm = document.querySelector('.note-popover .note-popover-editor .ProseMirror');
+            return pm ? pm.editor : null;
+        }
         a.setFootnoteClicks('popover');
         a.load(doc);
         press(document.querySelector('sup.footnote-ref[data-id="3"]'), 'mouse');
         var panel = document.querySelector('.note-popover');
-        var field = panel && panel.querySelector('textarea');
-        var opened = [!!panel, panel ? panel.querySelector('.note-popover-heading span').textContent : null, field ? field.value : null, document.activeElement === field];
-        if (field) {
-            field.value = 'three, edited\\nand a second line';
-            field.dispatchEvent(new Event('input', {bubbles: true}));
-        }
+        var note = panelEditor();
+        var opened = [!!panel, panel ? panel.querySelector('.note-popover-heading span').textContent : null, note ? note.getText() : null];
+        if (note) note.chain().selectAll().insertContent([{type: 'text', text: 'three, edited'}, {type: 'hardBreak'}, {type: 'text', text: 'and a second line'}]).run();
         var edited = a.getContent();
-        if (field) field.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
-        // Not `closed`: a page-level var of that name is the window's own,
-        // read-only and always false.
-        var dismissed = !document.querySelector('.note-popover') && !panel.isConnected;
-        a.insertFootnoteRef('7');
-        var back = a.getContent();
-        a.setFootnoteClicks('jump');
-        [opened, edited, dismissed, back]
+        if (note) note.chain().selectAll().insertContent([{type: 'text', text: 'bold', marks: [{type: 'bold'}]}, {type: 'text', text: ' word'}]).run();
+        var emphasised = a.getContent();
+        if (note) note.view.dom.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+        [opened, edited, emphasised]
         """) { r in
         let parts = r as? [Any] ?? []
-        guard parts.count == 4, let opened = parts[0] as? [Any] else { check(false, "note popover read (read: \(String(describing: r)))"); exit(1) }
-        check(opened.first as? Bool == true && opened[1] as? String == "Note 3", "a click on a marker opens its note by it (read: \(opened))")
-        check(opened[2] as? String == "three" && opened[3] as? Bool == true, "holding the note's text, ready to write in")
-        check(parts[1] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three, edited\n    and a second line\n\nEnd.", "what's typed goes into the note, a later line set in (read: \(String(describing: parts[1]).debugDescription))")
-        check(parts[2] as? Bool == true, "Escape closes it")
-        check(parts[3] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3][^7].\n\n[^2]: two\n[^3]: three, edited\n    and a second line\n\nEnd.", "and the caret is back just after the marker (read: \(String(describing: parts[3]).debugDescription))")
-        after(600) { addingAndRemoving() }
+        guard parts.count == 3, let opened = parts[0] as? [Any] else { check(false, "note popover read (read: \(String(describing: r)))"); exit(1) }
+        check(opened.first as? Bool == true && opened[1] as? String == "Note 3" && opened[2] as? String == "three", "a click on a marker opens its note by it, holding the note's text (read: \(opened))")
+        check(parts[1] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three, edited\n    and a second line\n\nEnd.", "what's written goes into the note, a later line set in (read: \(String(describing: parts[1]).debugDescription))")
+        check(parts[2] as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: **bold** word\n\nEnd.", "emphasis written there is the note's emphasis (read: \(String(describing: parts[2]).debugDescription))")
+        after(50) {
+            js("""
+                var dismissed = !document.querySelector('.note-popover');
+                a.insertFootnoteRef('7');
+                var back = a.getContent();
+                a.load('A[^1].\\n\\n[^1]: one *two* three');
+                [dismissed, back]
+                """) { r in
+                let parts = r as? [Any] ?? []
+                check(parts.first as? Bool == true, "Escape closes it")
+                check(parts.last as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C[^3][^7].\n\n[^2]: two\n[^3]: **bold** word\n\nEnd.", "and the caret is back just after the marker (read: \(String(describing: parts.last).debugDescription))")
+                after(600) {
+                    js("""
+                        press(document.querySelector('sup.footnote-ref'), 'mouse');
+                        var em = document.querySelector('.note-popover .ProseMirror em');
+                        var drawn = em ? em.textContent : null;
+                        a.setFootnoteClicks('jump');
+                        a.load(doc);
+                        drawn
+                        """) { r in
+                        check(r as? String == "two", "emphasis shows as emphasis there, as it does in the page (read: \(String(describing: r)))")
+                        after(600) {
+                            // A marker of its own in a note: the small editor
+                            // can't hold it, so the note opens as Markdown.
+                            js("""
+                                press(document.querySelector('sup.footnote-ref[data-id="3"]'), 'mouse');
+                                a.insertFootnoteRef('9');
+                                a.setFootnoteClicks('popover');
+                                1
+                                """) { _ in
+                                after(600) {
+                                    js("""
+                                        press(document.querySelector('sup.footnote-ref[data-id="3"]'), 'mouse');
+                                        var field = document.querySelector('.note-popover textarea');
+                                        var result = [field ? field.value : null, !!document.querySelector('.note-popover .ProseMirror'), document.querySelector('.note-popover-heading span').textContent];
+                                        if (field) field.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+                                        a.setFootnoteClicks('jump');
+                                        result
+                                        """) { r in
+                                        let parts = r as? [Any] ?? []
+                                        check(parts.count == 3 && parts[0] as? String == "[^9]three" && parts[1] as? Bool == false, "a note holding a marker opens as its Markdown (read: \(String(describing: r)))")
+                                        check(parts.last as? String == "Note 3 · Markdown", "and says so (read: \(String(describing: parts.last)))")
+                                        after(600) { addingAndRemoving() }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -763,11 +810,13 @@ func addingAndRemoving() {
         a.load(doc); a.focus();
         a.insertFootnote('4', '');
         var panel = document.querySelector('.note-popover');
-        var field = panel && panel.querySelector('textarea');
-        var opened = [!!panel, panel ? panel.querySelector('.note-popover-heading span').textContent : null, field ? field.value : null, document.activeElement === field];
-        if (field) { field.value = 'four'; field.dispatchEvent(new Event('input', {bubbles: true})); }
+        var pm = panel && panel.querySelector('.ProseMirror');
+        var note = pm ? pm.editor : null;
+        // Not focus: the harness's window is never key, so focus never lands.
+        var opened = [!!panel, panel ? panel.querySelector('.note-popover-heading span').textContent : null, note ? note.getText() : null];
+        if (note) note.commands.insertContent('four');
         var written = a.getContent();
-        if (field) field.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+        if (pm) pm.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
         a.setFootnoteClicks('jump');
         a.load(doc);
         var removed = [a.removeFootnote('2'), a.getContent()];
@@ -782,7 +831,7 @@ func addingAndRemoving() {
         check(parts[0] as? String == "[^4]A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n[^4]: four\n\nEnd.", "a footnote added is in the writing at once, after the last note (read: \(String(describing: parts[0]).debugDescription))")
         check(parts[1] as? String == original, "and one Undo takes out both marker and note (read: \(String(describing: parts[1]).debugDescription))")
         let opened = parts[2] as? [Any] ?? []
-        check(opened.count == 4 && opened[0] as? Bool == true && opened[1] as? String == "Note 4" && opened[2] as? String == "" && opened[3] as? Bool == true, "with notes edited by their markers, a footnote added opens ready to write (read: \(opened))")
+        check(opened.count == 3 && opened[0] as? Bool == true && opened[1] as? String == "Note 4" && opened[2] as? String == "", "with notes edited by their markers, a footnote added opens ready to write (read: \(opened))")
         check(parts[3] as? String == "[^4]A[^1].\n\n[^1]: one\n\nB[^2] and C[^3].\n\n[^2]: two\n[^3]: three\n[^4]: four\n\nEnd.", "and what's written goes into it (read: \(String(describing: parts[3]).debugDescription))")
         let removed = parts[4] as? [Any] ?? []
         check(removed.first as? Bool == true && removed.last as? String == "A[^1].\n\n[^1]: one\n\nB and C[^3].\n\n[^3]: three\n\nEnd.", "a footnote removed takes out its marker and its note (read: \(removed))")

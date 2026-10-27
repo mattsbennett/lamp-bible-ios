@@ -12,7 +12,7 @@ import { TableRow } from '@tiptap/extension-table-row'
 import { TableCell } from '@tiptap/extension-table-cell'
 import { TableHeader } from '@tiptap/extension-table-header'
 import { Markdown } from 'tiptap-markdown'
-import { FootnoteRef, FootnoteDefinition, definitionHTML, noteLines, noteSpan, noteMarkdown, noteContent } from './extensions/footnote.js'
+import { FootnoteRef, FootnoteDefinition, definitionHTML, noteLines, noteSpan, noteMarkdown, noteContent, CONTINUATION_INDENT } from './extensions/footnote.js'
 import {
   readFootnotes,
   decodeLabels,
@@ -208,14 +208,18 @@ function noteBlock(doc, shown) {
 }
 
 // A note opened by its marker, to write in where it's referred to, as a
-// host asks with setFootnoteClicks('popover'). What's typed goes into the
-// note's own lines as it's typed, so it goes out to the host, and undoes,
-// like any other edit. The panel sits outside the editor's own page, so the
-// editor's keys and clicks leave it alone.
+// host asks with setFootnoteClicks('popover'). The note shows as the page
+// shows it, its emphasis drawn rather than spelled out, in a small editor of
+// its own: a separate one, outside the page's editor, so neither's keys or
+// clicks reach the other. What's written goes into the note's own lines as
+// it's written, so it goes out to the host, and undoes, like any other edit.
+// A note holding more than text, such as a marker of its own, opens as its
+// Markdown instead, since the small editor couldn't keep what it can't hold.
 function openNotePopover(view, markerPos, shown) {
   closeNotePopover(false)
   const found = noteBlock(view.state.doc, shown)
-  if (!found) return
+  const span = found && noteSpan(found.node, shown)
+  if (!span) return
   const panel = document.createElement('div')
   panel.className = 'note-popover'
   panel.setAttribute('role', 'dialog')
@@ -231,20 +235,79 @@ function openNotePopover(view, markerPos, shown) {
   remove.textContent = 'Remove'
   remove.setAttribute('aria-label', `Remove footnote ${shown}`)
   heading.append(title, remove)
-  const field = document.createElement('textarea')
-  field.className = 'note-popover-text'
-  field.value = noteMarkdown(editor, found.node, shown) ?? ''
-  field.spellcheck = true
-  panel.append(heading, field)
+  panel.append(heading)
   document.body.appendChild(panel)
-  notePopover = { panel, shown, markerPos }
-  fitNotePopover(field)
-  placeNotePopover(view, panel, markerPos)
+  notePopover = { panel, shown, markerPos, noteEditor: null }
 
-  field.addEventListener('input', () => {
-    writeNote(shown, field.value)
-    fitNotePopover(field)
+  const close = backToMarker => closeNotePopover(backToMarker)
+  const textOnly = span.lines.every(line => {
+    let ok = true
+    line.forEach(node => { ok = ok && node.isText })
+    return ok
   })
+  if (textOnly) {
+    const holder = document.createElement('div')
+    holder.className = 'note-popover-editor'
+    panel.append(holder)
+    notePopover.noteEditor = new Editor({
+      element: holder,
+      extensions: [
+        StarterKit.configure({
+          heading: false,
+          blockquote: false,
+          bulletList: false,
+          orderedList: false,
+          listItem: false,
+          codeBlock: false,
+          horizontalRule: false,
+          dropcursor: false,
+          gapcursor: false,
+          link: { openOnClick: false, HTMLAttributes: { rel: null, target: null }, protocols: ['lampbible'] },
+        }),
+        Extension.create({
+          name: 'notePopoverKeys',
+          addKeyboardShortcuts() {
+            return {
+              // A note's lines are lines, not paragraphs.
+              Enter: () => this.editor.commands.setHardBreak(),
+              // Closed after the key is handled, not while its editor is
+              // still handling it.
+              Escape: () => { setTimeout(() => close(true)); return true },
+              'Mod-Enter': () => { setTimeout(() => close(true)); return true },
+            }
+          },
+        }),
+      ],
+      content: notePanelContent(span),
+      editorProps: { attributes: { 'aria-label': `Note ${shown}`, spellcheck: 'true' } },
+      onUpdate: ({ editor: note }) => writeNoteContent(shown, noteFromPanel(note.state.doc, shown)),
+    })
+    placeNotePopover(view, panel, markerPos)
+    notePopover.noteEditor.commands.focus('end')
+  } else {
+    // Said in the heading, so the difference reads as meant.
+    title.textContent = `Note ${shown} · Markdown`
+    const field = document.createElement('textarea')
+    field.className = 'note-popover-text'
+    field.value = noteMarkdown(editor, found.node, shown) ?? ''
+    field.spellcheck = true
+    panel.append(field)
+    fitNotePopover(field)
+    placeNotePopover(view, panel, markerPos)
+    field.addEventListener('input', () => {
+      writeNote(shown, field.value)
+      fitNotePopover(field)
+    })
+    field.addEventListener('keydown', event => {
+      if (event.key === 'Escape' || (event.key === 'Enter' && event.metaKey)) {
+        event.preventDefault()
+        close(true)
+      }
+    })
+    field.focus()
+    field.setSelectionRange(field.value.length, field.value.length)
+  }
+
   remove.addEventListener('click', () => {
     const marker = editor.state.doc.nodeAt(notePopover?.markerPos ?? -1)
     const label = marker?.type.name === 'footnoteRef' ? marker.attrs.id : null
@@ -257,15 +320,43 @@ function openNotePopover(view, markerPos, shown) {
     editor.view.dispatch(editor.state.tr.setSelection(TextSelection.near(editor.state.doc.resolve(pos))))
     editor.view.focus()
   })
-  field.addEventListener('keydown', event => {
-    if (event.key === 'Escape' || (event.key === 'Enter' && event.metaKey)) {
-      event.preventDefault()
-      closeNotePopover(true)
-    }
-  })
   document.addEventListener('mousedown', closeNotePopoverOutside, true)
-  field.focus()
-  field.setSelectionRange(field.value.length, field.value.length)
+}
+
+// A note's lines as the panel's editor holds them: one paragraph, its lines
+// apart by line breaks, the later ones without the indent the page sets
+// them in by.
+function notePanelContent(span) {
+  const content = []
+  span.lines.forEach((line, index) => {
+    if (index > 0) content.push({ type: 'hardBreak' })
+    const nodes = line.toJSON() ?? []
+    if (index > 0 && nodes[0]?.type === 'text') {
+      const text = nodes[0].text.replace(/^\s+/, '')
+      if (text) nodes[0] = { ...nodes[0], text }
+      else nodes.shift()
+    }
+    content.push(...nodes)
+  })
+  return { type: 'doc', content: [{ type: 'paragraph', content }] }
+}
+
+// The panel's note as the page shows it: its number, its first line, and
+// each later line on a line of its own, set in.
+function noteFromPanel(doc, shown) {
+  const lines = [[]]
+  doc.forEach((block, offset, index) => {
+    if (index > 0) lines.push([])
+    block.forEach(node => {
+      if (node.type.name === 'hardBreak') lines.push([])
+      else lines[lines.length - 1].push(editor.schema.nodeFromJSON(node.toJSON()))
+    })
+  })
+  const nodes = [editor.schema.text(`[${shown}] `), ...lines[0]]
+  for (const line of lines.slice(1)) {
+    nodes.push(editor.schema.nodes.hardBreak.create(), editor.schema.text(CONTINUATION_INDENT), ...line)
+  }
+  return Fragment.from(nodes)
 }
 
 // Grows the note's box with what's in it, up to a dozen lines.
@@ -340,12 +431,16 @@ function removeFootnote(label) {
 
 // Writes the note's Markdown into its lines in the document.
 function writeNote(shown, markdown) {
+  writeNoteContent(shown, noteContent(editor, shown, markdown))
+}
+
+// Puts `content` in place of the note's lines in the document.
+function writeNoteContent(shown, content) {
   const found = noteBlock(editor.state.doc, shown)
   const span = found && noteSpan(found.node, shown)
   if (!span) return
   const from = found.pos + 1 + span.from
   const to = found.pos + 1 + span.to
-  const content = noteContent(editor, shown, markdown)
   editor.view.dispatch(editor.state.tr.replaceWith(from, to, content))
   // Notes written above their marker move it as they grow or shrink.
   if (notePopover && from < notePopover.markerPos) notePopover.markerPos += content.size - (to - from)
@@ -359,8 +454,9 @@ function closeNotePopoverOutside(event) {
 // caret back just after its marker, where the writer was.
 function closeNotePopover(backToMarker) {
   if (!notePopover) return
-  const { panel, markerPos } = notePopover
+  const { panel, markerPos, noteEditor } = notePopover
   notePopover = null
+  noteEditor?.destroy()
   panel.remove()
   document.removeEventListener('mousedown', closeNotePopoverOutside, true)
   if (backToMarker && editor.isEditable) {
@@ -388,11 +484,13 @@ function goTo(view, pos) {
   }
 }
 
-// Scrolls the caret's line a third of the way down what can be seen of the
-// page: the visual viewport, which a phone's keyboard shortens, rather than
-// the page's whole height, half of which the keyboard can be covering. The
+// Scrolls the caret's line to the middle of what can be seen of the page:
+// the visual viewport, which a phone's keyboard shortens, rather than the
+// page's whole height, half of which the keyboard can be covering. Without
+// a keyboard the two are the same, and the line is centred as before. The
 // line, not its block, since a block of notes can be taller than the page.
-// A host that scrolls the page itself is kept to the caret by its reports.
+// A page its host lays out and scrolls doesn't scroll itself: there the host
+// has the caret's reports to follow (setReportsHeight).
 function revealCaret(view) {
   let coords
   try {
@@ -403,7 +501,7 @@ function revealCaret(view) {
   const visible = window.visualViewport
   const top = visible ? visible.offsetTop : 0
   const height = visible ? visible.height : window.innerHeight
-  window.scrollBy({ top: coords.top - (top + height / 3), behavior: 'smooth' })
+  window.scrollBy({ top: coords.top - (top + height / 2), behavior: 'smooth' })
 }
 // Names the document loaded last, so a host can tell a message about it from
 // one the previous document sent just before the editor changed hands.
