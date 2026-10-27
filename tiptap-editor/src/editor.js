@@ -374,9 +374,36 @@ function closeNotePopover(backToMarker) {
 function goTo(view, pos) {
   view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos)))
   view.focus()
-  const { node } = view.domAtPos(pos)
-  const element = node.nodeType === 1 ? node : node.parentElement
-  element?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  revealCaret(view)
+  // A keyboard rising after the tap takes the bottom of the page: once it
+  // has, look again.
+  const visible = window.visualViewport
+  if (visible) {
+    const again = () => {
+      visible.removeEventListener('resize', again)
+      revealCaret(view)
+    }
+    visible.addEventListener('resize', again)
+    setTimeout(() => visible.removeEventListener('resize', again), 1000)
+  }
+}
+
+// Scrolls the caret's line a third of the way down what can be seen of the
+// page: the visual viewport, which a phone's keyboard shortens, rather than
+// the page's whole height, half of which the keyboard can be covering. The
+// line, not its block, since a block of notes can be taller than the page.
+// A host that scrolls the page itself is kept to the caret by its reports.
+function revealCaret(view) {
+  let coords
+  try {
+    coords = view.coordsAtPos(view.state.selection.head)
+  } catch (e) {
+    return
+  }
+  const visible = window.visualViewport
+  const top = visible ? visible.offsetTop : 0
+  const height = visible ? visible.height : window.innerHeight
+  window.scrollBy({ top: coords.top - (top + height / 3), behavior: 'smooth' })
 }
 // Names the document loaded last, so a host can tell a message about it from
 // one the previous document sent just before the editor changed hands.

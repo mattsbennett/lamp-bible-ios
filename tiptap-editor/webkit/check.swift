@@ -644,9 +644,16 @@ func markerClicks() {
     print("-- a marker and its note while writing")
     js("""
         var doc = 'A[^1].\\n\\n[^1]: one\\n\\nB[^2] and C[^3].\\n\\n[^2]: two\\n[^3]: three\\n\\nEnd.';
+        // Where each jump asks the page to scroll: the caret's line, so
+        // what's recorded is which kind of line the caret is on.
         var scrolled = [];
         var scrollIntoView = Element.prototype.scrollIntoView;
-        Element.prototype.scrollIntoView = function () { scrolled.push(this.closest('.footnote-definition') ? 'note' : 'text') };
+        var scrollBy = window.scrollBy;
+        window.scrollBy = function () {
+            var at = window.getSelection().anchorNode;
+            var element = at && (at.nodeType === 1 ? at : at.parentElement);
+            scrolled.push(element && element.closest('.footnote-definition') ? 'note' : 'text');
+        };
         function press(target, kind, x) {
             var r = target.getBoundingClientRect();
             var at = {clientX: x === undefined ? r.left + r.width / 2 : r.left + x, clientY: r.top + r.height / 2, button: 0, bubbles: true, cancelable: true};
@@ -678,7 +685,7 @@ func markerClicks() {
                         a.load(doc);
                         press(document.querySelectorAll('.footnote-definition')[1], 'mouse', 2);
                         a.insertFootnoteRef('8');
-                        Element.prototype.scrollIntoView = scrollIntoView;
+                        window.scrollBy = scrollBy;
                         [a.getContent(), scrolled]
                         """) { r in
                         let parts = r as? [Any] ?? []
