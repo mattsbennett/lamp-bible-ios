@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampModuleKit
 
 // MARK: - UserSettings
 
@@ -17,10 +18,10 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
     var selectedPlanIds: String = ""
     var planInAppBible: Bool = true
     var planExternalBible: String?
-    var planWpm: Double = 183.0
+    var planWpm: Double = Double(LampPreferenceDefaults.plansWordsPerMinute)
     var planNotification: Bool = false
-    var planNotificationHour: Int = 18
-    var planNotificationMinute: Int = 30
+    var planNotificationHour: Int = LampPreferenceDefaults.plansReminderHour
+    var planNotificationMinute: Int = LampPreferenceDefaults.plansReminderMinute
     var readerTranslationId: String = "BSBs"
     var readerCrossReferenceSort: String = "r"
     var readerFontSize: Float = 18.0
