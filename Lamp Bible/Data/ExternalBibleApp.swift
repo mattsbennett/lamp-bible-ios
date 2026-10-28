@@ -25,6 +25,15 @@ struct ExternalBibleApp: Identifiable, Hashable {
     /// Empty for "None", which is never checked for installation.
     var scheme: String { application?.scheme ?? "" }
 
+    /// Whether the app is on this device to hand a passage to. False for
+    /// "None", and for an app chosen once and removed since: a link to it
+    /// would open nothing.
+    @MainActor
+    var isInstalled: Bool {
+        guard application != nil, let url = URL(string: scheme) else { return false }
+        return UIApplication.shared.canOpenURL(url)
+    }
+
     func getFullUrl(sv: Int, ev: Int) -> URL? {
         application?.url(startReference: sv, endReference: ev) { number in
             guard let book = try? BundledModuleDatabase.shared.getBook(id: number) else {

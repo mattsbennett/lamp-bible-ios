@@ -475,7 +475,7 @@ struct SettingsView: View {
                             } label: {
                                 Text(app.name).tint(.primary)
                             }
-                            .disabled(!app.scheme.isEmpty ? !UIApplication.shared.canOpenURL(URL(string: app.scheme)!) : false)
+                            .disabled(app.application != nil && !app.isInstalled)
                             Spacer()
                             if (userSettings.planExternalBible == app.name || (userSettings.planExternalBible == nil && app.name == "None")) {
                                 Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)

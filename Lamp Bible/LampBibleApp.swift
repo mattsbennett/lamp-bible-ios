@@ -22,6 +22,7 @@ struct DeepLinkDestination: Hashable, Identifiable {
 // MARK: - Deep Link Manager
 
 /// Manages deep link state for navigation
+@MainActor
 class DeepLinkManager: ObservableObject {
     static let shared = DeepLinkManager()
 
@@ -93,8 +94,10 @@ class DeepLinkManager: ObservableObject {
         guard let appName = settings.planExternalBible,
               appName != "None",
               let app = externalBibleApps.first(where: { $0.name == appName }),
+              app.isInstalled,
               let url = app.getFullUrl(sv: sv, ev: ev) else {
-            // Fall back to opening in Lamp Bible plan mode
+            // Fall back to opening in Lamp Bible plan mode, as for an app
+            // chosen once and removed since
             pendingVerseId = sv
             pendingPlanMode = true
             return

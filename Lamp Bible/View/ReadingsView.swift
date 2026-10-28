@@ -26,10 +26,12 @@ struct ReadingsView: View {
 
     private var readings: [ReadingMetaData] { planMetaData.readingMetaData }
 
-    /// The Bible app chosen in Settings to open readings in, if one is.
+    /// The Bible app chosen in Settings to open readings in, if one is and
+    /// it's still installed: one removed since would leave buttons that do
+    /// nothing.
     private var externalApp: ExternalBibleApp? {
         guard let name = userSettings.planExternalBible else { return nil }
-        return externalBibleApps.first { $0.name == name && $0.application != nil }
+        return externalBibleApps.first { $0.name == name && $0.isInstalled }
     }
 
     private func isRead(_ reading: ReadingMetaData) -> Bool {
