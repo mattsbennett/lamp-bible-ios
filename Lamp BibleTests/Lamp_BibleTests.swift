@@ -1053,34 +1053,82 @@ final class Lamp_BibleTests: XCTestCase {
             remoteReadings: ["kept", "deleted-locally", "added-remotely"].map { CompletedReading(id: $0) },
             base: base
         )
-        XCTAssertTrue(plan.applyRemoteSettings)
+        XCTAssertEqual(plan.settings, remoteSettings)
         XCTAssertEqual(plan.readingIDs, Set(["kept", "added-locally", "added-remotely"]))
         XCTAssertEqual(Set(plan.readings.map(\.id)), plan.readingIDs)
         XCTAssertTrue(plan.needsPublish)
     }
 
     @MainActor
-    func testSettingsPlanReportsConcurrentDifferentSettingsEdits() throws {
-        let baseSettings = UserSettings()
+    func testSettingsPlanKeepsBothDevicesEditsToDifferentSettings() throws {
+        var baseSettings = UserSettings()
+        baseSettings.updatedAt = Date(timeIntervalSince1970: 100)
+        var localSettings = baseSettings
+        localSettings.readerFontSize = 22
+        localSettings.updatedAt = Date(timeIntervalSince1970: 300)
+        var remoteSettings = baseSettings
+        remoteSettings.selectedPlanIds = "the_bible_companion"
+        remoteSettings.updatedAt = Date(timeIntervalSince1970: 200)
+        let base = UserSettingsSyncManager.SettingsSyncBase(
+            source: "test", token: "old", readingIDs: [], settings: baseSettings
+        )
+
+        // Refused, this failed every library pass from then on.
+        let plan = try UserSettingsSyncManager.shared.planSettingsMerge(
+            localSettings: localSettings,
+            localReadings: [],
+            remoteSettings: remoteSettings,
+            remoteReadings: [],
+            base: base
+        )
+        let merged = try XCTUnwrap(plan.settings)
+        XCTAssertEqual(merged.readerFontSize, 22)
+        XCTAssertEqual(merged.selectedPlanIds, "the_bible_companion")
+        XCTAssertEqual(merged.updatedAt, localSettings.updatedAt)
+        XCTAssertTrue(plan.needsPublish)
+
+        // The merge names every setting; one added since must join it, or a
+        // change to it made on two devices at once keeps only the remote's.
+        XCTAssertEqual(
+            Mirror(reflecting: UserSettings()).children.count, 25,
+            "A new setting needs a line in UserSettingsSyncManager.mergingFields"
+        )
+    }
+
+    @MainActor
+    func testSettingsPlanGivesASettingBothChangedToTheLaterEdit() throws {
+        var baseSettings = UserSettings()
+        baseSettings.updatedAt = Date(timeIntervalSince1970: 100)
         var localSettings = baseSettings
         localSettings.planWpm = 200
         var remoteSettings = baseSettings
         remoteSettings.planWpm = 220
+        remoteSettings.readerFontSize = 20
         let base = UserSettingsSyncManager.SettingsSyncBase(
             source: "test", token: "old", readingIDs: [], settings: baseSettings
         )
-        do {
-            _ = try UserSettingsSyncManager.shared.planSettingsMerge(
+        func merge() throws -> UserSettings? {
+            try UserSettingsSyncManager.shared.planSettingsMerge(
                 localSettings: localSettings,
                 localReadings: [],
                 remoteSettings: remoteSettings,
                 remoteReadings: [],
                 base: base
-            )
-            XCTFail("Concurrent settings edits must not be overwritten")
-        } catch SyncError.conflictDetected {
-            // The whole settings row needs explicit resolution.
+            ).settings
         }
+
+        localSettings.updatedAt = Date(timeIntervalSince1970: 300)
+        remoteSettings.updatedAt = Date(timeIntervalSince1970: 200)
+        XCTAssertEqual(try merge()?.planWpm, 200)
+        XCTAssertEqual(try merge()?.readerFontSize, 20)
+
+        localSettings.updatedAt = Date(timeIntervalSince1970: 200)
+        remoteSettings.updatedAt = Date(timeIntervalSince1970: 300)
+        XCTAssertEqual(try merge()?.planWpm, 220)
+
+        // A tie goes to the copy already there.
+        remoteSettings.updatedAt = localSettings.updatedAt
+        XCTAssertEqual(try merge()?.planWpm, 220)
     }
 
     @MainActor
@@ -1165,7 +1213,7 @@ final class Lamp_BibleTests: XCTestCase {
             remoteReadings: [remoteReading],
             base: nil
         )
-        XCTAssertFalse(plan.applyRemoteSettings)
+        XCTAssertNil(plan.settings)
         XCTAssertEqual(plan.readings, [remoteReading])
         XCTAssertTrue(plan.needsPublish)
     }

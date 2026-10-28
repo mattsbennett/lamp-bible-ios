@@ -15,8 +15,8 @@ import LampModuleKit
 /// showed only the symbol: enough to know a poll failed, not which check
 /// failed it. The difference decides what to do about it. A token or a
 /// revision that moved under the poll means something else wrote while this
-/// was working, and the next poll carries on; a concurrent settings or
-/// reading divergence repeats until it is merged.
+/// was working, and the next poll carries on; a concurrent reading
+/// divergence repeats until it is merged.
 private nonisolated func settingsSyncConflict(
     _ reason: String,
     function: StaticString = #function,
@@ -232,10 +232,55 @@ class UserSettingsSyncManager {
     }
 
     struct SettingsMergePlan {
-        let applyRemoteSettings: Bool
+        /// The settings this device takes: the other device's, or both
+        /// devices' edits merged. Nil when its own stand.
+        let settings: UserSettings?
         let readings: [CompletedReading]
         let readingIDs: Set<String>
         let needsPublish: Bool
+    }
+
+    /// Each setting from the device that changed it since `base`. One both
+    /// changed goes to the later edit, judged by the row's time since no
+    /// setting keeps its own, and to the remote's on a tie, as this device
+    /// is the one arriving.
+    static func mergingFields(
+        base: UserSettings, local: UserSettings, remote: UserSettings
+    ) -> UserSettings {
+        let localIsLater = local.updatedAt > remote.updatedAt
+        var merged = remote
+        func take<Value: Equatable>(_ field: WritableKeyPath<UserSettings, Value>) {
+            let changedHere = local[keyPath: field] != base[keyPath: field]
+            let changedThere = remote[keyPath: field] != base[keyPath: field]
+            if changedHere && (!changedThere || localIsLater) {
+                merged[keyPath: field] = local[keyPath: field]
+            }
+        }
+        take(\.selectedPlanIds)
+        take(\.planInAppBible)
+        take(\.planExternalBible)
+        take(\.planWpm)
+        take(\.planNotification)
+        take(\.planNotificationHour)
+        take(\.planNotificationMinute)
+        take(\.readerTranslationId)
+        take(\.readerCrossReferenceSort)
+        take(\.readerFontSize)
+        take(\.devotionalFontSize)
+        take(\.devotionalPresentFontMultiplier)
+        take(\.devotionalLineSpacingBonus)
+        take(\.hiddenTranslations)
+        take(\.greekLexiconOrder)
+        take(\.hebrewLexiconOrder)
+        take(\.hiddenGreekLexicons)
+        take(\.hiddenHebrewLexicons)
+        take(\.showStrongsHints)
+        take(\.customHighlightColors)
+        take(\.highlightColorOrder)
+        take(\.defaultQuizAgeGroup)
+        take(\.planReaderCount)
+        merged.updatedAt = max(local.updatedAt, remote.updatedAt)
+        return merged
     }
 
     func planSettingsMerge(
@@ -245,14 +290,28 @@ class UserSettingsSyncManager {
         remoteReadings: [CompletedReading],
         base: SettingsSyncBase?
     ) throws -> SettingsMergePlan {
+        // Settings changed on both devices since they last agreed are merged
+        // setting by setting. Refused, as they were, they failed the whole
+        // library pass, and every pass after, as nothing moved the base. The
+        // merge is then this device's edit to the row the remote holds.
+        var merged: UserSettings?
+        if let base, LampSyncThreeWayValue.decide(
+            base: comparableSettings(base.settings),
+            local: comparableSettings(localSettings),
+            remote: comparableSettings(remoteSettings)
+        ) == .conflict {
+            merged = Self.mergingFields(
+                base: base.settings, local: localSettings, remote: remoteSettings
+            )
+        }
         let remoteRows = Dictionary(uniqueKeysWithValues: remoteReadings.map { ($0.id, $0) })
         let corePlan: LampSyncSettingsPlanner.Plan<String, CompletedReading>
         do {
             if let base {
                 corePlan = try LampSyncSettingsPlanner.plan(
-                    baseSettings: comparableSettings(base.settings),
+                    baseSettings: comparableSettings(merged == nil ? base.settings : remoteSettings),
                     baseReadingIDs: base.readingIDs,
-                    localSettings: comparableSettings(localSettings),
+                    localSettings: comparableSettings(merged ?? localSettings),
                     localReadings: Dictionary(uniqueKeysWithValues:
                         localReadings.map { ($0.id, $0) }
                     ),
@@ -278,8 +337,14 @@ class UserSettingsSyncManager {
         } catch LampSyncSettingsPlanner.MergeError.concurrentReading {
             throw settingsSyncConflict("a reading position moved on another device at the same time")
         }
+        let settings: UserSettings?
+        if let merged {
+            settings = comparableSettings(merged) == comparableSettings(localSettings) ? nil : merged
+        } else {
+            settings = corePlan.settingsDecision == .remote ? remoteSettings : nil
+        }
         return SettingsMergePlan(
-            applyRemoteSettings: corePlan.settingsDecision == .remote,
+            settings: settings,
             readings: corePlan.readingIDs.sorted().compactMap { corePlan.readings[$0] },
             readingIDs: corePlan.readingIDs,
             needsPublish: corePlan.needsPublish
@@ -325,9 +390,9 @@ class UserSettingsSyncManager {
         // Merge settings FIRST — before readings sync, which bumps updated_at
         // and would make the local always look newer than remote.
         let settingsUpdated: Bool
-        if plan.applyRemoteSettings {
+        if let settings = plan.settings {
             settingsUpdated = try UserDatabase.shared.mergeSettings(
-                from: remoteSettings, force: base != nil
+                from: settings, force: base != nil
             )
         } else {
             settingsUpdated = false
