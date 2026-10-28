@@ -17,6 +17,7 @@ enum DevotionalCategory: String, Codable, CaseIterable {
     case reflection
     case study
     case prayer
+    case testimony
     case other
 
     var displayName: String {
@@ -26,6 +27,7 @@ enum DevotionalCategory: String, Codable, CaseIterable {
         case .reflection: return "Reflection"
         case .study: return "Study"
         case .prayer: return "Prayer"
+        case .testimony: return "Testimony"
         case .other: return "Other"
         }
     }

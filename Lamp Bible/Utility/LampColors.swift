@@ -74,6 +74,7 @@ extension DevotionalCategory {
         case .reflection: .green
         case .study: .orange
         case .prayer: .pink
+        case .testimony: .teal
         case .other: .gray
         }
     }

@@ -241,7 +241,7 @@ As we walk by faith today...
 | `author` | No | Author name |
 | `date` | No | ISO 8601 date (YYYY-MM-DD) |
 | `tags` | No | Array of tags |
-| `category` | No | One of: devotional, sermon, reflection, study, prayer, testimony, other |
+| `category` | No | One of: devotional, exhortation, reflection, study, prayer, testimony, other |
 | `series.id` | No | Series UUID |
 | `series.name` | No | Series display name |
 | `series.order` | No | Order within series |

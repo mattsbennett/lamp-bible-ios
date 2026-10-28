@@ -4286,13 +4286,13 @@ final class DevotionalUnknownCategoryTests: XCTestCase {
     }
 
     func testAnUnknownCategorySurvivesBeingReadAndStoredAgain() throws {
-        let reread = try XCTUnwrap(stored(category: "testimony").toDevotional())
+        let reread = try XCTUnwrap(stored(category: "lament").toDevotional())
         XCTAssertNil(reread.meta.category)
-        XCTAssertEqual(reread.meta.categoryValue, "testimony")
+        XCTAssertEqual(reread.meta.categoryValue, "lament")
 
         var edited = reread
         edited.meta.title = "Edited here"
-        XCTAssertEqual(DevotionalEntry(from: edited, moduleId: "devotionals").category, "testimony")
+        XCTAssertEqual(DevotionalEntry(from: edited, moduleId: "devotionals").category, "lament")
     }
 
     func testAKnownCategoryStillReadsAsItsCase() throws {
@@ -4306,12 +4306,12 @@ final class DevotionalUnknownCategoryTests: XCTestCase {
 
     /// A shared or exported writing carries it too, under the same key.
     func testJSONKeepsAnUnknownCategoryUnderItsKey() throws {
-        let json = #"{"schemaVersion":"1.0","id":"W1","type":"devotional","title":"Kept","category":"testimony"}"#
+        let json = #"{"schemaVersion":"1.0","id":"W1","type":"devotional","title":"Kept","category":"lament"}"#
         let meta = try JSONDecoder().decode(DevotionalMeta.self, from: Data(json.utf8))
-        XCTAssertEqual(meta.categoryValue, "testimony")
+        XCTAssertEqual(meta.categoryValue, "lament")
 
         let written = try JSONSerialization.jsonObject(with: JSONEncoder().encode(meta)) as? [String: Any]
-        XCTAssertEqual(written?["category"] as? String, "testimony")
+        XCTAssertEqual(written?["category"] as? String, "lament")
         XCTAssertNil(written?["categoryValue"])
     }
 }
