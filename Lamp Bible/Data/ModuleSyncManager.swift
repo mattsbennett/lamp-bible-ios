@@ -102,7 +102,14 @@ class ModuleSyncManager: ObservableObject {
 
         let data = try Data(contentsOf: url)
         if url.pathExtension.lowercased() == "json" {
-            _ = try BookJSONImportDescriptor.decode(from: data)
+            // Lamp is offered for any JSON file; only a book module opens.
+            do {
+                _ = try BookJSONImportDescriptor.decode(from: data)
+            } catch {
+                throw ModuleSyncError.importFailed(
+                    "\(url.lastPathComponent) isn't a book module, the only JSON file Lamp Bible opens."
+                )
+            }
             return .book
         }
 

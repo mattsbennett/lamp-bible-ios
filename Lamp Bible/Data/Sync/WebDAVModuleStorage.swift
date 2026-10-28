@@ -163,8 +163,13 @@ class WebDAVModuleStorage: ModuleStorage, LampSyncRemoteStore {
 enum KeychainHelper {
     private static let service = "com.lampbible.webdav"
 
-    /// Save WebDAV password to Keychain
+    /// Save WebDAV password to Keychain. An empty one is no password: the
+    /// stored one is removed.
     static func saveWebDAVPassword(_ password: String) throws {
+        guard !password.isEmpty else {
+            try deleteWebDAVPassword()
+            return
+        }
         guard let passwordData = password.data(using: .utf8) else {
             throw KeychainError.encodingFailed
         }

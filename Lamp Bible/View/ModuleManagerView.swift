@@ -1253,6 +1253,23 @@ struct ModuleManagerView: View {
 
     private func deleteModule(_ module: Module) async {
         do {
+            // An imported translation is listed as "translation-<id>" but
+            // kept, and synced, under its own id.
+            if module.type == .translation, module.id.hasPrefix("translation-") {
+                let translationId = String(module.id.dropFirst("translation-".count))
+                try database.deleteTranslation(id: translationId)
+                if UserDatabase.shared.getSettings().readerTranslationId == translationId {
+                    try? UserDatabase.shared.updateSettings {
+                        $0.readerTranslationId = UserSettings().readerTranslationId
+                    }
+                }
+                await syncManager.removeFromLibrary(
+                    type: .translation, moduleId: translationId, storage: await storage
+                )
+                await loadModules()
+                return
+            }
+
             // Delete from database
             try database.deleteAllEntriesForModule(moduleId: module.id)
             try database.deleteModule(id: module.id)
@@ -1906,10 +1923,18 @@ struct QuizDetailView: View {
                 }
             }
             .task {
-                let groups = (try? bundledDb.getQuizQuestionAgeGroups(moduleId: quiz.id)) ?? []
+                let groups: [String]
+                if quiz.isBundled {
+                    groups = (try? bundledDb.getQuizQuestionAgeGroups(moduleId: quiz.id)) ?? []
+                    questionCount = (try? bundledDb.getQuizQuestionCount(moduleId: quiz.id)) ?? 0
+                    availableDays = (try? bundledDb.getQuizDays(moduleId: quiz.id)) ?? []
+                } else {
+                    let userDb = ModuleDatabase.shared
+                    groups = (try? userDb.getQuizQuestionAgeGroups(moduleId: quiz.id)) ?? []
+                    questionCount = (try? userDb.getQuizQuestionCount(moduleId: quiz.id)) ?? 0
+                    availableDays = (try? userDb.getQuizDays(moduleId: quiz.id)) ?? []
+                }
                 ageGroupLabels = groups.map { formatAgeGroup($0) }
-                questionCount = (try? bundledDb.getQuizQuestionCount(moduleId: quiz.id)) ?? 0
-                availableDays = (try? bundledDb.getQuizDays(moduleId: quiz.id)) ?? []
             }
         }
     }

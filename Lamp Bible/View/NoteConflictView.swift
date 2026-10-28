@@ -207,7 +207,7 @@ struct ConflictDetailView: View {
                         }
                         .buttonStyle(.borderedProminent)
 
-                        Text("The cloud version will be added as a separate note marked \"[From other device]\"")
+                        Text("Both versions stay in this note, the other device's after \"[From other device]\"")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)

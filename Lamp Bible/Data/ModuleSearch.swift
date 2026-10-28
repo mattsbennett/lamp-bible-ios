@@ -713,13 +713,13 @@ class ModuleSearch {
             do {
                 let entries: [DictionaryEntry]
                 if let key = filter.strongsKey {
-                    if let entry = try bundledDb.getDictionaryEntry(moduleId: "dodson", key: key) {
+                    if let entry = try bundledDb.getDictionaryEntry(moduleId: "dodson_greek", key: key) {
                         entries = [entry]
                     } else {
                         entries = []
                     }
                 } else {
-                    entries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "dodson", keyType: nil, limit: limit)
+                    entries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "dodson_greek", keyType: nil, limit: limit)
                 }
 
                 for entry in entries.prefix(limit) {

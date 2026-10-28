@@ -135,15 +135,6 @@ struct ModuleSettingsView: View {
             } footer: {
                 Text("Drag to reorder. Swipe to hide.")
             }
-
-            // MARK: - Cross References Section
-            Section {
-                CrossReferenceSortPicker(userSettings: $userSettings)
-            } header: {
-                Text("Cross References")
-            } footer: {
-                Text("Sort order for cross references in the reader.")
-            }
         }
         .navigationTitle("Module Settings")
         .navigationBarTitleDisplayMode(.inline)
@@ -153,36 +144,6 @@ struct ModuleSettingsView: View {
         userSettings.readerTranslationId = translationId
         try? UserDatabase.shared.updateSettings { $0.readerTranslationId = translationId }
         generator.notificationOccurred(.success)
-    }
-}
-
-// MARK: - Cross Reference Sort Picker
-
-struct CrossReferenceSortPicker: View {
-    @Binding var userSettings: UserSettings
-    private let generator = UINotificationFeedbackGenerator()
-
-    private let sorts = ["r", "sv"]
-    private let sortNames = ["Relevance", "Verse"]
-
-    var body: some View {
-        ForEach(sorts.indices, id: \.self) { index in
-            HStack {
-                Button {
-                    userSettings.readerCrossReferenceSort = sorts[index]
-                    try? UserDatabase.shared.updateSettings { $0.readerCrossReferenceSort = sorts[index] }
-                    generator.notificationOccurred(.success)
-                } label: {
-                    Text(sortNames[index])
-                        .tint(.primary)
-                }
-                Spacer()
-                if userSettings.readerCrossReferenceSort == sorts[index] {
-                    Image(systemName: "checkmark")
-                        .foregroundColor(.accentColor)
-                }
-            }
-        }
     }
 }
 

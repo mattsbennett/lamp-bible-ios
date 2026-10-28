@@ -1801,7 +1801,7 @@ struct FootnoteEditorSheet: View {
                 }
 
                 Section {
-                    Text("A footnote reference will be inserted at the cursor position, and the footnote content will be added to the footnotes section at the bottom of the document.")
+                    Text("A footnote marker goes in at the cursor, and its note is added after the last of the document's notes. Notes are numbered in the order their markers first appear.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }

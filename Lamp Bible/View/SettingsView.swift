@@ -118,9 +118,7 @@ struct SettingsView: View {
                     url: webdavURL,
                     username: webdavUsername.isEmpty ? nil : webdavUsername
                 )
-                if !webdavPassword.isEmpty {
-                    try SyncCoordinator.shared.saveWebDAVPassword(webdavPassword)
-                }
+                try SyncCoordinator.shared.saveWebDAVPassword(webdavPassword)
                 connectionTestResult = .success
             } else {
                 connectionTestResult = .failure("Connection failed")
@@ -487,7 +485,7 @@ struct SettingsView: View {
                 } header: {
                     Text("External Bible")
                 } footer: {
-                    Text("Each reading gets an Open in button for this app. With the in-app Bible off, tapping a reading opens it here instead.")
+                    Text("Each reading gets a button that opens it in this app. With the in-app Bible off, tapping a reading opens it here instead.")
                 }
 
                 Section {
@@ -649,7 +647,9 @@ struct SettingsView: View {
                 }
             } message: {
                 if let newBackend = pendingBackendChange {
-                    Text("Switching from \(syncBackend.displayName) to \(newBackend.displayName).\n\n'Migrate' copies your data to the new location.\n'Switch Only' starts fresh (wipes local data).")
+                    Text(newBackend.usesRemoteStorage
+                         ? "Switching from \(syncBackend.displayName) to \(newBackend.displayName).\n\n'Migrate' keeps this device's library and syncs it there, merged with any library already there.\n'Switch Only' starts fresh (wipes local data)."
+                         : "Switching from \(syncBackend.displayName) to \(newBackend.displayName).\n\n'Migrate' keeps your library on this device.\n'Switch Only' starts fresh (wipes local data).")
                 } else {
                     Text("Would you like to migrate your data to the new storage?")
                 }
@@ -682,6 +682,7 @@ struct SettingsView: View {
                 MigrationProgressView(
                     progress: nil,
                     result: migrationResult,
+                    destination: syncBackend,
                     onDismiss: {
                         isMigrating = false
                         migrationResult = nil
@@ -810,6 +811,8 @@ struct SettingsView: View {
 struct MigrationProgressView: View {
     let progress: MigrationProgress?
     let result: MigrationResult?
+    /// Where the library syncs now, once the switch has been made.
+    let destination: SyncBackend
     let onDismiss: () -> Void
 
     var body: some View {
@@ -821,16 +824,19 @@ struct MigrationProgressView: View {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 60))
                             .foregroundStyle(.green)
-                        Text("Migration Complete")
+                        Text("Switched to \(destination.displayName)")
                             .font(.title2)
                             .fontWeight(.semibold)
-                        Text("This device's library is synced to the new location.")
+                        Text(destination.usesRemoteStorage
+                             ? "This device's library goes up with the next sync, merged with any library already there."
+                             : "Your library stays on this device and no longer syncs.")
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     } else {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 60))
                             .foregroundStyle(.orange)
-                        Text("Migration Completed with Errors")
+                        Text("Switch Didn't Finish")
                             .font(.title2)
                             .fontWeight(.semibold)
                         Text("\(result.successCount) succeeded, \(result.failedFiles.count) failed")
@@ -1016,10 +1022,8 @@ struct WebDAVConfigSheet: View {
 
     private func saveSettings() async {
         do {
-            // Save password to keychain
-            if !webdavPassword.isEmpty {
-                try KeychainHelper.saveWebDAVPassword(webdavPassword)
-            }
+            // Save password to keychain (an empty field removes it)
+            try KeychainHelper.saveWebDAVPassword(webdavPassword)
 
             // Update SyncCoordinator settings
             try await SyncCoordinator.shared.setWebDAVSettings(
@@ -1161,7 +1165,7 @@ struct WebDAVSetupSheet: View {
                     HStack {
                         VStack(alignment: .leading) {
                             Text("Migrate & Switch")
-                            Text("Copy all modules from \(sourceBackend.displayName)")
+                            Text("Keep this device's library and sync it to the server")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -1194,8 +1198,7 @@ struct WebDAVSetupSheet: View {
                 Text("Choose an Option")
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Warning: 'Migrate & Switch' will remove any existing files on WebDAV before copying.")
-                        .foregroundStyle(.orange)
+                    Text("'Migrate & Switch' merges this device's library with any library already on the server. Nothing on the server is removed.")
                     Text("Your files on \(sourceBackend.displayName) will not be removed.")
                 }
             }
@@ -1220,10 +1223,8 @@ struct WebDAVSetupSheet: View {
 
         // Save credentials first
         do {
-            // Save password to keychain
-            if !webdavPassword.isEmpty {
-                try KeychainHelper.saveWebDAVPassword(webdavPassword)
-            }
+            // Save password to keychain (an empty field removes it)
+            try KeychainHelper.saveWebDAVPassword(webdavPassword)
 
             // Update SyncCoordinator settings
             try await SyncCoordinator.shared.setWebDAVSettings(

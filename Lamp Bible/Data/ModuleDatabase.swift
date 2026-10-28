@@ -2787,6 +2787,17 @@ class ModuleDatabase {
         }
     }
 
+    /// Get distinct age groups used in quiz questions for a module
+    func getQuizQuestionAgeGroups(moduleId: String) throws -> [String] {
+        try dbQueue.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT DISTINCT age_group FROM quiz_questions
+                WHERE quiz_module_id = ?
+                ORDER BY age_group
+            """, arguments: [moduleId])
+        }
+    }
+
     /// Get distinct days that have quiz questions for a module
     func getQuizDays(moduleId: String) throws -> [Int] {
         try dbQueue.read { db in

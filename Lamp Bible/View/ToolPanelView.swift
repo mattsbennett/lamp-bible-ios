@@ -3102,13 +3102,14 @@ struct ToolPanelView: View {
         let start = editVerseStart
         let end = editVerseEnd ?? start
         let content = sections[index].content
+        let footnotes = sections[index].footnotes
 
         // Create updated section
         let updatedSection: NoteSection
         if end != start && end > start {
-            updatedSection = .verseRange(start: start, end: end, content: content)
+            updatedSection = .verseRange(start: start, end: end, content: content, footnotes: footnotes)
         } else {
-            updatedSection = .verse(start, content: content)
+            updatedSection = .verse(start, content: content, footnotes: footnotes)
         }
 
         // Remove old section

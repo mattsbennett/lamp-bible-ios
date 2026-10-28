@@ -133,11 +133,11 @@
 		</dict>
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Lamp Bible needs microphone access to record audio notes and devotional reflections.</string>
+	<string>Lamp Bible needs microphone access to record audio for your devotionals.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Lamp Bible needs photo library access to add images to your notes and devotionals.</string>
+	<string>Lamp Bible needs photo library access to add images to your devotionals.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Lamp Bible needs camera access to take photos for notes and devotionals and to scan presentation pairing codes.</string>
+	<string>Lamp Bible needs camera access to take photos for your devotionals and to scan presentation pairing codes.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to a Lamp Bible presentation on your local network and use this device as a remote.</string>
 	<key>NSBonjourServices</key>

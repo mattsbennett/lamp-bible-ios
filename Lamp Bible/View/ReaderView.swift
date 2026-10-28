@@ -3352,9 +3352,29 @@ struct ReaderView: View {
         // Read the age group live: `userSettings` is captured at init, and the
         // quiz sheet can change this preference while the reader is on screen.
         let ageGroup = UserDatabase.shared.getSettings().defaultQuizAgeGroup
-        quizQuestions = (try? BundledModuleDatabase.shared.getQuizQuestionsForReading(
-            moduleId: module.id, day: dayNum, sv: reading.sv, ev: reading.ev, ageGroup: ageGroup
-        )) ?? []
+        quizQuestions = module.questionsForReading(
+            day: dayNum, sv: reading.sv, ev: reading.ev, ageGroup: ageGroup
+        )
+    }
+}
+
+extension QuizModule {
+    /// The app ships this quiz, so its questions are in the bundled
+    /// database; one the person installed keeps them in theirs.
+    var isBundled: Bool {
+        ((try? BundledModuleDatabase.shared.getAllQuizModules()) ?? []).contains { $0.id == id }
+    }
+
+    /// The questions for a reading, from whichever database holds the quiz.
+    func questionsForReading(day: Int, sv: Int, ev: Int, ageGroup: String) -> [QuizQuestion] {
+        let questions = isBundled
+            ? try? BundledModuleDatabase.shared.getQuizQuestionsForReading(
+                moduleId: id, day: day, sv: sv, ev: ev, ageGroup: ageGroup
+            )
+            : try? ModuleDatabase.shared.getQuizQuestionsForReading(
+                moduleId: id, day: day, sv: sv, ev: ev, ageGroup: ageGroup
+            )
+        return questions ?? []
     }
 }
 
@@ -4294,9 +4314,9 @@ struct QuizSheetView: View {
 
     private func reloadQuestions() {
         speech.stop()
-        questions = (try? BundledModuleDatabase.shared.getQuizQuestionsForReading(
-            moduleId: quizModule.id, day: day, sv: sv, ev: ev, ageGroup: selectedAgeGroup
-        )) ?? []
+        questions = quizModule.questionsForReading(
+            day: day, sv: sv, ev: ev, ageGroup: selectedAgeGroup
+        )
         currentIndex = 0
         showAnswer = false
     }
