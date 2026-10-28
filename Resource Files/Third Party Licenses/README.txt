@@ -10,6 +10,10 @@ this directory and accompany the app distribution.
 - tiptap-markdown 0.9.0 — MIT — Copyright (c) 2021, Antoine Guingand
 - markdown-it and related runtime packages — permissive licences; exact notices are included here
 
+Reference data (in lamp-bible-core):
+- SIL libpalaso standard versifications, commit b4f7a6d — MIT — Copyright (c) 2007-2026 SIL Global
+  — SIL-libpalaso-versification-MIT.txt
+
 These notices apply to the third-party components only. They do not change the licence of Lamp
 Bible itself or the rights in bundled Bible content. Bundled-content notices are published at
 https://lampbible.com/content-licences.
