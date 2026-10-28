@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampCore
 import LampModuleKit
 
 /// Name a conflict in the log without changing what is thrown.
@@ -430,6 +431,8 @@ class UserSettingsSyncManager {
             let queue = try DatabaseQueue(path: copyURL.path)
             _ = try queue.writeWithoutTransaction { db in
                 try db.execute(sql: "UPDATE user_settings SET sync_settings_json = NULL WHERE id = 1")
+                // The plan ledger travels in the bundle's own part.
+                try db.execute(sql: "DROP TABLE IF EXISTS plan_progress")
                 try db.checkpoint(.truncate)
             }
             return try queue.read { db in
@@ -661,9 +664,18 @@ extension UserSettingsSyncManager {
             }
             if let remote { merged = try mergeRemoteData(remote, base: nil) }
         }
+        // Plan progress after the settings database, which carries what
+        // phones without it changed, and before that database is copied to
+        // publish, so phones without it see what the ledger changed.
+        let planChanged = try UserDatabase.shared.applyPlanProgress(
+            joining: ([bundle] + versions).compactMap {
+                $0.flatMap(LampSyncBundleLedgers.planProgress(in:))
+            }
+        )
         try UserDatabase.shared.checkpointForSync()
         let portable = try portableSettingsData(from: UserDatabase.shared.databaseURL)
         let publishes = remote == nil || merged?.needsPublish == true || !versions.isEmpty
+            || planChanged
         let settings = BundleSettingsParticipant(
             source: source,
             mergedAgainst: remote,
@@ -671,7 +683,13 @@ extension UserSettingsSyncManager {
             settings: portable.settings,
             readingIDs: publishes ? portable.readingIDs : (merged?.readingIDs ?? portable.readingIDs)
         )
-        return [settings, SharedPreferenceArchiveSync.BundleParticipant(source: source)]
+        var participants: [any SettingsBundleParticipant] = [
+            settings, SharedPreferenceArchiveSync.BundleParticipant(source: source)
+        ]
+        if let progress = try UserDatabase.shared.planProgress() {
+            participants.append(PlanProgressParticipant(contribution: progress))
+        }
+        return participants
     }
 
     fileprivate func rememberBundleSettings(
@@ -702,6 +720,28 @@ private struct BundleSettingsParticipant: SettingsBundleParticipant {
         try UserSettingsSyncManager.shared.rememberBundleSettings(
             source: source, revision: written.revision, settings: settings, readingIDs: readingIDs
         )
+    }
+}
+
+/// Plan progress: this device's whole ledger joined into the bundle's on
+/// every pass, which is what puts the part back when an app from before it
+/// wrote the bundle without it.
+@MainActor
+private struct PlanProgressParticipant: SettingsBundleParticipant {
+    let contribution: LampSyncPlanProgress
+
+    func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
+        try LampSyncBundleLedgers.Contribution(
+            personal: LampPersonalDeletionLedger(), planProgress: contribution
+        ).apply(to: &bundle)
+    }
+
+    /// Marks another device wrote while this pass was retrying its write
+    /// were never applied here. Applied now, the next pass sends them on to
+    /// phones without plan progress.
+    func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
+        guard let progress = LampSyncBundleLedgers.planProgress(in: written.bundle) else { return }
+        try UserDatabase.shared.applyPlanProgress(joining: [progress])
     }
 }
 

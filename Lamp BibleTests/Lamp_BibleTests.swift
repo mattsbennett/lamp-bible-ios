@@ -4315,3 +4315,84 @@ final class DevotionalUnknownCategoryTests: XCTestCase {
         XCTAssertNil(written?["categoryValue"])
     }
 }
+
+/// The phone's half of the settings bundle's plan progress. These touch the
+/// app's user database, so each uses a plan of its own that no other test
+/// knows, and leaves nothing chosen or finished behind.
+final class PlanProgressTests: XCTestCase {
+    private let plan = "lamp_test_\(UUID().uuidString.prefix(8).lowercased())"
+    private var reading: String { "\(plan)_45_0_2026" }
+
+    func testAMillisecondSurvivesBeingStoredAsADate() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.create(table: "completed_readings") { t in
+                t.column("id", .text).primaryKey()
+                t.column("plan_id", .text).notNull()
+                t.column("year", .integer).notNull()
+                t.column("completed_at", .datetime).notNull()
+            }
+        }
+        for step in 0..<2_000 {
+            let at = Int64(1_761_600_000_000) + Int64(step) * 7_919
+            let row = CompletedReading(id: "row_\(step)_0_2026", completedAt: UserDatabase.date(milliseconds: at))
+            try queue.write { try row.insert($0) }
+            let stored = try queue.read { try CompletedReading.fetchOne($0, key: row.id) }
+            XCTAssertEqual(stored.map { UserDatabase.milliseconds($0.completedAt) }, at)
+        }
+    }
+
+    @MainActor
+    func testATickAndAnUntickHereAreRecorded() throws {
+        let database = UserDatabase.shared
+        try database.addCompletedReading(reading)
+        let row = try XCTUnwrap(database.syncSnapshot().readings.first { $0.id == reading })
+        let ticked = try XCTUnwrap(database.planProgress()?.readings[reading])
+        XCTAssertTrue(LampSyncPlanProgress.isSet(ticked))
+        XCTAssertEqual(ticked.presentSince, UserDatabase.milliseconds(row.completedAt))
+
+        try database.removeCompletedReading(reading)
+        let unticked = try XCTUnwrap(database.planProgress()?.readings[reading])
+        XCTAssertFalse(LampSyncPlanProgress.isSet(unticked))
+    }
+
+    @MainActor
+    func testAnotherDevicesProgressIsAppliedAsAnOlderPhoneWouldWriteIt() throws {
+        let database = UserDatabase.shared
+        let at = UserDatabase.milliseconds(Date())
+        var mac = LampSyncPlanProgress()
+        mac.recordCompletion(reading, at: at)
+        mac.recordSelection(plan, at: at)
+
+        XCTAssertTrue(try database.applyPlanProgress(joining: [mac]))
+        // Every field as an older phone writes it, plan_id included, so the
+        // two copies of one tick never meet as a conflict.
+        let row = try database.syncSnapshot().readings.first { $0.id == reading }
+        XCTAssertEqual(row, CompletedReading(id: reading, completedAt: UserDatabase.date(milliseconds: at)))
+        XCTAssertTrue(database.getSettings().planIds.contains(plan))
+        XCTAssertFalse(try database.applyPlanProgress(joining: [mac]))
+
+        mac.recordUncompletion(reading, at: at + 1_000)
+        mac.recordDeselection(plan, at: at + 1_000)
+        XCTAssertTrue(try database.applyPlanProgress(joining: [mac]))
+        XCTAssertFalse(try database.syncSnapshot().readings.contains { $0.id == reading })
+        XCTAssertFalse(database.getSettings().planIds.contains(plan))
+    }
+
+    @MainActor
+    func testAnUntickFromAPhoneWithoutPlanProgressStays() throws {
+        let database = UserDatabase.shared
+        try database.addCompletedReading(reading)
+
+        // The settings database an older phone published, without the tick.
+        let others = try database.syncSnapshot().readings.filter { $0.id != reading }
+        XCTAssertTrue(try database.syncCompletedReadings(with: others))
+
+        // The ledger still held the tick; unrecorded, the untick would be
+        // undone here and sent on as a tick.
+        try database.applyPlanProgress(joining: [])
+        XCTAssertFalse(try database.syncSnapshot().readings.contains { $0.id == reading })
+        let mark = try XCTUnwrap(database.planProgress()?.readings[reading])
+        XCTAssertFalse(LampSyncPlanProgress.isSet(mark))
+    }
+}

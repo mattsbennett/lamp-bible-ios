@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampCore
 
 /// Notification posted when UserDatabase detects remote changes (from any sync provider)
 extension Notification.Name {
@@ -321,6 +322,16 @@ class UserDatabase {
             }
         }
 
+        // This device's record of plans chosen and readings finished, and of
+        // each undone, with when: what syncs as the settings bundle's plan
+        // progress. One row, the ledger as core encodes it.
+        migrator.registerMigration("v9_plan_progress") { db in
+            try db.create(table: "plan_progress") { t in
+                t.column("id", .integer).primaryKey()
+                t.column("ledger", .blob).notNull()
+            }
+        }
+
         return migrator
     }
 
@@ -362,9 +373,11 @@ class UserDatabase {
 
         let updated = try dbQueue.write { db -> UserSettings in
             var settings = try UserSettings.fetchOne(db, key: 1) ?? UserSettings()
+            let chosen = settings.planIds
             update(&settings)
             settings.updatedAt = Date()
             try settings.save(db)
+            try Self.recordPlanChoices(from: chosen, to: settings.planIds, in: db)
             return settings
         }
 
@@ -442,7 +455,15 @@ class UserDatabase {
         }
 
         try dbQueue.write { db in
-            let reading = CompletedReading(id: id)
+            var at = Self.milliseconds(Date())
+            if var progress = try Self.planProgress(in: db) {
+                progress.recordCompletion(id, at: at)
+                // The ledger stamps a tick after any untick it undoes; the
+                // row keeps the same time, so applying it changes nothing.
+                at = progress.readings[id]?.presentSince ?? at
+                try Self.save(progress, in: db)
+            }
+            let reading = CompletedReading(id: id, completedAt: Self.date(milliseconds: at))
             try reading.insert(db)
             // Bump updated_at so sync detects the change
             try db.execute(sql: "UPDATE user_settings SET updated_at = ? WHERE id = 1", arguments: [Date()])
@@ -462,24 +483,10 @@ class UserDatabase {
 
         try dbQueue.write { db in
             _ = try CompletedReading.deleteOne(db, key: id)
-            // Bump updated_at so sync detects the change
-            try db.execute(sql: "UPDATE user_settings SET updated_at = ? WHERE id = 1", arguments: [Date()])
-        }
-
-        // updated_at moved, so the memoised settings are stale
-        invalidateSettingsCache()
-        markLocalWrite()
-        notifyDatabaseChange()
-    }
-
-    /// Remove all completed readings for a plan
-    func removeCompletedReadings(forPlan planId: String) throws {
-        guard let dbQueue = dbQueue else {
-            throw DatabaseError(message: "Database not initialized")
-        }
-
-        try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM completed_readings WHERE plan_id = ?", arguments: [planId])
+            if var progress = try Self.planProgress(in: db) {
+                progress.recordUncompletion(id, at: Self.milliseconds(Date()))
+                try Self.save(progress, in: db)
+            }
             // Bump updated_at so sync detects the change
             try db.execute(sql: "UPDATE user_settings SET updated_at = ? WHERE id = 1", arguments: [Date()])
         }
@@ -568,6 +575,20 @@ class UserDatabase {
                     )
                 }
 
+                // A phone without plan progress ticked or unticked these, so
+                // the ledger learns of them here: a tick at its own time, an
+                // untick when it arrived, the only time known for it.
+                if var progress = try Self.planProgress(in: db) {
+                    progress.recordHeld(
+                        completed: remoteRows.filter { localRows[$0.key] != $0.value }
+                            .mapValues { Self.milliseconds($0.completedAt) },
+                        selected: [:]
+                    )
+                    let now = Self.milliseconds(Date())
+                    for id in toRemove { progress.recordUncompletion(id, at: now) }
+                    try Self.save(progress, in: db)
+                }
+
                 // Bump updated_at so observers know data changed
                 try db.execute(sql: "UPDATE user_settings SET updated_at = ? WHERE id = 1", arguments: [Date()])
                 return true
@@ -646,8 +667,110 @@ class UserDatabase {
                         remote.planReaderCount,
                         remote.updatedAt
                     ])
+                // Plans chosen on a phone without plan progress reach the
+                // ledger this way.
+                try Self.recordPlanChoices(from: local.planIds, to: remote.planIds, in: db)
                 return true
         }
+    }
+
+    // MARK: - Plan Progress
+
+    /// The plan ledger's time: milliseconds since 1970, as GRDB stores a date
+    /// to the millisecond, so a time read back from a row is the one written.
+    static func milliseconds(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1000).rounded())
+    }
+
+    static func date(milliseconds: Int64) -> Date {
+        Date(timeIntervalSince1970: Double(milliseconds) / 1000)
+    }
+
+    /// This device's plan ledger: empty before anything is recorded, nil when
+    /// it was written by a later version. One that can't be read is left as
+    /// it is rather than rewritten without what it holds.
+    private static func planProgress(in db: Database) throws -> LampSyncPlanProgress? {
+        guard let data = try Data.fetchOne(db, sql: "SELECT ledger FROM plan_progress WHERE id = 1") else {
+            return LampSyncPlanProgress()
+        }
+        guard let progress = try? LampSyncPlanProgress.decode(data) else {
+            print("[UserDB] The plan ledger is from a later version; not recording into it")
+            return nil
+        }
+        return progress
+    }
+
+    private static func save(_ progress: LampSyncPlanProgress, in db: Database) throws {
+        try db.execute(
+            sql: "INSERT OR REPLACE INTO plan_progress (id, ledger) VALUES (1, ?)",
+            arguments: [progress.encoded()]
+        )
+    }
+
+    /// Plans that joined or left the chosen ones, recorded now.
+    private static func recordPlanChoices(from before: [String], to after: [String], in db: Database) throws {
+        let chosen = Set(after).subtracting(before)
+        let dropped = Set(before).subtracting(after)
+        guard !chosen.isEmpty || !dropped.isEmpty,
+              var progress = try planProgress(in: db) else { return }
+        let now = milliseconds(Date())
+        for planId in chosen { progress.recordSelection(planId, at: now) }
+        for planId in dropped { progress.recordDeselection(planId, at: now) }
+        try save(progress, in: db)
+    }
+
+    /// This device's plan ledger, for the bundle; nil when it can't be read.
+    func planProgress() throws -> LampSyncPlanProgress? {
+        guard let dbQueue else { throw DatabaseError(message: "Database not initialized") }
+        return try dbQueue.read { try Self.planProgress(in: $0) }
+    }
+
+    /// Joins other devices' plan progress into this device's, and changes
+    /// the chosen plans and finished readings to what the join says, in one
+    /// transaction. True when they changed.
+    ///
+    /// What this device holds goes into its ledger first, every time: a
+    /// finished reading at its own time, a chosen plan at 0, since no time
+    /// was kept for it. That seeds the first ledger, and only ever sets, so
+    /// a plan or reading cleared since stays cleared.
+    @discardableResult
+    func applyPlanProgress(joining others: [LampSyncPlanProgress]) throws -> Bool {
+        guard let dbQueue else { throw DatabaseError(message: "Database not initialized") }
+
+        defer { invalidateSettingsCache() }
+
+        let changed = try dbQueue.write { db -> Bool in
+            guard var progress = try Self.planProgress(in: db),
+                  var settings = try UserSettings.fetchOne(db, key: 1) else { return false }
+            let completed = try CompletedReading.fetchAll(db).reduce(into: [String: Int64]()) {
+                $0[$1.id] = Self.milliseconds($1.completedAt)
+            }
+            let selected = settings.planIds.reduce(into: [String: Int64]()) { $0[$1] = 0 }
+            progress.recordHeld(completed: completed, selected: selected)
+            for other in others { progress.merge(other) }
+            try Self.save(progress, in: db)
+
+            let changes = progress.changes(toApplyTo: completed, selected: selected)
+            guard !changes.isEmpty else { return false }
+            // Built as every phone builds a row, so one made here matches
+            // a copy an older phone made of the same tick.
+            for (id, at) in changes.complete {
+                try CompletedReading(id: id, completedAt: Self.date(milliseconds: at)).save(db)
+            }
+            if !changes.uncomplete.isEmpty {
+                _ = try CompletedReading.deleteAll(db, keys: Array(changes.uncomplete))
+            }
+            if !changes.select.isEmpty || !changes.deselect.isEmpty {
+                var ids = settings.planIds.filter { !changes.deselect.contains($0) }
+                ids += changes.select.subtracting(ids).sorted()
+                settings.selectedPlanIds = ids.joined(separator: ",")
+            }
+            settings.updatedAt = Date()
+            try settings.save(db)
+            return true
+        }
+        if changed { notifyDatabaseChange() }
+        return changed
     }
 
     // MARK: - Sync Settings
