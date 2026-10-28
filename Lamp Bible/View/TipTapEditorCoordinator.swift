@@ -168,9 +168,12 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
         evaluateJS("window.editorAPI.setContent(\"\(escaped)\")")
     }
 
-    func getContent(completion: @escaping (String) -> Void) {
+    /// The document as it stands, including what the editor has not yet
+    /// reported as an edit. Nil when the page could not answer, which is not
+    /// an empty document.
+    func getContent(completion: @escaping (String?) -> Void) {
         evaluateJS("window.editorAPI.getContent()") { result in
-            completion(result as? String ?? "")
+            completion(result as? String)
         }
     }
 

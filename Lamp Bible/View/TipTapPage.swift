@@ -439,6 +439,20 @@ final class NoteEditorHostView: UIView {
             self, selector: #selector(keyboardChanged(_:)),
             name: UIResponder.keyboardWillHideNotification, object: nil
         )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(reportBeforeLeaving),
+            name: UIApplication.willResignActiveNotification, object: nil
+        )
+    }
+
+    /// The app is leaving the foreground. What was typed in the last moment
+    /// and not yet reported is reported now, while the page can still
+    /// answer, so it is saved with the rest.
+    @objc private func reportBeforeLeaving() {
+        page?.content { [weak self] text in
+            guard let self, let text, text != self.lastReported else { return }
+            self.report(text)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

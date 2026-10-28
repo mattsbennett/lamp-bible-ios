@@ -50,6 +50,27 @@ extension UINavigationController: UIGestureRecognizerDelegate {
     }
 }
 
+extension UIApplication {
+    /// Sees work begun as the app leaves the foreground, such as an edit's
+    /// save, through to its end. Without asking for the time the app can be
+    /// suspended partway, and closed from the switcher before it resumes.
+    @MainActor
+    func finishing(_ name: String, _ work: @escaping @MainActor () async -> Void) {
+        var taskId: UIBackgroundTaskIdentifier = .invalid
+        taskId = beginBackgroundTask(withName: name) { [self] in
+            endBackgroundTask(taskId)
+            taskId = .invalid
+        }
+        Task { @MainActor in
+            await work()
+            if taskId != .invalid {
+                endBackgroundTask(taskId)
+                taskId = .invalid
+            }
+        }
+    }
+}
+
 extension Calendar {
     static let iso8601 = Calendar(identifier: .iso8601)
 }

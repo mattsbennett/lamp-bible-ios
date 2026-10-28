@@ -40,6 +40,7 @@ struct FullScreenImageItem: Identifiable {
 struct DevotionalView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
 
     // Configuration
     let initialDevotional: Devotional
@@ -301,6 +302,25 @@ struct DevotionalView: View {
                 saveNowSync()
             }
             onBack?()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .inactive where mode == .edit:
+                // What was typed in the last moment, which the editor has
+                // not yet reported, is taken while the page can still answer.
+                tiptapCoordinator?.getContent { markdown in
+                    if let markdown, markdown != markdownContent { markdownContent = markdown }
+                }
+            case .background where hasUnsavedChanges:
+                // Saved as the app leaves the foreground, not after the
+                // pause: one closed from the switcher while suspended never
+                // comes back to make the save.
+                saveTask?.cancel()
+                saveTask = nil
+                UIApplication.shared.finishing("SaveWriting") { await saveNow() }
+            default:
+                break
+            }
         }
         .onChange(of: mode) { oldMode, newMode in
             // When leaving edit mode, ensure content is saved

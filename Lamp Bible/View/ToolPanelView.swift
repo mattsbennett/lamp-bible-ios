@@ -1154,6 +1154,7 @@ struct ToolPanelView: View {
     @AppStorage("bottomToolbarMode") private var bottomToolbarMode: BottomToolbarMode = .navigation
     @AppStorage("notesPanelOrientation") private var notesPanelOrientation: String = "bottom"
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Current scroll position ID for each content type (verse number or index)
     @State private var scrollPosition: Int? = nil
@@ -1625,6 +1626,16 @@ struct ToolPanelView: View {
         }
         .task {
             await loadNote()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Notes edited a moment ago are saved as the app leaves the
+            // foreground, not after the pause: one closed from the switcher
+            // while suspended never comes back to make the save.
+            guard phase == .background, hasUnsavedNotes, let scope = loadedNotes else { return }
+            saveTask?.cancel()
+            hasUnsavedNotes = false
+            let sections = sections
+            UIApplication.shared.finishing("SaveNotes") { await save(sections, in: scope) }
         }
         .task {
             // Periodically check sync status while panel is visible
