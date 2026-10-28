@@ -86,8 +86,8 @@ struct LibrarySyncPass {
         /// the archive pass runs instead. The phone never migrates.
         case notMigrated(archiveRevision: String?)
         /// Nothing migrated, and only this device ever kept the library: the
-        /// person may move it, after updating their other devices. Until
-        /// they do, it syncs as before.
+        /// person may move it, after updating their other devices. Nothing
+        /// syncs until they do.
         case phoneLibrary
         case synced(bundleRevision: String, report: Report)
     }

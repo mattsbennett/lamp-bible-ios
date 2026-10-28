@@ -48,6 +48,9 @@ struct SettingsView: View {
     @State private var hasLoadedSettings: Bool = false
     @State private var showingWipeConfirmation: Bool = false
     @ObservedObject private var syncCoordinator = SyncCoordinator.shared
+    @ObservedObject private var moduleSyncManager = ModuleSyncManager.shared
+    @State private var showingNoteConflicts: Bool = false
+    @State private var showingDevotionalConflicts: Bool = false
 
     enum ConnectionTestResult {
         case success
@@ -336,6 +339,42 @@ struct SettingsView: View {
                             )
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        }
+
+                        if syncCoordinator.libraryMovable {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label(
+                                    "This library is still in the earlier format, and only this device has kept it. Nothing syncs until it moves to the new sync. Update Lamp Bible to 1.2.0 or later on your other devices first: older versions won't see changes made after the move.",
+                                    systemImage: "arrow.triangle.2.circlepath"
+                                )
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                Button("Move Library") {
+                                    Task {
+                                        do {
+                                            try await syncCoordinator.movePhoneLibraryToNewSync()
+                                        } catch {
+                                            manualSyncError = error.localizedDescription
+                                            showingManualSyncError = true
+                                        }
+                                    }
+                                }
+                                .disabled(moduleSyncInProgress)
+                            }
+                        }
+
+                        if !moduleSyncManager.pendingConflicts.isEmpty {
+                            conflictRow(
+                                count: moduleSyncManager.pendingConflicts.count,
+                                kind: "note"
+                            ) { showingNoteConflicts = true }
+                        }
+
+                        if !moduleSyncManager.pendingDevotionalConflicts.isEmpty {
+                            conflictRow(
+                                count: moduleSyncManager.pendingDevotionalConflicts.count,
+                                kind: "devotional"
+                            ) { showingDevotionalConflicts = true }
                         }
 
                         if syncCoordinator.olderDeviceSyncing {
@@ -704,7 +743,31 @@ struct SettingsView: View {
                     }
                 )
             }
+            .sheet(isPresented: $showingNoteConflicts) {
+                NoteConflictView()
+            }
+            .sheet(isPresented: $showingDevotionalConflicts) {
+                DevotionalConflictView()
+            }
         }
+    }
+
+    /// Changes made here and on another device that the person has to choose
+    /// between. Their module can't upload until they do, so the sync
+    /// settings say so too.
+    private func conflictRow(count: Int, kind: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("\(count) \(kind)\(count == 1 ? "" : "s") changed on two devices")
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text("Resolve")
+                    .foregroundStyle(Color.accentColor)
+            }
+        }
+        .accessibilityHint("Those \(kind)s sync once you choose which version to keep")
     }
 
     private func performMigration() async {

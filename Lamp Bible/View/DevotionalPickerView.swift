@@ -41,6 +41,11 @@ struct DevotionalPickerView: View {
     /// Writings a slide deck was made from, so their rows can say so.
     @State private var writingIDsWithSlides: Set<String> = []
     @State private var showingDeckLibrary: Bool = false
+    /// Writings changed here and on another device since they last agreed.
+    /// Until each is settled their module can't upload, so they're offered
+    /// here, where the writing is.
+    @ObservedObject private var moduleSyncManager = ModuleSyncManager.shared
+    @State private var showingConflicts: Bool = false
 
     /// The currently selected module
     private var selectedModule: Module? {
@@ -100,6 +105,10 @@ struct DevotionalPickerView: View {
             // Filter indicators
             if hasActiveFilters {
                 filterIndicators
+            }
+
+            if !moduleSyncManager.pendingDevotionalConflicts.isEmpty {
+                conflictBanner
             }
 
             // Main content
@@ -220,6 +229,14 @@ struct DevotionalPickerView: View {
         .sheet(isPresented: $showingDeckLibrary) {
             DeckLibraryView()
                 .presentationDetents([.large])
+        }
+        .sheet(isPresented: $showingConflicts, onDismiss: loadDevotionals) {
+            DevotionalConflictView()
+        }
+        .onChange(of: moduleSyncManager.pendingDevotionalConflicts.count) { oldCount, newCount in
+            if oldCount == 0 && newCount > 0 {
+                showingConflicts = true
+            }
         }
         .task { await reloadWritingIDsWithSlides() }
         .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
@@ -365,6 +382,32 @@ struct DevotionalPickerView: View {
         .padding(10)
         .background(Color(.systemGray6))
         .cornerRadius(10)
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+
+    private var conflictBanner: some View {
+        let count = moduleSyncManager.pendingDevotionalConflicts.count
+        return Button {
+            showingConflicts = true
+        } label: {
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                Text("\(count) sync conflict\(count == 1 ? "" : "s")")
+                    .fontWeight(.medium)
+                Spacer()
+                Text("Resolve")
+                    .foregroundColor(.accentColor)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .background(Color.orange.opacity(0.15))
+            .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
         .padding(.horizontal)
         .padding(.top, 8)
     }

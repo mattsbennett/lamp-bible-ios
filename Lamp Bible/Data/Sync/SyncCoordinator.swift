@@ -27,8 +27,13 @@ class SyncCoordinator: ObservableObject {
 
     @Published private(set) var syncState: SyncState = .idle
     /// The library at the active endpoint was kept only by this device and
-    /// can move to the new sync, once the person agrees.
+    /// can move to the new sync, once the person agrees. Nothing syncs until
+    /// it has moved.
+    @Published private(set) var libraryMovable = false
+    /// Asking about the move now. Asked once a launch: after Not Now,
+    /// Settings keeps the offer rather than every sync asking again.
     @Published var libraryMoveOffered = false
+    private var libraryMoveAsked = false
     /// A device on a Lamp Bible older than 1.2.0 is still writing to a library
     /// that has moved to the new sync, and nothing it does is seen.
     @Published var olderDeviceSyncing = false
@@ -336,7 +341,11 @@ class SyncCoordinator: ObservableObject {
         }
         do {
             let outcome = try await LibrarySyncPass.runIfMigrated(storage: endpoint)
-            libraryMoveOffered = outcome == .phoneLibrary
+            libraryMovable = outcome == .phoneLibrary
+            if libraryMovable && !libraryMoveAsked {
+                libraryMoveAsked = true
+                libraryMoveOffered = true
+            }
             if case .notMigrated = outcome { libraryAwaitingMove = true } else { libraryAwaitingMove = false }
             if case .synced = outcome {
                 var updatedSettings = settings
@@ -357,6 +366,7 @@ class SyncCoordinator: ObservableObject {
         syncState = .syncing(progress: nil)
         do {
             try await LibrarySyncPass.movePhoneLibrary(storage: endpoint)
+            libraryMovable = false
             libraryMoveOffered = false
             syncState = .idle
         } catch {
