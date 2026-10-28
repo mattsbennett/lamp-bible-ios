@@ -1580,7 +1580,10 @@ class ModuleSyncManager: ObservableObject {
                 bookId: bookFile.id,
                 name: bookFile.name,
                 testament: bookFile.testament,
-                chapterCount: bookFile.chapters.count
+                // The last chapter's number, as core's compiler writes it,
+                // not how many there are: a book holding only Psalm 119
+                // has 119.
+                chapterCount: bookFile.chapters.map(\.chapter).max() ?? 0
             )
             books.append(book)
 
