@@ -220,7 +220,7 @@ struct ReadingsView: View {
             .frame(minHeight: 32)
             .padding(.leading, 48)
         }
-        .padding(EdgeInsets(top: 6, leading: 4, bottom: 10, trailing: 14))
+        .padding(EdgeInsets(top: 12, leading: 4, bottom: 12, trailing: 14))
         .if(stackHorizontally) { view in
             view.frame(width: 325)
         }
