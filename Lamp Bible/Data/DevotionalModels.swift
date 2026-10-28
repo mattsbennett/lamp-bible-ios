@@ -431,11 +431,25 @@ struct DevotionalMeta: Codable, Equatable {
     var author: String?
     var date: String?               // ISO 8601 format: YYYY-MM-DD
     var tags: [String]?
-    var category: DevotionalCategory?
+    /// The category as written. Kept as a string so one this version
+    /// doesn't know, written by a newer app, survives an edit here.
+    var categoryValue: String?
     var series: DevotionalSeriesInfo?
     var keyScriptures: [DevotionalKeyScripture]?
     var created: Int?               // Unix timestamp
     var lastModified: Int?          // Unix timestamp
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, type, title, subtitle, author, date, tags
+        case categoryValue = "category"
+        case series, keyScriptures, created, lastModified
+    }
+
+    /// The category, when it's one this version knows.
+    var category: DevotionalCategory? {
+        get { categoryValue.flatMap { DevotionalCategory(rawValue: $0) } }
+        set { categoryValue = newValue?.rawValue }
+    }
 
     init(
         id: String = UUID().uuidString,
@@ -456,7 +470,7 @@ struct DevotionalMeta: Codable, Equatable {
         self.author = author
         self.date = date
         self.tags = tags
-        self.category = category
+        self.categoryValue = category?.rawValue
         self.series = series
         self.keyScriptures = keyScriptures
         self.created = created ?? Int(Date().timeIntervalSince1970)
@@ -697,7 +711,7 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
         self.author = devotional.meta.author
         self.date = devotional.meta.date
         self.tags = devotional.meta.tags?.joined(separator: ",")
-        self.category = devotional.meta.category?.rawValue
+        self.category = devotional.meta.categoryValue
         self.seriesId = devotional.meta.series?.id
         self.seriesName = devotional.meta.series?.name
         self.seriesOrder = devotional.meta.series?.order
@@ -830,19 +844,19 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
             return DevotionalSeriesInfo(id: seriesId, name: seriesName, order: seriesOrder)
         }()
 
-        let meta = DevotionalMeta(
+        var meta = DevotionalMeta(
             id: id,
             title: title,
             subtitle: subtitle,
             author: author,
             date: date,
             tags: tags?.split(separator: ",").map { String($0) },
-            category: category.flatMap { DevotionalCategory(rawValue: $0) },
             series: series,
             keyScriptures: keyScriptures,
             created: created,
             lastModified: lastModified
         )
+        meta.categoryValue = category
 
         return Devotional(
             meta: meta,

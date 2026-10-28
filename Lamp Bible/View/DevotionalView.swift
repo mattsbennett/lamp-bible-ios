@@ -2178,6 +2178,7 @@ struct MetadataEditorSheet: View {
     @State private var author: String = ""
     @State private var date: Date = Date()
     @State private var category: DevotionalCategory = .devotional
+    @State private var categoryPicked = false
     @State private var tagsText: String = ""
 
     var body: some View {
@@ -2188,7 +2189,10 @@ struct MetadataEditorSheet: View {
                     TextField("Subtitle", text: $subtitle)
                     TextField("Author", text: $author)
                     DatePicker("Date", selection: $date, displayedComponents: .date)
-                    Picker("Category", selection: $category) {
+                    Picker("Category", selection: Binding(
+                        get: { category },
+                        set: { category = $0; categoryPicked = true }
+                    )) {
                         ForEach(DevotionalCategory.allCases, id: \.self) { cat in
                             Text(cat.rawValue.capitalized).tag(cat)
                         }
@@ -2251,7 +2255,12 @@ struct MetadataEditorSheet: View {
         devotional.meta.subtitle = subtitle.isEmpty ? nil : subtitle
         devotional.meta.author = author.isEmpty ? nil : author
         devotional.meta.date = formatter.string(from: date)
-        devotional.meta.category = category
+        // A category this version doesn't know shows as Devotional in the
+        // picker; it stays as it was unless one is picked here.
+        let unknownCategory = devotional.meta.categoryValue != nil && devotional.meta.category == nil
+        if categoryPicked || !unknownCategory {
+            devotional.meta.category = category
+        }
         devotional.meta.tags = tags
         devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
 

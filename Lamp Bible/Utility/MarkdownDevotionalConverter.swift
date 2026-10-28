@@ -160,8 +160,8 @@ struct MarkdownDevotionalConverter {
             lines.append("tags: [\(tagList)]")
         }
 
-        if let category = devotional.meta.category {
-            lines.append("category: \"\(category.rawValue)\"")
+        if let category = devotional.meta.categoryValue {
+            lines.append("category: \"\(category)\"")
         }
 
         if let series = devotional.meta.series {

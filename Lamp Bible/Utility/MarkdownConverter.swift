@@ -223,7 +223,7 @@ struct MarkdownConverter {
             author: devotional.meta.author,
             date: devotional.meta.date,
             tags: devotional.meta.tags ?? [],
-            category: devotional.meta.category?.rawValue,
+            category: devotional.meta.categoryValue,
             seriesName: devotional.meta.series?.name,
             seriesOrder: devotional.meta.series?.order,
             scriptureDescriptions: scriptures,

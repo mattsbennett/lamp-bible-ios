@@ -4223,3 +4223,47 @@ final class PresentationRemoteMemoryTests: XCTestCase {
         XCTAssertTrue(memory.presenters.isEmpty)
     }
 }
+
+/// A category a newer app wrote, such as one the Mac offers before this
+/// version knows it, has to come through an edit here unchanged: the writing
+/// would otherwise go back up with its category erased.
+final class DevotionalUnknownCategoryTests: XCTestCase {
+    private func stored(category: String?) -> DevotionalEntry {
+        var meta = DevotionalMeta(id: "W1", title: "Kept", created: 1, lastModified: 2)
+        meta.categoryValue = category
+        return DevotionalEntry(
+            from: Devotional(meta: meta, content: .blocks([.paragraph("Body")])),
+            moduleId: "devotionals"
+        )
+    }
+
+    func testAnUnknownCategorySurvivesBeingReadAndStoredAgain() throws {
+        let reread = try XCTUnwrap(stored(category: "testimony").toDevotional())
+        XCTAssertNil(reread.meta.category)
+        XCTAssertEqual(reread.meta.categoryValue, "testimony")
+
+        var edited = reread
+        edited.meta.title = "Edited here"
+        XCTAssertEqual(DevotionalEntry(from: edited, moduleId: "devotionals").category, "testimony")
+    }
+
+    func testAKnownCategoryStillReadsAsItsCase() throws {
+        let reread = try XCTUnwrap(stored(category: "prayer").toDevotional())
+        XCTAssertEqual(reread.meta.category, .prayer)
+
+        var changed = reread
+        changed.meta.category = .study
+        XCTAssertEqual(DevotionalEntry(from: changed, moduleId: "devotionals").category, "study")
+    }
+
+    /// A shared or exported writing carries it too, under the same key.
+    func testJSONKeepsAnUnknownCategoryUnderItsKey() throws {
+        let json = #"{"schemaVersion":"1.0","id":"W1","type":"devotional","title":"Kept","category":"testimony"}"#
+        let meta = try JSONDecoder().decode(DevotionalMeta.self, from: Data(json.utf8))
+        XCTAssertEqual(meta.categoryValue, "testimony")
+
+        let written = try JSONSerialization.jsonObject(with: JSONEncoder().encode(meta)) as? [String: Any]
+        XCTAssertEqual(written?["category"] as? String, "testimony")
+        XCTAssertNil(written?["categoryValue"])
+    }
+}
