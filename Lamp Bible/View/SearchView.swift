@@ -1228,13 +1228,6 @@ struct SearchView: View {
         .sheet(item: $selectedCommentary) { result in
             CommentaryEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId, searchQuery: currentSearchText, translationId: translationId)
         }
-        .sheet(item: $analysisItem) { item in
-            StrongsAnalysisSheet(
-                key: item.key,
-                translationId: translationId,
-                onNavigateToVerse: navigateToHighlightedVerse
-            )
-        }
         .fullScreenCover(item: $selectedBookSection) { result in
             BookModuleView(moduleId: result.moduleId, initialSectionId: result.id)
         }
@@ -1357,6 +1350,15 @@ struct SearchView: View {
                 ? { analysisItem = StrongsAnalysisItem(key: LampStrongsKey.normalized(currentSearchText)) }
                 : nil
         )
+        // On the list the button is in: the module results' sheets hang off
+        // a list that isn't on screen while a Bible search is.
+        .sheet(item: $analysisItem) { item in
+            StrongsAnalysisSheet(
+                key: item.key,
+                translationId: translationId,
+                onNavigateToVerse: navigateToHighlightedVerse
+            )
+        }
     }
 
     // MARK: - Search Logic
