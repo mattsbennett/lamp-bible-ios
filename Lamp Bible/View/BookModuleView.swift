@@ -987,7 +987,8 @@ private final class BookSectionDocument: Sendable {
 
 /// Sets a book's text as the phone shows it, from what core says each stretch
 /// is (`LampBookTextResolver`): links in the forms this reader opens, footnote
-/// markers small and raised, original-language words in their colour.
+/// markers small and raised, page markers small and grey, original-language
+/// words in their colour.
 private struct BookTextStyler: Sendable {
     let footnoteNumbers: [String: Int]
     let fontSize: Double
@@ -1034,6 +1035,13 @@ private struct BookTextStyler: Sendable {
         let underlined = value.runs[LampBookTextAttributes.Underline.self]
             .compactMap { run in run.0 == true ? run.1 : nil }
         for range in underlined { value[range].underlineStyle = .single }
+
+        let pages = value.runs[LampBookTextAttributes.Page.self]
+            .compactMap { run in run.0 == nil ? nil : run.1 }
+        for range in pages {
+            value[range].font = Font.system(size: fontSize * 0.7)
+            value[range].foregroundColor = Color.secondary
+        }
         return value
     }
 }
