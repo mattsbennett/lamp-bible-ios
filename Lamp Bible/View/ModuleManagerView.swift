@@ -839,7 +839,7 @@ struct ModuleManagerView: View {
         .sheet(item: $selectedQuiz) { quiz in
             QuizDetailView(quiz: quiz)
         }
-        .sheet(item: $selectedBookModule) { module in
+        .fullScreenCover(item: $selectedBookModule) { module in
             BookModuleView(moduleId: module.id)
         }
         .sheet(item: $moduleToEdit) { module in

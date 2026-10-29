@@ -858,6 +858,31 @@ final class Lamp_BibleTests: XCTestCase {
         XCTAssertEqual(store.sectionID(for: "book-b"), "book-b:chapter-7")
     }
 
+    func testBookReadingPositionKeepsThePlaceInASectionAndReadsSectionOnlyRecords() throws {
+        let suiteName = "BookReadingPositionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BookReadingProgressStore(defaults: defaults)
+
+        // As an earlier version left it: the section alone.
+        defaults.set("book-a:chapter-3", forKey: "books.readingProgress.book-a")
+        let earlier = try XCTUnwrap(store.position(for: "book-a"))
+        XCTAssertEqual(earlier.sectionID, "book-a:chapter-3")
+        XCTAssertEqual(earlier.blockIndex, -1)
+        XCTAssertEqual(earlier.updatedAt, .distantPast)
+
+        store.save(
+            BookReadingPosition(sectionID: "book-a:chapter-4", sectionTitle: "Four", blockIndex: 212),
+            for: "book-a"
+        )
+        let saved = try XCTUnwrap(store.position(for: "book-a"))
+        XCTAssertEqual(saved.sectionID, "book-a:chapter-4")
+        XCTAssertEqual(saved.sectionTitle, "Four")
+        XCTAssertEqual(saved.blockIndex, 212)
+        XCTAssertEqual(store.sectionID(for: "book-a"), "book-a:chapter-4")
+        XCTAssertNil(store.position(for: "book-b"))
+    }
+
     func testBookJSONImportsThroughSharedCompilerWithSiblingMedia() async throws {
         let moduleID = "book-import-test-\(UUID().uuidString.lowercased())"
         let sourceDirectory = temporaryDirectory.appendingPathComponent(moduleID, isDirectory: true)

@@ -1227,7 +1227,7 @@ struct SearchView: View {
         .sheet(item: $selectedCommentary) { result in
             CommentaryEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId, searchQuery: currentSearchText, translationId: translationId)
         }
-        .sheet(item: $selectedBookSection) { result in
+        .fullScreenCover(item: $selectedBookSection) { result in
             BookModuleView(moduleId: result.moduleId, initialSectionId: result.id)
         }
         .sheet(item: $selectedHighlight) { result in

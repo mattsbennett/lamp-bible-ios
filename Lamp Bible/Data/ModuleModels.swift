@@ -450,6 +450,17 @@ enum BookMediaPath {
     }
 }
 
+/// Where a reader left a book: the section, and the first of its blocks on
+/// screen, so that a long section reopens where it was being read rather than
+/// at its top. Block -1 is the section's own heading.
+struct BookReadingPosition: Codable, Equatable {
+    var sectionID: String
+    /// Kept so the library can say where a book was left without opening it.
+    var sectionTitle: String?
+    var blockIndex: Int = -1
+    var updatedAt: Date = Date()
+}
+
 struct BookReadingProgressStore {
     private let defaults: UserDefaults
 
@@ -457,16 +468,36 @@ struct BookReadingProgressStore {
         self.defaults = defaults
     }
 
+    func position(for moduleID: String) -> BookReadingPosition? {
+        if let data = defaults.data(forKey: positionKey(for: moduleID)),
+           let position = try? JSONDecoder().decode(BookReadingPosition.self, from: data) {
+            return position
+        }
+        // Earlier versions kept only the section, and not when it was read.
+        return defaults.string(forKey: key(for: moduleID)).map {
+            BookReadingPosition(sectionID: $0, updatedAt: .distantPast)
+        }
+    }
+
+    func save(_ position: BookReadingPosition, for moduleID: String) {
+        guard let data = try? JSONEncoder().encode(position) else { return }
+        defaults.set(data, forKey: positionKey(for: moduleID))
+    }
+
     func sectionID(for moduleID: String) -> String? {
-        defaults.string(forKey: key(for: moduleID))
+        position(for: moduleID)?.sectionID
     }
 
     func save(sectionID: String, for moduleID: String) {
-        defaults.set(sectionID, forKey: key(for: moduleID))
+        save(BookReadingPosition(sectionID: sectionID), for: moduleID)
     }
 
     private func key(for moduleID: String) -> String {
         "books.readingProgress.\(moduleID)"
+    }
+
+    private func positionKey(for moduleID: String) -> String {
+        "books.readingPosition.\(moduleID)"
     }
 }
 
