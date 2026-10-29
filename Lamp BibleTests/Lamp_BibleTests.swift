@@ -4392,8 +4392,14 @@ final class PlanProgressTests: XCTestCase {
         XCTAssertTrue(try database.applyPlanProgress(joining: [mac]))
         // Every field as an older phone writes it, plan_id included, so the
         // two copies of one tick never meet as a conflict.
-        let row = try database.syncSnapshot().readings.first { $0.id == reading }
-        XCTAssertEqual(row, CompletedReading(id: reading, completedAt: UserDatabase.date(milliseconds: at)))
+        let row = try XCTUnwrap(database.syncSnapshot().readings.first { $0.id == reading })
+        let expected = CompletedReading(id: reading, completedAt: UserDatabase.date(milliseconds: at))
+        XCTAssertEqual(row.planId, expected.planId)
+        XCTAssertEqual(row.year, expected.year)
+        // In milliseconds, as the ledger compares them: a date read back from
+        // the database can differ in its last binary digit from one made from
+        // the same milliseconds.
+        XCTAssertEqual(UserDatabase.milliseconds(row.completedAt), at)
         XCTAssertTrue(database.getSettings().planIds.contains(plan))
         XCTAssertFalse(try database.applyPlanProgress(joining: [mac]))
 
