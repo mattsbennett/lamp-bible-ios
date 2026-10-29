@@ -96,6 +96,7 @@ struct StrongsAnalysisView: View {
     @State private var bookFilter: Int?
     @State private var shownVerseCount = 50
     @AppStorage("strongs.analysis.bookChartAsRing") private var showsRing = false
+    @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = false
 
     var body: some View {
         Group {
@@ -143,11 +144,23 @@ struct StrongsAnalysisView: View {
             Section { summary(analysis) }
             if !analysis.renderings.isEmpty {
                 Section {
-                    renderings(analysis)
+                    Picker("Chart", selection: $showsRenderingRing) {
+                        Text("List").tag(false)
+                        Text("Ring").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowSeparator(.hidden)
+                    if showsRenderingRing {
+                        renderingShare(analysis)
+                    } else {
+                        renderings(analysis)
+                    }
                 } header: {
                     Text("Rendered As")
                 } footer: {
-                    Text("Tap one to filter the verse list below.")
+                    Text(showsRenderingRing
+                        ? "How its \(analysis.occurrenceCount) occurrences are rendered, the commonest first. Tap one to filter the verse list below."
+                        : "Tap one to filter the verse list below.")
                 }
             }
             Section {
@@ -158,7 +171,7 @@ struct StrongsAnalysisView: View {
                 .pickerStyle(.segmented)
                 .listRowSeparator(.hidden)
                 if showsRing {
-                    share(analysis)
+                    bookShare(analysis)
                 } else {
                     books(analysis)
                 }
@@ -303,35 +316,37 @@ struct StrongsAnalysisView: View {
         }
     }
 
-    /// Blue against orange, a pair that stays apart for most colour vision,
-    /// and not the app's red accent, which beside orange reads as one warm
-    /// colour.
     // MARK: Share
 
-    /// The share as core slices it for a deck's ring (`LampPresentationChart`):
-    /// the books holding most, the rest gathered as "Others".
+    /// A share as core slices it for a deck's ring (`LampPresentationChart`):
+    /// the largest first, the rest gathered as "Others", each named slice a
+    /// way to filter the verses.
     @ViewBuilder
-    private func share(_ analysis: LampStrongsAnalysis) -> some View {
+    private func share(
+        _ analysis: LampStrongsAnalysis,
+        by grouping: LampPresentationChart.Grouping,
+        filterIDs: [String: String],
+        selectedID: String?,
+        toggle: @escaping (String) -> Void
+    ) -> some View {
         let chart = LampPresentationChart(
             source: .init(strongs: analysis.key, translationID: analysis.translationID),
-            by: .book,
+            by: grouping,
             style: .share
         )
         let slices = chart.values(from: analysis)
         let total = slices.reduce(0) { $0 + $1.value }
-        let bookIDs = Dictionary(analysis.books.map { ($0.name, $0.id) }, uniquingKeysWith: { first, _ in first })
         StrongsShareRing(slices: slices, total: Int(total)) { index in
             shareColor(index, of: slices)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 6)
+        // "Others" names nothing to filter by, so its row is no button.
         ForEach(Array(slices.enumerated()), id: \.offset) { index, slice in
-            let bookID = bookIDs[slice.label]
-            let isSelected = bookID != nil && bookFilter == bookID
+            let filterID = filterIDs[slice.label]
+            let isSelected = filterID != nil && selectedID == filterID
             Button {
-                guard let bookID else { return }
-                bookFilter = isSelected ? nil : bookID
-                shownVerseCount = 50
+                if let filterID { toggle(filterID) }
             } label: {
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 2)
@@ -340,6 +355,7 @@ struct StrongsAnalysisView: View {
                     Text(slice.label)
                         .font(.subheadline.weight(isSelected ? .semibold : .regular))
                         .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                        .lineLimit(1)
                     Spacer(minLength: 8)
                     Text("\(Int(slice.value))")
                         .font(.subheadline)
@@ -353,8 +369,41 @@ struct StrongsAnalysisView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(bookID == nil)
+            .disabled(filterID == nil)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
+        }
+    }
+
+    /// The books' share, filtering by book.
+    @ViewBuilder
+    private func bookShare(_ analysis: LampStrongsAnalysis) -> some View {
+        share(
+            analysis,
+            by: .book,
+            filterIDs: Dictionary(analysis.books.map { ($0.name, String($0.id)) }, uniquingKeysWith: { first, _ in first }),
+            selectedID: bookFilter.map(String.init)
+        ) { id in
+            let book = Int(id)
+            bookFilter = bookFilter == book ? nil : book
+            shownVerseCount = 50
+        }
+    }
+
+    /// The renderings' share, filtering by rendering. Core labels the one with
+    /// no English of its own "(no English)".
+    @ViewBuilder
+    private func renderingShare(_ analysis: LampStrongsAnalysis) -> some View {
+        share(
+            analysis,
+            by: .rendering,
+            filterIDs: Dictionary(
+                analysis.renderings.map { ($0.text.isEmpty ? "(no English)" : $0.text, $0.id) },
+                uniquingKeysWith: { first, _ in first }
+            ),
+            selectedID: renderingFilter
+        ) { id in
+            renderingFilter = renderingFilter == id ? nil : id
+            shownVerseCount = 50
         }
     }
 
@@ -368,6 +417,9 @@ struct StrongsAnalysisView: View {
         return Color.accentColor.opacity(1 - 0.6 * Double(index) / Double(slices.count - 1))
     }
 
+    /// Blue against orange, a pair that stays apart for most colour vision,
+    /// and not the app's red accent, which beside orange reads as one warm
+    /// colour.
     private func barColor(_ expectation: LampStrongsAnalysis.Expectation) -> Color {
         switch expectation {
         case .more: .blue
