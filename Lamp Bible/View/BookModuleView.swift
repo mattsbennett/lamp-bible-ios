@@ -409,6 +409,10 @@ struct BookModuleView: View {
     @State private var document: BookSectionDocument?
     /// Where to put the reader once the selected section is ready.
     @State private var landingBlock = -1
+    /// The place the book was left, when it opens there: its block is found
+    /// again once the section's blocks are decoded, in case a rebuild of the
+    /// book has moved them.
+    @State private var resumedPosition: LampBookReadingPosition?
     /// The first block on screen, or -1 for the section's heading.
     @State private var topBlock = -1
     @State private var scrollRequest: BookScrollRequest?
@@ -727,6 +731,7 @@ struct BookModuleView: View {
     // MARK: Moving
 
     private func select(sectionID: String, block: Int = -1) {
+        resumedPosition = nil
         if sectionID == selectedSectionId {
             requestScroll(to: block)
         } else {
@@ -749,8 +754,11 @@ struct BookModuleView: View {
 
     private func savePosition() {
         guard let selectedSectionId else { return }
+        // Anchored to the block's opening words, which find it again after a
+        // rebuild; a section not yet decoded has only its top to give.
+        let blocks = document?.sectionID == selectedSectionId ? document?.blocks ?? [] : []
         BookReadingState.store().save(
-            position: LampBookReadingPosition(sectionID: selectedSectionId, blockIndex: topBlock),
+            position: LampBookReadingPosition(sectionID: selectedSectionId, blockIndex: topBlock, in: blocks),
             for: moduleId
         )
     }
@@ -845,12 +853,14 @@ struct BookModuleView: View {
             func exists(_ id: String?) -> Bool {
                 id.map { id in loadedSections.contains { $0.id == id } } ?? false
             }
+            resumedPosition = nil
             if exists(initialSectionId) {
                 selectedSectionId = initialSectionId
                 landingBlock = -1
             } else if let saved, exists(saved.sectionID) {
                 selectedSectionId = saved.sectionID
                 landingBlock = saved.blockIndex
+                resumedPosition = saved
             } else {
                 selectedSectionId = loadedSections.first?.id
                 landingBlock = -1
@@ -880,6 +890,11 @@ struct BookModuleView: View {
             )
         }.value
         guard !Task.isCancelled, selectedSectionId == sectionID else { return }
+        if !keepsPlace, let resumed = resumedPosition, resumed.sectionID == sectionID {
+            landingBlock = resumed.blockIndex(in: prepared.blocks)
+            topBlock = landingBlock
+            resumedPosition = nil
+        }
         document = prepared
         requestScroll(to: keepsPlace ? topBlock : landingBlock)
     }
