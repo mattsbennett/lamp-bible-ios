@@ -235,8 +235,7 @@ struct NavigationToolbarContent: View {
             .disabled(currentBook == firstBook && currentChapter == firstChapter)
 
             Text("Ch.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.caption)
                 .fixedSize()
 
             Button(action: loadNext) {
@@ -255,8 +254,7 @@ struct NavigationToolbarContent: View {
             .disabled(currentBook == firstBook)
 
             Text("Bk.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.caption)
                 .fixedSize()
 
             Button(action: loadNextBook) {
@@ -297,8 +295,8 @@ struct HistoryToolbarContent: View {
                     showingHistoryList = true
                 } label: {
                     Text("\(history.currentIndex + 1) of \(history.history.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.subheadline.weight(.medium).monospacedDigit())
+                        .foregroundStyle(.primary)
                 }
                 .popover(isPresented: $showingHistoryList) {
                     HistoryListPopover(
@@ -441,8 +439,7 @@ struct PlanToolbarContent: View {
     var body: some View {
         if plansWithReadings.isEmpty {
             Text("No readings for today")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.subheadline)
                 .frame(height: 36)
         } else if let plan = currentPlan, !currentReadings.isEmpty {
             HStack(spacing: 24) {
@@ -472,13 +469,15 @@ struct PlanToolbarContent: View {
                             }
                         }
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
                         Text(currentReadings[currentReadingIndex].description)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.subheadline.weight(.medium))
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
+                    // The bar's text is all primary, told apart by size: on the
+                    // glass bar of iOS 26, over the chapter scrolling beneath
+                    // it, secondary and tertiary text fades nearly to nothing.
+                    .foregroundStyle(.primary)
                     .frame(maxWidth: centerContentMaxWidth)
                 }
                 .popover(isPresented: $showingPlanPicker) {
@@ -515,8 +514,7 @@ struct PlanToolbarContent: View {
             .frame(height: 36)
         } else {
             Text("No readings for today")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.subheadline)
                 .frame(height: 36)
         }
     }
