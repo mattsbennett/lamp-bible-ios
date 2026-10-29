@@ -1653,6 +1653,14 @@ class ModuleDatabase {
         }
     }
 
+    /// One section's title, without the text under it: naming where each
+    /// book was left would otherwise read every one of those sections whole.
+    func getBookSectionTitle(id: String) throws -> String? {
+        try dbQueue.read { db in
+            try String.fetchOne(db, sql: "SELECT title FROM book_sections WHERE id = ?", arguments: [id])
+        }
+    }
+
     func getBookSection(id: String) throws -> BookSection? {
         try dbQueue.read { db in
             try BookSection.fetchOne(db, key: id)

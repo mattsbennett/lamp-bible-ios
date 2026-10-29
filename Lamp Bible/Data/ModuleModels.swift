@@ -7,6 +7,7 @@
 
 import Foundation
 import GRDB
+import LampCore
 import LampModuleKit
 
 // MARK: - Book OSIS Cache
@@ -450,54 +451,67 @@ enum BookMediaPath {
     }
 }
 
-/// Where a reader left a book: the section, and the first of its blocks on
-/// screen, so that a long section reopens where it was being read rather than
-/// at its top. Block -1 is the section's own heading.
-struct BookReadingPosition: Codable, Equatable {
-    var sectionID: String
-    /// Kept so the library can say where a book was left without opening it.
-    var sectionTitle: String?
-    var blockIndex: Int = -1
-    var updatedAt: Date = Date()
+extension Notification.Name {
+    /// Where a book was left, or what is bookmarked in it, changed on another
+    /// device and came in with a sync pass.
+    static let bookReadingDidChange = Notification.Name("bookReadingDidChange")
 }
 
-struct BookReadingProgressStore {
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+/// Where each book was left and what is bookmarked in it, in the store both
+/// apps keep (`LampBookReadingStateStore`), which a sync pass carries between
+/// devices.
+enum BookReadingState {
+    static func store(defaults: UserDefaults = .standard) -> LampBookReadingStateStore {
+        migrateEarlierPositions(in: defaults)
+        return LampBookReadingStateStore(defaults: defaults)
     }
 
-    func position(for moduleID: String) -> BookReadingPosition? {
-        if let data = defaults.data(forKey: positionKey(for: moduleID)),
-           let position = try? JSONDecoder().decode(BookReadingPosition.self, from: data) {
-            return position
+    private static let migratedKey = "books.readerState.migratedFromPhone"
+    private static let positionPrefix = "books.readingPosition."
+    private static let sectionPrefix = "books.readingProgress."
+
+    /// Moves what earlier versions kept, each book under keys of its own that
+    /// never synced, into the shared store, once and before a sync pass
+    /// contributes it. A section kept without a time is left at 0, so a
+    /// position another device recorded outranks it.
+    static func migrateEarlierPositions(in defaults: UserDefaults) {
+        guard !defaults.bool(forKey: migratedKey) else { return }
+        let store = LampBookReadingStateStore(defaults: defaults)
+        let keys = Array(defaults.dictionaryRepresentation().keys)
+        for key in keys where key.hasPrefix(positionPrefix) {
+            if let data = defaults.data(forKey: key),
+               let earlier = try? JSONDecoder().decode(EarlierPosition.self, from: data) {
+                store.save(
+                    position: LampBookReadingPosition(
+                        sectionID: earlier.sectionID,
+                        blockIndex: earlier.blockIndex,
+                        updatedAt: earlier.updatedAt
+                    ),
+                    for: String(key.dropFirst(positionPrefix.count))
+                )
+            }
+            defaults.removeObject(forKey: key)
         }
-        // Earlier versions kept only the section, and not when it was read.
-        return defaults.string(forKey: key(for: moduleID)).map {
-            BookReadingPosition(sectionID: $0, updatedAt: .distantPast)
+        for key in keys where key.hasPrefix(sectionPrefix) {
+            let moduleID = String(key.dropFirst(sectionPrefix.count))
+            if store.position(for: moduleID) == nil, let sectionID = defaults.string(forKey: key) {
+                store.save(
+                    position: LampBookReadingPosition(
+                        sectionID: sectionID,
+                        updatedAt: Date(timeIntervalSince1970: 0)
+                    ),
+                    for: moduleID
+                )
+            }
+            defaults.removeObject(forKey: key)
         }
+        defaults.set(true, forKey: migratedKey)
     }
 
-    func save(_ position: BookReadingPosition, for moduleID: String) {
-        guard let data = try? JSONEncoder().encode(position) else { return }
-        defaults.set(data, forKey: positionKey(for: moduleID))
-    }
-
-    func sectionID(for moduleID: String) -> String? {
-        position(for: moduleID)?.sectionID
-    }
-
-    func save(sectionID: String, for moduleID: String) {
-        save(BookReadingPosition(sectionID: sectionID), for: moduleID)
-    }
-
-    private func key(for moduleID: String) -> String {
-        "books.readingProgress.\(moduleID)"
-    }
-
-    private func positionKey(for moduleID: String) -> String {
-        "books.readingPosition.\(moduleID)"
+    private struct EarlierPosition: Decodable {
+        let sectionID: String
+        let blockIndex: Int
+        let updatedAt: Date
     }
 }
 

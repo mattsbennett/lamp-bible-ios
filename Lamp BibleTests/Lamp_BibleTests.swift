@@ -845,42 +845,35 @@ final class Lamp_BibleTests: XCTestCase {
         XCTAssertEqual(roots.first?.children?.map(\.id), ["sample:chapter"])
     }
 
-    func testBookReadingProgressRoundTripsPerModule() throws {
-        let suiteName = "BookReadingProgressTests.\(UUID().uuidString)"
+    func testEarlierBookPositionsMoveIntoTheSharedStoreOnce() throws {
+        let suiteName = "BookReadingStateTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let store = BookReadingProgressStore(defaults: defaults)
-
-        store.save(sectionID: "book-a:chapter-2", for: "book-a")
-        store.save(sectionID: "book-b:chapter-7", for: "book-b")
-
-        XCTAssertEqual(store.sectionID(for: "book-a"), "book-a:chapter-2")
-        XCTAssertEqual(store.sectionID(for: "book-b"), "book-b:chapter-7")
-    }
-
-    func testBookReadingPositionKeepsThePlaceInASectionAndReadsSectionOnlyRecords() throws {
-        let suiteName = "BookReadingPositionTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let store = BookReadingProgressStore(defaults: defaults)
-
-        // As an earlier version left it: the section alone.
-        defaults.set("book-a:chapter-3", forKey: "books.readingProgress.book-a")
-        let earlier = try XCTUnwrap(store.position(for: "book-a"))
-        XCTAssertEqual(earlier.sectionID, "book-a:chapter-3")
-        XCTAssertEqual(earlier.blockIndex, -1)
-        XCTAssertEqual(earlier.updatedAt, .distantPast)
-
-        store.save(
-            BookReadingPosition(sectionID: "book-a:chapter-4", sectionTitle: "Four", blockIndex: 212),
-            for: "book-a"
+        // As the previous version kept them: a position with its time, and,
+        // older still, a section alone.
+        let readAt = Date(timeIntervalSince1970: 1_793_000_000)
+        defaults.set(
+            Data(#"{"sectionID":"book-a:chapter-4","sectionTitle":"Four","blockIndex":212,"updatedAt":\#(readAt.timeIntervalSinceReferenceDate)}"#.utf8),
+            forKey: "books.readingPosition.book-a"
         )
-        let saved = try XCTUnwrap(store.position(for: "book-a"))
-        XCTAssertEqual(saved.sectionID, "book-a:chapter-4")
-        XCTAssertEqual(saved.sectionTitle, "Four")
-        XCTAssertEqual(saved.blockIndex, 212)
-        XCTAssertEqual(store.sectionID(for: "book-a"), "book-a:chapter-4")
-        XCTAssertNil(store.position(for: "book-b"))
+        defaults.set("book-a:chapter-1", forKey: "books.readingProgress.book-a")
+        defaults.set("book-b:chapter-7", forKey: "books.readingProgress.book-b")
+
+        let store = BookReadingState.store(defaults: defaults)
+
+        XCTAssertEqual(store.position(for: "book-a")?.sectionID, "book-a:chapter-4")
+        XCTAssertEqual(store.position(for: "book-a")?.blockIndex, 212)
+        XCTAssertEqual(store.position(for: "book-a")?.updatedAt, readAt)
+        // A section kept without a time, at 0, so another device's outranks it.
+        XCTAssertEqual(store.position(for: "book-b")?.sectionID, "book-b:chapter-7")
+        XCTAssertEqual(store.position(for: "book-b")?.blockIndex, -1)
+        XCTAssertEqual(store.position(for: "book-b")?.updatedAt, Date(timeIntervalSince1970: 0))
+        XCTAssertNil(defaults.object(forKey: "books.readingPosition.book-a"))
+        XCTAssertNil(defaults.object(forKey: "books.readingProgress.book-b"))
+
+        // Once: a key an older install writes later isn't read again.
+        defaults.set("book-c:chapter-1", forKey: "books.readingProgress.book-c")
+        XCTAssertNil(BookReadingState.store(defaults: defaults).position(for: "book-c"))
     }
 
     func testBookJSONImportsThroughSharedCompilerWithSiblingMedia() async throws {

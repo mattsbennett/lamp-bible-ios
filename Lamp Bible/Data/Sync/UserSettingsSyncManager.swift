@@ -689,6 +689,12 @@ extension UserSettingsSyncManager {
         if let progress = try UserDatabase.shared.planProgress() {
             participants.append(PlanProgressParticipant(contribution: progress))
         }
+        let reading = BookReadingState.store()
+        let readingChanged = ([bundle] + versions)
+            .compactMap { $0.flatMap(LampSyncBundleLedgers.bookReading(in:)) }
+            .reduce(false) { reading.merge($1) || $0 }
+        if readingChanged { BookReadingParticipant.announce() }
+        participants.append(BookReadingParticipant(contribution: reading.ledger()))
         return participants
     }
 
@@ -742,6 +748,30 @@ private struct PlanProgressParticipant: SettingsBundleParticipant {
     func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
         guard let progress = LampSyncBundleLedgers.planProgress(in: written.bundle) else { return }
         try UserDatabase.shared.applyPlanProgress(joining: [progress])
+    }
+}
+
+/// Where each book was left and what is bookmarked in it: this device's whole
+/// record joined into the bundle's on every pass, as plan progress is.
+@MainActor
+private struct BookReadingParticipant: SettingsBundleParticipant {
+    let contribution: LampSyncBookReading
+
+    func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
+        try LampSyncBundleLedgers.Contribution(
+            personal: LampPersonalDeletionLedger(), bookReading: contribution
+        ).apply(to: &bundle)
+    }
+
+    /// What another device wrote while this pass retried its write.
+    func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
+        guard let reading = LampSyncBundleLedgers.bookReading(in: written.bundle),
+              BookReadingState.store().merge(reading) else { return }
+        Self.announce()
+    }
+
+    static func announce() {
+        NotificationCenter.default.post(name: .bookReadingDidChange, object: nil)
     }
 }
 

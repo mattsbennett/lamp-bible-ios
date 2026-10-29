@@ -660,6 +660,13 @@ class BundledModuleDatabase {
         }
     }
 
+    func getBookSectionTitle(id: String) throws -> String? {
+        guard hasBookModulesTable() else { return nil }
+        return try read { db in
+            try String.fetchOne(db, sql: "SELECT title FROM book_sections WHERE id = ?", arguments: [id])
+        }
+    }
+
     func getBookSections(moduleId: String) throws -> [BookSection] {
         guard hasBookModulesTable() else { return [] }
         return try read { db in
