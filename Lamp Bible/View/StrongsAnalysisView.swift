@@ -95,6 +95,7 @@ struct StrongsAnalysisView: View {
     @State private var renderingFilter: String?
     @State private var bookFilter: Int?
     @State private var shownVerseCount = 50
+    @AppStorage("strongs.analysis.bookChartAsRing") private var showsRing = false
 
     var body: some View {
         Group {
@@ -146,15 +147,27 @@ struct StrongsAnalysisView: View {
                 } header: {
                     Text("Rendered As")
                 } footer: {
-                    Text("Tap one to show only its verses.")
+                    Text("Tap one to filter the verse list below.")
                 }
             }
             Section {
-                books(analysis)
+                Picker("Chart", selection: $showsRing) {
+                    Text("Bars").tag(false)
+                    Text("Ring").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .listRowSeparator(.hidden)
+                if showsRing {
+                    share(analysis)
+                } else {
+                    books(analysis)
+                }
             } header: {
                 Text("By Book")
             } footer: {
-                Text("↑ more often, ↓ less often than a book of its length would hold, by a margin chance would rarely give. Tap a book to show its verses.")
+                Text(showsRing
+                    ? "Where its \(analysis.occurrenceCount) occurrences fall, the books holding most first. Tap a book to filter the verse list below."
+                    : "↑ more often, ↓ less often than a book of its length would hold, by a margin chance would rarely give. Tap a book to filter the verse list below.")
             }
             if !analysis.companions.isEmpty {
                 Section {
@@ -293,6 +306,68 @@ struct StrongsAnalysisView: View {
     /// Blue against orange, a pair that stays apart for most colour vision,
     /// and not the app's red accent, which beside orange reads as one warm
     /// colour.
+    // MARK: Share
+
+    /// The share as core slices it for a deck's ring (`LampPresentationChart`):
+    /// the books holding most, the rest gathered as "Others".
+    @ViewBuilder
+    private func share(_ analysis: LampStrongsAnalysis) -> some View {
+        let chart = LampPresentationChart(
+            source: .init(strongs: analysis.key, translationID: analysis.translationID),
+            by: .book,
+            style: .share
+        )
+        let slices = chart.values(from: analysis)
+        let total = slices.reduce(0) { $0 + $1.value }
+        let bookIDs = Dictionary(analysis.books.map { ($0.name, $0.id) }, uniquingKeysWith: { first, _ in first })
+        StrongsShareRing(slices: slices, total: Int(total)) { index in
+            shareColor(index, of: slices)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        ForEach(Array(slices.enumerated()), id: \.offset) { index, slice in
+            let bookID = bookIDs[slice.label]
+            let isSelected = bookID != nil && bookFilter == bookID
+            Button {
+                guard let bookID else { return }
+                bookFilter = isSelected ? nil : bookID
+                shownVerseCount = 50
+            } label: {
+                HStack(spacing: 8) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(shareColor(index, of: slices))
+                        .frame(width: 10, height: 10)
+                    Text(slice.label)
+                        .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                    Spacer(minLength: 8)
+                    Text("\(Int(slice.value))")
+                        .font(.subheadline)
+                        .monospacedDigit()
+                    Text("\(total > 0 ? Int((slice.value / total * 100).rounded()) : 0)%")
+                        .font(.subheadline)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(bookID == nil)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+        }
+    }
+
+    /// One hue, deepest for the largest slice, as a deck's ring has it; the
+    /// gathered rest faintest, being a remainder rather than a finding.
+    private func shareColor(_ index: Int, of slices: [LampPresentationChart.Value]) -> Color {
+        let isOthers = index == slices.count - 1 && slices.count == LampPresentationChart.shareSlices
+            && slices[index].label == "Others"
+        guard !isOthers else { return Color.accentColor.opacity(0.2) }
+        guard slices.count > 1 else { return .accentColor }
+        return Color.accentColor.opacity(1 - 0.6 * Double(index) / Double(slices.count - 1))
+    }
+
     private func barColor(_ expectation: LampStrongsAnalysis.Expectation) -> Color {
         switch expectation {
         case .more: .blue
@@ -440,5 +515,49 @@ struct StrongsAnalysisView: View {
             value[start..<end].foregroundColor = Color.accentColor
         }
         return value
+    }
+}
+
+/// A ring of the whole, largest slice first from twelve o'clock, with the
+/// total in its hole: the one number a share otherwise leaves you to add up.
+private struct StrongsShareRing: View {
+    let slices: [LampPresentationChart.Value]
+    let total: Int
+    let color: (Int) -> Color
+
+    var body: some View {
+        ZStack {
+            Canvas { context, size in
+                let centre = CGPoint(x: size.width / 2, y: size.height / 2)
+                let radius = min(size.width, size.height) / 2
+                let hole = radius * 0.6
+                let sum = slices.reduce(0) { $0 + $1.value }
+                guard sum > 0 else { return }
+                var start = Angle.degrees(-90)
+                for (index, slice) in slices.enumerated() {
+                    let sweep = Angle.degrees(360 * slice.value / sum)
+                    var path = Path()
+                    path.addArc(center: centre, radius: radius, startAngle: start, endAngle: start + sweep, clockwise: false)
+                    path.addArc(center: centre, radius: hole, startAngle: start + sweep, endAngle: start, clockwise: true)
+                    path.closeSubpath()
+                    context.fill(path, with: .color(color(index)))
+                    // A hairline in the row's own colour, so neighbouring
+                    // slices of one hue stay apart.
+                    context.stroke(path, with: .color(Color(uiColor: .secondarySystemGroupedBackground)), lineWidth: 1.5)
+                    start += sweep
+                }
+            }
+            VStack(spacing: 0) {
+                Text("\(total)")
+                    .font(.title3.weight(.semibold))
+                    .monospacedDigit()
+                Text("in all")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 140, height: 140)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(slices.map { "\($0.label), \(Int($0.value))" }.joined(separator: "; "))
     }
 }
