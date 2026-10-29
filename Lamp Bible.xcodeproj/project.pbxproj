@@ -77,6 +77,7 @@
 		B87B2AD32F008243006DC53D /* SplitReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD22F008243006DC53D /* SplitReaderView.swift */; };
 		B87B2AD72F01FAE7006DC53D /* NavigationHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */; };
 		B87B2AD92F022EEE006DC53D /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AD82F022EEE006DC53D /* SearchView.swift */; };
+		B8A1C0DF2F0A000000000001 /* StrongsAnalysisView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8A1C0DE2F0A000000000001 /* StrongsAnalysisView.swift */; };
 		B87B2ADB2F022F00006DC53D /* SearchResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2ADA2F022F00006DC53D /* SearchResult.swift */; };
 		B87B2AF12F037B3A006DC53D /* StrongsParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AF02F037B3A006DC53D /* StrongsParser.swift */; };
 		B87B2AFD2F03881D006DC53D /* LexiconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B87B2AFC2F03881D006DC53D /* LexiconView.swift */; };
@@ -253,6 +254,7 @@
 		B87B2AD22F008243006DC53D /* SplitReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitReaderView.swift; sourceTree = "<group>"; };
 		B87B2AD62F01FAE7006DC53D /* NavigationHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationHistory.swift; sourceTree = "<group>"; };
 		B87B2AD82F022EEE006DC53D /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		B8A1C0DE2F0A000000000001 /* StrongsAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrongsAnalysisView.swift; sourceTree = "<group>"; };
 		B87B2ADA2F022F00006DC53D /* SearchResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResult.swift; sourceTree = "<group>"; };
 		B87B2AF02F037B3A006DC53D /* StrongsParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrongsParser.swift; sourceTree = "<group>"; };
 		B87B2AFC2F03881D006DC53D /* LexiconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LexiconView.swift; sourceTree = "<group>"; };
@@ -475,6 +477,7 @@
 				B82BBB832B4CCEC5002248CC /* ReaderNavigationToolbarView.swift */,
 				B8FC33472B3F4AC7009C544D /* ReaderView.swift */,
 				B87B2AD82F022EEE006DC53D /* SearchView.swift */,
+				B8A1C0DE2F0A000000000001 /* StrongsAnalysisView.swift */,
 				B84968D92AF9FDEA00955089 /* SettingsView.swift */,
 				B87B2AD22F008243006DC53D /* SplitReaderView.swift */,
 				B851FFD42B7B221700C74C1D /* WrappingHStack.swift */,
@@ -816,6 +819,7 @@
 				B82BBB882B4D0679002248CC /* PlanDateToolbarView.swift in Sources */,
 				B8FC333E2B3E2CAF009C544D /* DataModel.swift in Sources */,
 				B87B2AD92F022EEE006DC53D /* SearchView.swift in Sources */,
+				B8A1C0DF2F0A000000000001 /* StrongsAnalysisView.swift in Sources */,
 				B84968DE2AFB3D4000955089 /* ExternalBibleApp.swift in Sources */,
 				B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */,
 				B851FFD32B7B1BCF00C74C1D /* ReadingsView.swift in Sources */,

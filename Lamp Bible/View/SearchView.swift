@@ -352,6 +352,7 @@ struct SearchView: View {
     @State private var selectedNote: ModuleSearchResult? = nil
     @State private var selectedCommentary: ModuleSearchResult? = nil
     @State private var selectedBookSection: ModuleSearchResult? = nil
+    @State private var analysisItem: StrongsAnalysisItem? = nil
     @State private var selectedHighlight: ModuleSearchResult? = nil
     @State private var selectedTranslation: ModuleSearchResult? = nil
 
@@ -1227,6 +1228,13 @@ struct SearchView: View {
         .sheet(item: $selectedCommentary) { result in
             CommentaryEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId, searchQuery: currentSearchText, translationId: translationId)
         }
+        .sheet(item: $analysisItem) { item in
+            StrongsAnalysisSheet(
+                key: item.key,
+                translationId: translationId,
+                onNavigateToVerse: navigateToHighlightedVerse
+            )
+        }
         .fullScreenCover(item: $selectedBookSection) { result in
             BookModuleView(moduleId: result.moduleId, initialSectionId: result.id)
         }
@@ -1344,7 +1352,10 @@ struct SearchView: View {
             resultLimit: resultLimit,
             stateManager: stateManager,
             onNavigate: navigateToVerse,
-            onLoadMore: loadMoreResults
+            onLoadMore: loadMoreResults,
+            onAnalyze: searchMode == .strongs && !searchResults.isEmpty
+                ? { analysisItem = StrongsAnalysisItem(key: LampStrongsKey.normalized(currentSearchText)) }
+                : nil
         )
     }
 
@@ -3237,6 +3248,8 @@ private struct BibleResultsListView: View {
     let stateManager: SearchStateManager
     let onNavigate: (SearchResult) -> Void
     let onLoadMore: () -> Void
+    /// For a Strong's search: opens the key's analysis.
+    var onAnalyze: (() -> Void)? = nil
 
     // Track all visible item IDs - local state only, doesn't trigger parent re-renders
     @State private var visibleIds: Set<Int> = []
@@ -3276,10 +3289,18 @@ private struct BibleResultsListView: View {
                         }
                     }
                 } header: {
-                    if totalResultCount > resultLimit {
-                        Text("Showing \(searchResults.count) of \(totalResultCount) results")
-                    } else {
-                        Text("\(searchResults.count) results")
+                    HStack {
+                        if totalResultCount > resultLimit {
+                            Text("Showing \(searchResults.count) of \(totalResultCount) results")
+                        } else {
+                            Text("\(searchResults.count) results")
+                        }
+                        Spacer()
+                        if let onAnalyze {
+                            Button("Analyse", systemImage: "chart.bar.xaxis", action: onAnalyze)
+                                .font(.footnote)
+                                .textCase(nil)
+                        }
                     }
                 }
 

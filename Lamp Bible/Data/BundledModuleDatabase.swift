@@ -1663,6 +1663,38 @@ class TranslationDatabase {
         }
     }
 
+    /// What the translation's Strong's tags say about one key
+    /// (`LampStrongsAnalyzer`), measured against every tagged verse of it, not
+    /// only the ones holding the key, and keeping those verses' text to show.
+    /// A pass over the whole translation: call it off the main thread.
+    func analyzeStrongs(key: String, translationId: String) throws -> LampStrongsAnalysis? {
+        guard let translation = try getTranslation(id: translationId) else { return nil }
+        var analyzer = LampStrongsAnalyzer(
+            key: key,
+            translationID: translation.id,
+            translationName: translation.name,
+            translationAbbreviation: translation.abbreviation,
+            language: translation.language,
+            includingVerseText: true
+        )
+        func feed(_ db: Database) throws {
+            let rows = try Row.fetchCursor(db, sql: """
+                SELECT ref, text, annotations_json FROM translation_verses
+                WHERE translation_id = ? AND annotations_json IS NOT NULL
+                """, arguments: [translationId])
+            while let row = try rows.next() {
+                // The text is read only for a verse holding the key.
+                analyzer.add(reference: row["ref"], text: row["text"] ?? "", annotationsJSON: row["annotations_json"])
+            }
+        }
+        if try bundledDb.isTranslationBundled(id: translationId) {
+            try bundledDb.read(feed)
+        } else {
+            try userDb.read(feed)
+        }
+        return analyzer.analysis()
+    }
+
     /// Count Strong's number occurrences in a translation
     func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
         if try bundledDb.isTranslationBundled(id: translationId) {

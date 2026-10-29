@@ -2171,6 +2171,7 @@ struct LexiconEntryView: View {
     let senses: [DictionarySense]
     var translationId: String? = nil
     var onSearchStrongs: ((String) -> Void)? = nil
+    var onAnalyzeStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
     var baseFontSize: CGFloat = 17  // Base font size (scaled from user's reader font size)
     var hitCount: Int? = nil  // Number of occurrences in the translation
@@ -2282,6 +2283,19 @@ struct LexiconEntryView: View {
                         .foregroundStyle(.accent)
                     }
                     .buttonStyle(.plain)
+                }
+
+                // Where those occurrences fall, and what renders them
+                if let onAnalyze = onAnalyzeStrongs, let count = hitCount, count > 0 {
+                    Button {
+                        onAnalyze(entry.strongsId)
+                    } label: {
+                        Image(systemName: "chart.bar.xaxis")
+                            .font(subheadlineFont)
+                            .foregroundStyle(.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Analyse \(entry.strongsId)")
                 }
             }
 
@@ -2858,6 +2872,7 @@ struct LexiconPageView: View {
     var strongsHitCounts: [String: Int] = [:]  // Hit counts for display
     var searchTerms: [String] = []  // Search terms to highlight
     var onSearchStrongs: ((String) -> Void)? = nil
+    var onAnalyzeStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
 
     // Shared state for cross-segment navigation
@@ -3097,6 +3112,7 @@ struct LexiconPageView: View {
                     senses: data.senses,
                     translationId: translationId,
                     onSearchStrongs: onSearchStrongs,
+                    onAnalyzeStrongs: onAnalyzeStrongs,
                     onNavigateToVerse: onNavigateToVerse,
                     baseFontSize: baseFontSize,
                     hitCount: strongsHitCounts[data.entry.strongsId],
@@ -3512,6 +3528,7 @@ struct LexiconSheetView: View {
     @State private var settledPage: Int = 0  // Debounced - only updates when swipe finishes
     @State private var settleTask: Task<Void, Never>? = nil
     @State private var searchItem: StrongsSearchItem? = nil
+    @State private var analysisItem: StrongsAnalysisItem? = nil
     @State private var requestScrollToVerseId: Int? = nil
     @State private var requestScrollAnimated: Bool = false
     // Use ObservableObject for async loading
@@ -3560,9 +3577,15 @@ struct LexiconSheetView: View {
         searchItem = StrongsSearchItem(strongsNum: strongsNum)
     }
 
+    /// Opens the analysis of the given Strong's number
+    private func openAnalysis(_ strongsNum: String) {
+        analysisItem = StrongsAnalysisItem(key: strongsNum)
+    }
+
     /// Handle navigation from search results
     private func handleNavigateToVerse(_ verseId: Int) {
         searchItem = nil
+        analysisItem = nil
         dismiss()
         onNavigateToVerse?(verseId)
     }
@@ -3593,6 +3616,7 @@ struct LexiconSheetView: View {
                                 searchTerms: searchTerms,
                                 // Disable search when restricted to a specific lexicon (e.g., from module search)
                                 onSearchStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openSearch : nil,
+                                onAnalyzeStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openAnalysis : nil,
                                 onNavigateToVerse: restrictToLexicon == nil ? handleNavigateToVerse : nil
                             )
                             .tag(index)
@@ -3639,6 +3663,7 @@ struct LexiconSheetView: View {
                             searchTerms: searchTerms,
                             // Disable search when restricted to a specific lexicon (e.g., from module search)
                             onSearchStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openSearch : nil,
+                            onAnalyzeStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openAnalysis : nil,
                             onNavigateToVerse: restrictToLexicon == nil ? handleNavigateToVerse : nil
                         )
                     }
@@ -3671,6 +3696,13 @@ struct LexiconSheetView: View {
                     strongsNum: item.strongsNum,
                     translationId: translationId,
                     fontSize: Int(userSettings.readerFontSize),
+                    onNavigateToVerse: handleNavigateToVerse
+                )
+            }
+            .sheet(item: $analysisItem) { item in
+                StrongsAnalysisSheet(
+                    key: item.key,
+                    translationId: translationId,
                     onNavigateToVerse: handleNavigateToVerse
                 )
             }
