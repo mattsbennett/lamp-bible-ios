@@ -4683,3 +4683,108 @@ final class SearchSpeedTests: XCTestCase {
         XCTAssertTrue(snippet.hasPrefix("…") && snippet.hasSuffix("…"))
     }
 }
+
+final class StrongsIndexTests: XCTestCase {
+    private struct QueueSource: TranslationVerseSource {
+        let queue: DatabaseQueue
+        var verseStamp = "test"
+        func read<T>(_ block: (Database) throws -> T) throws -> T { try queue.read(block) }
+    }
+
+    private func source(_ verses: [(Int, String)]) throws -> QueueSource {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE translations (id TEXT PRIMARY KEY, name TEXT, abbreviation TEXT);
+                CREATE TABLE translation_verses (
+                    id INTEGER PRIMARY KEY, translation_id TEXT, ref INTEGER, book INTEGER,
+                    chapter INTEGER, verse INTEGER, text TEXT, annotations_json TEXT);
+                INSERT INTO translations VALUES ('T', 'Test', 'T');
+                """)
+            for (ref, annotations) in verses {
+                try db.execute(
+                    sql: """
+                        INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text, annotations_json)
+                        VALUES ('T', ?, ?, 1, 1, 'love one another', ?)
+                        """,
+                    arguments: [ref, ref / 1_000_000, annotations]
+                )
+            }
+        }
+        return QueueSource(queue: queue)
+    }
+
+    private func tag(_ strongs: String, start: Int = 0) -> String {
+        #"[{"type":"strongs","start":\#(start),"end":\#(start + 4),"data":{"strongs":"\#(strongs)"}}]"#
+    }
+
+    func testAKeyIsFoundAsCoreReadsATag() throws {
+        let source = try source([
+            (40_001_001, tag("G26")),
+            (40_001_002, tag("G0026")),
+            (40_001_003, tag("H996,G26")),
+            (40_001_004, tag("26")),
+            (40_001_005, tag("G2600,H26", start: 26)),
+            (40_001_006, tag("G25")),
+            (1_001_001, tag("G26")),
+        ])
+        let index = try StrongsIndex.inMemory()
+        XCTAssertNil(index.refs(translationId: "T", key: "G26", source: source), "Not indexed yet")
+        try index.rebuild("T", from: source)
+
+        XCTAssertEqual(index.refs(translationId: "T", key: "G26", source: source),
+                       [1_001_001, 40_001_001, 40_001_002, 40_001_003, 40_001_004])
+        XCTAssertEqual(index.refs(translationId: "T", key: "G26", bookRange: 40...66, source: source),
+                       [40_001_001, 40_001_002, 40_001_003, 40_001_004])
+        XCTAssertEqual(index.refs(translationId: "T", key: "g0025", source: source), [40_001_006])
+        XCTAssertEqual(index.refs(translationId: "T", key: "G9999", source: source), [])
+    }
+
+    func testAChangedTranslationIsIndexedAgain() throws {
+        let source = try source([(40_001_001, tag("G26"))])
+        let index = try StrongsIndex.inMemory()
+        try index.rebuild("T", from: source)
+        XCTAssertEqual(index.refs(translationId: "T", key: "G26", source: source), [40_001_001])
+
+        try source.queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text, annotations_json)
+                VALUES ('T', 40001002, 40, 1, 2, 'love', ?)
+                """, arguments: [tag("G26")])
+        }
+        XCTAssertNil(index.refs(translationId: "T", key: "G26", source: source), "Stale, so not trusted")
+        try index.rebuild("T", from: source)
+        XCTAssertEqual(index.refs(translationId: "T", key: "G26", source: source), [40_001_001, 40_001_002])
+    }
+
+    func testTheAppsIndexIsBuiltAtLaunchAndMakesASearchALookup() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let source = BundledModuleDatabase.shared
+        // The launch queued every tagged translation; wait for the KJV.
+        StrongsIndex.shared.prepare(readerTranslationId: "KJVs")
+        let deadline = Date().addingTimeInterval(180)
+        while StrongsIndex.shared.refs(translationId: "KJVs", key: "G25", source: source) == nil, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        let started = Date()
+        let total = try TranslationDatabase.shared.countStrongsOccurrences(translationId: "KJVs", strongsNum: "G25")
+        let verses = try TranslationDatabase.shared.searchVersesByStrongs(translationId: "KJVs", strongsNum: "G25", limit: 100)
+        let elapsed = Date().timeIntervalSince(started)
+        print("[StrongsIndex] G25 in the KJV: \(total) verses, \(verses.count) shown, in \(Int(elapsed * 1000)) ms")
+        XCTAssertEqual(total, 109)
+        XCTAssertEqual(verses.count, 100)
+        XCTAssertTrue(verses.allSatisfy { $0.snippet.contains("<mark>") })
+        XCTAssertLessThan(elapsed, 0.2)
+    }
+
+    func testTheIndexOfTheKJVCountsAsTheScanDoes() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let source = BundledModuleDatabase.shared
+        let index = try StrongsIndex.inMemory()
+        try index.rebuild("KJVs", from: source)
+        for key in ["G25", "G26", "G2532", "H430", "H1", "G1", "H996"] {
+            let scanned = try source.read { try StrongsVerseQuery.count(in: $0, translationId: "KJVs", key: key) }
+            XCTAssertEqual(index.refs(translationId: "KJVs", key: key, source: source)?.count, scanned, key)
+        }
+    }
+}

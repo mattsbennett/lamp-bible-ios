@@ -178,6 +178,8 @@ struct LampBibleApp: App {
             }
         }
         SearchIndexMaintenance.start()
+        // Indexed once and kept, so a Strong's search is a lookup.
+        StrongsIndex.shared.prepare(readerTranslationId: UserDatabase.shared.getSettings().readerTranslationId)
     }
 
     var body: some Scene {

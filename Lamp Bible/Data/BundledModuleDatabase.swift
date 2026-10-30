@@ -51,6 +51,11 @@ class BundledModuleDatabase {
             return
         }
 
+        let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+        let sourcePath = Bundle.main.path(forResource: "bundled_modules.db", ofType: "zlib") ?? dbPath
+        let sourceSize = ((try? FileManager.default.attributesOfItem(atPath: sourcePath))?[.size] as? Int) ?? 0
+        contentStamp = "\(appBuild):\(sourceSize)"
+
         var config = Configuration()
         config.readonly = true
 
@@ -128,6 +133,10 @@ class BundledModuleDatabase {
 
     /// Check if bundled database is available
     var available: Bool { isAvailable }
+
+    /// The app build and the bundled file's size: changes whenever the
+    /// bundled modules may have, as the decompressed copy's marker does.
+    private(set) var contentStamp = ""
 
     private var reverseLexiconMappingsCache: [String: [String]]?
     private let reverseLexiconMappingsLock = NSLock()
@@ -1776,11 +1785,24 @@ class TranslationDatabase {
     }
 
     /// Count Strong's number occurrences in a translation
+    /// The database the translation's verses are in.
+    func verseSource(for translationId: String) throws -> TranslationVerseSource {
+        try bundledDb.isTranslationBundled(id: translationId) ? bundledDb : userDb
+    }
+
+    /// From the Strong's index, or, while the translation has none, by
+    /// reading the verses that may tag the key.
     func countStrongsOccurrences(
         translationId: String,
         strongsNum: String,
         bookRange: ClosedRange<Int>? = nil
     ) throws -> Int {
+        if let refs = StrongsIndex.shared.refs(
+            translationId: translationId, key: strongsNum, bookRange: bookRange,
+            source: try verseSource(for: translationId)
+        ) {
+            return refs.count
+        }
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.countStrongsOccurrences(
                 translationId: translationId, strongsNum: strongsNum, bookRange: bookRange
@@ -1792,13 +1814,23 @@ class TranslationDatabase {
         }
     }
 
-    /// Search verses by Strong's number in annotations_json
+    /// The verses tagging a Strong's number, from the index, or, while the
+    /// translation has none, by reading the verses that may tag it.
     func searchVersesByStrongs(
         translationId: String,
         strongsNum: String,
         bookRange: ClosedRange<Int>? = nil,
         limit: Int = 50
     ) throws -> [TranslationSearchResult] {
+        let source = try verseSource(for: translationId)
+        if let refs = StrongsIndex.shared.refs(
+            translationId: translationId, key: strongsNum, bookRange: bookRange, source: source
+        ) {
+            let shown = Array(refs.prefix(limit))
+            return try source.read { db in
+                try StrongsVerseQuery.verses(in: db, translationId: translationId, key: strongsNum, refs: shown)
+            }
+        }
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.searchVersesByStrongs(
                 translationId: translationId,
@@ -1891,21 +1923,47 @@ enum StrongsVerseQuery {
         while results.count < limit, let row = try rows.next() {
             let annotationsJson: String? = row["annotations_json"]
             guard LampStrongsSearch.holdsKey(annotationsJson, key: key) else { continue }
-            let text: String = row["text"] ?? ""
-            results.append(TranslationSearchResult(
-                id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
-                translationId: row["translation_id"],
-                translationName: row["translation_name"] ?? "",
-                translationAbbrev: row["translation_abbrev"] ?? "",
-                ref: row["ref"],
-                book: row["book"],
-                chapter: row["chapter"],
-                verse: row["verse"],
-                snippet: LampStrongsSearch.markedText(text, annotationsJSON: annotationsJson, key: key),
-                rank: 1.0,
-                rawText: annotationsJson
-            ))
+            results.append(result(from: row, key: key))
         }
         return results
+    }
+
+    /// The verses at `refs`, which the Strong's index found tagging `key`,
+    /// in order.
+    static func verses(in db: Database, translationId: String, key: String, refs: [Int]) throws -> [TranslationSearchResult] {
+        var results: [TranslationSearchResult] = []
+        var start = 0
+        while start < refs.count {
+            let chunk = refs[start..<min(start + 500, refs.count)]
+            start += chunk.count
+            results += try Row.fetchAll(db, sql: """
+                SELECT v.translation_id, t.name AS translation_name, t.abbreviation AS translation_abbrev,
+                       v.ref, v.book, v.chapter, v.verse, v.text, v.annotations_json
+                FROM translation_verses v
+                JOIN translations t ON v.translation_id = t.id
+                WHERE v.translation_id = ? AND v.ref IN (\(chunk.map { _ in "?" }.joined(separator: ", ")))
+                ORDER BY v.ref
+                """, arguments: StatementArguments([translationId] + Array(chunk))
+            ).map { result(from: $0, key: key) }
+        }
+        return results
+    }
+
+    private static func result(from row: Row, key: String) -> TranslationSearchResult {
+        let annotationsJson: String? = row["annotations_json"]
+        let text: String = row["text"] ?? ""
+        return TranslationSearchResult(
+            id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
+            translationId: row["translation_id"],
+            translationName: row["translation_name"] ?? "",
+            translationAbbrev: row["translation_abbrev"] ?? "",
+            ref: row["ref"],
+            book: row["book"],
+            chapter: row["chapter"],
+            verse: row["verse"],
+            snippet: LampStrongsSearch.markedText(text, annotationsJSON: annotationsJson, key: key),
+            rank: 1.0,
+            rawText: annotationsJson
+        )
     }
 }
