@@ -27,6 +27,8 @@ struct ModuleSearchResult: Identifiable {
     var strongsKey: String? = nil
     var highlightColor: String? = nil  // Hex color for highlight results
     var highlightStyle: HighlightStyle? = nil  // Style for highlight results
+    /// A highlight's own translation, which its offsets count into.
+    var translationId: String? = nil
 
     // For navigation
     var book: Int? { verseId.map { $0 / 1000000 } }
@@ -131,6 +133,21 @@ class ModuleSearch {
             })
         } catch {
             print("Failed to get bundled books: \(error)")
+        }
+
+        // The bundled commentaries, the Treasury and the cross-references,
+        // which live in the bundled database rather than the user's.
+        if BundledModuleDatabase.shared.available {
+            do {
+                let bundledCommentaries = try BundledModuleDatabase.shared.read { db in
+                    try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'commentary' ORDER BY name")
+                }
+                modules.append(contentsOf: bundledCommentaries.map {
+                    SearchableModule(id: $0["id"], name: $0["name"], type: .commentary, isBundled: true)
+                })
+            } catch {
+                print("Failed to get bundled commentaries: \(error)")
+            }
         }
 
         do {
@@ -339,14 +356,6 @@ class ModuleSearch {
         return Array(results.prefix(limit))
     }
 
-    /// Legacy method for compatibility
-    func search(query: String, types: Set<ModuleType>? = nil, limit: Int = 50) throws -> [ModuleSearchResult] {
-        var filter = ModuleSearchFilter.default
-        if let types = types {
-            filter.types = types
-        }
-        return try search(query: query, filter: filter, limit: limit)
-    }
 
     // MARK: - Type-Specific Search
 
@@ -429,12 +438,12 @@ class ModuleSearch {
             var moduleCondition = ""
             var moduleArgs: [DatabaseValueConvertible] = []
             if let moduleIds = filter.moduleIds {
-                let userModuleIds = Array(moduleIds.filter { !$0.hasPrefix("strongs-") && $0 != "dodson" && $0 != "bdb" })
-                if !userModuleIds.isEmpty {
-                    let placeholders = userModuleIds.map { _ in "?" }.joined(separator: ", ")
-                    moduleCondition = "AND d.module_id IN (\(placeholders))"
-                    moduleArgs = userModuleIds.map { $0 as DatabaseValueConvertible }
-                }
+                let userModuleIds = Self.userDictionaryIDs(in: moduleIds)
+                // Only bundled dictionaries chosen: none of the user's.
+                guard !userModuleIds.isEmpty else { return [] }
+                let placeholders = userModuleIds.map { _ in "?" }.joined(separator: ", ")
+                moduleCondition = "AND d.module_id IN (\(placeholders))"
+                moduleArgs = userModuleIds.map { $0 as DatabaseValueConvertible }
             }
 
             // FTS search
@@ -550,6 +559,12 @@ class ModuleSearch {
         }
     }
 
+    /// The chosen modules that aren't a bundled dictionary, which the filter
+    /// lists under their own IDs.
+    private static func userDictionaryIDs(in moduleIds: Set<String>) -> [String] {
+        moduleIds.filter { !$0.hasPrefix("strongs-") && $0 != "dodson" && $0 != "bdb" }.sorted()
+    }
+
     /// Search user dictionaries by key only (no FTS)
     private func searchDictionariesByKey(filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         guard let key = filter.strongsKey else { return [] }
@@ -560,14 +575,12 @@ class ModuleSearch {
 
             // Module filter
             if let moduleIds = filter.moduleIds {
-                let userModuleIds = Array(moduleIds.filter { !$0.hasPrefix("strongs-") && $0 != "dodson" && $0 != "bdb" })
-                if !userModuleIds.isEmpty {
-                    let placeholders = userModuleIds.map { _ in "?" }.joined(separator: ", ")
-                    conditions.append("d.module_id IN (\(placeholders))")
-                    for id in userModuleIds {
-                        arguments.append(id)
-                    }
-                }
+                let userModuleIds = Self.userDictionaryIDs(in: moduleIds)
+                // Only bundled dictionaries chosen: none of the user's.
+                guard !userModuleIds.isEmpty else { return [] }
+                let placeholders = userModuleIds.map { _ in "?" }.joined(separator: ", ")
+                conditions.append("d.module_id IN (\(placeholders))")
+                arguments.append(contentsOf: userModuleIds)
             }
 
             let whereClause = conditions.joined(separator: " AND ")
@@ -612,9 +625,12 @@ class ModuleSearch {
         let bundledDb = BundledModuleDatabase.shared
         var results: [ModuleSearchResult] = []
 
-        // Parse query for quoted (exact word match) and unquoted (substring match) terms
-        let searchTerms = parseSearchQuery(query)
-        let searchQuery = getRealmSearchString(from: query).lowercased()
+        // The database matches every term, in any sense; what is left here is
+        // to rank each entry and show where it matched.
+        let parsedQuery = LampSearchQuery(query)
+        func snippet(_ entry: DictionaryEntry) -> String {
+            parsedQuery.markedSnippet(DictionarySearchText.text(fromSensesJSON: entry.sensesJson), limit: 200)
+        }
 
         // Check which bundled dictionaries to search
         let searchAll = filter.moduleIds == nil
@@ -622,12 +638,6 @@ class ModuleSearch {
         let searchStrongsHebrew = searchAll || filter.moduleIds?.contains("strongs-hebrew") == true
         let searchDodson = searchAll || filter.moduleIds?.contains("dodson") == true
         let searchBDB = searchAll || filter.moduleIds?.contains("bdb") == true
-
-        // Helper to check if entry matches all terms (for word-boundary matching of quoted terms)
-        func entryMatchesTerms(_ texts: [String]) -> Bool {
-            let combinedText = texts.joined(separator: " ")
-            return textMatchesAllTerms(combinedText, terms: searchTerms)
-        }
 
         // Strong's Greek (module ID: strongs_greek)
         if searchStrongsGreek {
@@ -642,16 +652,15 @@ class ModuleSearch {
                     }
                 } else {
                     // Text search
-                    entries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "strongs_greek", keyType: nil, limit: limit)
+                    entries = try bundledDb.searchDictionaryEntries(query: query, moduleId: "strongs_greek", keyType: nil, limit: limit)
                 }
 
                 for entry in entries.prefix(limit) {
                     // Get definition from first sense
                     let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.shortDefinitionText ?? entry.senses.first?.gloss ?? ""
                     let entryTexts = [entry.key, entry.lemma, senseDef, entry.transliteration ?? ""]
-                    guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
 
-                    let snippet = extractSnippetAroundMatch(senseDef, searchTerms: searchTerms, maxLength: 200)
+                    let snippet = snippet(entry)
                     results.append(ModuleSearchResult(
                         id: "strongs-greek-\(entry.key)",
                         moduleId: "strongs-greek",
@@ -660,7 +669,7 @@ class ModuleSearch {
                         title: "\(entry.lemma) (\(entry.key))",
                         snippet: snippet,
                         verseId: nil,
-                        rank: calculateTextRank(query: searchQuery, in: entryTexts),
+                        rank: calculateTextRank(query: query, in: entryTexts),
                         strongsKey: entry.key
                     ))
                 }
@@ -680,15 +689,14 @@ class ModuleSearch {
                         entries = []
                     }
                 } else {
-                    entries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "strongs_hebrew", keyType: nil, limit: limit)
+                    entries = try bundledDb.searchDictionaryEntries(query: query, moduleId: "strongs_hebrew", keyType: nil, limit: limit)
                 }
 
                 for entry in entries.prefix(limit) {
                     let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.shortDefinitionText ?? entry.senses.first?.gloss ?? ""
                     let entryTexts = [entry.key, entry.lemma, senseDef, entry.transliteration ?? ""]
-                    guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
 
-                    let snippet = extractSnippetAroundMatch(senseDef, searchTerms: searchTerms, maxLength: 200)
+                    let snippet = snippet(entry)
                     // Use LRM (Left-to-Right Mark) to prevent RTL reordering of key
                     let lrm = "\u{200E}"
                     results.append(ModuleSearchResult(
@@ -699,7 +707,7 @@ class ModuleSearch {
                         title: "\(entry.lemma) \(lrm)(\(entry.key))",
                         snippet: snippet,
                         verseId: nil,
-                        rank: calculateTextRank(query: searchQuery, in: entryTexts),
+                        rank: calculateTextRank(query: query, in: entryTexts),
                         strongsKey: entry.key
                     ))
                 }
@@ -719,15 +727,14 @@ class ModuleSearch {
                         entries = []
                     }
                 } else {
-                    entries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "dodson_greek", keyType: nil, limit: limit)
+                    entries = try bundledDb.searchDictionaryEntries(query: query, moduleId: "dodson_greek", keyType: nil, limit: limit)
                 }
 
                 for entry in entries.prefix(limit) {
                     let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.shortDefinitionText ?? entry.senses.first?.gloss ?? ""
                     let entryTexts = [entry.key, entry.lemma, senseDef]
-                    guard filter.strongsKey != nil || entryMatchesTerms(entryTexts) else { continue }
 
-                    let snippet = extractSnippetAroundMatch(senseDef, searchTerms: searchTerms, maxLength: 200)
+                    let snippet = snippet(entry)
                     results.append(ModuleSearchResult(
                         id: "dodson-\(entry.key)",
                         moduleId: "dodson",
@@ -736,7 +743,7 @@ class ModuleSearch {
                         title: "\(entry.lemma) (\(entry.key))",
                         snippet: snippet,
                         verseId: nil,
-                        rank: calculateTextRank(query: searchQuery, in: entryTexts),
+                        rank: calculateTextRank(query: query, in: entryTexts),
                         strongsKey: entry.key
                     ))
                 }
@@ -802,7 +809,7 @@ class ModuleSearch {
                     }
                 } else {
                     // Text search
-                    let bdbEntries = try bundledDb.searchDictionaryEntries(query: searchQuery, moduleId: "bdb", keyType: nil, limit: limit)
+                    let bdbEntries = try bundledDb.searchDictionaryEntries(query: query, moduleId: "bdb", keyType: nil, limit: limit)
                     var seenBdbIds = Set<String>()
                     for entry in bdbEntries {
                         guard !seenBdbIds.contains(entry.key) else { continue }
@@ -810,9 +817,8 @@ class ModuleSearch {
 
                         let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.gloss ?? ""
                         let entryTexts = [entry.lemma, senseDef]
-                        guard entryMatchesTerms(entryTexts) else { continue }
 
-                        let snippet = extractSnippetAroundMatch(senseDef, searchTerms: searchTerms, maxLength: 200)
+                        let snippet = snippet(entry)
 
                         // Find Strong's number for this BDB entry via reverse lookup
                         let strongsIds = try bundledDb.getReverseLexiconMappings(targetKey: entry.key)
@@ -826,7 +832,7 @@ class ModuleSearch {
                             title: entry.lemma,
                             snippet: snippet,
                             verseId: nil,
-                            rank: calculateTextRank(query: searchQuery, in: entryTexts),
+                            rank: calculateTextRank(query: query, in: entryTexts),
                             strongsKey: strongsNum.isEmpty ? entry.key : strongsNum
                         ))
                     }
@@ -844,120 +850,110 @@ class ModuleSearch {
         LampSearchQuery(query).textRank(in: texts)
     }
 
-    /// Extract a snippet centered around the first search term match
-    private func extractSnippetAroundMatch(_ text: String, searchTerms: [SearchTerm], maxLength: Int) -> String {
-        guard !text.isEmpty else { return "" }
-
-        let lowerText = text.lowercased()
-
-        // Find the first matching term's position
-        var matchPosition: String.Index? = nil
-        for term in searchTerms {
-            if let range = lowerText.range(of: term.text.lowercased()) {
-                matchPosition = range.lowerBound
-                break
+    /// The user's commentaries and the bundled ones, the Treasury and the
+    /// cross-references, whose units and index are in the bundled database.
+    private func searchCommentaries(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+        var hits = try database.read { db in
+            try commentaryHits(in: db, ftsQuery: ftsQuery, filter: filter, limit: limit)
+        }
+        if BundledModuleDatabase.shared.available {
+            hits += try BundledModuleDatabase.shared.read { db in
+                try commentaryHits(in: db, ftsQuery: ftsQuery, filter: filter, limit: limit)
             }
         }
-
-        guard let matchPos = matchPosition else {
-            // No match found, return start of text
-            return String(text.prefix(maxLength))
+        // Titled once the reads are done: a book's name comes from the
+        // bundled database, which can't be read again inside its own read.
+        return hits.map { hit in
+            let displayTitle: String
+            if let title = hit.title, !title.isEmpty {
+                displayTitle = title
+            } else {
+                let bookName = BookOsisCache.shared.displayName(for: hit.book)
+                let verse = hit.sv % 1000
+                switch hit.unitType {
+                case "section":
+                    displayTitle = "Section in \(bookName) \(hit.chapter)"
+                case "pericope":
+                    displayTitle = "Pericope \(bookName) \(hit.chapter):\(verse)"
+                default:
+                    displayTitle = "Commentary on \(bookName) \(hit.chapter):\(verse)"
+                }
+            }
+            return ModuleSearchResult(
+                id: hit.id,
+                moduleId: hit.moduleId,
+                moduleName: hit.moduleName,
+                moduleType: .commentary,
+                title: displayTitle,
+                snippet: hit.snippet,
+                verseId: hit.sv,
+                rank: hit.rank
+            )
         }
-
-        let matchOffset = text.distance(from: text.startIndex, to: matchPos)
-
-        // If match is within first maxLength chars, just return prefix
-        if matchOffset < maxLength / 2 {
-            return String(text.prefix(maxLength))
-        }
-
-        // Center the snippet around the match
-        let halfWindow = maxLength / 2
-        let startOffset = max(0, matchOffset - halfWindow)
-        let endOffset = min(text.count, startOffset + maxLength)
-
-        let startIndex = text.index(text.startIndex, offsetBy: startOffset)
-        let endIndex = text.index(text.startIndex, offsetBy: endOffset)
-
-        var snippet = String(text[startIndex..<endIndex])
-
-        // Add ellipsis if truncated
-        if startOffset > 0 {
-            snippet = "…" + snippet
-        }
-        if endOffset < text.count {
-            snippet = snippet + "…"
-        }
-
-        return snippet
     }
 
-    private func searchCommentaries(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
-        try database.read { db in
-            var conditions = ["commentary_units_fts MATCH ?"]
-            var arguments: [DatabaseValueConvertible] = [ftsQuery]
+    private struct CommentaryHit {
+        let id: String
+        let moduleId: String
+        let moduleName: String
+        let title: String?
+        let unitType: String
+        let sv: Int
+        let book: Int
+        let chapter: Int
+        let snippet: String
+        let rank: Double
+    }
 
-            if let moduleIds = filter.moduleIds {
-                let moduleIdArray = Array(moduleIds)
-                let placeholders = moduleIdArray.map { _ in "?" }.joined(separator: ", ")
-                conditions.append("c.module_id IN (\(placeholders))")
-                for id in moduleIdArray {
-                    arguments.append(id)
-                }
+    private func commentaryHits(
+        in db: Database,
+        ftsQuery: String,
+        filter: ModuleSearchFilter,
+        limit: Int
+    ) throws -> [CommentaryHit] {
+        var conditions = ["commentary_units_fts MATCH ?"]
+        var arguments: [DatabaseValueConvertible] = [ftsQuery]
+
+        if let moduleIds = filter.moduleIds {
+            let moduleIdArray = Array(moduleIds)
+            let placeholders = moduleIdArray.map { _ in "?" }.joined(separator: ", ")
+            conditions.append("c.module_id IN (\(placeholders))")
+            for id in moduleIdArray {
+                arguments.append(id)
             }
+        }
 
-            let whereClause = conditions.joined(separator: " AND ")
-            let sql = """
-                SELECT
-                    c.id, c.module_id, c.sv, c.ev, c.title, c.unit_type,
-                    c.book, c.chapter,
-                    m.name as module_name,
-                    bm25(commentary_units_fts) as rank,
-                    snippet(commentary_units_fts, 1, '<mark>', '</mark>', '...', 32) as snippet
-                FROM commentary_units_fts f
-                JOIN commentary_units c ON f.rowid = c.rowid
-                JOIN modules m ON c.module_id = m.id
-                WHERE \(whereClause)
-                ORDER BY rank
-                LIMIT ?
-            """
-            arguments.append(limit)
+        let whereClause = conditions.joined(separator: " AND ")
+        let sql = """
+            SELECT
+                c.id, c.module_id, c.sv, c.ev, c.title, c.unit_type,
+                c.book, c.chapter,
+                m.name as module_name,
+                bm25(commentary_units_fts) as rank,
+                snippet(commentary_units_fts, 1, '<mark>', '</mark>', '...', 32) as snippet
+            FROM commentary_units_fts f
+            JOIN commentary_units c ON f.rowid = c.rowid
+            JOIN modules m ON c.module_id = m.id
+            WHERE \(whereClause)
+            ORDER BY rank
+            LIMIT ?
+        """
+        arguments.append(limit)
 
-            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                let title: String? = row["title"]
-                let unitType: String = row["unit_type"]
-                let sv: Int = row["sv"]
-                let book: Int = row["book"]
-                let chapter: Int = row["chapter"]
-                let verse = sv % 1000
-
-                // Format display title based on unit type
-                let displayTitle: String
-                if let t = title, !t.isEmpty {
-                    displayTitle = t
-                } else {
-                    let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
-                    switch unitType {
-                    case "section":
-                        displayTitle = "Section in \(bookName) \(chapter)"
-                    case "pericope":
-                        displayTitle = "Pericope \(bookName) \(chapter):\(verse)"
-                    default:
-                        displayTitle = "Commentary on \(bookName) \(chapter):\(verse)"
-                    }
-                }
-
-                return ModuleSearchResult(
-                    id: row["id"],
-                    moduleId: row["module_id"],
-                    moduleName: row["module_name"],
-                    moduleType: .commentary,
-                    title: displayTitle,
-                    snippet: row["snippet"] ?? "",
-                    verseId: sv,
-                    rank: -(row["rank"] as Double)
-                )
-            }
+        return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
+            let sv: Int = row["sv"]
+            return CommentaryHit(
+                id: row["id"],
+                moduleId: row["module_id"],
+                moduleName: row["module_name"],
+                title: row["title"],
+                unitType: row["unit_type"],
+                sv: sv,
+                book: row["book"],
+                chapter: row["chapter"] ?? (sv / 1000) % 1000,
+                snippet: row["snippet"] ?? "",
+                rank: -(row["rank"] as Double)
+            )
         }
     }
 
@@ -991,7 +987,7 @@ class ModuleSearch {
                     d.id, d.module_id, d.title, d.subtitle, d.date, d.tags, d.category,
                     m.name as module_name,
                     bm25(devotional_entries_fts) as rank,
-                    snippet(devotional_entries_fts, 1, '<mark>', '</mark>', '...', 32) as snippet
+                    snippet(devotional_entries_fts, 2, '<mark>', '</mark>', '...', 32) as snippet
                 FROM devotional_entries_fts f
                 JOIN devotional_entries d ON f.id = d.id
                 JOIN modules m ON d.module_id = m.id
@@ -1068,7 +1064,7 @@ class ModuleSearch {
                 if let t = title, !t.isEmpty {
                     displayTitle = t
                 } else {
-                    let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
+                    let bookName = BookOsisCache.shared.displayName(for: book)
                     // Verse 0 means chapter-level note, don't show ":0"
                     if verse == 0 {
                         displayTitle = "Note on \(bookName) \(chapter)"
@@ -1118,7 +1114,7 @@ class ModuleSearch {
         // Convert to ModuleSearchResult
         return searchResults.map { result in
             // Get book name from GRDB (or use number if not found)
-            let bookName = (try? BundledModuleDatabase.shared.getBook(id: result.book))?.name ?? "Book \(result.book)"
+            let bookName = BookOsisCache.shared.displayName(for: result.book)
 
             let displayTitle = "\(bookName) \(result.chapter):\(result.verse)"
 
@@ -1167,7 +1163,7 @@ class ModuleSearch {
             )
 
             for result in searchResults {
-                let bookName = (try? BundledModuleDatabase.shared.getBook(id: result.book))?.name ?? "Book \(result.book)"
+                let bookName = BookOsisCache.shared.displayName(for: result.book)
                 let displayTitle = "\(bookName) \(result.chapter):\(result.verse)"
 
                 results.append(ModuleSearchResult(
@@ -1189,29 +1185,6 @@ class ModuleSearch {
         return Array(results.prefix(limit))
     }
 
-    // MARK: - Dictionary-Specific Search
-
-    /// Search dictionaries by key (Strong's number)
-    func searchDictionaryByKey(_ key: String, moduleId: String? = nil) throws -> [DictionaryEntry] {
-        try database.read { db in
-            var query = DictionaryEntry.filter(Column("key") == key)
-            if let moduleId = moduleId {
-                query = query.filter(Column("module_id") == moduleId)
-            }
-            return try query.fetchAll(db)
-        }
-    }
-
-    /// Search dictionaries by lemma
-    func searchDictionaryByLemma(_ lemma: String, moduleId: String? = nil) throws -> [DictionaryEntry] {
-        try database.read { db in
-            var query = DictionaryEntry.filter(Column("lemma").like("%\(lemma)%"))
-            if let moduleId = moduleId {
-                query = query.filter(Column("module_id") == moduleId)
-            }
-            return try query.fetchAll(db)
-        }
-    }
 
     // MARK: - FTS Query Preparation
 
@@ -1244,7 +1217,9 @@ class ModuleSearch {
 
         guard !setsToSearch.isEmpty else { return [] }
 
-        let searchQuery = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // The grammar every other search follows: words in any order, quoted
+        // phrases, a word's start.
+        let searchQuery = LampSearchQuery(query)
         let hasTextQuery = !searchQuery.isEmpty
 
         for set in setsToSearch {
@@ -1271,16 +1246,15 @@ class ModuleSearch {
             for highlight in highlights {
                 guard let verseText = versesById[highlight.ref] else { continue }
 
-                // If we have a text query, check if the verse text contains it
                 if hasTextQuery {
-                    guard verseText.lowercased().contains(searchQuery) else { continue }
+                    guard searchQuery.matches(verseText) else { continue }
                 }
 
                 // Build result
                 let bookId = highlight.ref / 1_000_000
                 let chapter = (highlight.ref % 1_000_000) / 1000
                 let verse = highlight.ref % 1000
-                let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "Book \(bookId)"
+                let bookName = BookOsisCache.shared.displayName(for: bookId)
                 let title = "\(bookName) \(chapter):\(verse)"
 
                 // Create snippet - show highlighted portion marked for styling
@@ -1288,20 +1262,19 @@ class ModuleSearch {
                     text: verseText, startOffset: highlight.sc, endOffset: highlight.ec
                 )
 
-                // Calculate rank based on text match quality
+                // By the highlighted words first, then the verse: the
+                // snippet starts with its mark, so compared as a whole it
+                // could never equal the query or start with it. A search by
+                // colour alone puts the newest first, by the row's ID, which
+                // grows as highlights are made.
                 let rank: Double
                 if hasTextQuery {
-                    // Boost exact matches
-                    if snippet.lowercased() == searchQuery {
-                        rank = 10.0
-                    } else if snippet.lowercased().hasPrefix(searchQuery) {
-                        rank = 8.0
-                    } else {
-                        rank = 5.0
-                    }
+                    let characters = Array(verseText)
+                    let lower = min(max(highlight.sc, 0), characters.count)
+                    let upper = min(max(highlight.ec, lower), characters.count)
+                    rank = searchQuery.textRank(in: [String(characters[lower..<upper]), verseText])
                 } else {
-                    // Color-only search - rank by recency (newer highlights first)
-                    rank = 1.0
+                    rank = Double(highlight.id ?? 0)
                 }
 
                 var result = ModuleSearchResult(
@@ -1316,6 +1289,7 @@ class ModuleSearch {
                 )
                 result.highlightColor = LampHighlightSearch.normalizedColor(highlight.color)
                 result.highlightStyle = highlight.highlightStyle
+                result.translationId = translationId
                 results.append(result)
 
                 if results.count >= limit { break }

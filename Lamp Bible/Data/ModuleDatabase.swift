@@ -1472,6 +1472,26 @@ class ModuleDatabase {
             try db.execute(sql: "ALTER TABLE sync_file_records ADD COLUMN pending_revision TEXT")
         }
 
+        // v31: A user dictionary is searched by its definitions as plain text,
+        // as the bundled ones are, not by the JSON they are stored in, whose
+        // field names matched every entry. Rebuilt here on lemmas alone, which
+        // is quick; the text is filled in off the launch path
+        // (`SearchIndexMaintenance`), each row's index entry following it.
+        migrator.registerMigration("v31_dictionary_search_text") { db in
+            guard try db.tableExists("dictionary_entries") else { return }
+            if try !db.columns(in: "dictionary_entries").contains(where: { $0.name == "search_text" }) {
+                try db.execute(sql: "ALTER TABLE dictionary_entries ADD COLUMN search_text TEXT")
+            }
+            let index = ExternalContentSearchIndex.dictionary
+            for suffix in ["insert", "update", "delete"] {
+                try db.execute(sql: "DROP TRIGGER IF EXISTS \(index.name)_\(suffix)")
+            }
+            try db.execute(sql: "DROP TABLE IF EXISTS \(index.name)")
+            try db.execute(sql: index.createIndexSQL(named: index.name))
+            try db.execute(sql: "INSERT INTO \(index.name)(\(index.name)) VALUES ('rebuild')")
+            try index.installTriggers(in: db)
+        }
+
         return migrator
     }
 
@@ -1667,33 +1687,6 @@ class ModuleDatabase {
         }
     }
 
-    func searchBookSections(query: String, moduleIds: Set<String>? = nil, limit: Int = 200) throws -> [BookSection] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-        return try dbQueue.read { db in
-            var conditions = [
-                "(title LIKE ? COLLATE NOCASE OR COALESCE(subtitle, '') LIKE ? COLLATE NOCASE OR search_text LIKE ? COLLATE NOCASE)"
-            ]
-            let pattern = "%\(trimmed)%"
-            var arguments: StatementArguments = [pattern, pattern, pattern]
-            if let moduleIds, !moduleIds.isEmpty {
-                let placeholders = Array(repeating: "?", count: moduleIds.count).joined(separator: ", ")
-                conditions.append("module_id IN (\(placeholders))")
-                arguments += StatementArguments(moduleIds.sorted())
-            }
-            arguments += [min(max(limit, 1), 500)]
-            return try BookSection.fetchAll(
-                db,
-                sql: """
-                    SELECT * FROM book_sections
-                    WHERE \(conditions.joined(separator: " AND "))
-                    ORDER BY rowid
-                    LIMIT ?
-                    """,
-                arguments: arguments
-            )
-        }
-    }
 
     // MARK: - Note Entry CRUD
 
@@ -2001,7 +1994,17 @@ class ModuleDatabase {
     func saveDictionaryEntry(_ entry: DictionaryEntry) throws {
         try dbQueue.write { db in
             try entry.save(db)
+            try Self.writeSearchText(of: entry, in: db)
         }
+    }
+
+    /// The record doesn't carry its search text, so a saved entry has it
+    /// written beside it, or an edited one would be found by its old senses.
+    private static func writeSearchText(of entry: DictionaryEntry, in db: Database) throws {
+        try db.execute(
+            sql: "UPDATE dictionary_entries SET search_text = ? WHERE id = ?",
+            arguments: [DictionarySearchText.text(fromSensesJSON: entry.sensesJson), entry.id]
+        )
     }
 
     func getDictionaryEntry(moduleId: String, key: String) throws -> DictionaryEntry? {
@@ -2220,6 +2223,7 @@ class ModuleDatabase {
         try dbQueue.write { db in
             for entry in entries {
                 try entry.save(db)
+                try Self.writeSearchText(of: entry, in: db)
             }
         }
     }
@@ -2450,13 +2454,7 @@ class ModuleDatabase {
 
     func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
         try dbQueue.read { db in
-            // Search for Strong's number in annotations_json
-            // Pattern: "strongs":"H1234" or "strongs": "H1234" (handles both compact and spaced JSON)
-            let count = try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM translation_verses
-                WHERE translation_id = ? AND annotations_json LIKE ?
-            """, arguments: [translationId, LampStrongsSearch.sqlLikePattern(for: strongsNum)])
-            return count ?? 0
+            try StrongsVerseQuery.count(in: db, translationId: translationId, key: strongsNum)
         }
     }
 
@@ -2467,58 +2465,9 @@ class ModuleDatabase {
         limit: Int = 50
     ) throws -> [TranslationSearchResult] {
         try dbQueue.read { db in
-            var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
-            var arguments: [DatabaseValueConvertible] = [translationId, LampStrongsSearch.sqlLikePattern(for: strongsNum)]
-
-            if let range = bookRange {
-                conditions.append("v.book BETWEEN ? AND ?")
-                arguments.append(range.lowerBound)
-                arguments.append(range.upperBound)
-            }
-
-            let whereClause = conditions.joined(separator: " AND ")
-
-            let sql = """
-                SELECT
-                    v.id,
-                    v.translation_id,
-                    t.name as translation_name,
-                    t.abbreviation as translation_abbrev,
-                    v.ref,
-                    v.book,
-                    v.chapter,
-                    v.verse,
-                    v.text,
-                    v.annotations_json
-                FROM translation_verses v
-                JOIN translations t ON v.translation_id = t.id
-                WHERE \(whereClause)
-                ORDER BY v.ref
-                LIMIT ?
-            """
-            arguments.append(limit)
-
-            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                let text: String = row["text"] ?? ""
-                let annotationsJson: String? = row["annotations_json"]
-
-                // Create snippet with <mark> tags around words matching the Strong's number
-                let snippet = LampStrongsSearch.markedText(text, annotationsJSON: annotationsJson, key: strongsNum)
-
-                return TranslationSearchResult(
-                    id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
-                    translationId: row["translation_id"],
-                    translationName: row["translation_name"] ?? "",
-                    translationAbbrev: row["translation_abbrev"] ?? "",
-                    ref: row["ref"],
-                    book: row["book"],
-                    chapter: row["chapter"],
-                    verse: row["verse"],
-                    snippet: snippet,
-                    rank: 1.0,
-                    rawText: annotationsJson
-                )
-            }
+            try StrongsVerseQuery.verses(
+                in: db, translationId: translationId, key: strongsNum, bookRange: bookRange, limit: limit
+            )
         }
     }
 
@@ -3629,11 +3578,17 @@ struct ExternalContentSearchIndex: Equatable {
     let columns: [String]
     let tokenize: String?
 
+    /// A user dictionary's entries by lemma and their definitions as plain
+    /// text (`DictionarySearchText`), not the JSON they are stored in.
+    static let dictionary = ExternalContentSearchIndex(
+        name: "dictionary_fts", content: "dictionary_entries", rowid: "rowid",
+        columns: ["lemma", "search_text"], tokenize: nil
+    )
+
     static let all: [ExternalContentSearchIndex] = [
         .init(name: "translation_verses_fts", content: "translation_verses", rowid: "id",
               columns: ["text"], tokenize: "unicode61 remove_diacritics 2"),
-        .init(name: "dictionary_fts", content: "dictionary_entries", rowid: "rowid",
-              columns: ["lemma", "senses_json"], tokenize: nil),
+        dictionary,
         .init(name: "commentary_units_fts", content: "commentary_units", rowid: "rowid",
               columns: ["title", "search_text"], tokenize: nil),
         .init(name: "note_fts", content: "note_entries", rowid: "rowid",
@@ -3648,8 +3603,13 @@ struct ExternalContentSearchIndex: Equatable {
         }
     }
 
+    /// Whether the index and its content are here, with every column it
+    /// indexes: a migration before the one adding a column must leave the
+    /// index alone, or its triggers would name a column not yet made.
     func exists(in db: Database) throws -> Bool {
-        try db.tableExists(name) && db.tableExists(content)
+        guard try db.tableExists(name), try db.tableExists(content) else { return false }
+        let present = Set(try db.columns(in: content).map(\.name))
+        return columns.allSatisfy(present.contains)
     }
 
     func installTriggers(in db: Database) throws {
@@ -3849,34 +3809,104 @@ enum SearchIndexRepair {
     }
 }
 
-/// Runs `SearchIndexRepair` once per install, in the background, and lets
-/// sync wait for it: sync is what writes the content these indexes read.
+/// Runs `SearchIndexRepair` once per install, and fills in any user
+/// dictionary entry's search text not yet written, in the background, and
+/// lets sync wait for it: sync is what writes the content these indexes read.
 @MainActor
 enum SearchIndexMaintenance {
     private static let completedKey = "SearchIndexRepair.completed.v1"
     private static var task: Task<Void, Never>?
 
     static func start(defaults: UserDefaults = .standard) {
-        guard task == nil, !defaults.bool(forKey: completedKey) else { return }
+        guard task == nil else { return }
+        let needsRepair = !defaults.bool(forKey: completedKey)
         task = Task.detached(priority: .utility) {
             let url = ModuleDatabase.shared.fileURL
             do {
                 var config = Configuration()
                 config.busyMode = .timeout(10)
                 let queue = try DatabaseQueue(path: url.path, configuration: config)
-                let started = Date()
-                let report = try SearchIndexRepair.repair(queue)
-                try queue.close()
-                print("[SearchIndex] repaired \(report.rebuilt) (swapped \(report.swapped)) in \(Int(Date().timeIntervalSince(started)))s: \(report.bytesBefore / 1_000_000) MB -> \(report.bytesAfter / 1_000_000) MB\(report.vacuumed ? ", compacted" : "")")
-                defaults.set(true, forKey: completedKey)
+                defer { try? queue.close() }
+                if needsRepair {
+                    let started = Date()
+                    let report = try SearchIndexRepair.repair(queue)
+                    print("[SearchIndex] repaired \(report.rebuilt) (swapped \(report.swapped)) in \(Int(Date().timeIntervalSince(started)))s: \(report.bytesBefore / 1_000_000) MB -> \(report.bytesAfter / 1_000_000) MB\(report.vacuumed ? ", compacted" : "")")
+                    defaults.set(true, forKey: completedKey)
+                }
+                // Nothing to do, and one quick query, once every entry has it.
+                let filled = try DictionarySearchText.fillMissing(in: queue)
+                if filled > 0 { print("[SearchIndex] wrote search text for \(filled) dictionary entries") }
             } catch {
                 // Not marked done: the next launch picks up where this stopped.
-                print("[SearchIndex] repair stopped: \(error)")
+                print("[SearchIndex] maintenance stopped: \(error)")
             }
         }
     }
 
     static func waitUntilFinished() async {
         await task?.value
+    }
+}
+
+/// A user dictionary entry's definitions as plain text, for its search index:
+/// each sense's definition, short definition and gloss, as core's dictionary
+/// compiler writes `search_text` into a module file.
+enum DictionarySearchText {
+    static func text(fromSensesJSON json: String?) -> String {
+        guard let json, let data = json.data(using: .utf8),
+              let senses = try? JSONDecoder().decode([DictionarySense].self, from: data) else { return "" }
+        return senses
+            .flatMap { [$0.definitionText, $0.shortDefinitionText, $0.gloss].compactMap { $0 } }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    /// Writes the text of each entry without it, a module's or every one's.
+    /// An entry with no text gets an empty one, so it isn't read again.
+    @discardableResult
+    static func fill(in db: Database, moduleId: String? = nil) throws -> Int {
+        guard try db.columns(in: "dictionary_entries").contains(where: { $0.name == "search_text" }) else {
+            return 0
+        }
+        var sql = "SELECT rowid, senses_json FROM dictionary_entries WHERE search_text IS NULL"
+        var arguments: StatementArguments = []
+        if let moduleId {
+            sql += " AND module_id = ?"
+            arguments = [moduleId]
+        }
+        let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
+        for row in rows {
+            try db.execute(
+                sql: "UPDATE dictionary_entries SET search_text = ? WHERE rowid = ?",
+                arguments: [text(fromSensesJSON: row["senses_json"]), row["rowid"] as Int64]
+            )
+        }
+        return rows.count
+    }
+
+    /// In batches, so the app's own writes get between them.
+    static func fillMissing(in queue: DatabaseQueue, batch: Int = 500) throws -> Int {
+        guard try queue.read({ try $0.tableExists("dictionary_entries") }) else { return 0 }
+        var total = 0
+        while true {
+            let written: Int = try queue.write { db in
+                guard try db.columns(in: "dictionary_entries").contains(where: { $0.name == "search_text" }) else {
+                    return 0
+                }
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT rowid, senses_json FROM dictionary_entries
+                    WHERE search_text IS NULL LIMIT ?
+                    """, arguments: [batch])
+                for row in rows {
+                    try db.execute(
+                        sql: "UPDATE dictionary_entries SET search_text = ? WHERE rowid = ?",
+                        arguments: [text(fromSensesJSON: row["senses_json"]), row["rowid"] as Int64]
+                    )
+                }
+                return rows.count
+            }
+            total += written
+            if written < batch { return total }
+        }
     }
 }

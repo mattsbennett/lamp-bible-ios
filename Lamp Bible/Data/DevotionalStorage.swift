@@ -361,46 +361,6 @@ class DevotionalStorage {
 
 extension ModuleDatabase {
 
-    /// Get devotionals matching a FTS query
-    func searchDevotionalsFTS(
-        moduleId: String? = nil,
-        query: String,
-        limit: Int = 50
-    ) throws -> [DevotionalEntry] {
-        let ftsQuery = prepareFTSQueryForDevotionals(query)
-        guard !ftsQuery.isEmpty else { return [] }
-
-        return try read { db in
-            var conditions = ["devotional_entries_fts MATCH ?"]
-            var arguments: [DatabaseValueConvertible] = [ftsQuery]
-
-            if let moduleId = moduleId {
-                conditions.append("d.module_id = ?")
-                arguments.append(moduleId)
-            }
-
-            let whereClause = conditions.joined(separator: " AND ")
-
-            let sql = """
-                SELECT d.*
-                FROM devotional_entries_fts f
-                JOIN devotional_entries d ON f.id = d.id
-                WHERE \(whereClause)
-                ORDER BY bm25(devotional_entries_fts)
-                LIMIT ?
-            """
-            arguments.append(limit)
-
-            return try DevotionalEntry.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
-        }
-    }
-
-    /// Devotionals answer the same grammar as verses.
-    /// See `ModuleDatabase.prepareFTSQuery`.
-    private func prepareFTSQueryForDevotionals(_ query: String) -> String {
-        LampSearchQuery(query).fts5Query
-    }
-
     /// Get all devotional entries for a module
     func getAllDevotionalEntries(moduleId: String) throws -> [DevotionalEntry] {
         try read { db in

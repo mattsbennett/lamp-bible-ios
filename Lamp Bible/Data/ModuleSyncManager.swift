@@ -441,12 +441,17 @@ class ModuleSyncManager: ObservableObject {
         // Import based on module type
         switch type {
         case .dictionary:
-            // Copy dictionary entries
+            // Copy dictionary entries, with the search text a compiled module
+            // carries; one from before it gets its text written here.
+            let sourceColumns = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(dictionary_entries)")
+                .compactMap { $0["name"] as String? }
+            let searchText = sourceColumns.contains("search_text") ? "search_text" : "NULL"
             try db.execute(sql: """
-                INSERT INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json)
-                SELECT id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json
+                INSERT INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json, search_text)
+                SELECT id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json, \(searchText)
                 FROM \(dbAlias).dictionary_entries
                 """)
+            try DictionarySearchText.fill(in: db, moduleId: fileInfo.id)
 
         case .commentary:
             // Check which schema the source database uses

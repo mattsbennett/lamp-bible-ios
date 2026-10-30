@@ -17,8 +17,12 @@ class BookOsisCache {
     static let shared = BookOsisCache()
     private var osisCache: [Int: String] = [:]
     private var nameCache: [Int: String] = [:]
+    /// Searches read it off the main thread while rows read it on it.
+    private let lock = NSLock()
 
     func getOsisId(for bookId: Int) -> String {
+        lock.lock()
+        defer { lock.unlock() }
         if let cached = osisCache[bookId] {
             return cached
         }
@@ -32,6 +36,8 @@ class BookOsisCache {
     }
 
     func getName(for bookId: Int) -> String {
+        lock.lock()
+        defer { lock.unlock() }
         if let cached = nameCache[bookId] {
             return cached
         }
@@ -42,6 +48,12 @@ class BookOsisCache {
             osisCache[bookId] = osisId
         }
         return name
+    }
+
+    /// The book's name, or "Book N" (or `fallback`) for one the bundle lacks.
+    func displayName(for bookId: Int, fallback: String? = nil) -> String {
+        let name = getName(for: bookId)
+        return name.isEmpty ? fallback ?? "Book \(bookId)" : name
     }
 }
 

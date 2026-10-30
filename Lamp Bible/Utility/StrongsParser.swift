@@ -90,23 +90,3 @@ func stripStrongsAnnotations(_ text: String) -> String {
     let words = parseAnnotatedVerse(text)
     return words.map { $0.text }.joined()
 }
-
-// MARK: - Search Query Parsing
-
-typealias SearchTerm = LampSearchTerm
-
-func parseSearchQuery(_ query: String) -> [SearchTerm] {
-    LampSearchQuery(query).terms
-}
-
-func textMatches(_ text: String, term: SearchTerm) -> Bool {
-    term.matches(text)
-}
-
-func textMatchesAllTerms(_ text: String, terms: [SearchTerm]) -> Bool {
-    terms.allSatisfy { $0.matches(text) }
-}
-
-func getRealmSearchString(from query: String) -> String {
-    LampSearchQuery(query).realmPrefilter
-}

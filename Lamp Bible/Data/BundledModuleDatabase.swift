@@ -387,21 +387,15 @@ class BundledModuleDatabase {
         }
     }
 
-    /// Count Strong's number occurrences in a translation
+    /// Count the verses in a translation tagging a Strong's number
     func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
         guard isAvailable else { return 0 }
         return try read { db in
-            // Search for Strong's number in annotations_json
-            // Pattern: "strongs":"H1234" or "strongs": "H1234" (handles both compact and spaced JSON)
-            let count = try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM translation_verses
-                WHERE translation_id = ? AND annotations_json LIKE ?
-            """, arguments: [translationId, LampStrongsSearch.sqlLikePattern(for: strongsNum)])
-            return count ?? 0
+            try StrongsVerseQuery.count(in: db, translationId: translationId, key: strongsNum)
         }
     }
 
-    /// Search verses by Strong's number in annotations_json
+    /// Search verses by Strong's number
     func searchVersesByStrongs(
         translationId: String,
         strongsNum: String,
@@ -410,58 +404,9 @@ class BundledModuleDatabase {
     ) throws -> [TranslationSearchResult] {
         guard isAvailable else { return [] }
         return try read { db in
-            var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
-            var arguments: [DatabaseValueConvertible] = [translationId, LampStrongsSearch.sqlLikePattern(for: strongsNum)]
-
-            if let range = bookRange {
-                conditions.append("v.book BETWEEN ? AND ?")
-                arguments.append(range.lowerBound)
-                arguments.append(range.upperBound)
-            }
-
-            let whereClause = conditions.joined(separator: " AND ")
-
-            let sql = """
-                SELECT
-                    v.id,
-                    v.translation_id,
-                    t.name as translation_name,
-                    t.abbreviation as translation_abbrev,
-                    v.ref,
-                    v.book,
-                    v.chapter,
-                    v.verse,
-                    v.text,
-                    v.annotations_json
-                FROM translation_verses v
-                JOIN translations t ON v.translation_id = t.id
-                WHERE \(whereClause)
-                ORDER BY v.ref
-                LIMIT ?
-            """
-            arguments.append(limit)
-
-            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                let text: String = row["text"] ?? ""
-                let annotationsJson: String? = row["annotations_json"]
-
-                // Create snippet with <mark> tags around words matching the Strong's number
-                let snippet = LampStrongsSearch.markedText(text, annotationsJSON: annotationsJson, key: strongsNum)
-
-                return TranslationSearchResult(
-                    id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
-                    translationId: row["translation_id"],
-                    translationName: row["translation_name"],
-                    translationAbbrev: row["translation_abbrev"],
-                    ref: row["ref"],
-                    book: row["book"],
-                    chapter: row["chapter"],
-                    verse: row["verse"],
-                    snippet: snippet,
-                    rank: 1.0,
-                    rawText: annotationsJson
-                )
-            }
+            try StrongsVerseQuery.verses(
+                in: db, translationId: translationId, key: strongsNum, bookRange: bookRange, limit: limit
+            )
         }
     }
 
@@ -575,6 +520,10 @@ class BundledModuleDatabase {
     }
 
     /// Search dictionary entries
+    /// Entries matching a query as every search reads one (`LampSearchQuery`):
+    /// by key, lemma, transliteration and definitions, and by the words in
+    /// the senses' JSON but never its field names, as core searches a
+    /// dictionary module. The exact key, then the exact lemma, come first.
     func searchDictionaryEntries(
         query: String,
         moduleId: String? = nil,
@@ -582,33 +531,79 @@ class BundledModuleDatabase {
         limit: Int = 50
     ) throws -> [DictionaryEntry] {
         guard isAvailable else { return [] }
+        let parsed = LampSearchQuery(query)
+        guard !parsed.isEmpty else { return [] }
         return try read { db in
-            var request = DictionaryEntry.all()
-
-            // Filter by module
-            if let moduleId = moduleId {
-                request = request.filter(Column("module_id") == moduleId)
-            } else if let keyType = keyType {
-                // Get modules matching keyType
-                let moduleIds = try Module
+            var moduleIds: [String] = []
+            if let moduleId {
+                moduleIds = [moduleId]
+            } else if let keyType {
+                moduleIds = try Module
                     .filter(Column("type") == "dictionary")
                     .filter(Column("key_type") == keyType)
                     .fetchAll(db)
-                    .map { $0.id }
-                if !moduleIds.isEmpty {
-                    request = request.filter(moduleIds.contains(Column("module_id")))
+                    .map(\.id)
+            }
+            var moduleCondition = ""
+            var moduleArguments = StatementArguments()
+            if !moduleIds.isEmpty {
+                moduleCondition = "module_id IN (\(moduleIds.map { _ in "?" }.joined(separator: ", "))) AND"
+                moduleArguments += StatementArguments(moduleIds)
+            }
+
+            let columns = Set(try db.columns(in: "dictionary_entries").map(\.name))
+            let searchColumns = ["key", "lemma", "transliteration", "search_text"].filter(columns.contains)
+            let like = parsed.sqlLikePredicate(columns: searchColumns, jsonColumns: ["senses_json"])
+            var condition = "(\(like.condition))"
+            var arguments = moduleArguments
+            arguments += StatementArguments(like.arguments)
+
+            // SQLite folds neither Greek accents and breathings nor Hebrew
+            // points, so "αγαπη" would never find ἀγάπη: a query in either
+            // script is matched against every headword here, accents set
+            // aside, and those entries are found alongside.
+            if query.unicodeScalars.contains(where: Self.isGreekOrHebrew) {
+                let headwords = try Row.fetchAll(db, sql: """
+                    SELECT id, key, lemma, transliteration FROM dictionary_entries
+                    WHERE \(moduleCondition) 1
+                    """, arguments: moduleArguments)
+                // Each read optional, spelled out: a headword without a
+                // transliteration read as a plain String traps in GRDB.
+                let ids: [String] = headwords.compactMap { row -> String? in
+                    let key: String? = row["key"]
+                    let lemma: String? = row["lemma"]
+                    let transliteration: String? = row["transliteration"]
+                    let text = [key, lemma, transliteration].compactMap { $0 }.joined(separator: " ")
+                    guard parsed.matches(text) else { return nil }
+                    let id: DatabaseValue = row["id"]
+                    return String.fromDatabaseValue(id) ?? Int64.fromDatabaseValue(id).map(String.init)
+                }
+                if !ids.isEmpty {
+                    condition = "(\(condition) OR id IN (\(ids.map { _ in "?" }.joined(separator: ", "))))"
+                    arguments += StatementArguments(ids)
                 }
             }
 
-            // Search by key or lemma (case-insensitive)
-            let searchPattern = "%\(query)%"
-            request = request.filter(
-                Column("key").like(searchPattern) ||
-                Column("lemma").like(searchPattern)
-            )
-
-            return try request.limit(limit).fetchAll(db)
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            arguments += [trimmed, trimmed, limit]
+            return try DictionaryEntry.fetchAll(db, sql: """
+                SELECT * FROM dictionary_entries
+                WHERE \(moduleCondition) \(condition)
+                ORDER BY
+                    CASE
+                        WHEN key = ? COLLATE NOCASE THEN 0
+                        WHEN lemma = ? COLLATE NOCASE THEN 1
+                        ELSE 2
+                    END,
+                    key, lemma
+                LIMIT ?
+                """, arguments: arguments)
         }
+    }
+
+    private static func isGreekOrHebrew(_ scalar: Unicode.Scalar) -> Bool {
+        (0x0370...0x03FF).contains(scalar.value) || (0x1F00...0x1FFF).contains(scalar.value)
+            || (0x0590...0x05FF).contains(scalar.value)
     }
 
     /// Get all bundled modules
@@ -1744,5 +1739,67 @@ class TranslationDatabase {
         } else {
             return try userDb.getHeadingsForChapter(translationId: translationId, book: book, chapter: chapter)
         }
+    }
+}
+
+/// The verses a Strong's key tags, in either database: core's prefilter by
+/// the key's number, then each candidate's tags read with the scanner the
+/// analysis uses. A key inside a comma-joined tag ("H996,H914") is found,
+/// so a key's count, its verse list and its analysis agree.
+enum StrongsVerseQuery {
+    static func count(in db: Database, translationId: String, key: String) throws -> Int {
+        let rows = try Row.fetchCursor(db, sql: """
+            SELECT annotations_json FROM translation_verses
+            WHERE translation_id = ? AND annotations_json LIKE ?
+            """, arguments: [translationId, LampStrongsSearch.sqlPrefilterPattern(for: key)])
+        var count = 0
+        while let row = try rows.next() {
+            if LampStrongsSearch.holdsKey(row["annotations_json"], key: key) { count += 1 }
+        }
+        return count
+    }
+
+    static func verses(
+        in db: Database,
+        translationId: String,
+        key: String,
+        bookRange: ClosedRange<Int>?,
+        limit: Int
+    ) throws -> [TranslationSearchResult] {
+        var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
+        var arguments: [DatabaseValueConvertible] = [translationId, LampStrongsSearch.sqlPrefilterPattern(for: key)]
+        if let range = bookRange {
+            conditions.append("v.book BETWEEN ? AND ?")
+            arguments.append(range.lowerBound)
+            arguments.append(range.upperBound)
+        }
+        let rows = try Row.fetchCursor(db, sql: """
+            SELECT v.translation_id, t.name AS translation_name, t.abbreviation AS translation_abbrev,
+                   v.ref, v.book, v.chapter, v.verse, v.text, v.annotations_json
+            FROM translation_verses v
+            JOIN translations t ON v.translation_id = t.id
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY v.ref
+            """, arguments: StatementArguments(arguments))
+        var results: [TranslationSearchResult] = []
+        while results.count < limit, let row = try rows.next() {
+            let annotationsJson: String? = row["annotations_json"]
+            guard LampStrongsSearch.holdsKey(annotationsJson, key: key) else { continue }
+            let text: String = row["text"] ?? ""
+            results.append(TranslationSearchResult(
+                id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
+                translationId: row["translation_id"],
+                translationName: row["translation_name"] ?? "",
+                translationAbbrev: row["translation_abbrev"] ?? "",
+                ref: row["ref"],
+                book: row["book"],
+                chapter: row["chapter"],
+                verse: row["verse"],
+                snippet: LampStrongsSearch.markedText(text, annotationsJSON: annotationsJson, key: key),
+                rank: 1.0,
+                rawText: annotationsJson
+            ))
+        }
+        return results
     }
 }

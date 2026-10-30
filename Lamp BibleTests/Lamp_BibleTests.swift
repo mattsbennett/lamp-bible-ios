@@ -2486,7 +2486,8 @@ final class SearchIndexRepairTests: XCTestCase {
         }
     }
 
-    /// The tables and triggers as migrations v2 and v9 made them.
+    /// The tables and triggers as migrations v2 and v9 made them, the
+    /// dictionary's in the columns v31 gave it, with v9's kind of trigger.
     private func makeLegacySchema(dictionary: Bool = true) throws {
         try queue.write { db in
             try db.execute(sql: """
@@ -2506,15 +2507,16 @@ final class SearchIndexRepairTests: XCTestCase {
                 """)
             guard dictionary else { return }
             try db.execute(sql: """
-                CREATE TABLE dictionary_entries (id TEXT PRIMARY KEY, lemma TEXT NOT NULL, senses_json TEXT);
+                CREATE TABLE dictionary_entries (
+                    id TEXT PRIMARY KEY, lemma TEXT NOT NULL, senses_json TEXT, search_text TEXT);
                 CREATE VIRTUAL TABLE dictionary_fts USING fts5(
-                    lemma, senses_json, content='dictionary_entries', content_rowid='rowid');
+                    lemma, search_text, content='dictionary_entries', content_rowid='rowid');
                 CREATE TRIGGER dictionary_fts_insert AFTER INSERT ON dictionary_entries BEGIN
-                    INSERT INTO dictionary_fts(rowid, lemma, senses_json)
-                    VALUES (new.rowid, new.lemma, new.senses_json);
+                    INSERT INTO dictionary_fts(rowid, lemma, search_text)
+                    VALUES (new.rowid, new.lemma, new.search_text);
                 END;
                 CREATE TRIGGER dictionary_fts_update AFTER UPDATE ON dictionary_entries BEGIN
-                    UPDATE dictionary_fts SET lemma = new.lemma, senses_json = new.senses_json
+                    UPDATE dictionary_fts SET lemma = new.lemma, search_text = new.search_text
                     WHERE rowid = new.rowid;
                 END;
                 CREATE TRIGGER dictionary_fts_delete AFTER DELETE ON dictionary_entries BEGIN
@@ -2544,11 +2546,11 @@ final class SearchIndexRepairTests: XCTestCase {
         try queue.write { db in
             for entry in 0..<40 {
                 try db.execute(
-                    sql: "INSERT INTO dictionary_entries (id, lemma, senses_json) VALUES (?, ?, ?)",
-                    arguments: ["e\(entry)", "lemma\(entry)", "[\"first sense\"]"]
+                    sql: "INSERT INTO dictionary_entries (id, lemma, search_text) VALUES (?, ?, ?)",
+                    arguments: ["e\(entry)", "lemma\(entry)", "first sense"]
                 )
             }
-            try db.execute(sql: "UPDATE dictionary_entries SET senses_json = '[\"second sense\"]'")
+            try db.execute(sql: "UPDATE dictionary_entries SET search_text = 'second sense'")
             try db.execute(sql: "DELETE FROM dictionary_entries WHERE CAST(substr(id, 2) AS INTEGER) % 2 = 0")
         }
     }
@@ -4418,5 +4420,136 @@ final class PlanProgressTests: XCTestCase {
         XCTAssertFalse(try database.syncSnapshot().readings.contains { $0.id == reading })
         let mark = try XCTUnwrap(database.planProgress()?.readings[reading])
         XCTAssertFalse(LampSyncPlanProgress.isSet(mark))
+    }
+}
+
+final class DictionarySearchTextTests: XCTestCase {
+    func testTheTextIsTheDefinitionsNotTheJSONTheyAreStoredIn() {
+        let json = #"[{"definition":{"text":"love, benevolence"},"shortDefinition":"love","gloss":"charity"},{"definition":"a love feast"}]"#
+        let text = DictionarySearchText.text(fromSensesJSON: json)
+        XCTAssertEqual(text, "love, benevolence love charity a love feast")
+        XCTAssertFalse(text.contains("definition"))
+        XCTAssertEqual(DictionarySearchText.text(fromSensesJSON: "not json"), "")
+        XCTAssertEqual(DictionarySearchText.text(fromSensesJSON: nil), "")
+    }
+
+    func testAnIndexIsLeftAloneUntilEveryColumnItIndexesIsThere() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            // As a fresh install has it at v27, before v31 adds the column.
+            try db.execute(sql: """
+                CREATE TABLE dictionary_entries (id TEXT PRIMARY KEY, lemma TEXT NOT NULL, senses_json TEXT);
+                CREATE VIRTUAL TABLE dictionary_fts USING fts5(
+                    lemma, senses_json, content='dictionary_entries', content_rowid='rowid');
+                """)
+            XCTAssertFalse(try ExternalContentSearchIndex.dictionary.exists(in: db))
+            XCTAssertNoThrow(try ExternalContentSearchIndex.installTriggers(in: db))
+            try db.execute(sql: "ALTER TABLE dictionary_entries ADD COLUMN search_text TEXT")
+            XCTAssertTrue(try ExternalContentSearchIndex.dictionary.exists(in: db))
+        }
+    }
+
+    func testEntriesWithoutTextAreFilledAndFoundByTheirDefinitions() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE dictionary_entries (
+                    id TEXT PRIMARY KEY, module_id TEXT, lemma TEXT NOT NULL, senses_json TEXT, search_text TEXT);
+                """)
+            try db.execute(sql: ExternalContentSearchIndex.dictionary.createIndexSQL(named: "dictionary_fts"))
+            try ExternalContentSearchIndex.dictionary.installTriggers(in: db)
+            try db.execute(sql: """
+                INSERT INTO dictionary_entries (id, module_id, lemma, senses_json) VALUES
+                    ('a', 'm', 'agape', '[{"definition":"love, esteem"}]'),
+                    ('b', 'm', 'logos', '[{"definition":"word, speech"}]'),
+                    ('c', 'm', 'empty', '[]')
+                """)
+        }
+
+        XCTAssertEqual(try DictionarySearchText.fillMissing(in: queue, batch: 2), 3)
+        XCTAssertEqual(try DictionarySearchText.fillMissing(in: queue), 0)
+        try queue.read { db in
+            func hits(_ query: String) throws -> [String] {
+                try String.fetchAll(db, sql: """
+                    SELECT d.id FROM dictionary_fts f JOIN dictionary_entries d ON f.rowid = d.rowid
+                    WHERE dictionary_fts MATCH ? ORDER BY d.id
+                    """, arguments: [query])
+            }
+            XCTAssertEqual(try hits("esteem"), ["a"])
+            XCTAssertEqual(try hits("speech"), ["b"])
+            // The JSON's field names are no longer indexed.
+            XCTAssertEqual(try hits("definition"), [])
+        }
+    }
+}
+
+final class SearchAuditFixTests: XCTestCase {
+    func testAKeyInACommaJoinedTagIsCountedAndListed() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE translations (id TEXT PRIMARY KEY, name TEXT, abbreviation TEXT);
+                CREATE TABLE translation_verses (
+                    id INTEGER PRIMARY KEY, translation_id TEXT, ref INTEGER, book INTEGER,
+                    chapter INTEGER, verse INTEGER, text TEXT, annotations_json TEXT);
+                INSERT INTO translations VALUES ('KJVs', 'King James', 'KJV');
+                """)
+            let verses: [(Int, String, String)] = [
+                (1_001_001, "between the light", #"[{"type":"strongs","start":0,"end":7,"data":{"strongs":"H996,H914"}}]"#),
+                (1_001_002, "between them", #"[{"type":"strongs","start":0,"end":7,"data":{"strongs":"H996"}}]"#),
+                (1_001_003, "and divided", #"[{"type":"strongs","start":4,"end":11,"data":{"strongs":"H9960"}}]"#),
+            ]
+            for (ref, text, annotations) in verses {
+                try db.execute(
+                    sql: """
+                        INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text, annotations_json)
+                        VALUES ('KJVs', ?, 1, 1, ?, ?, ?)
+                        """,
+                    arguments: [ref, ref % 1000, text, annotations]
+                )
+            }
+        }
+
+        try queue.read { db in
+            // Both verses holding H996, the comma-joined tag's included; not
+            // H9960, whose number only starts the same.
+            XCTAssertEqual(try StrongsVerseQuery.count(in: db, translationId: "KJVs", key: "H996"), 2)
+            let verses = try StrongsVerseQuery.verses(
+                in: db, translationId: "KJVs", key: "H996", bookRange: nil, limit: 10
+            )
+            XCTAssertEqual(verses.map(\.ref), [1_001_001, 1_001_002])
+            XCTAssertTrue(verses.first?.snippet.contains("<mark>between</mark>") == true)
+            XCTAssertEqual(try StrongsVerseQuery.verses(
+                in: db, translationId: "KJVs", key: "H996", bookRange: nil, limit: 1
+            ).count, 1)
+        }
+    }
+
+    func testABundledDictionaryIsFoundByItsDefinitionsNotItsFieldNames() throws {
+        let bundled = BundledModuleDatabase.shared
+        try XCTSkipUnless(bundled.available, "No bundled database in this build")
+        let love = try bundled.searchDictionaryEntries(query: "love", moduleId: "strongs_greek", limit: 500)
+        XCTAssertTrue(love.contains { $0.key == "G26" }, "G26 is found through its definition")
+        XCTAssertTrue(try bundled.searchDictionaryEntries(query: "definition", moduleId: "strongs_greek").isEmpty)
+        let accentless = try bundled.searchDictionaryEntries(query: "αγαπη", moduleId: "strongs_greek")
+        XCTAssertTrue(accentless.contains { $0.key == "G26" }, "Greek is matched with its accents set aside")
+    }
+
+    func testTheBundledCommentariesAreSearched() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.commentary]
+        let results = try ModuleSearch.shared.search(query: "love", filter: filter, limit: 20)
+        XCTAssertTrue(results.contains { $0.moduleId == "tske" || $0.moduleId == "crossrefs" })
+        XCTAssertTrue(ModuleSearch.shared.getSearchableModules().contains { $0.id == "tske" && $0.type == .commentary })
+    }
+
+    func testABibleRowMarksEveryWordTheSearchMatched() {
+        let marked = LampSearchQuery("faith works").markedSnippet("Faith without works is dead", limit: 120)
+        XCTAssertEqual(marked, "<mark>Faith</mark> without <mark>works</mark> is dead")
+        // Cut around the first mark, with an ellipsis where text is left out.
+        let long = String(repeating: "word ", count: 60) + "<mark>faith</mark> at last"
+        let text = SearchResultRow.snippetText(fromMarked: long, limit: 40)
+        XCTAssertNotNil(text)
     }
 }

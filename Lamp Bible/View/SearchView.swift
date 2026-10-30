@@ -365,16 +365,13 @@ struct SearchView: View {
         return searchMode.placeholder
     }
 
-    /// Check if the current translation has Strong's annotations
+    /// Whether the current translation carries Strong's tags, as its features
+    /// say: read, not searched for, since `"strongs": false` names the word too.
     private var translationHasStrongsAnnotations: Bool {
-        // Check if translation has Strong's annotations via GRDB
-        // For now, assume translations with Strong's annotations are flagged
-        // This could be optimized with a metadata field on the translation
         guard let translation = try? TranslationDatabase.shared.getTranslation(id: translationId) else {
             return false
         }
-        // Check features JSON for strongs support
-        return translation.featuresJson?.contains("strongs") ?? false
+        return translation.features?.strongs == true
     }
 
     /// Count of active module search filters
@@ -1210,7 +1207,10 @@ struct SearchView: View {
         .sheet(item: $selectedLexiconEntry) { result in
             if let strongsKey = result.strongsKey {
                 LexiconSheetView(
-                    word: result.title.components(separatedBy: " (").first ?? result.title,
+                    // A Hebrew title puts a left-to-right mark before its key,
+                    // which would keep " (" from matching.
+                    word: result.title.replacingOccurrences(of: "\u{200E}", with: "")
+                        .components(separatedBy: " (").first ?? result.title,
                     strongs: [strongsKey],
                     morphology: nil,
                     translationId: translationId,
@@ -1237,7 +1237,8 @@ struct SearchView: View {
                 onNavigate: { verseId in
                     selectedHighlight = nil
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        navigateToHighlightedVerse(verseId)
+                        // In the highlight's own translation, the one it marks.
+                        navigateToVerse(verseId, translationId: result.translationId ?? translationId)
                     }
                 }
             )
@@ -1370,6 +1371,7 @@ struct SearchView: View {
 
         searchTask = Task {
             await performSearchAsync()
+            guard !Task.isCancelled else { return }
 
             // Save to Bible history if we found results (module history is saved in performModuleSearch)
             if searchScope == .bible {
@@ -1393,7 +1395,8 @@ struct SearchView: View {
         await performBibleSearchAsync(showLoadingState: showLoadingState)
     }
 
-    /// Performs Bible search on main thread (Realm requires main thread)
+    /// Searches the translation off the main thread, and shows what it found
+    /// only if no newer search has replaced it meanwhile.
     @MainActor
     private func performBibleSearchAsync(showLoadingState: Bool = true) async {
         let query = bibleSearchText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -1419,50 +1422,46 @@ struct SearchView: View {
             stateManager.bibleScrollToId = nil
         }
 
-        // Yield to allow UI updates before heavy work
-        await Task.yield()
-
-        if searchMode == .strongs {
-            // Strong's search using annotations_json LIKE query
-            let strongsQuery = query.uppercased()
-            let results = (try? TranslationDatabase.shared.searchVersesByStrongs(
-                translationId: translationId,
-                strongsNum: strongsQuery,
-                bookRange: nil,
-                limit: 10000  // High limit to get total count
-            )) ?? []
-            totalResultCount = results.count
-
-            let limited = Array(results.prefix(resultLimit))
-            searchResults = limited.compactMap { result -> SearchResult? in
-                let bookName = (try? BundledModuleDatabase.shared.getBook(id: result.book))?.name ?? "Book \(result.book)"
-                return SearchResult(searchResult: result, bookName: bookName)
+        let isStrongs = searchMode == .strongs
+        let translationId = translationId
+        let shown = resultLimit
+        let found = await Task.detached(priority: .userInitiated) { () -> (total: Int, results: [SearchResult]) in
+            let results: [TranslationSearchResult]
+            if isStrongs {
+                let key = LampStrongsKey.typedKey(query) ?? LampStrongsKey.normalized(query)
+                results = (try? TranslationDatabase.shared.searchVersesByStrongs(
+                    translationId: translationId,
+                    strongsNum: key,
+                    bookRange: nil,
+                    limit: 10000  // High limit to get total count
+                )) ?? []
+            } else {
+                // Text search using GRDB FTS5. The query goes in as typed: the
+                // searcher applies the shared grammar, and stripping its quotes
+                // first would lose the phrases they mark.
+                results = (try? TranslationDatabase.shared.searchAllTranslations(
+                    query: query,
+                    translationIds: [translationId],
+                    bookRange: nil,
+                    limit: 10000  // High limit to get total count
+                )) ?? []
             }
-        } else {
-            // Text search using GRDB FTS5. The query goes in as typed: the
-            // searcher applies the shared grammar, and `getRealmSearchString`
-            // would strip the quotes that mark a phrase before it got there.
-            let results = (try? TranslationDatabase.shared.searchAllTranslations(
-                query: query,
-                translationIds: [translationId],
-                bookRange: nil,
-                limit: 10000  // High limit to get total count
-            )) ?? []
-            totalResultCount = results.count
-
-            let limited = Array(results.prefix(resultLimit))
-            searchResults = limited.compactMap { result -> SearchResult? in
-                let bookName = (try? BundledModuleDatabase.shared.getBook(id: result.book))?.name ?? "Book \(result.book)"
-                return SearchResult(searchResult: result, bookName: bookName)
+            let shownResults = results.prefix(shown).map { result in
+                SearchResult(searchResult: result, bookName: BookOsisCache.shared.displayName(for: result.book))
             }
-        }
+            return (results.count, Array(shownResults))
+        }.value
+        guard !Task.isCancelled else { return }
+        totalResultCount = found.total
+        searchResults = found.results
 
         if showLoadingState {
             isSearching = false
         }
     }
 
-    /// Performs search across user modules (includes Realm for bundled dictionaries, must run on main thread)
+    /// Searches the modules off the main thread, and shows what it found only
+    /// if no newer search has replaced it meanwhile.
     @MainActor
     private func performModuleSearchAsync(showLoadingState: Bool = true) async {
         let query = moduleSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1488,7 +1487,9 @@ struct SearchView: View {
         case .strongsKey:
             // Strong's key search - only dictionaries and translations with Strong's support
             filter.types = [.dictionary, .translation]
-            let key = query.uppercased()
+            // Normalised as the dictionaries store it ("G0026" is G26); a
+            // BDB ID is none of core's, and kept as typed.
+            let key = LampStrongsKey.typedKey(query) ?? query.uppercased()
             if !key.isEmpty {
                 filter.strongsKey = key
             }
@@ -1521,13 +1522,18 @@ struct SearchView: View {
             isSearching = true
         }
 
-        // Yield to allow UI updates before heavy work
-        await Task.yield()
+        // Request one extra to detect if there are more results
+        let searchQuery = (moduleSearchMode == .strongsKey || moduleSearchMode == .highlightColor) ? "" : query
+        let moduleSearch = moduleSearch
+        let requested = resultLimit + 1
+        let filterToSearch = filter
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Result { try moduleSearch.search(query: searchQuery, filter: filterToSearch, limit: requested) }
+        }.value
+        guard !Task.isCancelled else { return }
 
         do {
-            // Request one extra to detect if there are more results
-            let searchQuery = (moduleSearchMode == .strongsKey || moduleSearchMode == .highlightColor) ? "" : query
-            let results = try moduleSearch.search(query: searchQuery, filter: filter, limit: resultLimit + 1)
+            let results = try outcome.get()
             let hasMoreResults = results.count > resultLimit
             let limitedResults = hasMoreResults ? Array(results.prefix(resultLimit)) : results
 
@@ -1581,10 +1587,10 @@ struct SearchView: View {
         }
     }
 
-    /// Validates that the query looks like a Strong's number (H, G, or TH prefix followed by digits)
+    /// Whether the query is a Strong's key alone, as core reads one: H, G or
+    /// TH, digits, and at most one letter, so "H1234a" counts as the Mac has it.
     private func isValidStrongsQuery(_ query: String) -> Bool {
-        let pattern = "^(H|G|TH)\\d+$"
-        return query.range(of: pattern, options: .regularExpression) != nil
+        LampStrongsKey.typedKey(query) != nil
     }
 
     /// Validates that the query looks like a BDB ID (BDB prefix followed by digits)
@@ -1596,7 +1602,9 @@ struct SearchView: View {
     /// Searches for verses containing the exact Strong's number with proper boundary matching
     private func loadMoreResults() {
         resultLimit += 100
-        Task {
+        // Kept, so a new search cancels it as it would any other.
+        searchTask?.cancel()
+        searchTask = Task {
             // Don't show loading state for load more to preserve scroll position
             await performSearchAsync(showLoadingState: false)
         }
@@ -1671,81 +1679,8 @@ struct SearchResultRow: View {
 
     @State private var showingSheet: Bool = false
 
-    // Get context verses based on setting using GRDB
-    private var contextVerses: [TranslationVerse] {
-        let verseId = result.id
-        let (verse, chapter, book) = splitVerseId(verseId)
-
-        // Get all verses in the chapter
-        let content = (try? TranslationDatabase.shared.getChapter(translationId: translationId, book: book, chapter: chapter)) ?? ChapterContent(verses: [], headings: [])
-        let chapterVerses = content.verses
-
-        switch contextAmount {
-        case .oneVerse:
-            // 1 verse before + hit verse + 1 verse after
-            guard let index = chapterVerses.firstIndex(where: { $0.ref == verseId }) else {
-                if let singleVerse = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: verseId) {
-                    return [singleVerse]
-                }
-                return []
-            }
-            let startIndex = max(0, index - 1)
-            let endIndex = min(chapterVerses.count - 1, index + 1)
-            return Array(chapterVerses[startIndex...endIndex])
-        case .threeVerses:
-            // 3 verses before + hit verse + 3 verses after
-            guard let index = chapterVerses.firstIndex(where: { $0.ref == verseId }) else {
-                if let singleVerse = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: verseId) {
-                    return [singleVerse]
-                }
-                return []
-            }
-            let startIndex = max(0, index - 3)
-            let endIndex = min(chapterVerses.count - 1, index + 3)
-            return Array(chapterVerses[startIndex...endIndex])
-        case .chapter:
-            // All verses in the chapter
-            return chapterVerses
-        }
-    }
-
     private var sheetTitle: String {
         result.referenceText
-    }
-
-    private func highlightedAttributedText(_ text: String, query: String) -> AttributedString {
-        var result = AttributedString()
-        // Strip quotes from query for highlighting
-        let cleanQuery = getRealmSearchString(from: query)
-        let lowercaseText = text.lowercased()
-        let lowercaseQuery = cleanQuery.lowercased()
-
-        guard !cleanQuery.isEmpty, lowercaseText.contains(lowercaseQuery) else {
-            return AttributedString(text)
-        }
-
-        var currentIndex = text.startIndex
-
-        while currentIndex < text.endIndex {
-            if let range = text.range(of: cleanQuery, options: .caseInsensitive, range: currentIndex..<text.endIndex) {
-                // Add text before match
-                if currentIndex < range.lowerBound {
-                    result.append(AttributedString(String(text[currentIndex..<range.lowerBound])))
-                }
-                // Add highlighted match
-                var highlight = AttributedString(String(text[range]))
-                highlight.backgroundColor = .lampFindMatch
-                highlight.font = .system(size: CGFloat(fontSize)).bold()
-                result.append(highlight)
-                currentIndex = range.upperBound
-            } else {
-                // Add remaining text
-                result.append(AttributedString(String(text[currentIndex..<text.endIndex])))
-                break
-            }
-        }
-
-        return result
     }
 
     /// Scale factor for relative sizing (module results use ~17pt headline, ~15pt subheadline)
@@ -1817,153 +1752,66 @@ struct SearchResultRow: View {
         }
     }
 
-    // Context for list rows - always includes the match, truncates from ends to fit
+    /// The verse cut to about 120 characters around its first hit, every hit
+    /// marked as the search matched it: each word of a text search where it
+    /// matched (`LampSearchQuery.markedSnippet`), or each word tagged with the
+    /// key, a comma-joined tag's included (`LampStrongsSearch.markedText`).
     private var listContextText: Text {
-        // Get clean text (snippet contains the verse text)
-        let cleanedText = result.text
-        let hitInfo: (start: Int, end: Int)?
-
+        let marked: String
         if searchMode == .strongs {
-            // Parse JSON annotations and find matching Strong's number
-            hitInfo = findStrongsHitInAnnotations(result.rawText, strongsNum: searchQuery.uppercased())
+            let key = LampStrongsKey.typedKey(searchQuery) ?? LampStrongsKey.normalized(searchQuery)
+            marked = LampStrongsSearch.markedText(result.text, annotationsJSON: result.rawText, key: key)
         } else {
-            // Strip quotes from query for hit finding
-            let cleanQuery = getRealmSearchString(from: searchQuery)
-            if let range = cleanedText.range(of: cleanQuery, options: .caseInsensitive) {
-                hitInfo = (
-                    cleanedText.distance(from: cleanedText.startIndex, to: range.lowerBound),
-                    cleanedText.distance(from: cleanedText.startIndex, to: range.upperBound)
-                )
-            } else {
-                hitInfo = nil
-            }
+            marked = LampSearchQuery(searchQuery).markedSnippet(result.text, limit: 120)
         }
-
-        // Build snippet with hit centered
-        return buildSnippetText(cleanedText: cleanedText, hitInfo: hitInfo, targetLength: 120)
+        return Self.snippetText(fromMarked: marked, limit: 120)
     }
 
-    /// Find the position of a Strong's number hit by parsing annotations_json
-    private func findStrongsHitInAnnotations(_ annotationsJson: String, strongsNum: String) -> (start: Int, end: Int)? {
-        guard let data = annotationsJson.data(using: .utf8),
-              let annotations = try? JSONDecoder().decode([VerseAnnotation].self, from: data) else {
-            return nil
-        }
-
-        for annotation in annotations {
-            if let strongs = annotation.data?.strongs, LampStrongsKey.matches(strongs, strongsNum) {
-                return (annotation.start, annotation.end)
-            }
-        }
-        return nil
-    }
-
-
-    /// Build a snippet Text centered on the hit, with highlighting
-    private func buildSnippetText(cleanedText: String, hitInfo: (start: Int, end: Int)?, targetLength: Int) -> Text {
-        // If no hit found, just truncate from start
-        guard let hit = hitInfo else {
-            if cleanedText.count <= targetLength {
-                return Text(cleanedText)
+    /// `<mark>`ed text as a `Text`, the marks in the find-match style, cut to
+    /// about `limit` characters starting a little before the first mark.
+    static func snippetText(fromMarked marked: String, limit: Int) -> Text {
+        var segments: [(text: String, isMark: Bool)] = []
+        var rest = Substring(marked)
+        while let open = rest.range(of: "<mark>") {
+            segments.append((String(rest[..<open.lowerBound]), false))
+            rest = rest[open.upperBound...]
+            if let close = rest.range(of: "</mark>") {
+                segments.append((String(rest[..<close.lowerBound]), true))
+                rest = rest[close.upperBound...]
             } else {
-                return Text(String(cleanedText.prefix(targetLength - 3)) + "...")
+                segments.append((String(rest), true))
+                rest = ""
             }
         }
+        segments.append((String(rest), false))
 
-        // Validate and clamp hit bounds
-        let hitStart = max(0, min(hit.start, cleanedText.count))
-        let hitEnd = max(hitStart, min(hit.end, cleanedText.count))
-
-        // If hit is empty or invalid after clamping, just show truncated text
-        guard hitStart < hitEnd else {
-            if cleanedText.count <= targetLength {
-                return Text(cleanedText)
-            } else {
-                return Text(String(cleanedText.prefix(targetLength - 3)) + "...")
+        let length = segments.reduce(0) { $0 + $1.text.count }
+        var windowStart = 0
+        var windowEnd = length
+        if length > limit {
+            var offset = 0
+            var firstMark = 0
+            for segment in segments {
+                if segment.isMark { firstMark = offset; break }
+                offset += segment.text.count
             }
+            windowStart = min(max(firstMark - limit / 3, 0), length - limit)
+            windowEnd = windowStart + limit
         }
 
-        // If whole text fits, show it all with highlighting
-        if cleanedText.count <= targetLength {
-            let startIdx = cleanedText.index(cleanedText.startIndex, offsetBy: hitStart)
-            let endIdx = cleanedText.index(cleanedText.startIndex, offsetBy: hitEnd)
-            return Text(cleanedText[cleanedText.startIndex..<startIdx])
-                + Text.findMatch(cleanedText[startIdx..<endIdx]).bold()
-                + Text(cleanedText[endIdx..<cleanedText.endIndex])
-        }
-
-        // Calculate context distribution
-        let hitLength = hitEnd - hitStart
-        let availableContext = max(0, targetLength - hitLength)
-
-        let idealBefore = availableContext / 2
-        let idealAfter = availableContext - idealBefore
-
-        var actualBefore = min(idealBefore, hitStart)
-        var actualAfter = min(idealAfter, cleanedText.count - hitEnd)
-
-        // Fill shortfall from the other side
-        let shortfallBefore = idealBefore - actualBefore
-        let shortfallAfter = idealAfter - actualAfter
-        actualAfter = min(actualAfter + shortfallBefore, cleanedText.count - hitEnd)
-        actualBefore = min(actualBefore + shortfallAfter, hitStart)
-
-        let snippetStart = hitStart - actualBefore
-        let snippetEnd = hitEnd + actualAfter
-
-        let startIdx = cleanedText.index(cleanedText.startIndex, offsetBy: snippetStart)
-        let endIdx = cleanedText.index(cleanedText.startIndex, offsetBy: snippetEnd)
-        let hitStartIdx = cleanedText.index(cleanedText.startIndex, offsetBy: hitStart)
-        let hitEndIdx = cleanedText.index(cleanedText.startIndex, offsetBy: hitEnd)
-
-        var result = Text("")
-
-        if snippetStart > 0 {
-            result = result + Text("...")
-        }
-
-        result = result + Text(cleanedText[startIdx..<hitStartIdx])
-        result = result + Text.findMatch(cleanedText[hitStartIdx..<hitEndIdx]).bold()
-        result = result + Text(cleanedText[hitEndIdx..<endIdx])
-
-        if snippetEnd < cleanedText.count {
-            result = result + Text("...")
-        }
-
-        return result
-    }
-
-    private func highlightedText(_ text: String, query: String) -> Text {
-        // Strip quotes from query for highlighting
-        let cleanQuery = getRealmSearchString(from: query)
-        let lowercaseText = text.lowercased()
-        let lowercaseQuery = cleanQuery.lowercased()
-
-        guard !cleanQuery.isEmpty, lowercaseText.contains(lowercaseQuery) else {
-            return Text(text)
-        }
-
-        var result = Text("")
-        var currentIndex = text.startIndex
-
-        while currentIndex < text.endIndex {
-            if let range = text.range(of: cleanQuery, options: .caseInsensitive, range: currentIndex..<text.endIndex) {
-                // Add text before match
-                if currentIndex < range.lowerBound {
-                    result = result + Text(text[currentIndex..<range.lowerBound])
-                }
-                // Add highlighted match
-                result = result + Text.findMatch(text[range])
-                    .bold()
-                currentIndex = range.upperBound
-            } else {
-                // Add remaining text
-                result = result + Text(text[currentIndex..<text.endIndex])
-                break
+        var text = Text(windowStart > 0 ? "…" : "")
+        var offset = 0
+        for segment in segments {
+            let lower = max(windowStart - offset, 0)
+            let upper = min(windowEnd - offset, segment.text.count)
+            if lower < upper {
+                let characters = Array(segment.text)
+                let piece = String(characters[lower..<upper])
+                text = text + (segment.isMark ? Text.findMatch(piece).bold() : Text(piece))
             }
+            offset += segment.text.count
         }
-
-        return result
+        return windowEnd < length ? text + Text("…") : text
     }
 
 }
@@ -2005,7 +1853,7 @@ struct ModuleSearchResultRow: View {
             return nil
         }
         // Look up book name
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Book \(book)"
+        let bookName = BookOsisCache.shared.displayName(for: book)
         // Verse 0 means chapter-level (e.g., chapter intro notes), don't show ":0"
         if verse == 0 {
             return "\(bookName) \(chapter)"
@@ -2878,7 +2726,7 @@ struct NoteEntrySheet: View {
 
     private var verseReference: String? {
         guard let entry = entry else { return nil }
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: entry.book))?.name ?? "Book \(entry.book)"
+        let bookName = BookOsisCache.shared.displayName(for: entry.book)
         // Verse 0 means chapter-level note, don't show ":0"
         if entry.verse == 0 {
             return "\(bookName) \(entry.chapter)"
@@ -2997,21 +2845,21 @@ struct CommentaryEntrySheet: View {
 
     private let scrollCoordinateSpaceName = "commentaryScroll"
 
+    /// The user's commentary, or a bundled one: the Treasury and the
+    /// cross-references keep their units in the bundled database.
     private var unit: CommentaryUnit? {
-        try? ModuleDatabase.shared.read { db in
-            try CommentaryUnit.filter(Column("id") == entryId).fetchOne(db)
-        }
+        let fetch = { (db: Database) in try CommentaryUnit.filter(Column("id") == entryId).fetchOne(db) }
+        return (try? ModuleDatabase.shared.read(fetch)) ?? (try? BundledModuleDatabase.shared.read(fetch)) ?? nil
     }
 
     private var module: Module? {
-        try? ModuleDatabase.shared.read { db in
-            try Module.filter(Column("id") == moduleId).fetchOne(db)
-        }
+        let fetch = { (db: Database) in try Module.filter(Column("id") == moduleId).fetchOne(db) }
+        return (try? ModuleDatabase.shared.read(fetch)) ?? (try? BundledModuleDatabase.shared.read(fetch)) ?? nil
     }
 
     private var verseReference: String? {
         guard let unit = unit else { return nil }
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: unit.book))?.name ?? "Book \(unit.book)"
+        let bookName = BookOsisCache.shared.displayName(for: unit.book)
         let verse = unit.sv % 1000
         let chapter = (unit.sv / 1000) % 1000
         return "\(bookName) \(chapter):\(verse)"
@@ -3033,7 +2881,7 @@ struct CommentaryEntrySheet: View {
         let bookId = sv / 1000000
         let chapter = (sv % 1000000) / 1000
         let verse = sv % 1000
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
+        let bookName = BookOsisCache.shared.displayName(for: bookId, fallback: "?")
         if let ev = ev {
             let endVerse = ev % 1000
             if endVerse != verse {
