@@ -131,6 +131,9 @@ class BundledModuleDatabase {
 
     // MARK: - Database Access
 
+    /// Nothing inside `block` may read this database again, `getBook` and
+    /// the book-name cache included: the queue isn't reentrant, and GRDB
+    /// traps. Look names up once the read has returned.
     func read<T>(_ block: (Database) throws -> T) throws -> T {
         guard let db = dbQueue else {
             throw BundledModuleDatabaseError.notAvailable

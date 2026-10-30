@@ -189,6 +189,25 @@ class ModuleSearch {
             print("Failed to get user modules: \(error)")
         }
 
+        // Reading plans and quizzes, the bundled ones and the user's; a user's
+        // copy stands in for a bundled one of the same ID.
+        var plans: [String: SearchableModule] = [:]
+        for plan in (try? BundledModuleDatabase.shared.getAllPlans()) ?? [] {
+            plans[plan.id] = SearchableModule(id: plan.id, name: plan.name, type: .plan, isBundled: true)
+        }
+        for plan in (try? database.getAllPlans()) ?? [] {
+            plans[plan.id] = SearchableModule(id: plan.id, name: plan.name, type: .plan, isBundled: false)
+        }
+        modules.append(contentsOf: plans.values.sorted { $0.name < $1.name })
+        var quizzes: [String: SearchableModule] = [:]
+        for quiz in (try? BundledModuleDatabase.shared.getAllQuizModules()) ?? [] {
+            quizzes[quiz.id] = SearchableModule(id: quiz.id, name: quiz.name, type: .quiz, isBundled: true)
+        }
+        for quiz in (try? database.getAllQuizModules()) ?? [] {
+            quizzes[quiz.id] = SearchableModule(id: quiz.id, name: quiz.name, type: .quiz, isBundled: false)
+        }
+        modules.append(contentsOf: quizzes.values.sorted { $0.name < $1.name })
+
         // Highlight sets
         do {
             let highlightSets = try database.getAllHighlightSets()
@@ -343,6 +362,14 @@ class ModuleSearch {
                 // Strong's key search for translations with Strong's support
                 results.append(contentsOf: try searchTranslationsByStrongs(filter: filter, limit: limit))
             }
+        }
+
+        if filter.types.contains(.plan) && hasTextQuery {
+            results.append(contentsOf: try searchPlans(query: query, filter: filter, limit: limit))
+        }
+
+        if filter.types.contains(.quiz) && hasTextQuery {
+            results.append(contentsOf: try searchQuizzes(query: query, filter: filter, limit: limit))
         }
 
         if filter.types.contains(.highlights) && (hasTextQuery || hasColorFilter) {
@@ -1186,6 +1213,104 @@ class ModuleSearch {
     }
 
 
+    // MARK: - Plans and Quizzes
+
+    /// Reading plans by their name, author and descriptions, the bundled ones
+    /// and the user's, as the Mac searches them.
+    private func searchPlans(query: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+        let parsed = LampSearchQuery(query)
+        guard !parsed.isEmpty else { return [] }
+        var plans: [String: Plan] = [:]
+        for plan in (try? BundledModuleDatabase.shared.getAllPlans()) ?? [] { plans[plan.id] = plan }
+        for plan in try database.getAllPlans() { plans[plan.id] = plan }
+        return plans.values
+            .filter { plan in
+                (filter.moduleIds?.contains(plan.id) ?? true)
+                    && parsed.matches(
+                        [plan.name, plan.planDescription, plan.fullDescription, plan.author]
+                            .compactMap { $0 }.joined(separator: " ")
+                    )
+            }
+            .sorted { $0.name < $1.name }
+            .prefix(limit)
+            .map { plan in
+                ModuleSearchResult(
+                    id: "plan:\(plan.id)",
+                    moduleId: plan.id,
+                    moduleName: plan.author ?? "Reading Plan",
+                    moduleType: .plan,
+                    title: plan.name,
+                    snippet: parsed.markedSnippet(
+                        plan.fullDescription ?? plan.planDescription ?? plan.duration.map { "\($0) days" } ?? "",
+                        limit: 200
+                    ),
+                    verseId: nil,
+                    rank: parsed.textRank(in: [plan.name, plan.author ?? "", plan.planDescription ?? ""])
+                )
+            }
+    }
+
+    /// Quiz questions by their theme and the words of their question and
+    /// answer, never the JSON's field names, as the Mac searches them; the
+    /// user's and the bundled ones. A result's ID names the database it came
+    /// from, since each numbers its questions from 1.
+    private func searchQuizzes(query: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+        let parsed = LampSearchQuery(query)
+        guard !parsed.isEmpty else { return [] }
+        var results = try database.read { db in
+            try quizHits(in: db, source: "user", parsed: parsed, filter: filter, limit: limit)
+        }
+        if BundledModuleDatabase.shared.available {
+            results += try BundledModuleDatabase.shared.read { db in
+                try quizHits(in: db, source: "bundled", parsed: parsed, filter: filter, limit: limit)
+            }
+        }
+        return results
+    }
+
+    private func quizHits(
+        in db: Database,
+        source: String,
+        parsed: LampSearchQuery,
+        filter: ModuleSearchFilter,
+        limit: Int
+    ) throws -> [ModuleSearchResult] {
+        guard try db.tableExists("quiz_questions"), try db.tableExists("quiz_modules") else { return [] }
+        let like = parsed.sqlLikePredicate(columns: ["q.theme"], jsonColumns: ["q.question_json", "q.answer_json"])
+        var conditions = [like.condition]
+        var arguments = StatementArguments(like.arguments)
+        if let moduleIds = filter.moduleIds {
+            guard !moduleIds.isEmpty else { return [] }
+            conditions.append("q.quiz_module_id IN (\(moduleIds.map { _ in "?" }.joined(separator: ", ")))")
+            arguments += StatementArguments(moduleIds.sorted())
+        }
+        arguments += [limit]
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT q.id, q.quiz_module_id, q.sv, q.question_json, q.answer_json, m.name AS module_name
+            FROM quiz_questions q
+            JOIN quiz_modules m ON m.id = q.quiz_module_id
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY q.day, q.sv, q.age_group, q.question_index
+            LIMIT ?
+            """, arguments: arguments)
+        return rows.map { row in
+            let questionJSON: String = row["question_json"]
+            let answerJSON: String = row["answer_json"]
+            let question = QuizTextParser.parse(questionJSON).text
+            let answer = QuizTextParser.parse(answerJSON).text
+            return ModuleSearchResult(
+                id: "quiz:\(source):\(row["id"] as Int64)",
+                moduleId: row["quiz_module_id"],
+                moduleName: row["module_name"],
+                moduleType: .quiz,
+                title: question.isEmpty ? "Quiz Question" : question,
+                snippet: parsed.markedSnippet(answer, limit: 200),
+                verseId: row["sv"],
+                rank: parsed.textRank(in: [question, answer])
+            )
+        }
+    }
+
     // MARK: - FTS Query Preparation
 
     /// The one search grammar. Every searcher below is handed the result of
@@ -1231,6 +1356,9 @@ class ModuleSearch {
                 highlights = highlights.filter { entry in
                     LampHighlightSearch.matchesColor(entry.color, in: colorFilter)
                 }
+            }
+            if let bookRange = filter.bookRange {
+                highlights = highlights.filter { bookRange.contains($0.ref / 1_000_000) }
             }
 
             guard !highlights.isEmpty else { continue }

@@ -65,7 +65,7 @@ extension LampModuleKind {
     /// Module types that are searchable in the module search UI
     /// Excludes plan and quiz (have dedicated UI)
     static var searchableTypes: [ModuleType] {
-        [.translation, .dictionary, .commentary, .book, .devotional, .notes, .highlights]
+        [.translation, .dictionary, .commentary, .book, .devotional, .notes, .plan, .highlights, .quiz]
     }
 
     static func detected(fromTableNames tables: Set<String>) -> ModuleType? {

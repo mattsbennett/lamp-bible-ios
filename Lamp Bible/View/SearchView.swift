@@ -85,19 +85,12 @@ enum ModuleSearchMode: String, CaseIterable, Codable {
     }
 }
 
+/// A Bible search as the phone kept it before core's history, read once to
+/// move it there.
 struct SearchHistoryEntry: Codable, Equatable {
     let query: String
     let mode: SearchMode
     let translationId: String?  // GRDB translation ID
-
-    // For display - get translation abbreviation
-    var translationAbbreviation: String? {
-        guard let id = translationId,
-              let translation = try? TranslationDatabase.shared.getTranslation(id: id) else {
-            return nil
-        }
-        return translation.abbreviation
-    }
 }
 
 /// Manages search state to persist across navigation
@@ -122,6 +115,9 @@ class SearchStateManager: ObservableObject {
 
     // Shared state
     @Published var isSearching: Bool = false
+    /// The books searched, nil for all: verses in the Bible scope, and
+    /// verses and highlights among the modules, as the Mac narrows them.
+    @Published var bookRange: ClosedRange<Int>? = nil
 
     func clearBibleResults() {
         bibleSearchResults = []
@@ -138,24 +134,120 @@ class SearchStateManager: ObservableObject {
     }
 }
 
+/// A module search as the phone kept it before core's history, read once to
+/// move it there.
 struct ModuleSearchHistoryEntry: Codable, Equatable {
     let query: String
     let searchMode: ModuleSearchMode
     let moduleIds: Set<String>?
     let tags: Set<String>
+}
 
-    var filterSummary: String {
-        var parts: [String] = []
-        if searchMode != .text {
-            parts.append(searchMode.displayName)
+/// The phone's search history, one list for both scopes as core keeps the
+/// Mac's, each entry with the filters it ran with. Kept on this device only.
+enum SearchHistoryStore {
+    static let key = "unifiedSearchHistory"
+    static let legacyBibleKey = "searchHistory"
+    static let legacyModuleKey = "moduleSearchHistory"
+
+    /// A search of the Bible scope, as against modules confined to a kind.
+    static func isBibleSearch(_ entry: LampSearchHistory.Entry) -> Bool {
+        entry.kinds == [.translation]
+    }
+
+    /// Moves the two lists the phone kept before into the one, then drops
+    /// them, so a cleared history stays cleared.
+    static func migrateLegacy(in defaults: UserDefaults = .standard) {
+        let bible = defaults.data(forKey: legacyBibleKey)
+        let module = defaults.data(forKey: legacyModuleKey)
+        guard bible != nil || module != nil else { return }
+        let existing = LampSearchHistory.decoded(from: defaults.data(forKey: key) ?? Data()).entries
+        var history = LampSearchHistory()
+        // Oldest first, since each one recorded goes to the top.
+        for entry in (existing + legacyEntries(bible: bible ?? Data(), module: module ?? Data())).reversed() {
+            history.record(entry, resultCount: 1)
         }
-        if let ids = moduleIds, !ids.isEmpty {
-            parts.append("\(ids.count) modules")
+        defaults.set(history.encoded(), forKey: key)
+        defaults.removeObject(forKey: legacyBibleKey)
+        defaults.removeObject(forKey: legacyModuleKey)
+    }
+
+    /// The old entries, newest first. Neither list kept times, so the two are
+    /// taken in turn, and given times a second apart to keep that order.
+    static func legacyEntries(bible: Data, module: Data, now: Date = Date()) -> [LampSearchHistory.Entry] {
+        let bibleEntries: [SearchHistoryEntry] = (try? JSONDecoder().decode([SearchHistoryEntry].self, from: bible))
+            ?? ((try? JSONDecoder().decode([String].self, from: bible)) ?? []).map {
+                SearchHistoryEntry(query: $0, mode: .text, translationId: nil)
+            }
+        let moduleEntries = (try? JSONDecoder().decode([ModuleSearchHistoryEntry].self, from: module)) ?? []
+
+        let fromBible = bibleEntries.map { old -> LampSearchHistory.Entry in
+            switch old.mode {
+            case .text:
+                return LampSearchHistory.Entry(query: old.query, kinds: [.translation], translationID: old.translationId)
+            case .strongs:
+                return LampSearchHistory.Entry(
+                    query: "", kinds: [.translation], translationID: old.translationId,
+                    strongsKey: LampStrongsKey.typedKey(old.query) ?? old.query
+                )
+            }
         }
-        if !tags.isEmpty {
-            parts.append("\(tags.count) tags")
+        let fromModules = moduleEntries.map { old -> LampSearchHistory.Entry in
+            let ids = old.moduleIds?.isEmpty == false ? old.moduleIds : nil
+            switch old.searchMode {
+            case .text:
+                return LampSearchHistory.Entry(
+                    query: old.query, moduleIDs: ids,
+                    devotionalCriteria: old.tags.isEmpty ? nil : LampDevotionalSearchCriteria(tags: old.tags)
+                )
+            case .strongsKey:
+                return LampSearchHistory.Entry(
+                    query: "", kinds: [.dictionary, .translation], moduleIDs: ids,
+                    strongsKey: LampStrongsKey.typedKey(old.query) ?? old.query.uppercased()
+                )
+            case .highlightColor:
+                return LampSearchHistory.Entry(query: old.query, kinds: [.highlights], moduleIDs: ids)
+            }
         }
-        return parts.isEmpty ? "" : "[\(parts.joined(separator: "; "))]"
+
+        var merged: [LampSearchHistory.Entry] = []
+        for index in 0..<max(fromBible.count, fromModules.count) {
+            if index < fromBible.count { merged.append(fromBible[index]) }
+            if index < fromModules.count { merged.append(fromModules[index]) }
+        }
+        return merged.enumerated().map { offset, entry in
+            var dated = entry
+            dated.searchedAt = now.addingTimeInterval(-Double(offset))
+            return dated
+        }
+    }
+}
+
+/// The books a search covers, for its menu and its summary.
+enum SearchBookRange {
+    static let oldTestament = 1...39
+    static let newTestament = 40...66
+
+    static func name(of range: ClosedRange<Int>?) -> String {
+        switch range {
+        case nil: return "All Books"
+        case oldTestament?: return "Old Testament"
+        case newTestament?: return "New Testament"
+        case let range?:
+            let first = BookOsisCache.shared.displayName(for: range.lowerBound)
+            guard range.count > 1 else { return first }
+            return "\(first)–\(BookOsisCache.shared.displayName(for: range.upperBound))"
+        }
+    }
+
+    /// For a title: nothing when every book is searched.
+    static func shortName(of range: ClosedRange<Int>?) -> String? {
+        switch range {
+        case nil: return nil
+        case oldTestament?: return "OT"
+        case newTestament?: return "NT"
+        default: return name(of: range)
+        }
     }
 }
 
@@ -239,8 +331,7 @@ struct SearchView: View {
     @State private var navigateToVerseId: Int? = nil  // For standalone mode navigation to reader
     @State private var readerDate: Date = Date.now  // Date binding for reader
     @AppStorage("searchContextAmount") private var contextAmount: SearchContextAmount = .oneVerse
-    @AppStorage("searchHistory") private var searchHistoryData: Data = Data()
-    @AppStorage("moduleSearchHistory") private var moduleSearchHistoryData: Data = Data()
+    @AppStorage(SearchHistoryStore.key) private var searchHistoryData: Data = Data()
     @AppStorage("searchMode") private var searchMode: SearchMode = .text
     @AppStorage("searchScope") private var searchScope: SearchScope = .bible
     @State private var userSettings = UserDatabase.shared.getSettings()
@@ -353,10 +444,10 @@ struct SearchView: View {
     @State private var selectedCommentary: ModuleSearchResult? = nil
     @State private var selectedBookSection: ModuleSearchResult? = nil
     @State private var analysisItem: StrongsAnalysisItem? = nil
+    @State private var selectedPlan: ModuleSearchResult? = nil
+    @State private var selectedQuiz: ModuleSearchResult? = nil
     @State private var selectedHighlight: ModuleSearchResult? = nil
     @State private var selectedTranslation: ModuleSearchResult? = nil
-
-    private let maxHistorySize = 20
 
     private var moduleSearchPlaceholder: String {
         if searchScope == .modules {
@@ -384,73 +475,158 @@ struct SearchView: View {
         return count
     }
 
-    private var searchHistory: [SearchHistoryEntry] {
-        get {
-            // Try new format first
-            if let entries = try? JSONDecoder().decode([SearchHistoryEntry].self, from: searchHistoryData) {
-                return entries
-            }
-            // Fall back to old format (migrate strings to text mode)
-            if let oldStrings = try? JSONDecoder().decode([String].self, from: searchHistoryData) {
-                return oldStrings.map { SearchHistoryEntry(query: $0, mode: .text, translationId: nil) }
-            }
-            return []
+    private var searchHistory: LampSearchHistory {
+        LampSearchHistory.decoded(from: searchHistoryData)
+    }
+
+    private var bookRange: ClosedRange<Int>? {
+        get { stateManager.bookRange }
+        nonmutating set { stateManager.bookRange = newValue }
+    }
+
+    /// The search on screen, with every filter that shaped it.
+    private var currentHistoryEntry: LampSearchHistory.Entry {
+        let query = currentSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if searchScope == .bible {
+            let isStrongs = searchMode == .strongs
+            return LampSearchHistory.Entry(
+                query: isStrongs ? "" : query,
+                kinds: [.translation],
+                translationID: translationId,
+                bookRange: bookRange,
+                strongsKey: isStrongs ? (LampStrongsKey.typedKey(query) ?? LampStrongsKey.normalized(query)) : nil
+            )
+        }
+        switch moduleSearchMode {
+        case .text:
+            return LampSearchHistory.Entry(
+                query: query,
+                moduleIDs: filterModuleIds,
+                bookRange: bookRange,
+                highlightColors: filterHighlightColors.isEmpty ? nil : filterHighlightColors,
+                devotionalCriteria: filterTags.isEmpty ? nil : LampDevotionalSearchCriteria(tags: filterTags)
+            )
+        case .strongsKey:
+            return LampSearchHistory.Entry(
+                query: "",
+                kinds: [.dictionary, .translation],
+                moduleIDs: filterModuleIds,
+                strongsKey: LampStrongsKey.typedKey(query) ?? query.uppercased()
+            )
+        case .highlightColor:
+            // No words: the box is hidden in this mode, and what it last held
+            // played no part. Core keeps no search of colours alone.
+            return LampSearchHistory.Entry(
+                query: "",
+                kinds: [.highlights],
+                moduleIDs: filterModuleIds,
+                translationID: colorSearchTranslationId,
+                bookRange: bookRange,
+                highlightColors: selectedSearchColors
+            )
         }
     }
 
-    private var moduleSearchHistory: [ModuleSearchHistoryEntry] {
-        get {
-            if let entries = try? JSONDecoder().decode([ModuleSearchHistoryEntry].self, from: moduleSearchHistoryData) {
-                return entries
-            }
-            return []
-        }
-    }
-
-    private func saveToBibleHistory(_ query: String) {
+    /// Keeps the search on screen; core decides whether it is worth keeping.
+    private func recordSearch(resultCount: Int) {
         var history = searchHistory
-        let entry = SearchHistoryEntry(query: query, mode: searchMode, translationId: translationId)
-        // Remove if already exists with same query and translation (to move to top)
-        history.removeAll { $0.query.lowercased() == query.lowercased() && $0.translationId == translationId }
-        // Add to beginning
-        history.insert(entry, at: 0)
-        // Trim to max size
-        if history.count > maxHistorySize {
-            history = Array(history.prefix(maxHistorySize))
-        }
-        // Save
-        if let data = try? JSONEncoder().encode(history) {
-            searchHistoryData = data
+        if history.record(currentHistoryEntry, resultCount: resultCount) {
+            searchHistoryData = history.encoded()
         }
     }
 
-    private func saveToModuleHistory(_ query: String) {
-        var history = moduleSearchHistory
-        let entry = ModuleSearchHistoryEntry(
-            query: query,
-            searchMode: moduleSearchMode,
-            moduleIds: filterModuleIds,
-            tags: filterTags
-        )
-        // Remove if already exists with same query and filters (to move to top)
-        history.removeAll { $0 == entry }
-        // Add to beginning
-        history.insert(entry, at: 0)
-        // Trim to max size
-        if history.count > maxHistorySize {
-            history = Array(history.prefix(maxHistorySize))
-        }
-        // Save
-        if let data = try? JSONEncoder().encode(history) {
-            moduleSearchHistoryData = data
-        }
-    }
-
-    private func clearHistory() {
-        if searchScope == .modules {
-            moduleSearchHistoryData = Data()
+    /// Puts back the scope and every filter a search ran with, then runs it.
+    private func restore(_ entry: LampSearchHistory.Entry) {
+        bookRange = entry.bookRange
+        if SearchHistoryStore.isBibleSearch(entry) {
+            searchScope = .bible
+            if isStandaloneMode, let translationId = entry.translationID {
+                selectedTranslationIdString = translationId
+            }
+            searchMode = entry.strongsKey == nil ? .text : .strongs
+            bibleSearchText = entry.strongsKey ?? entry.query
         } else {
-            searchHistoryData = Data()
+            searchScope = .modules
+            if entry.kinds == [.highlights] {
+                moduleSearchMode = .highlightColor
+                selectedSearchColors = entry.highlightColors ?? []
+                colorSearchTranslationId = entry.translationID
+                moduleSearchText = entry.query
+            } else if let key = entry.strongsKey {
+                moduleSearchMode = .strongsKey
+                moduleSearchText = key
+            } else {
+                moduleSearchMode = .text
+                filterTags = entry.devotionalCriteria?.tags ?? []
+                filterHighlightColors = entry.highlightColors ?? []
+                moduleSearchText = entry.query
+            }
+            filterModuleIds = entry.moduleIDs
+        }
+        DispatchQueue.main.async {
+            submitSearch()
+        }
+    }
+
+    /// What a remembered search covered, for its line in the menu.
+    private func historySummary(_ entry: LampSearchHistory.Entry) -> String {
+        var parts: [String] = []
+        if SearchHistoryStore.isBibleSearch(entry) {
+            if let id = entry.translationID,
+               let translation = try? TranslationDatabase.shared.getTranslation(id: id) {
+                parts.append(translation.abbreviation)
+            }
+            if entry.strongsKey != nil { parts.append("Strong's") }
+        } else {
+            if entry.strongsKey != nil {
+                parts.append("Strong's Key")
+            } else if entry.kinds == [.highlights] {
+                parts.append("Highlights")
+            } else {
+                parts.append("Modules")
+            }
+            if let ids = entry.moduleIDs, !ids.isEmpty {
+                parts.append(ids.count == 1 ? "1 module" : "\(ids.count) modules")
+            }
+            if let tags = entry.devotionalCriteria?.tags, !tags.isEmpty {
+                parts.append(tags.count == 1 ? "1 tag" : "\(tags.count) tags")
+            }
+        }
+        if let range = entry.bookRange {
+            parts.append(SearchBookRange.name(of: range))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The books searched; choosing one runs the search again.
+    @ViewBuilder
+    private var bookRangeMenu: some View {
+        Menu {
+            Picker("Books", selection: Binding(get: { bookRange }, set: { bookRange = $0 })) {
+                Text(SearchBookRange.name(of: nil)).tag(ClosedRange<Int>?.none)
+                Text(SearchBookRange.name(of: SearchBookRange.oldTestament)).tag(Optional(SearchBookRange.oldTestament))
+                Text(SearchBookRange.name(of: SearchBookRange.newTestament)).tag(Optional(SearchBookRange.newTestament))
+            }
+            Menu("One Book") {
+                ForEach(1...66, id: \.self) { book in
+                    Button {
+                        bookRange = book...book
+                    } label: {
+                        if bookRange == book...book {
+                            Label(BookOsisCache.shared.displayName(for: book), systemImage: "checkmark")
+                        } else {
+                            Text(BookOsisCache.shared.displayName(for: book))
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(
+                searchScope == .modules
+                    ? "Verses and Highlights In: \(SearchBookRange.name(of: bookRange))"
+                    : "Books: \(SearchBookRange.name(of: bookRange))",
+                systemImage: "books.vertical"
+            )
         }
     }
 
@@ -470,6 +646,8 @@ struct SearchView: View {
                 }
 
                 Divider()
+
+                searchOffers
 
                 // Content - frame ensures consistent sizing during state transitions
                 Group {
@@ -495,6 +673,15 @@ struct SearchView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Here rather than on a list: the offer above the results
+                // opens it when there are none.
+                .sheet(item: $analysisItem) { item in
+                    StrongsAnalysisSheet(
+                        key: item.key,
+                        translationId: translationId,
+                        onNavigateToVerse: navigateToHighlightedVerse
+                    )
+                }
             }
             .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.inline)
@@ -546,10 +733,18 @@ struct SearchView: View {
                                 Label("Translation: \(translationAbbreviation)", systemImage: "book.closed")
                             }
                         }
+
+                        Divider()
+                        bookRangeMenu
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: searchScope.icon)
                             Text(searchScope == .bible ? translationAbbreviation : searchScope.rawValue)
+                            if let books = SearchBookRange.shortName(of: bookRange) {
+                                Text("· \(books)")
+                                    .lineLimit(1)
+                                    .foregroundStyle(.secondary)
+                            }
                             Image(systemName: "chevron.down")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -597,87 +792,37 @@ struct SearchView: View {
                                 Divider()
                             }
 
-                            // Search history (scope-aware)
-                            if searchScope == .bible {
-                                if !searchHistory.isEmpty {
-                                    Menu {
-                                        ForEach(Array(searchHistory.enumerated()), id: \.offset) { _, entry in
-                                            Button {
-                                                searchMode = entry.mode
-                                                // Restore translation if in standalone mode
-                                                if isStandaloneMode, let translationId = entry.translationId {
-                                                    selectedTranslationIdString = translationId
-                                                }
-                                                bibleSearchText = entry.query
-                                                DispatchQueue.main.async {
-                                                    submitSearch()
-                                                }
-                                            } label: {
-                                                HStack {
-                                                    Label(entry.query, systemImage: entry.mode.icon)
-                                                    if let abbr = entry.translationAbbreviation {
-                                                        Text(abbr)
-                                                            .font(.caption)
-                                                            .foregroundStyle(.secondary)
-                                                    }
-                                                }
+                            // One history for both scopes; choosing an entry
+                            // returns to the scope it ran in.
+                            if !searchHistory.entries.isEmpty {
+                                Menu {
+                                    ForEach(searchHistory.entries) { entry in
+                                        Button {
+                                            restore(entry)
+                                        } label: {
+                                            Label {
+                                                Text(entry.strongsKey ?? entry.query)
+                                                Text(historySummary(entry))
+                                            } icon: {
+                                                Image(systemName: SearchHistoryStore.isBibleSearch(entry)
+                                                    ? SearchScope.bible.icon : SearchScope.modules.icon)
                                             }
                                         }
-
-                                        Divider()
-
-                                        Button(role: .destructive) {
-                                            clearHistory()
-                                        } label: {
-                                            Label("Clear History", systemImage: "trash")
-                                        }
-                                    } label: {
-                                        Label("Recent Searches", systemImage: "clock.arrow.circlepath")
                                     }
-                                } else {
-                                    Label("No Recent Searches", systemImage: "clock.arrow.circlepath")
-                                        .foregroundStyle(.secondary)
+
+                                    Divider()
+
+                                    Button(role: .destructive) {
+                                        searchHistoryData = LampSearchHistory().encoded()
+                                    } label: {
+                                        Label("Clear History", systemImage: "trash")
+                                    }
+                                } label: {
+                                    Label("Recent Searches", systemImage: "clock.arrow.circlepath")
                                 }
                             } else {
-                                // Module search history with filters
-                                if !moduleSearchHistory.isEmpty {
-                                    Menu {
-                                        ForEach(Array(moduleSearchHistory.enumerated()), id: \.offset) { _, entry in
-                                            Button {
-                                                // Restore search mode and filters
-                                                moduleSearchMode = entry.searchMode
-                                                filterModuleIds = entry.moduleIds
-                                                filterTags = entry.tags
-                                                moduleSearchText = entry.query
-                                                DispatchQueue.main.async {
-                                                    submitSearch()
-                                                }
-                                            } label: {
-                                                VStack(alignment: .leading) {
-                                                    Text(entry.query)
-                                                    if !entry.filterSummary.isEmpty {
-                                                        Text(entry.filterSummary)
-                                                            .font(.caption2)
-                                                            .foregroundStyle(.secondary)
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        Divider()
-
-                                        Button(role: .destructive) {
-                                            clearHistory()
-                                        } label: {
-                                            Label("Clear History", systemImage: "trash")
-                                        }
-                                    } label: {
-                                        Label("Recent Searches", systemImage: "clock.arrow.circlepath")
-                                    }
-                                } else {
-                                    Label("No Recent Searches", systemImage: "clock.arrow.circlepath")
-                                        .foregroundStyle(.secondary)
-                                }
+                                Label("No Recent Searches", systemImage: "clock.arrow.circlepath")
+                                    .foregroundStyle(.secondary)
                             }
                         } label: {
                             Image(systemName: "ellipsis")
@@ -688,7 +833,12 @@ struct SearchView: View {
             .onChange(of: bibleSearchText) {
                 guard searchScope == .bible else { return }
                 resultsVisible = false
-                autoDetectSearchMode()
+                leaveStrongsModeIfNoKey()
+            }
+            .onChange(of: stateManager.bookRange) {
+                if !currentSearchText.isEmpty && resultsVisible {
+                    submitSearch()
+                }
             }
             .onChange(of: moduleSearchText) {
                 guard searchScope == .modules else { return }
@@ -726,6 +876,7 @@ struct SearchView: View {
             .onAppear {
                 // Reload settings in case they changed
                 userSettings = UserDatabase.shared.getSettings()
+                SearchHistoryStore.migrateLegacy()
 
                 // Load available modules, tags, and colors for filters
                 availableModules = moduleSearch.getSearchableModules()
@@ -744,7 +895,7 @@ struct SearchView: View {
                     if let mode = initialSearchMode {
                         searchMode = mode
                     } else {
-                        autoDetectSearchMode()
+                        detectInitialStrongsSearch()
                     }
                     // Auto-detect key search for module scope (Strong's/BDB IDs)
                     if searchScope == .modules {
@@ -1140,7 +1291,7 @@ struct SearchView: View {
     private var groupedModuleResults: [(type: ModuleType, results: [ModuleSearchResult])] {
         let grouped = Dictionary(grouping: moduleSearchResults) { $0.moduleType }
         // Order by type display order.
-        let typeOrder: [ModuleType] = [.dictionary, .translation, .commentary, .book, .notes, .devotional, .highlights]
+        let typeOrder: [ModuleType] = [.dictionary, .translation, .commentary, .book, .notes, .devotional, .plan, .quiz, .highlights]
         return typeOrder.compactMap { type in
             if let results = grouped[type], !results.isEmpty {
                 return (type: type, results: results)
@@ -1228,6 +1379,17 @@ struct SearchView: View {
         .sheet(item: $selectedCommentary) { result in
             CommentaryEntrySheet(moduleId: result.moduleId, entryId: result.id, verseId: result.verseId, searchQuery: currentSearchText, translationId: translationId)
         }
+        .sheet(item: $selectedPlan) { result in
+            PlanSearchResultSheet(planId: result.moduleId)
+        }
+        .sheet(item: $selectedQuiz) { result in
+            QuizSearchResultSheet(resultId: result.id) { verseId in
+                selectedQuiz = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    navigateToHighlightedVerse(verseId)
+                }
+            }
+        }
         .fullScreenCover(item: $selectedBookSection) { result in
             BookModuleView(moduleId: result.moduleId, initialSectionId: result.id)
         }
@@ -1271,11 +1433,11 @@ struct SearchView: View {
         case .book:
             selectedBookSection = result
         case .plan:
-            break  // Plans have dedicated UI
+            selectedPlan = result
         case .highlights:
             selectedHighlight = result
         case .quiz:
-            break  // Quizzes have dedicated UI
+            selectedQuiz = result
         }
     }
 
@@ -1321,6 +1483,8 @@ struct SearchView: View {
             } else {
                 return "\(translationAbbreviation) does not include Strong's annotations. Switch to a Strong's-annotated translation to search by Strong's numbers."
             }
+        } else if let books = bookRange {
+            return "No verses in \(SearchBookRange.name(of: books)) found matching \"\(currentSearchText)\"."
         } else {
             return "No verses found matching \"\(currentSearchText)\"."
         }
@@ -1351,14 +1515,49 @@ struct SearchView: View {
                 ? { analysisItem = StrongsAnalysisItem(key: LampStrongsKey.normalized(currentSearchText)) }
                 : nil
         )
-        // On the list the button is in: the module results' sheets hang off
-        // a list that isn't on screen while a Bible search is.
-        .sheet(item: $analysisItem) { item in
-            StrongsAnalysisSheet(
-                key: item.key,
-                translationId: translationId,
-                onNavigateToVerse: navigateToHighlightedVerse
-            )
+    }
+
+    /// Rows above the results for what the words name besides a search: a
+    /// passage to open, and in a Bible with Strong's tags, a key to search
+    /// or analyse. The search still runs beneath them, since "John 3" is also
+    /// a phrase and "G26" may be meant as text.
+    @ViewBuilder
+    private var searchOffers: some View {
+        let query = currentSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reference = LampSearchQuery(query).reference
+        let strongsKey = searchScope == .bible && searchMode == .text && translationHasStrongsAnnotations
+            ? LampStrongsKey.typedKey(query) : nil
+        if reference != nil || strongsKey != nil {
+            VStack(spacing: 0) {
+                if let reference {
+                    SearchOfferRow(
+                        icon: "book",
+                        title: "Go to \(reference.description)",
+                        subtitle: "Open the passage in the reader"
+                    ) {
+                        navigateToHighlightedVerse(reference.startReference)
+                    }
+                }
+                if let strongsKey {
+                    if reference != nil { Divider().padding(.leading, 52) }
+                    SearchOfferRow(
+                        icon: SearchMode.strongs.icon,
+                        title: "Search Strong's \(strongsKey)",
+                        subtitle: "The verses in \(translationAbbreviation) that translate it"
+                    ) {
+                        searchMode = .strongs
+                    }
+                    Divider().padding(.leading, 52)
+                    SearchOfferRow(
+                        icon: "chart.pie",
+                        title: "Analyse \(strongsKey)",
+                        subtitle: "Where it's found and how it's rendered"
+                    ) {
+                        analysisItem = StrongsAnalysisItem(key: strongsKey)
+                    }
+                }
+            }
+            Divider()
         }
     }
 
@@ -1373,12 +1572,9 @@ struct SearchView: View {
             await performSearchAsync()
             guard !Task.isCancelled else { return }
 
-            // Save to Bible history if we found results (module history is saved in performModuleSearch)
+            // Module history is kept in performModuleSearchAsync.
             if searchScope == .bible {
-                let query = bibleSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !searchResults.isEmpty && query.count >= 2 {
-                    saveToBibleHistory(query)
-                }
+                recordSearch(resultCount: totalResultCount)
             }
         }
         // Note: Search state is automatically preserved in stateManager
@@ -1424,6 +1620,7 @@ struct SearchView: View {
 
         let isStrongs = searchMode == .strongs
         let translationId = translationId
+        let bookRange = bookRange
         let shown = resultLimit
         let found = await Task.detached(priority: .userInitiated) { () -> (total: Int, results: [SearchResult]) in
             let results: [TranslationSearchResult]
@@ -1432,7 +1629,7 @@ struct SearchView: View {
                 results = (try? TranslationDatabase.shared.searchVersesByStrongs(
                     translationId: translationId,
                     strongsNum: key,
-                    bookRange: nil,
+                    bookRange: bookRange,
                     limit: 10000  // High limit to get total count
                 )) ?? []
             } else {
@@ -1442,7 +1639,7 @@ struct SearchView: View {
                 results = (try? TranslationDatabase.shared.searchAllTranslations(
                     query: query,
                     translationIds: [translationId],
-                    bookRange: nil,
+                    bookRange: bookRange,
                     limit: 10000  // High limit to get total count
                 )) ?? []
             }
@@ -1469,6 +1666,7 @@ struct SearchView: View {
         // Build filter based on search mode
         var filter = ModuleSearchFilter()
         filter.moduleIds = filterModuleIds
+        filter.bookRange = bookRange
 
         switch moduleSearchMode {
         case .text:
@@ -1541,11 +1739,7 @@ struct SearchView: View {
             totalResultCount = hasMoreResults ? -resultLimit : results.count
             moduleSearchResults = limitedResults
 
-            // Save to module history if we have results
-            let hasValidQuery = query.count >= 2 || filter.strongsKey != nil
-            if !results.isEmpty && hasValidQuery {
-                saveToModuleHistory(query)
-            }
+            recordSearch(resultCount: results.count)
         } catch {
             print("Module search failed: \(error)")
             moduleSearchResults = []
@@ -1560,19 +1754,24 @@ struct SearchView: View {
     // MARK: - Strong's Search Helpers
 
     /// Auto-detect if user is typing a Strong's number and switch mode if appropriate (Bible scope only)
-    private func autoDetectSearchMode() {
+    /// Leaves Strong's mode once the box holds neither a key nor the start of
+    /// one. Typing a key never switches into it: "G26" may be meant as text,
+    /// so the key is offered above the results instead, as the Mac offers it.
+    private func leaveStrongsModeIfNoKey() {
         let query = bibleSearchText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let looksLikeStrongsNumber = isValidStrongsQuery(query)
+        guard searchMode == .strongs, !query.isEmpty, !isValidStrongsQuery(query) else { return }
+        let looksLikePartialStrongs = query.range(of: "^(H|G|TH)\\d*$", options: .regularExpression) != nil
+        if !looksLikePartialStrongs {
+            searchMode = .text
+        }
+    }
 
-        if looksLikeStrongsNumber && translationHasStrongsAnnotations && searchMode != .strongs {
+    /// Opened with a key and no mode, from a key tapped elsewhere: that is a
+    /// Strong's search, where the translation has the tags.
+    private func detectInitialStrongsSearch() {
+        let query = bibleSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isValidStrongsQuery(query) && translationHasStrongsAnnotations {
             searchMode = .strongs
-        } else if !looksLikeStrongsNumber && searchMode == .strongs && !query.isEmpty {
-            // Only switch back to text if it clearly doesn't look like a Strong's number
-            // and isn't a partial Strong's entry (like "H" or "H1")
-            let looksLikePartialStrongs = query.range(of: "^(H|G|TH)\\d*$", options: .regularExpression) != nil
-            if !looksLikePartialStrongs {
-                searchMode = .text
-            }
         }
     }
 
@@ -3449,5 +3648,151 @@ struct TranslationSearchPreviewSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+}
+
+/// A reading plan found by search: what it is, and whether it is followed.
+/// Following it is the same change the plan picker makes, so it syncs.
+struct PlanSearchResultSheet: View {
+    let planId: String
+    @Environment(\.dismiss) private var dismiss
+    /// Set before the view appears, so opening the sheet changes nothing.
+    @State private var isFollowed: Bool
+
+    init(planId: String) {
+        self.planId = planId
+        _isFollowed = State(initialValue: UserDatabase.shared.getSettings().isPlanSelected(planId))
+    }
+
+    private var plan: Plan? {
+        if let plan = (try? ModuleDatabase.shared.getPlan(id: planId)) ?? nil { return plan }
+        return (try? BundledModuleDatabase.shared.getAllPlans())?.first { $0.id == planId }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let plan {
+                    Section {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(plan.name).font(.title3.weight(.semibold))
+                            if let author = plan.author, !author.isEmpty {
+                                Text(author).foregroundStyle(.secondary)
+                            }
+                            if let duration = plan.duration {
+                                Text("\(duration) days").font(.subheadline).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        Toggle("Follow This Plan", isOn: $isFollowed)
+                            .onChange(of: isFollowed) { _, follow in
+                                try? UserDatabase.shared.updateSettings { settings in
+                                    if follow { settings.addPlan(planId) } else { settings.removePlan(planId) }
+                                }
+                            }
+                    }
+                    if let description = plan.fullDescription ?? plan.planDescription, !description.isEmpty {
+                        Section("About") { Text(description) }
+                    }
+                } else {
+                    ContentUnavailableView("Plan Not Found", systemImage: "checklist")
+                }
+            }
+            .navigationTitle("Reading Plan")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+/// A quiz question found by search: the question, its answer and the passage
+/// it asks about. A result's ID says which database it came from.
+struct QuizSearchResultSheet: View {
+    let resultId: String
+    let openInReader: (Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var question: QuizQuestion? {
+        let parts = resultId.split(separator: ":")
+        guard parts.count == 3, let id = Int64(parts[2]) else { return nil }
+        let fetch = { (db: Database) in try QuizQuestion.filter(Column("id") == id).fetchOne(db) }
+        return parts[1] == "bundled"
+            ? (try? BundledModuleDatabase.shared.read(fetch)) ?? nil
+            : (try? ModuleDatabase.shared.read(fetch)) ?? nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let question {
+                    Section("Question") {
+                        Text(QuizTextParser.parse(question.questionJson).text)
+                    }
+                    Section("Answer") {
+                        Text(QuizTextParser.parse(question.answerJson).text)
+                    }
+                    Section {
+                        Button {
+                            openInReader(question.sv)
+                        } label: {
+                            Label(
+                                LampBibleReferenceFormatter.describeRange(from: question.sv, to: question.ev),
+                                systemImage: "book"
+                            )
+                        }
+                    } footer: {
+                        Text("Day \(question.day) · \(question.ageGroup.capitalized)")
+                    }
+                } else {
+                    ContentUnavailableView("Question Not Found", systemImage: "questionmark.bubble")
+                }
+            }
+            .navigationTitle("Quiz Question")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+/// A row offering what the search box names besides a search.
+private struct SearchOfferRow: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.body)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

@@ -4553,3 +4553,78 @@ final class SearchAuditFixTests: XCTestCase {
         XCTAssertNotNil(text)
     }
 }
+
+final class SearchFeatureTests: XCTestCase {
+    func testTheTwoOldHistoriesBecomeOneWithTheirFilters() throws {
+        let bible = try JSONEncoder().encode([
+            SearchHistoryEntry(query: "faith", mode: .text, translationId: "KJVs"),
+            SearchHistoryEntry(query: "g26", mode: .strongs, translationId: "KJVs"),
+        ])
+        let module = try JSONEncoder().encode([
+            ModuleSearchHistoryEntry(query: "grace", searchMode: .text, moduleIds: ["strongs-greek"], tags: ["Prayer"]),
+            ModuleSearchHistoryEntry(query: "H430", searchMode: .strongsKey, moduleIds: nil, tags: []),
+        ])
+        let entries = SearchHistoryStore.legacyEntries(bible: bible, module: module)
+
+        // Taken in turn, the newest of each first.
+        XCTAssertEqual(entries.map { $0.strongsKey ?? $0.query }, ["faith", "grace", "G26", "H430"])
+        XCTAssertTrue(entries[0].searchedAt > entries[1].searchedAt)
+        XCTAssertEqual(entries[0].kinds, [.translation])
+        XCTAssertEqual(entries[0].translationID, "KJVs")
+        XCTAssertNil(entries[1].kinds)
+        XCTAssertEqual(entries[1].moduleIDs, ["strongs-greek"])
+        XCTAssertEqual(entries[1].devotionalCriteria?.tags, ["Prayer"])
+        XCTAssertTrue(SearchHistoryStore.isBibleSearch(entries[2]))
+        XCTAssertEqual(entries[2].query, "")
+        XCTAssertFalse(SearchHistoryStore.isBibleSearch(entries[3]))
+        XCTAssertEqual(entries[3].kinds, [.dictionary, .translation])
+    }
+
+    func testTheOldHistoriesMoveOnceAndAClearedHistoryStaysCleared() throws {
+        let suite = "SearchFeatureTests"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // The first format of all, plain strings; "a" says too little to keep.
+        defaults.set(try JSONEncoder().encode(["love", "a", "hope"]), forKey: SearchHistoryStore.legacyBibleKey)
+        SearchHistoryStore.migrateLegacy(in: defaults)
+        let moved = LampSearchHistory.decoded(from: try XCTUnwrap(defaults.data(forKey: SearchHistoryStore.key)))
+        XCTAssertEqual(moved.entries.map(\.query), ["love", "hope"])
+        XCTAssertNil(defaults.data(forKey: SearchHistoryStore.legacyBibleKey))
+
+        defaults.set(LampSearchHistory().encoded(), forKey: SearchHistoryStore.key)
+        SearchHistoryStore.migrateLegacy(in: defaults)
+        let cleared = LampSearchHistory.decoded(from: try XCTUnwrap(defaults.data(forKey: SearchHistoryStore.key)))
+        XCTAssertTrue(cleared.entries.isEmpty)
+    }
+
+    func testBookRangesAreNamedForTheMenuAndTheTitle() {
+        XCTAssertEqual(SearchBookRange.name(of: nil), "All Books")
+        XCTAssertEqual(SearchBookRange.name(of: 1...39), "Old Testament")
+        XCTAssertEqual(SearchBookRange.name(of: 40...66), "New Testament")
+        XCTAssertNil(SearchBookRange.shortName(of: nil))
+        XCTAssertEqual(SearchBookRange.shortName(of: 40...66), "NT")
+    }
+
+    func testReadingPlansAreSearchedByTheirDescriptions() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.plan]
+        let results = try ModuleSearch.shared.search(query: "assimilation", filter: filter, limit: 20)
+        XCTAssertTrue(results.contains { $0.moduleId == "the_bible_companion" && $0.moduleType == .plan })
+        XCTAssertTrue(ModuleSearch.shared.getSearchableModules().contains { $0.type == .plan })
+    }
+
+    func testQuizQuestionsAreFoundByTheirWordsNotTheirFieldNames() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.quiz]
+        let found = try ModuleSearch.shared.search(query: "Abraham", filter: filter, limit: 20)
+        let first = try XCTUnwrap(found.first)
+        XCTAssertTrue(first.id.hasPrefix("quiz:bundled:"))
+        XCTAssertFalse(first.title.contains("{"), "The question's words, not its JSON")
+        XCTAssertNotNil(first.verseId)
+        XCTAssertTrue(try ModuleSearch.shared.search(query: "annotations", filter: filter, limit: 20).isEmpty)
+    }
+}

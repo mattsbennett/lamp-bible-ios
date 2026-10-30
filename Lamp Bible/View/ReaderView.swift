@@ -3774,7 +3774,8 @@ private enum ReaderSpeechTextBuilder {
     }
 }
 
-private enum QuizTextParser {
+/// Shared with search, which shows a question's words.
+enum QuizTextParser {
     /// Parse quiz text JSON into AnnotatedText; handles plain strings and annotated text objects.
     /// Normalizes crossref annotations to scripture so the renderer makes them tappable.
     static func parse(_ json: String) -> AnnotatedText {
