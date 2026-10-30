@@ -4689,6 +4689,7 @@ final class StrongsIndexTests: XCTestCase {
         let queue: DatabaseQueue
         var verseStamp = "test"
         func read<T>(_ block: (Database) throws -> T) throws -> T { try queue.read(block) }
+        func openIndexReader() throws -> DatabaseQueue { queue }
     }
 
     private func source(_ verses: [(Int, String)]) throws -> QueueSource {
@@ -4730,7 +4731,7 @@ final class StrongsIndexTests: XCTestCase {
         ])
         let index = try StrongsIndex.inMemory()
         XCTAssertNil(index.refs(translationId: "T", key: "G26", source: source), "Not indexed yet")
-        try index.rebuild("T", from: source)
+        try index.buildAndWait("T", from: source)
 
         XCTAssertEqual(index.refs(translationId: "T", key: "G26", source: source),
                        [1_001_001, 40_001_001, 40_001_002, 40_001_003, 40_001_004])
@@ -4743,7 +4744,7 @@ final class StrongsIndexTests: XCTestCase {
     func testAChangedTranslationIsIndexedAgain() throws {
         let source = try source([(40_001_001, tag("G26"))])
         let index = try StrongsIndex.inMemory()
-        try index.rebuild("T", from: source)
+        try index.buildAndWait("T", from: source)
         XCTAssertEqual(index.refs(translationId: "T", key: "G26", source: source), [40_001_001])
 
         try source.queue.write { db in
@@ -4753,7 +4754,7 @@ final class StrongsIndexTests: XCTestCase {
                 """, arguments: [tag("G26")])
         }
         XCTAssertNil(index.refs(translationId: "T", key: "G26", source: source), "Stale, so not trusted")
-        try index.rebuild("T", from: source)
+        try index.buildAndWait("T", from: source)
         XCTAssertEqual(index.refs(translationId: "T", key: "G26", source: source), [40_001_001, 40_001_002])
     }
 
@@ -4777,14 +4778,36 @@ final class StrongsIndexTests: XCTestCase {
         XCTAssertLessThan(elapsed, 0.2)
     }
 
+    func testATagCorrectedInPlaceIsSeenByTheFingerprint() throws {
+        let source = try source([(40_001_001, tag("G26"))])
+        let index = try StrongsIndex.inMemory()
+        try index.buildAndWait("T", from: source)
+        let before = try index.fingerprint(of: "T", source: source)
+        try source.queue.write { db in
+            try db.execute(sql: "UPDATE translation_verses SET annotations_json = ?", arguments: [tag("G25")])
+        }
+        // The quick stamp hasn't moved, so a fresh launch reads it afresh.
+        let afresh = try StrongsIndex.inMemory()
+        XCTAssertNotEqual(try afresh.fingerprint(of: "T", source: source), before)
+    }
+
     func testTheIndexOfTheKJVCountsAsTheScanDoes() throws {
         try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
         let source = BundledModuleDatabase.shared
         let index = try StrongsIndex.inMemory()
-        try index.rebuild("KJVs", from: source)
+        try index.buildAndWait("KJVs", from: source)
         for key in ["G25", "G26", "G2532", "H430", "H1", "G1", "H996"] {
             let scanned = try source.read { try StrongsVerseQuery.count(in: $0, translationId: "KJVs", key: key) }
             XCTAssertEqual(index.refs(translationId: "KJVs", key: key, source: source)?.count, scanned, key)
+            XCTAssertEqual(index.count(translationId: "KJVs", key: key, source: source), scanned, key)
+        }
+
+        // An analysis from the index is the analysis of every verse.
+        let kjv = try XCTUnwrap(TranslationDatabase.shared.getTranslation(id: "KJVs"))
+        for key in ["G26", "H430"] {
+            let indexed = try index.analysis(key: key, translation: kjv, includingVerseText: true, source: source)
+            let read = try TranslationDatabase.shared.analyzeStrongsByReadingEveryVerse(key: key, translationId: "KJVs")
+            XCTAssertEqual(indexed, read, key)
         }
     }
 }

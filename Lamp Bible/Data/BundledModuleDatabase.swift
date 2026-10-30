@@ -61,6 +61,7 @@ class BundledModuleDatabase {
 
         do {
             dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+            databasePath = dbPath
             isAvailable = true
             print("BundledModuleDatabase: Successfully opened bundled_modules.db")
             // List all tables for debugging
@@ -137,6 +138,9 @@ class BundledModuleDatabase {
     /// The app build and the bundled file's size: changes whenever the
     /// bundled modules may have, as the decompressed copy's marker does.
     private(set) var contentStamp = ""
+
+    /// Where the database is, for a connection of the Strong's index's own.
+    private(set) var databasePath: String?
 
     private var reverseLexiconMappingsCache: [String: [String]]?
     private let reverseLexiconMappingsLock = NSLock()
@@ -1755,8 +1759,21 @@ class TranslationDatabase {
     /// What the translation's Strong's tags say about one key
     /// (`LampStrongsAnalyzer`), measured against every tagged verse of it, not
     /// only the ones holding the key, and keeping those verses' text to show.
-    /// A pass over the whole translation: call it off the main thread.
+    /// From the Strong's index, reading only the verses holding the key, or,
+    /// while the translation has none, by a pass over the whole translation:
+    /// call it off the main thread.
     func analyzeStrongs(key: String, translationId: String) throws -> LampStrongsAnalysis? {
+        guard let translation = try getTranslation(id: translationId) else { return nil }
+        if let analysis = try StrongsIndex.shared.analysis(
+            key: key, translation: translation, includingVerseText: true, source: try verseSource(for: translationId)
+        ) {
+            return analysis
+        }
+        return try analyzeStrongsByReadingEveryVerse(key: key, translationId: translationId)
+    }
+
+    /// The analysis by a pass over every tagged verse of the translation.
+    func analyzeStrongsByReadingEveryVerse(key: String, translationId: String) throws -> LampStrongsAnalysis? {
         guard let translation = try getTranslation(id: translationId) else { return nil }
         var analyzer = LampStrongsAnalyzer(
             key: key,
@@ -1797,11 +1814,11 @@ class TranslationDatabase {
         strongsNum: String,
         bookRange: ClosedRange<Int>? = nil
     ) throws -> Int {
-        if let refs = StrongsIndex.shared.refs(
+        if let count = StrongsIndex.shared.count(
             translationId: translationId, key: strongsNum, bookRange: bookRange,
             source: try verseSource(for: translationId)
         ) {
-            return refs.count
+            return count
         }
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.countStrongsOccurrences(
@@ -1824,11 +1841,10 @@ class TranslationDatabase {
     ) throws -> [TranslationSearchResult] {
         let source = try verseSource(for: translationId)
         if let refs = StrongsIndex.shared.refs(
-            translationId: translationId, key: strongsNum, bookRange: bookRange, source: source
+            translationId: translationId, key: strongsNum, bookRange: bookRange, limit: limit, source: source
         ) {
-            let shown = Array(refs.prefix(limit))
             return try source.read { db in
-                try StrongsVerseQuery.verses(in: db, translationId: translationId, key: strongsNum, refs: shown)
+                try StrongsVerseQuery.verses(in: db, translationId: translationId, key: strongsNum, refs: refs)
             }
         }
         if try bundledDb.isTranslationBundled(id: translationId) {
