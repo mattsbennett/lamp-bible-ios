@@ -129,6 +129,9 @@ class BundledModuleDatabase {
     /// Check if bundled database is available
     var available: Bool { isAvailable }
 
+    private var reverseLexiconMappingsCache: [String: [String]]?
+    private let reverseLexiconMappingsLock = NSLock()
+
     // MARK: - Database Access
 
     /// Nothing inside `block` may read this database again, `getBook` and
@@ -391,10 +394,14 @@ class BundledModuleDatabase {
     }
 
     /// Count the verses in a translation tagging a Strong's number
-    func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
+    func countStrongsOccurrences(
+        translationId: String,
+        strongsNum: String,
+        bookRange: ClosedRange<Int>? = nil
+    ) throws -> Int {
         guard isAvailable else { return 0 }
         return try read { db in
-            try StrongsVerseQuery.count(in: db, translationId: translationId, key: strongsNum)
+            try StrongsVerseQuery.count(in: db, translationId: translationId, key: strongsNum, bookRange: bookRange)
         }
     }
 
@@ -413,7 +420,6 @@ class BundledModuleDatabase {
         }
     }
 
-    /// Add <mark> tags around words that match a Strong's number
     /// Get the last verse ref in a chapter
     func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
         guard isAvailable else { return 0 }
@@ -527,12 +533,21 @@ class BundledModuleDatabase {
     /// by key, lemma, transliteration and definitions, and by the words in
     /// the senses' JSON but never its field names, as core searches a
     /// dictionary module. The exact key, then the exact lemma, come first.
+    /// An entry search found: its headword and its definitions as plain
+    /// text, without the senses to decode.
+    struct DictionaryHit {
+        let key: String
+        let lemma: String
+        let transliteration: String?
+        let text: String
+    }
+
     func searchDictionaryEntries(
         query: String,
         moduleId: String? = nil,
         keyType: String? = nil,
         limit: Int = 50
-    ) throws -> [DictionaryEntry] {
+    ) throws -> [DictionaryHit] {
         guard isAvailable else { return [] }
         let parsed = LampSearchQuery(query)
         guard !parsed.isEmpty else { return [] }
@@ -555,6 +570,7 @@ class BundledModuleDatabase {
             }
 
             let columns = Set(try db.columns(in: "dictionary_entries").map(\.name))
+            let hasSearchText = columns.contains("search_text")
             let searchColumns = ["key", "lemma", "transliteration", "search_text"].filter(columns.contains)
             let like = parsed.sqlLikePredicate(columns: searchColumns, jsonColumns: ["senses_json"])
             var condition = "(\(like.condition))"
@@ -566,21 +582,7 @@ class BundledModuleDatabase {
             // script is matched against every headword here, accents set
             // aside, and those entries are found alongside.
             if query.unicodeScalars.contains(where: Self.isGreekOrHebrew) {
-                let headwords = try Row.fetchAll(db, sql: """
-                    SELECT id, key, lemma, transliteration FROM dictionary_entries
-                    WHERE \(moduleCondition) 1
-                    """, arguments: moduleArguments)
-                // Each read optional, spelled out: a headword without a
-                // transliteration read as a plain String traps in GRDB.
-                let ids: [String] = headwords.compactMap { row -> String? in
-                    let key: String? = row["key"]
-                    let lemma: String? = row["lemma"]
-                    let transliteration: String? = row["transliteration"]
-                    let text = [key, lemma, transliteration].compactMap { $0 }.joined(separator: " ")
-                    guard parsed.matches(text) else { return nil }
-                    let id: DatabaseValue = row["id"]
-                    return String.fromDatabaseValue(id) ?? Int64.fromDatabaseValue(id).map(String.init)
-                }
+                let ids = try Self.headwordMatches(for: parsed, moduleIds: moduleIds, in: db)
                 if !ids.isEmpty {
                     condition = "(\(condition) OR id IN (\(ids.map { _ in "?" }.joined(separator: ", "))))"
                     arguments += StatementArguments(ids)
@@ -589,8 +591,11 @@ class BundledModuleDatabase {
 
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             arguments += [trimmed, trimmed, limit]
-            return try DictionaryEntry.fetchAll(db, sql: """
-                SELECT * FROM dictionary_entries
+            let textColumn = hasSearchText ? "search_text" : "NULL AS search_text"
+            return try Row.fetchAll(db, sql: """
+                SELECT key, lemma, transliteration, \(textColumn),
+                       CASE WHEN \(hasSearchText ? "search_text IS NULL OR search_text = ''" : "1") THEN senses_json END AS senses_json
+                FROM dictionary_entries
                 WHERE \(moduleCondition) \(condition)
                 ORDER BY
                     CASE
@@ -600,8 +605,69 @@ class BundledModuleDatabase {
                     END,
                     key, lemma
                 LIMIT ?
-                """, arguments: arguments)
+                """, arguments: arguments).map { row in
+                    let searchText: String? = row["search_text"]
+                    return DictionaryHit(
+                        key: row["key"] ?? "",
+                        lemma: row["lemma"] ?? "",
+                        transliteration: row["transliteration"],
+                        text: searchText.flatMap { $0.isEmpty ? nil : $0 }
+                            ?? DictionarySearchText.text(fromSensesJSON: row["senses_json"])
+                    )
+                }
         }
+    }
+
+    /// Each module's headwords, accents, points, case and apostrophes folded
+    /// away, built on the first Greek or Hebrew search. The database is
+    /// read-only, so they never go stale.
+    private static var foldedHeadwords: [String: [(id: String, text: String, folded: String)]] = [:]
+    private static let foldedHeadwordsLock = NSLock()
+
+    private static func folded(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .filter { !"'’‘ʼ".contains($0) }
+    }
+
+    /// The entries whose headword matches, found among those holding every
+    /// word of the query once folded, which core's matcher then confirms:
+    /// it is too slow to run over every headword.
+    private static func headwordMatches(for parsed: LampSearchQuery, moduleIds: [String], in db: Database) throws -> [String] {
+        let words = parsed.plainText.split(whereSeparator: \.isWhitespace).map { folded(String($0)) }.filter { !$0.isEmpty }
+        let moduleKeys = moduleIds.isEmpty ? [""] : moduleIds
+        var ids: [String] = []
+        for moduleKey in moduleKeys {
+            foldedHeadwordsLock.lock()
+            var headwords = foldedHeadwords[moduleKey]
+            foldedHeadwordsLock.unlock()
+            if headwords == nil {
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT id, key, lemma, transliteration FROM dictionary_entries
+                    WHERE \(moduleKey.isEmpty ? "1" : "module_id = ?")
+                    """, arguments: moduleKey.isEmpty ? [] : [moduleKey])
+                // Each read optional, spelled out: a headword without a
+                // transliteration read as a plain String traps in GRDB.
+                let built = rows.compactMap { row -> (id: String, text: String, folded: String)? in
+                    let key: String? = row["key"]
+                    let lemma: String? = row["lemma"]
+                    let transliteration: String? = row["transliteration"]
+                    let id: DatabaseValue = row["id"]
+                    guard let identifier = String.fromDatabaseValue(id) ?? Int64.fromDatabaseValue(id).map(String.init) else {
+                        return nil
+                    }
+                    let text = [key, lemma, transliteration].compactMap { $0 }.joined(separator: " ")
+                    return (identifier, text, folded(text))
+                }
+                foldedHeadwordsLock.lock()
+                foldedHeadwords[moduleKey] = built
+                foldedHeadwordsLock.unlock()
+                headwords = built
+            }
+            ids += (headwords ?? []).filter { headword in
+                words.allSatisfy { headword.folded.contains($0) } && parsed.matches(headword.text)
+            }.map(\.id)
+        }
+        return ids
     }
 
     private static func isGreekOrHebrew(_ scalar: Unicode.Scalar) -> Bool {
@@ -1038,14 +1104,30 @@ class BundledModuleDatabase {
     /// Get source keys that map to a target key (reverse lookup)
     func getReverseLexiconMappings(targetKey: String) throws -> [String] {
         guard isAvailable else { return [] }
-        return try read { db in
-            // Search for target key in JSON array
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT source_key FROM lexicon_mappings
-                WHERE target_keys_json LIKE ?
-            """, arguments: ["%\"\(targetKey)\"%"])
-            return rows.compactMap { $0["source_key"] as String? }
+        return try reverseLexiconMappings()[targetKey] ?? []
+    }
+
+    /// Every target key's sources, in table order, read once: finding one
+    /// meant a LIKE over the whole table, and a BDB search asks for each
+    /// entry it shows. The database is read-only, so it never goes stale.
+    private func reverseLexiconMappings() throws -> [String: [String]] {
+        reverseLexiconMappingsLock.lock()
+        defer { reverseLexiconMappingsLock.unlock() }
+        if let cached = reverseLexiconMappingsCache { return cached }
+        var mappings: [String: [String]] = [:]
+        try read { db in
+            let rows = try Row.fetchCursor(db, sql: "SELECT source_key, target_keys_json FROM lexicon_mappings ORDER BY id")
+            while let row = try rows.next() {
+                guard let source: String = row["source_key"],
+                      let json: String = row["target_keys_json"],
+                      let targets = try? JSONDecoder().decode([String].self, from: Data(json.utf8)) else { continue }
+                for target in Set(targets) {
+                    mappings[target, default: []].append(source)
+                }
+            }
         }
+        reverseLexiconMappingsCache = mappings
+        return mappings
     }
 
     /// Get lexicon mapping metadata
@@ -1694,11 +1776,19 @@ class TranslationDatabase {
     }
 
     /// Count Strong's number occurrences in a translation
-    func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
+    func countStrongsOccurrences(
+        translationId: String,
+        strongsNum: String,
+        bookRange: ClosedRange<Int>? = nil
+    ) throws -> Int {
         if try bundledDb.isTranslationBundled(id: translationId) {
-            return try bundledDb.countStrongsOccurrences(translationId: translationId, strongsNum: strongsNum)
+            return try bundledDb.countStrongsOccurrences(
+                translationId: translationId, strongsNum: strongsNum, bookRange: bookRange
+            )
         } else {
-            return try userDb.countStrongsOccurrences(translationId: translationId, strongsNum: strongsNum)
+            return try userDb.countStrongsOccurrences(
+                translationId: translationId, strongsNum: strongsNum, bookRange: bookRange
+            )
         }
     }
 
@@ -1750,11 +1840,41 @@ class TranslationDatabase {
 /// analysis uses. A key inside a comma-joined tag ("H996,H914") is found,
 /// so a key's count, its verse list and its analysis agree.
 enum StrongsVerseQuery {
-    static func count(in db: Database, translationId: String, key: String) throws -> Int {
+    /// The verses that may tag `key`, for `holdsKey` to confirm: its letter and
+    /// digits, padded or not. Core's own pattern is the digits alone, which
+    /// for G26 is "%26%": nearly every tagged verse, through its offsets and
+    /// every other key holding 26, each then parsed. A key without a letter
+    /// falls back to core's.
+    static func prefilter(for key: String, column: String) -> (condition: String, arguments: [String]) {
+        let normalized = LampStrongsKey.normalized(key)
+        let digits = String(normalized.drop { !($0.isASCII && $0.isNumber) }.prefix { $0.isASCII && $0.isNumber })
+        guard let letter = normalized.prefix(while: { !($0.isASCII && $0.isNumber) }).last,
+              letter == "G" || letter == "H", !digits.isEmpty else {
+            return ("\(column) LIKE ?", [LampStrongsSearch.sqlPrefilterPattern(for: key)])
+        }
+        let patterns = (0...max(0, 4 - digits.count)).map { padding in
+            "%\(letter)\(String(repeating: "0", count: padding))\(digits)%"
+        }
+        return ("(" + patterns.map { _ in "\(column) LIKE ?" }.joined(separator: " OR ") + ")", patterns)
+    }
+
+    static func count(
+        in db: Database,
+        translationId: String,
+        key: String,
+        bookRange: ClosedRange<Int>? = nil
+    ) throws -> Int {
+        let prefilter = prefilter(for: key, column: "annotations_json")
+        var arguments = StatementArguments([translationId] + prefilter.arguments)
+        var books = ""
+        if let bookRange {
+            books = " AND book BETWEEN ? AND ?"
+            arguments += [bookRange.lowerBound, bookRange.upperBound]
+        }
         let rows = try Row.fetchCursor(db, sql: """
             SELECT annotations_json FROM translation_verses
-            WHERE translation_id = ? AND annotations_json LIKE ?
-            """, arguments: [translationId, LampStrongsSearch.sqlPrefilterPattern(for: key)])
+            WHERE translation_id = ? AND \(prefilter.condition)\(books)
+            """, arguments: arguments)
         var count = 0
         while let row = try rows.next() {
             if LampStrongsSearch.holdsKey(row["annotations_json"], key: key) { count += 1 }
@@ -1769,8 +1889,9 @@ enum StrongsVerseQuery {
         bookRange: ClosedRange<Int>?,
         limit: Int
     ) throws -> [TranslationSearchResult] {
-        var conditions = ["v.translation_id = ?", "v.annotations_json LIKE ?"]
-        var arguments: [DatabaseValueConvertible] = [translationId, LampStrongsSearch.sqlPrefilterPattern(for: key)]
+        let prefilter = prefilter(for: key, column: "v.annotations_json")
+        var conditions = ["v.translation_id = ?", prefilter.condition]
+        var arguments: [DatabaseValueConvertible] = [translationId] + prefilter.arguments
         if let range = bookRange {
             conditions.append("v.book BETWEEN ? AND ?")
             arguments.append(range.lowerBound)

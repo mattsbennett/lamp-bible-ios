@@ -1623,26 +1623,32 @@ struct SearchView: View {
         let bookRange = bookRange
         let shown = resultLimit
         let found = await Task.detached(priority: .userInitiated) { () -> (total: Int, results: [SearchResult]) in
-            let results: [TranslationSearchResult]
             if isStrongs {
+                // Counted apart from the verses listed: each listed verse is
+                // marked, and a common key tags thousands.
                 let key = LampStrongsKey.typedKey(query) ?? LampStrongsKey.normalized(query)
-                results = (try? TranslationDatabase.shared.searchVersesByStrongs(
+                let total = (try? TranslationDatabase.shared.countStrongsOccurrences(
+                    translationId: translationId, strongsNum: key, bookRange: bookRange
+                )) ?? 0
+                let verses = (try? TranslationDatabase.shared.searchVersesByStrongs(
                     translationId: translationId,
                     strongsNum: key,
                     bookRange: bookRange,
-                    limit: 10000  // High limit to get total count
+                    limit: shown
                 )) ?? []
-            } else {
-                // Text search using GRDB FTS5. The query goes in as typed: the
-                // searcher applies the shared grammar, and stripping its quotes
-                // first would lose the phrases they mark.
-                results = (try? TranslationDatabase.shared.searchAllTranslations(
-                    query: query,
-                    translationIds: [translationId],
-                    bookRange: bookRange,
-                    limit: 10000  // High limit to get total count
-                )) ?? []
+                return (total, verses.map { result in
+                    SearchResult(searchResult: result, bookName: BookOsisCache.shared.displayName(for: result.book))
+                })
             }
+            // Text search using GRDB FTS5. The query goes in as typed: the
+            // searcher applies the shared grammar, and stripping its quotes
+            // first would lose the phrases they mark.
+            let results = (try? TranslationDatabase.shared.searchAllTranslations(
+                query: query,
+                translationIds: [translationId],
+                bookRange: bookRange,
+                limit: 10000  // High limit to get total count
+            )) ?? []
             let shownResults = results.prefix(shown).map { result in
                 SearchResult(searchResult: result, bookName: BookOsisCache.shared.displayName(for: result.book))
             }

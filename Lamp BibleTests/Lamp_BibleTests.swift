@@ -4628,3 +4628,60 @@ final class SearchFeatureTests: XCTestCase {
         XCTAssertTrue(try ModuleSearch.shared.search(query: "annotations", filter: filter, limit: 20).isEmpty)
     }
 }
+
+final class SearchSpeedTests: XCTestCase {
+    func testAKeyIsFoundPaddedOrNotButNotThroughItsDigitsElsewhere() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE translations (id TEXT PRIMARY KEY, name TEXT, abbreviation TEXT);
+                CREATE TABLE translation_verses (
+                    id INTEGER PRIMARY KEY, translation_id TEXT, ref INTEGER, book INTEGER,
+                    chapter INTEGER, verse INTEGER, text TEXT, annotations_json TEXT);
+                INSERT INTO translations VALUES ('T', 'Test', 'T');
+                """)
+            let verses: [(Int, String)] = [
+                (40_001_001, #"[{"type":"strongs","start":0,"end":4,"data":{"strongs":"G26"}}]"#),
+                (40_001_002, #"[{"type":"strongs","start":0,"end":4,"data":{"strongs":"G0026"}}]"#),
+                // 26 only as an offset and inside other keys.
+                (40_001_003, #"[{"type":"strongs","start":26,"end":126,"data":{"strongs":"G2600,H26"}}]"#),
+                (1_001_001, #"[{"type":"strongs","start":0,"end":4,"data":{"strongs":"G26"}}]"#),
+            ]
+            for (ref, annotations) in verses {
+                try db.execute(
+                    sql: """
+                        INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text, annotations_json)
+                        VALUES ('T', ?, ?, 1, 1, 'love one another', ?)
+                        """,
+                    arguments: [ref, ref / 1_000_000, annotations]
+                )
+            }
+        }
+        try queue.read { db in
+            XCTAssertEqual(try StrongsVerseQuery.count(in: db, translationId: "T", key: "G26"), 3)
+            XCTAssertEqual(try StrongsVerseQuery.count(in: db, translationId: "T", key: "G26", bookRange: 40...66), 2)
+            let shown = try StrongsVerseQuery.verses(in: db, translationId: "T", key: "G26", bookRange: nil, limit: 1)
+            XCTAssertEqual(shown.map(\.ref), [1_001_001])
+        }
+        let prefilter = StrongsVerseQuery.prefilter(for: "G26", column: "annotations_json")
+        XCTAssertEqual(prefilter.arguments, ["%G26%", "%G026%", "%G0026%"])
+    }
+
+    func testABDBEntryLeadsBackToItsStrongsNumbers() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        XCTAssertEqual(try BundledModuleDatabase.shared.getReverseLexiconMappings(targetKey: "BDB3"), ["H3"])
+        XCTAssertEqual(try BundledModuleDatabase.shared.getReverseLexiconMappings(targetKey: "BDB9264"), ["H3", "H4"])
+        XCTAssertEqual(try BundledModuleDatabase.shared.getReverseLexiconMappings(targetKey: "BDB-none"), [])
+    }
+
+    func testALongEntryIsCutAroundItsMatchBeforeItIsMarked() {
+        let text = String(repeating: "word ", count: 2000) + "the love of God " + String(repeating: "more ", count: 2000)
+        let query = LampSearchQuery("love")
+        let source = ModuleSearch.snippetSource(text, for: query)
+        XCTAssertLessThan(source.count, 1000)
+        XCTAssertTrue(source.contains("love"))
+        let snippet = query.markedSnippet(source, limit: 200)
+        XCTAssertTrue(snippet.contains("<mark>love</mark>"))
+        XCTAssertTrue(snippet.hasPrefix("…") && snippet.hasSuffix("…"))
+    }
+}

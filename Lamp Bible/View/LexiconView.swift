@@ -1419,13 +1419,13 @@ private struct StrongsRefContent: View {
     private var bodyFont: Font { .system(size: baseFontSize * 1.024) }
     private var caption2Font: Font { .system(size: baseFontSize * 0.735) }
 
-    private func loadHitCount() {
+    /// Off the main thread: a count reads every verse that may tag the key.
+    private func loadHitCount() async {
         guard let transId = translationId else { return }
-        // Search for Strong's number in annotations_json using GRDB
-        hitCount = (try? TranslationDatabase.shared.countStrongsOccurrences(
-            translationId: transId,
-            strongsNum: strongsNum
-        )) ?? 0
+        let key = strongsNum
+        hitCount = await Task.detached(priority: .userInitiated) {
+            (try? TranslationDatabase.shared.countStrongsOccurrences(translationId: transId, strongsNum: key)) ?? 0
+        }.value
     }
 
     var body: some View {
@@ -1497,7 +1497,7 @@ private struct StrongsRefContent: View {
                     )
                 }
             }
-            .onAppear { loadHitCount() }
+            .task { await loadHitCount() }
         } else {
             Text("Entry not found: \(strongsNum)")
                 .foregroundStyle(.secondary)
@@ -3443,17 +3443,21 @@ class LexiconLoader: ObservableObject {
 
     /// Loads Strong's hit counts using GRDB
     /// Called after initial UI update so loading state shows first
+    /// Off the main thread, a verse's keys counted one after another: each
+    /// count reads every verse that may tag its key.
     private func loadHitCounts(for strongs: [String], translationId: String) {
-        var counts: [String: Int] = [:]
-
-        for strongsNum in strongs {
-            counts[strongsNum] = (try? TranslationDatabase.shared.countStrongsOccurrences(
-                translationId: translationId,
-                strongsNum: strongsNum
-            )) ?? 0
+        lexiconParsingQueue.async { [weak self] in
+            var counts: [String: Int] = [:]
+            for strongsNum in strongs {
+                counts[strongsNum] = (try? TranslationDatabase.shared.countStrongsOccurrences(
+                    translationId: translationId,
+                    strongsNum: strongsNum
+                )) ?? 0
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.strongsHitCounts = counts
+            }
         }
-
-        strongsHitCounts = counts
     }
 
     private func computeAvailableLexicons(

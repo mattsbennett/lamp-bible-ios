@@ -2452,9 +2452,13 @@ class ModuleDatabase {
         }
     }
 
-    func countStrongsOccurrences(translationId: String, strongsNum: String) throws -> Int {
+    func countStrongsOccurrences(
+        translationId: String,
+        strongsNum: String,
+        bookRange: ClosedRange<Int>? = nil
+    ) throws -> Int {
         try dbQueue.read { db in
-            try StrongsVerseQuery.count(in: db, translationId: translationId, key: strongsNum)
+            try StrongsVerseQuery.count(in: db, translationId: translationId, key: strongsNum, bookRange: bookRange)
         }
     }
 
@@ -2471,7 +2475,6 @@ class ModuleDatabase {
         }
     }
 
-    /// Add <mark> tags around words that match a Strong's number
     func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
         try dbQueue.read { db in
             let ref = try Int.fetchOne(db, sql: """
