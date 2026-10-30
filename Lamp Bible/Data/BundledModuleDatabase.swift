@@ -1836,35 +1836,17 @@ class TranslationDatabase {
 }
 
 /// The verses a Strong's key tags, in either database: core's prefilter by
-/// the key's number, then each candidate's tags read with the scanner the
-/// analysis uses. A key inside a comma-joined tag ("H996,H914") is found,
-/// so a key's count, its verse list and its analysis agree.
+/// the key's letters and number, then each candidate's tags read with the
+/// scanner the analysis uses. A key inside a comma-joined tag ("H996,H914")
+/// is found, so a key's count, its verse list and its analysis agree.
 enum StrongsVerseQuery {
-    /// The verses that may tag `key`, for `holdsKey` to confirm: its letter and
-    /// digits, padded or not. Core's own pattern is the digits alone, which
-    /// for G26 is "%26%": nearly every tagged verse, through its offsets and
-    /// every other key holding 26, each then parsed. A key without a letter
-    /// falls back to core's.
-    static func prefilter(for key: String, column: String) -> (condition: String, arguments: [String]) {
-        let normalized = LampStrongsKey.normalized(key)
-        let digits = String(normalized.drop { !($0.isASCII && $0.isNumber) }.prefix { $0.isASCII && $0.isNumber })
-        guard let letter = normalized.prefix(while: { !($0.isASCII && $0.isNumber) }).last,
-              letter == "G" || letter == "H", !digits.isEmpty else {
-            return ("\(column) LIKE ?", [LampStrongsSearch.sqlPrefilterPattern(for: key)])
-        }
-        let patterns = (0...max(0, 4 - digits.count)).map { padding in
-            "%\(letter)\(String(repeating: "0", count: padding))\(digits)%"
-        }
-        return ("(" + patterns.map { _ in "\(column) LIKE ?" }.joined(separator: " OR ") + ")", patterns)
-    }
-
     static func count(
         in db: Database,
         translationId: String,
         key: String,
         bookRange: ClosedRange<Int>? = nil
     ) throws -> Int {
-        let prefilter = prefilter(for: key, column: "annotations_json")
+        let prefilter = LampStrongsSearch.sqlPrefilter(for: key, column: "annotations_json")
         var arguments = StatementArguments([translationId] + prefilter.arguments)
         var books = ""
         if let bookRange {
@@ -1889,7 +1871,7 @@ enum StrongsVerseQuery {
         bookRange: ClosedRange<Int>?,
         limit: Int
     ) throws -> [TranslationSearchResult] {
-        let prefilter = prefilter(for: key, column: "v.annotations_json")
+        let prefilter = LampStrongsSearch.sqlPrefilter(for: key, column: "v.annotations_json")
         var conditions = ["v.translation_id = ?", prefilter.condition]
         var arguments: [DatabaseValueConvertible] = [translationId] + prefilter.arguments
         if let range = bookRange {

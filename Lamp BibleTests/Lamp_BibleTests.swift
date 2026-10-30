@@ -4663,8 +4663,6 @@ final class SearchSpeedTests: XCTestCase {
             let shown = try StrongsVerseQuery.verses(in: db, translationId: "T", key: "G26", bookRange: nil, limit: 1)
             XCTAssertEqual(shown.map(\.ref), [1_001_001])
         }
-        let prefilter = StrongsVerseQuery.prefilter(for: "G26", column: "annotations_json")
-        XCTAssertEqual(prefilter.arguments, ["%G26%", "%G026%", "%G0026%"])
     }
 
     func testABDBEntryLeadsBackToItsStrongsNumbers() throws {
