@@ -4367,7 +4367,10 @@ struct VerseSheetContent: View {
            let data = json.data(using: .utf8),
            let annotations = try? JSONDecoder().decode([VerseAnnotation].self, from: data) {
             for annotation in annotations {
-                if let strongs = annotation.data?.strongs, LampStrongsKey.matches(strongs, strongsNum) {
+                // Each key a tag lists on its own, as a search finds them.
+                if let strongs = annotation.data?.strongs,
+                   strongs.split(whereSeparator: { $0 == "," || $0 == ";" || $0 == "|" || $0.isWhitespace })
+                    .contains(where: { LampStrongsKey.matches(String($0), strongsNum) }) {
                     highlightRanges.append((annotation.start, annotation.end))
                 }
             }

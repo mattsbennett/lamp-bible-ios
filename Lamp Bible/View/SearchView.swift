@@ -1504,7 +1504,6 @@ struct SearchView: View {
             currentSearchText: currentSearchText,
             searchMode: searchMode,
             fontSize: fontSize,
-            contextAmount: contextAmount,
             translationId: translationId,
             totalResultCount: totalResultCount,
             resultLimit: resultLimit,
@@ -1871,6 +1870,86 @@ struct SearchView: View {
     }
 }
 
+// MARK: - Verse Preview
+
+/// A verse opened from a list of hits, over the list: the verse with its hits
+/// marked, as much context as chosen, and a button to open it in the reader.
+/// Search and the Strong's analysis open their verses in it; the context
+/// chosen here is search's own setting.
+struct VersePreviewSheet: View {
+    let title: String
+    let verseId: Int
+    let translationId: String
+    let highlightQuery: String
+    let highlightMode: SearchMode
+    /// Nil where there is no reader to open it in.
+    let onOpen: (() -> Void)?
+
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("searchContextAmount") private var contextAmount: SearchContextAmount = .oneVerse
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VerseSheetContent(
+                    title: title,
+                    verseId: verseId,
+                    endVerseId: nil,
+                    translationId: translationId,
+                    onNavigate: onOpen.map { open in
+                        {
+                            dismiss()
+                            open()
+                        }
+                    },
+                    contextAmount: contextAmount,
+                    highlightQuery: highlightQuery,
+                    highlightMode: highlightMode
+                )
+                .padding()
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Menu {
+                        Picker("Context", selection: $contextAmount) {
+                            ForEach(SearchContextAmount.allCases, id: \.self) { amount in
+                                Text(amount.label).tag(amount)
+                            }
+                        }
+                    } label: {
+                        Label("Context", systemImage: "rectangle.expand.vertical")
+                    }
+                    if let onOpen {
+                        Button {
+                            dismiss()
+                            onOpen()
+                        } label: {
+                            Label("Open in Reader", systemImage: "arrow.up.right")
+                        }
+                    }
+                }
+            }
+        }
+        .presentationDetents([.fraction(0.4), .medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+    }
+}
+
+/// A verse to preview, by reference.
+struct VersePreviewReference: Identifiable {
+    let id: Int
+}
+
 // MARK: - Search Result Row
 
 struct SearchResultRow: View {
@@ -1878,7 +1957,6 @@ struct SearchResultRow: View {
     let searchQuery: String
     let searchMode: SearchMode
     let fontSize: Int
-    let contextAmount: SearchContextAmount
     let translationId: String
     let onNavigate: () -> Void
 
@@ -1914,46 +1992,14 @@ struct SearchResultRow: View {
         }
         .buttonStyle(.plain)
         .sheet(isPresented: $showingSheet) {
-            NavigationStack {
-                ScrollView {
-                    VerseSheetContent(
-                        title: sheetTitle,
-                        verseId: result.id,
-                        endVerseId: nil,
-                        translationId: translationId,
-                        onNavigate: {
-                            showingSheet = false
-                            onNavigate()
-                        },
-                        contextAmount: contextAmount,
-                        highlightQuery: searchQuery,
-                        highlightMode: searchMode
-                    )
-                    .padding()
-                }
-                .navigationTitle(sheetTitle)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button {
-                            showingSheet = false
-                        } label: {
-                            Image(systemName: "xmark")
-                        }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            showingSheet = false
-                            onNavigate()
-                        } label: {
-                            Image(systemName: "arrow.up.right")
-                        }
-                    }
-                }
-            }
-            .presentationDetents([.fraction(0.4), .medium, .large])
-            .presentationDragIndicator(.visible)
-            .presentationContentInteraction(.scrolls)
+            VersePreviewSheet(
+                title: sheetTitle,
+                verseId: result.id,
+                translationId: translationId,
+                highlightQuery: searchQuery,
+                highlightMode: searchMode,
+                onOpen: onNavigate
+            )
         }
     }
 
@@ -3296,7 +3342,6 @@ private struct BibleResultsListView: View {
     let currentSearchText: String
     let searchMode: SearchMode
     let fontSize: Int
-    let contextAmount: SearchContextAmount
     let translationId: String
     let totalResultCount: Int
     let resultLimit: Int
@@ -3330,7 +3375,6 @@ private struct BibleResultsListView: View {
                             searchQuery: currentSearchText,
                             searchMode: searchMode,
                             fontSize: fontSize,
-                            contextAmount: contextAmount,
                             translationId: translationId,
                             onNavigate: { onNavigate(result) }
                         )

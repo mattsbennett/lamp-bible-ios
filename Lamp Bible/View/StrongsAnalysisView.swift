@@ -95,6 +95,7 @@ struct StrongsAnalysisView: View {
     @State private var renderingFilter: String?
     @State private var bookFilter: Int?
     @State private var shownVerseCount = 50
+    @State private var previewReference: VersePreviewReference?
     @AppStorage("strongs.analysis.bookChartAsRing") private var showsRing = false
     @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = false
 
@@ -116,6 +117,19 @@ struct StrongsAnalysisView: View {
         .navigationTitle(key)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: key) { await load() }
+        .sheet(item: $previewReference) { preview in
+            VersePreviewSheet(
+                title: Self.referenceTitle(
+                    preview.id,
+                    bookNames: Dictionary((analysis?.books ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+                ),
+                verseId: preview.id,
+                translationId: translationId,
+                highlightQuery: key,
+                highlightMode: .strongs,
+                onOpen: onNavigateToVerse.map { navigate in { navigate(preview.id) } }
+            )
+        }
     }
 
     private func load() async {
@@ -526,64 +540,81 @@ struct StrongsAnalysisView: View {
         return title
     }
 
+    /// As a search hit is shown: the reference over the verse cut around
+    /// the key's first word, every one of its words marked as a find. A tap
+    /// opens the verse over the analysis, with its context and a button to
+    /// open it in the reader.
     private func verseRow(
         _ reference: Int,
         bookNames: [Int: String],
         analysis: LampStrongsAnalysis
     ) -> some View {
-        let book = reference / 1_000_000
-        let chapter = (reference % 1_000_000) / 1_000
-        let verse = reference % 1_000
-        return Button {
-            onNavigateToVerse?(reference)
+        Button {
+            previewReference = VersePreviewReference(id: reference)
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(bookNames[book] ?? "Book \(book)") \(chapter):\(verse)")
-                    .font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 6) {
+                Text(Self.referenceTitle(reference, bookNames: bookNames))
+                    .font(.headline)
                     .foregroundStyle(.primary)
-                Text(highlighted(reference, in: analysis))
-                    .foregroundStyle(.primary)
+                SearchResultRow.snippetText(fromMarked: marked(reference, in: analysis), limit: 120)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
+            .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(onNavigateToVerse == nil)
     }
 
-    /// The verse with each of the key's words in it bold and tinted. Offsets
-    /// count Characters, as the analysis gives them.
-    private func highlighted(_ reference: Int, in analysis: LampStrongsAnalysis) -> AttributedString {
-        let text = analysis.verseTexts[reference] ?? ""
-        var value = AttributedString(text)
-        let length = value.characters.count
-        for occurrence in occurrencesByVerse[reference] ?? []
-        where occurrence.startOffset >= 0 && occurrence.startOffset < occurrence.endOffset
-            && occurrence.endOffset <= length {
-            let characters = value.characters
-            let start = characters.index(characters.startIndex, offsetBy: occurrence.startOffset)
-            let end = characters.index(characters.startIndex, offsetBy: occurrence.endOffset)
-            value[start..<end].inlinePresentationIntent = .stronglyEmphasized
-            value[start..<end].foregroundColor = Color.accentColor
+    static func referenceTitle(_ reference: Int, bookNames: [Int: String]) -> String {
+        let book = reference / 1_000_000
+        return "\(bookNames[book] ?? BookOsisCache.shared.displayName(for: book)) \((reference % 1_000_000) / 1_000):\(reference % 1_000)"
+    }
+
+    /// The verse with each of the key's words wrapped in `<mark>`, as a
+    /// search marks its hits. Offsets count Characters, as the analysis
+    /// gives them.
+    private func marked(_ reference: Int, in analysis: LampStrongsAnalysis) -> String {
+        let characters = Array(analysis.verseTexts[reference] ?? "")
+        var marked = ""
+        var cursor = 0
+        let spans = (occurrencesByVerse[reference] ?? [])
+            .filter { $0.startOffset >= 0 && $0.startOffset < $0.endOffset && $0.endOffset <= characters.count }
+            .sorted { $0.startOffset < $1.startOffset }
+        for span in spans where span.startOffset >= cursor {
+            marked += String(characters[cursor..<span.startOffset])
+                + "<mark>" + String(characters[span.startOffset..<span.endOffset]) + "</mark>"
+            cursor = span.endOffset
         }
-        return value
+        return marked + String(characters[cursor...])
     }
 }
 
 /// A ring of the whole, largest slice first from twelve o'clock, with the
 /// total in its hole: the one number a share otherwise leaves you to add up.
+/// A slice tapped is read out in the hole, its name, count and share, and
+/// the rest fade: shades of one hue are hard to match to their rows by eye.
+/// Tapping it again, or the hole, goes back to the total.
 private struct StrongsShareRing: View {
     let slices: [LampPresentationChart.Value]
     let total: Int
     let color: (Int) -> Color
+
+    @State private var selected: Int?
+
+    private static let size: CGFloat = 140
+    private static let holeRatio: CGFloat = 0.6
+
+    private var sum: Double { slices.reduce(0) { $0 + $1.value } }
 
     var body: some View {
         ZStack {
             Canvas { context, size in
                 let centre = CGPoint(x: size.width / 2, y: size.height / 2)
                 let radius = min(size.width, size.height) / 2
-                let hole = radius * 0.6
-                let sum = slices.reduce(0) { $0 + $1.value }
+                let hole = radius * Self.holeRatio
+                let sum = sum
                 guard sum > 0 else { return }
                 var start = Angle.degrees(-90)
                 for (index, slice) in slices.enumerated() {
@@ -592,13 +623,50 @@ private struct StrongsShareRing: View {
                     path.addArc(center: centre, radius: radius, startAngle: start, endAngle: start + sweep, clockwise: false)
                     path.addArc(center: centre, radius: hole, startAngle: start + sweep, endAngle: start, clockwise: true)
                     path.closeSubpath()
-                    context.fill(path, with: .color(color(index)))
+                    let isFaded = selected != nil && selected != index
+                    context.fill(path, with: .color(color(index).opacity(isFaded ? 0.25 : 1)))
                     // A hairline in the row's own colour, so neighbouring
                     // slices of one hue stay apart.
                     context.stroke(path, with: .color(Color(uiColor: .secondarySystemGroupedBackground)), lineWidth: 1.5)
                     start += sweep
                 }
             }
+            .contentShape(Circle())
+            .onTapGesture(coordinateSpace: .local) { location in
+                let tapped = slice(at: location)
+                withAnimation(.easeOut(duration: 0.15)) {
+                    selected = tapped == selected ? nil : tapped
+                }
+            }
+            readout
+                .frame(width: Self.size * Self.holeRatio - 8)
+                .allowsHitTesting(false)
+        }
+        .frame(width: Self.size, height: Self.size)
+        .onChange(of: slices.map(\.label)) { selected = nil }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(slices.map { "\($0.label), \(Int($0.value))" }.joined(separator: "; "))
+    }
+
+    @ViewBuilder
+    private var readout: some View {
+        if let selected, slices.indices.contains(selected) {
+            let slice = slices[selected]
+            VStack(spacing: 0) {
+                Text(slice.label)
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                    .multilineTextAlignment(.center)
+                Text("\(Int(slice.value))")
+                    .font(.title3.weight(.semibold))
+                    .monospacedDigit()
+                Text(Self.share(slice.value, of: sum))
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        } else {
             VStack(spacing: 0) {
                 Text("\(total)")
                     .font(.title3.weight(.semibold))
@@ -608,8 +676,28 @@ private struct StrongsShareRing: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(width: 140, height: 140)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(slices.map { "\($0.label), \(Int($0.value))" }.joined(separator: "; "))
+    }
+
+    static func share(_ value: Double, of sum: Double) -> String {
+        guard sum > 0 else { return "" }
+        let percent = 100 * value / sum
+        return percent > 0 && percent < 1 ? "<1%" : "\(Int(percent.rounded()))%"
+    }
+
+    /// The slice under `location`, or nil in the hole or outside the ring.
+    /// The slices run clockwise from twelve o'clock.
+    private func slice(at location: CGPoint) -> Int? {
+        let radius = Self.size / 2
+        let dx = location.x - radius, dy = location.y - radius
+        let distance = (dx * dx + dy * dy).squareRoot()
+        guard distance >= radius * Self.holeRatio, distance <= radius, sum > 0 else { return nil }
+        var angle = atan2(dy, dx) * 180 / .pi + 90
+        if angle < 0 { angle += 360 }
+        var end = 0.0
+        for (index, slice) in slices.enumerated() {
+            end += 360 * slice.value / sum
+            if angle < end { return index }
+        }
+        return slices.indices.last
     }
 }
