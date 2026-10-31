@@ -69,7 +69,7 @@ class WidgetDataService {
     }
 
     func writeAvailablePlans() {
-        let plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+        let plans = ReadingPlanLibrary.allPlans()
         let widgetPlans = plans.map { WidgetAvailablePlan(id: $0.id, name: $0.name) }
 
         if let encoded = try? JSONEncoder().encode(widgetPlans) {

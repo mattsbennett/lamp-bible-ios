@@ -60,11 +60,11 @@ struct PlanView: View {
                     .task {
                         guard !isLoaded else { return }
                         isLoaded = true
-                        plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+                        plans = ReadingPlanLibrary.allPlans()
                         refreshMetaData()
                     }
                     .onChange(of: planViewRefreshId) {
-                        plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+                        plans = ReadingPlanLibrary.allPlans()
                         refreshMetaData()
                     }
                     .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in

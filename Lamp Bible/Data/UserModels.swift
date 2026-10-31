@@ -118,7 +118,7 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
     var selectedPlans: [Plan] {
         let ids = planIds
         guard !ids.isEmpty else { return [] }
-        return ids.compactMap { try? BundledModuleDatabase.shared.getPlan(id: $0) }
+        return ids.compactMap { ReadingPlanLibrary.plan(id: $0) }
     }
 }
 

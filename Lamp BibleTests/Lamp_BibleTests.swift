@@ -10,6 +10,7 @@ import WebKit
 import GRDB
 import LampCore
 import LampModuleKit
+import LampIntelligence
 @testable import Lamp_Bible
 
 final class Lamp_BibleTests: XCTestCase {
@@ -4809,5 +4810,119 @@ final class StrongsIndexTests: XCTestCase {
             let read = try TranslationDatabase.shared.analyzeStrongsByReadingEveryVerse(key: key, translationId: "KJVs")
             XCTAssertEqual(indexed, read, key)
         }
+    }
+}
+
+final class NewPlanTests: XCTestCase {
+    private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        LampPlanCalendar.calendar.date(from: DateComponents(year: year, month: month, day: day))!
+    }
+
+    func testTheFormAsksForWhatItShows() throws {
+        var form = NewPlanForm()
+        form.tracks = [PlanFormTrack(passages: "Matthew–John; Acts"), PlanFormTrack(passages: "Psalms", chaptersPerDay: 1)]
+        form.readingDays = 30
+        form.start = date(2026, 11, 1)
+        form.restDays = [.saturday, .sunday]
+        let request = try form.request()
+        XCTAssertEqual(request.name, "Matthew–John; Acts in 30 Days")
+        XCTAssertEqual(request.tracks.count, 2)
+        XCTAssertEqual(request.tracks[0].passages.count, 2)
+        XCTAssertEqual(request.tracks[1].chaptersPerDay, 1)
+        XCTAssertEqual(request.readingDays, 30)
+        XCTAssertEqual(request.restDays, [.saturday, .sunday])
+
+        let draft = try request.draft(id: "test")
+        XCTAssertEqual(draft.days.count, 30)
+        // 1 November 2026 is a Sunday, a rest day here: the first reading is
+        // on Monday the 2nd, day 307.
+        XCTAssertEqual(draft.days.first?.number, 307)
+        // Every day has a portion of each track, and none falls on a weekend.
+        XCTAssertTrue(draft.days.allSatisfy { $0.readings.count >= 2 })
+        XCTAssertTrue(draft.days.allSatisfy {
+            ![1, 7].contains(LampPlanCalendar.calendar.component(.weekday, from: $0.date))
+        })
+    }
+
+    func testPacedTracksCanRunUntilReadThrough() throws {
+        var form = NewPlanForm()
+        form.tracks = [PlanFormTrack(passages: "John", chaptersPerDay: 1)]
+        form.untilReadThrough = true
+        form.start = date(2026, 11, 1)
+        XCTAssertNil(try form.request().readingDays)
+        XCTAssertEqual(try form.request().draft(id: "test").days.count, 21)
+        XCTAssertEqual(form.suggestedName, "John, a Chapter a Day")
+    }
+
+    func testAPassageCoreCantReadIsShownItsMessage() {
+        var form = NewPlanForm()
+        form.tracks = [PlanFormTrack(passages: "Hezekiah 3")]
+        XCTAssertThrowsError(try form.request()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Hezekiah 3"))
+        }
+    }
+
+    func testWhatTheModelAskedForFillsTheForm() throws {
+        let agent = LampAgentReadingPlanRequest(
+            name: "The Gospels in a Month",
+            description: "Matthew to John over 30 days.",
+            tracks: [.init(passages: ["Matthew–John"])],
+            readingDays: 30,
+            startDate: "2026-11-02",
+            restDays: ["weekends"]
+        )
+        let form = try NewPlanForm(agent: agent, today: date(2026, 10, 31))
+        XCTAssertEqual(form.name, "The Gospels in a Month")
+        XCTAssertEqual(form.tracks.map(\.passages), ["Matthew–John"])
+        XCTAssertEqual(form.readingDays, 30)
+        XCTAssertFalse(form.untilReadThrough)
+        XCTAssertEqual(form.start, date(2026, 11, 2))
+        XCTAssertEqual(form.restDays, [.saturday, .sunday])
+    }
+
+    /// The on-device model itself, where this machine has it ready: what it
+    /// makes of a plain request must draft without an error.
+    func testTheModelMakesAPlanFromADescription() async throws {
+        guard #available(iOS 26, *) else { throw XCTSkip("Apple Intelligence needs iOS 26") }
+        if let reason = LampReadingPlanAssistant.unavailableReason {
+            throw XCTSkip("Apple Intelligence isn't ready here: \(reason)")
+        }
+        let agent: LampAgentReadingPlanRequest
+        do {
+            agent = try await LampReadingPlanAssistant().request(for: "The Gospels in a month, weekdays only")
+        } catch {
+            // The simulator says the model is available, then fails in its
+            // safety layer for want of the device's assets.
+            throw XCTSkip("The model couldn't run here: \(error.localizedDescription)")
+        }
+        print("[NewPlan] the model asked for \(agent)")
+        let form = try NewPlanForm(agent: agent)
+        let draft = try form.request().draft(id: "model-test")
+        XCTAssertFalse(draft.days.isEmpty)
+        XCTAssertEqual(form.restDays, [.saturday, .sunday])
+    }
+
+    func testAMadePlanIsInstalledAndReadLikeAnyOther() async throws {
+        var form = NewPlanForm()
+        form.name = "Test Plan \(UUID().uuidString.prefix(6))"
+        form.tracks = [PlanFormTrack(passages: "Romans 1–8")]
+        form.readingDays = 8
+        form.start = date(2026, 11, 1)
+        let id = UUID().uuidString
+        let draft = try form.request().draft(id: id)
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("plan-test-\(id)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent(id).appendingPathExtension("lamp")
+        _ = try LampModuleCompiler().compile(data: try draft.moduleJSON(), sourceFilename: "\(id).json", destinationURL: url)
+        try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: .plan)
+        defer { try? ModuleDatabase.shared.deletePlan(id: id) }
+
+        XCTAssertTrue(ReadingPlanLibrary.allPlans().contains { $0.id == id && $0.name == form.name })
+        XCTAssertTrue(ReadingPlanLibrary.isUserPlan(id: id))
+        let day = try XCTUnwrap(ReadingPlanLibrary.planDay(planId: id, day: 306))
+        XCTAssertFalse(day.readings.isEmpty)
+        XCTAssertEqual(day.readings.first?.sv, 45_001_001, "Romans 1")
     }
 }

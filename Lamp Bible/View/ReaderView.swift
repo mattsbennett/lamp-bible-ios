@@ -3197,7 +3197,7 @@ struct ReaderView: View {
 
     /// Loads today's readings from the user's selected plans
     private func loadPlanReadings() {
-        let plans = (try? BundledModuleDatabase.shared.getAllPlans()) ?? []
+        let plans = ReadingPlanLibrary.allPlans()
         let plansMetaData = PlansMetaData(plans: plans, date: date)
 
         // Build list of plans with their readings

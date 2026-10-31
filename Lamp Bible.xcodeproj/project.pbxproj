@@ -26,6 +26,7 @@
 		B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2222B450B4100E8AC49 /* Extensions.swift */; };
 		2FF8A37F705D44F2AB0765DD /* LampColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 471A3E15F4CF4428BD71A9D6 /* LampColors.swift */; };
 		B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */; };
+		D7A1C0A62F0B000000000001 /* NewPlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A1C0A52F0B000000000001 /* NewPlanView.swift */; };
 		B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */; };
 		B84968D42AF72D5F00955089 /* PlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968D32AF72D5F00955089 /* PlanView.swift */; };
 		B84968DA2AF9FDEA00955089 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968D92AF9FDEA00955089 /* SettingsView.swift */; };
@@ -100,6 +101,7 @@
 		B892295D2F05FE4200A58F81 /* ModuleDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */; };
 		B892295F2F05FE4600A58F81 /* ModuleModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892295E2F05FE4600A58F81 /* ModuleModels.swift */; };
 		B89229612F05FE4F00A58F81 /* ModuleSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229602F05FE4F00A58F81 /* ModuleSearch.swift */; };
+		D7A1C0A42F0B000000000001 /* ReadingPlanLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A1C0A32F0B000000000001 /* ReadingPlanLibrary.swift */; };
 		B8A1C0E12F0A000000000001 /* StrongsIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8A1C0E02F0A000000000001 /* StrongsIndex.swift */; };
 		B89229632F05FE5600A58F81 /* ModuleStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229622F05FE5600A58F81 /* ModuleStorage.swift */; };
 		B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */; };
@@ -130,6 +132,7 @@
 		C1A100032FE1000000000001 /* LampCore in Frameworks */ = {isa = PBXBuildFile; productRef = C1A100312FE1000000000001 /* LampCore */; };
 		C1A100052FE1000000000001 /* LampModuleKit in Frameworks */ = {isa = PBXBuildFile; productRef = C1A100322FE1000000000001 /* LampModuleKit */; };
 		C1A100062FE1000000000001 /* LampPresentationUI in Frameworks */ = {isa = PBXBuildFile; productRef = C1A100332FE1000000000001 /* LampPresentationUI */; };
+		D7A1C0A12F0B000000000001 /* LampIntelligence in Frameworks */ = {isa = PBXBuildFile; productRef = D7A1C0A22F0B000000000001 /* LampIntelligence */; };
 		C1A100072FE1000000000001 /* PresentationDeckStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100142FE1000000000001 /* PresentationDeckStorage.swift */; };
 		C1A100082FE1000000000001 /* PresentationDeckSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100152FE1000000000001 /* PresentationDeckSync.swift */; };
 		C1A100092FE1000000000001 /* DeckLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100162FE1000000000001 /* DeckLibraryView.swift */; };
@@ -203,6 +206,7 @@
 		B82DA2222B450B4100E8AC49 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		471A3E15F4CF4428BD71A9D6 /* LampColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampColors.swift; sourceTree = "<group>"; };
 		B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanPickerView.swift; sourceTree = "<group>"; };
+		D7A1C0A52F0B000000000001 /* NewPlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewPlanView.swift; sourceTree = "<group>"; };
 		B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanFooterView.swift; sourceTree = "<group>"; };
 		B84968D32AF72D5F00955089 /* PlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanView.swift; sourceTree = "<group>"; };
 		B84968D92AF9FDEA00955089 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -282,6 +286,7 @@
 		B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleDatabase.swift; sourceTree = "<group>"; };
 		B892295E2F05FE4600A58F81 /* ModuleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleModels.swift; sourceTree = "<group>"; };
 		B89229602F05FE4F00A58F81 /* ModuleSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSearch.swift; sourceTree = "<group>"; };
+		D7A1C0A32F0B000000000001 /* ReadingPlanLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingPlanLibrary.swift; sourceTree = "<group>"; };
 		B8A1C0E02F0A000000000001 /* StrongsIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrongsIndex.swift; sourceTree = "<group>"; };
 		B89229622F05FE5600A58F81 /* ModuleStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleStorage.swift; sourceTree = "<group>"; };
 		B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSyncManager.swift; sourceTree = "<group>"; };
@@ -346,6 +351,7 @@
 				C1A100032FE1000000000001 /* LampCore in Frameworks */,
 				C1A100052FE1000000000001 /* LampModuleKit in Frameworks */,
 				C1A100062FE1000000000001 /* LampPresentationUI in Frameworks */,
+				D7A1C0A12F0B000000000001 /* LampIntelligence in Frameworks */,
 				8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */,
 				115D622AA82F562690671C60 /* RealmSwift in Frameworks */,
 			);
@@ -391,6 +397,7 @@
 				B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */,
 				B892295E2F05FE4600A58F81 /* ModuleModels.swift */,
 				B89229602F05FE4F00A58F81 /* ModuleSearch.swift */,
+				D7A1C0A32F0B000000000001 /* ReadingPlanLibrary.swift */,
 				B8A1C0E02F0A000000000001 /* StrongsIndex.swift */,
 				B89229622F05FE5600A58F81 /* ModuleStorage.swift */,
 				B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */,
@@ -474,6 +481,7 @@
 				B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */,
 				B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */,
 				B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */,
+				D7A1C0A52F0B000000000001 /* NewPlanView.swift */,
 				B84968D32AF72D5F00955089 /* PlanView.swift */,
 				B851FFD22B7B1BCF00C74C1D /* ReadingsView.swift */,
 				B82BBB852B4CF238002248CC /* ReaderBottomToolbarView.swift */,
@@ -643,6 +651,7 @@
 				C1A100312FE1000000000001 /* LampCore */,
 				C1A100322FE1000000000001 /* LampModuleKit */,
 				C1A100332FE1000000000001 /* LampPresentationUI */,
+				D7A1C0A22F0B000000000001 /* LampIntelligence */,
 			);
 			productName = "Lamp Bible";
 			productReference = B885E4132ADB47E40066F0A0 /* Lamp Bible.app */;
@@ -829,6 +838,7 @@
 				B87B2AF12F037B3A006DC53D /* StrongsParser.swift in Sources */,
 				B861BF022B43655D001CA38E /* BookListView.swift in Sources */,
 				B89229612F05FE4F00A58F81 /* ModuleSearch.swift in Sources */,
+				D7A1C0A42F0B000000000001 /* ReadingPlanLibrary.swift in Sources */,
 				B8A1C0E12F0A000000000001 /* StrongsIndex.swift in Sources */,
 				B892295F2F05FE4600A58F81 /* ModuleModels.swift in Sources */,
 				B85B89902F19F248004B4F61 /* MarkdownDevotionalConverter.swift in Sources */,
@@ -880,6 +890,7 @@
 				B85B899D2F1C73D7004B4F61 /* SyncCoordinator.swift in Sources */,
 				B85B89CF2F1C73D7004B4F61 /* UserSettingsSyncManager.swift in Sources */,
 				B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */,
+				D7A1C0A62F0B000000000001 /* NewPlanView.swift in Sources */,
 				8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */,
 				4E4BAF27A20B29E1841CD1B5 /* TipTapPage.swift in Sources */,
 				3DEAB6EDE05206515168103B /* NoteMarkdownRenderer.swift in Sources */,
@@ -1373,6 +1384,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C1A100302FE1000000000001 /* XCLocalSwiftPackageReference "../lamp-bible-core" */;
 			productName = LampPresentationUI;
+		};
+		D7A1C0A22F0B000000000001 /* LampIntelligence */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C1A100302FE1000000000001 /* XCLocalSwiftPackageReference "../lamp-bible-core" */;
+			productName = LampIntelligence;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

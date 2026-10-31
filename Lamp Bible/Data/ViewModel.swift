@@ -33,8 +33,8 @@ class PlanMetaData {
         self.date = date
         let dayNum = plan.getPlanDay(date: date)
 
-        // Get plan day from GRDB bundled database
-        guard let planDay = try? BundledModuleDatabase.shared.getPlanDay(planId: plan.id, day: dayNum) else {
+        // From the bundled database, or the user's for a plan they added or made.
+        guard let planDay = try? ReadingPlanLibrary.planDay(planId: plan.id, day: dayNum) else {
             self.description = ""
             self.readingTime = 0
             // A plan can legitimately lack this day; a database that has not
@@ -142,8 +142,8 @@ class PlansMetaData {
     }
 
     init(plans: [Plan]?, date: Date, userSettings: UserSettings) {
-        // Get all plans from GRDB bundled database if not provided
-        self.plans = plans ?? ((try? BundledModuleDatabase.shared.getAllPlans()) ?? [])
+        // Every plan, bundled and the user's, if not provided
+        self.plans = plans ?? ReadingPlanLibrary.allPlans()
         self.date = date
 
         for plan in self.plans {
