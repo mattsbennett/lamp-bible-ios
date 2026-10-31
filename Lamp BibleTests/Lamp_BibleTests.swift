@@ -4890,9 +4890,10 @@ final class NewPlanTests: XCTestCase {
         let agent: LampAgentReadingPlanRequest
         do {
             agent = try await LampReadingPlanAssistant().request(for: "The Gospels in a month, weekdays only")
-        } catch {
+        } catch let error as LampReadingPlanAssistantError {
             // The simulator says the model is available, then fails in its
-            // safety layer for want of the device's assets.
+            // safety layer for want of the device's assets, which core reads
+            // as a plain failure.
             throw XCTSkip("The model couldn't run here: \(error.localizedDescription)")
         }
         print("[NewPlan] the model asked for \(agent)")

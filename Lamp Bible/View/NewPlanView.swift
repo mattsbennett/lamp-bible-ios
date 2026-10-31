@@ -209,20 +209,15 @@ struct NewPlanView: View {
         isAsking = true
         askError = nil
         defer { isAsking = false }
-        let agent: LampAgentReadingPlanRequest
         do {
-            agent = try await LampReadingPlanAssistant().request(for: words)
-        } catch {
-            // The model's own errors are written for developers; say it plainly.
-            print("[NewPlan] the model couldn't answer: \(error)")
-            askError = "Apple Intelligence couldn't make a plan from that. Try other words, or fill in the plan below."
-            return
-        }
-        do {
-            // Core's errors are written to be shown as they are.
+            let agent = try await LampReadingPlanAssistant().request(for: words)
             form = try NewPlanForm(agent: agent)
             showsPreview = true
+        } catch is CancellationError {
+            return
         } catch {
+            // Core's errors, the assistant's and the plan's, are written to
+            // be shown as they are.
             askError = error.localizedDescription
         }
     }
