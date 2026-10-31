@@ -4880,6 +4880,24 @@ final class NewPlanTests: XCTestCase {
         XCTAssertEqual(form.restDays, [.saturday, .sunday])
     }
 
+    func testAPassageTheModelGotWrongIsLeftInTheFormToPutRight() throws {
+        // As the model on the phone once asked: Mark has 16 chapters.
+        let agent = LampAgentReadingPlanRequest(
+            name: "The Gospels in a Month",
+            tracks: [.init(passages: ["Matthew 1–Matthew 28", "Mark 1–Mark 20"])],
+            readingDays: 22,
+            restDays: ["weekends"]
+        )
+        var form = try NewPlanForm(agent: agent, today: date(2026, 10, 31))
+        XCTAssertEqual(form.tracks.map(\.passages), ["Matthew 1–Matthew 28; Mark 1–Mark 20"])
+        XCTAssertEqual(form.restDays, [.saturday, .sunday])
+        XCTAssertThrowsError(try form.request()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Mark 1–Mark 20"))
+        }
+        form.tracks[0].passages = "Matthew 1–Matthew 28; Mark"
+        XCTAssertFalse(try form.request().draft(id: "put-right").days.isEmpty)
+    }
+
     /// The on-device model itself, where this machine has it ready: what it
     /// makes of a plain request must draft without an error.
     func testTheModelMakesAPlanFromADescription() async throws {

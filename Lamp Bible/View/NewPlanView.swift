@@ -73,9 +73,13 @@ struct NewPlanForm: Equatable {
     }
 
     /// The form filled from what the model or an agent asked for: its
-    /// passages as it wrote them, its dates and rest days read by core.
+    /// passages as it wrote them, read only when the plan is previewed, so
+    /// one core can't read is put right in the form; its dates and rest days
+    /// read by core.
     init(agent: LampAgentReadingPlanRequest, today: Date = Date()) throws {
-        let request = try agent.request(today: today)
+        var timing = agent
+        timing.tracks = []
+        let request = try timing.request(today: today)
         name = agent.name
         description = agent.description ?? ""
         tracks = agent.tracks.map { PlanFormTrack(passages: $0.passages.joined(separator: "; "), chaptersPerDay: $0.chaptersPerDay) }
@@ -212,13 +216,21 @@ struct NewPlanView: View {
         do {
             let agent = try await LampReadingPlanAssistant().request(for: words)
             form = try NewPlanForm(agent: agent)
-            showsPreview = true
         } catch is CancellationError {
             return
         } catch {
             // Core's errors, the assistant's and the plan's, are written to
             // be shown as they are.
             askError = error.localizedDescription
+            return
+        }
+        do {
+            _ = try form.request()
+            showsPreview = true
+        } catch {
+            // The model can still name a chapter a book doesn't have; its
+            // plan stays in the form, for that passage to be put right.
+            askError = "\(error.localizedDescription) Correct it below, then tap Preview."
         }
     }
 
