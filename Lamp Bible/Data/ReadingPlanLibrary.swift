@@ -43,7 +43,8 @@ enum ReadingPlanLibrary {
     }
 
     /// Deletes one of the user's plans, here and from the synced library, and
-    /// stops following it, unless a bundled plan of the same ID stands in.
+    /// stops following it and drops its ticked readings, as the Mac does,
+    /// unless a bundled plan of the same ID stands in.
     static func delete(planId: String) async throws {
         try ModuleDatabase.shared.deletePlan(id: planId)
         await ModuleSyncManager.shared.removeFromLibrary(
@@ -51,6 +52,10 @@ enum ReadingPlanLibrary {
         )
         if ((try? BundledModuleDatabase.shared.getPlan(id: planId)) ?? nil) == nil {
             try UserDatabase.shared.updateSettings { $0.removePlan(planId) }
+            // Unticked one by one, so the progress ledger carries it.
+            for reading in UserDatabase.shared.getCompletedReadings(forPlan: planId) {
+                try UserDatabase.shared.removeCompletedReading(reading.id)
+            }
         }
         WidgetDataService.shared.refreshWidget()
     }

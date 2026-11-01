@@ -4947,11 +4947,14 @@ final class NewPlanTests: XCTestCase {
         XCTAssertFalse(day.readings.isEmpty)
         XCTAssertEqual(day.readings.first?.sv, 45_001_001, "Romans 1")
 
-        // Deleted, it is no longer followed either.
+        // Deleted, it is no longer followed, nor its readings ticked.
         try UserDatabase.shared.updateSettings { $0.addPlan(id) }
+        try UserDatabase.shared.addCompletedReading("\(id)_306_r0_2026")
+        XCTAssertEqual(UserDatabase.shared.getCompletedReadings(forPlan: id).count, 1)
         try await ReadingPlanLibrary.delete(planId: id)
         XCTAssertFalse(ReadingPlanLibrary.allPlans().contains { $0.id == id })
         XCTAssertFalse(UserDatabase.shared.getSettings().isPlanSelected(id))
+        XCTAssertTrue(UserDatabase.shared.getCompletedReadings(forPlan: id).isEmpty)
     }
 
     func testThePreviewSaysWhatIsReadAndOnWhichDays() {

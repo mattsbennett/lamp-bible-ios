@@ -25,7 +25,8 @@ struct PlanPickerView: View {
     var body: some View {
         // Pushed onto Plans' or Settings' stack, so New Plan is pushed there too.
         Form {
-            planSections(bundledPlans, titled: "Included", deletable: false)
+            // Headed only when there are plans of the user's to set them apart from.
+            planSections(bundledPlans, titled: userPlans.isEmpty ? nil : "Included", deletable: false)
             planSections(userPlans, titled: "Your Plans", deletable: true)
         }
         .navigationDestination(isPresented: $showsNewPlan) {
@@ -67,7 +68,7 @@ struct PlanPickerView: View {
 
     /// A section a plan, the first headed by where the plans come from.
     @ViewBuilder
-    private func planSections(_ plans: [Plan], titled title: String, deletable: Bool) -> some View {
+    private func planSections(_ plans: [Plan], titled title: String?, deletable: Bool) -> some View {
         ForEach(Array(plans.enumerated()), id: \.element.id) { index, plan in
             Section {
                 Toggle(isOn: isFollowing(plan)) {
@@ -81,7 +82,7 @@ struct PlanPickerView: View {
                     }
                 }
             } header: {
-                if index == 0 { Text(title) }
+                if index == 0, let title { Text(title) }
             } footer: {
                 PlanFooterView(plan: plan, onDelete: deletable ? { Task { await delete(plan) } } : nil)
             }
