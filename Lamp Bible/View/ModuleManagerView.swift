@@ -14,7 +14,7 @@ import LampModuleKit
 
 enum ModuleSource: String, CaseIterable {
     case all = "All"
-    case bundled = "Bundled"
+    case bundled = "Built In"
     case user = "User"
 }
 
@@ -1506,7 +1506,7 @@ struct ModuleRow: View {
                         .clipShape(Capsule())
 
                     // Source badge
-                    Text(module.isBundled ? "Bundled" : "User")
+                    Text(module.isBundled ? "Built In" : "User")
                         .font(.caption2)
                         .fontWeight(.medium)
                         .foregroundStyle(.white)
@@ -1762,7 +1762,7 @@ struct PlanRow: View {
                         .clipShape(Capsule())
 
                     // Source badge
-                    Text(isBundled ? "Bundled" : "User")
+                    Text(isBundled ? "Built In" : "User")
                         .font(.caption2)
                         .fontWeight(.medium)
                         .foregroundStyle(.white)
@@ -1841,7 +1841,7 @@ struct QuizRow: View {
                         .clipShape(Capsule())
 
                     // Source badge
-                    Text(isBundled ? "Bundled" : "User")
+                    Text(isBundled ? "Built In" : "User")
                         .font(.caption2)
                         .fontWeight(.medium)
                         .foregroundStyle(.white)
@@ -2133,7 +2133,7 @@ struct CommentarySeriesRow: View {
                         .clipShape(Capsule())
 
                     // Source badge
-                    Text(series.isBundled ? "Bundled" : "User")
+                    Text(series.isBundled ? "Built In" : "User")
                         .font(.caption2)
                         .fontWeight(.medium)
                         .foregroundStyle(.white)
@@ -2253,7 +2253,7 @@ struct CommentarySeriesDetailView: View {
             // Badges row
             HStack(spacing: 8) {
                 // Source badge
-                Text(series.isBundled ? "Bundled" : "User")
+                Text(series.isBundled ? "Built In" : "User")
                     .font(.caption2)
                     .fontWeight(.medium)
                     .foregroundStyle(.white)
@@ -2409,7 +2409,7 @@ struct DictionarySeriesRow: View {
 
                     // Source badge - check if all bundled
                     let allBundled = series.modules.allSatisfy { $0.isBundled }
-                    Text(allBundled ? "Bundled" : "User")
+                    Text(allBundled ? "Built In" : "User")
                         .font(.caption2)
                         .fontWeight(.medium)
                         .foregroundStyle(.white)
@@ -2509,7 +2509,7 @@ struct DictionaryModuleRow: View {
 
                 HStack(spacing: 6) {
                     // Source badge
-                    Text(module.isBundled ? "Bundled" : "User")
+                    Text(module.isBundled ? "Built In" : "User")
                         .font(.caption2)
                         .fontWeight(.medium)
                         .foregroundStyle(.white)

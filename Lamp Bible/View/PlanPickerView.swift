@@ -29,10 +29,13 @@ struct PlanPickerView: View {
     var body: some View {
         // Pushed onto Plans' or Settings' stack, so New Plan is pushed there too.
         Form {
-            Section("Included") {
+            // Worded and marked as modules and search mark them.
+            Section {
                 ForEach(bundledPlans, id: \.id) { plan in
                     row(plan)
                 }
+            } header: {
+                Label("Built In", systemImage: "shippingbox")
             }
 
             Section {
@@ -44,7 +47,7 @@ struct PlanPickerView: View {
                 }
                 Button("New Plan", systemImage: "plus") { showsNewPlan = true }
             } header: {
-                Text("Your Plans")
+                Label("Your Plans", systemImage: "person.circle")
             } footer: {
                 if !userPlans.isEmpty {
                     Text("Plans you've made or added. Swipe left on one to delete it.")
