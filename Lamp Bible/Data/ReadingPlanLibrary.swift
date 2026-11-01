@@ -34,4 +34,24 @@ enum ReadingPlanLibrary {
     static func isUserPlan(id: String) -> Bool {
         ((try? ModuleDatabase.shared.getPlan(id: id)) ?? nil) != nil
     }
+
+    /// The bundled plans, and the user's, which can be deleted, apart.
+    static func plansBySource() -> (bundled: [Plan], user: [Plan]) {
+        let plans = allPlans()
+        let userIDs = Set(((try? ModuleDatabase.shared.getAllPlans()) ?? []).map(\.id))
+        return (plans.filter { !userIDs.contains($0.id) }, plans.filter { userIDs.contains($0.id) })
+    }
+
+    /// Deletes one of the user's plans, here and from the synced library, and
+    /// stops following it, unless a bundled plan of the same ID stands in.
+    static func delete(planId: String) async throws {
+        try ModuleDatabase.shared.deletePlan(id: planId)
+        await ModuleSyncManager.shared.removeFromLibrary(
+            type: .plan, moduleId: planId, storage: await ModuleSyncManager.shared.getStorage()
+        )
+        if ((try? BundledModuleDatabase.shared.getPlan(id: planId)) ?? nil) == nil {
+            try UserDatabase.shared.updateSettings { $0.removePlan(planId) }
+        }
+        WidgetDataService.shared.refreshWidget()
+    }
 }

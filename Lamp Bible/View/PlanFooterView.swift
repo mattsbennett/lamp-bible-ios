@@ -9,8 +9,17 @@ import SwiftUI
 
 struct PlanFooterView: View {
     let plan: Plan
+    /// Deletes the plan, already confirmed; nil for a bundled plan.
+    var onDelete: (() -> Void)? = nil
     @State private var showingInfoSheet = false
-    
+    @State private var confirmsDelete = false
+
+    /// A made plan has only its short description.
+    private var fullDescription: String {
+        let full = plan.fullDescription?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return full.isEmpty ? plan.planDescription ?? "" : full
+    }
+
     var body: some View {
         VStack {
             Text(plan.planDescription ?? "").frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
@@ -32,15 +41,34 @@ struct PlanFooterView: View {
                                     .foregroundColor(.primary)
                                     .padding(EdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0))
                                     .bold()
-                                Text(plan.author ?? "")
-                                    .foregroundColor(.primary)
-                                    .italic()
-                                Text(plan.fullDescription ?? "")
-                                    .font(.callout)
-                                    .foregroundColor(.primary)
-                                    .padding(EdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0))
-                                    .lineSpacing(8)
+                                if let author = plan.author, !author.isEmpty {
+                                    Text(author)
+                                        .foregroundColor(.primary)
+                                        .italic()
+                                }
+                                if !fullDescription.isEmpty {
+                                    Text(fullDescription)
+                                        .font(.callout)
+                                        .foregroundColor(.primary)
+                                        .padding(EdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0))
+                                        .lineSpacing(8)
+                                }
+                                if onDelete != nil {
+                                    Section {
+                                        Button("Delete Plan", systemImage: "trash", role: .destructive) {
+                                            confirmsDelete = true
+                                        }
+                                    }
+                                }
                             }
+                        }
+                        .confirmationDialog("Delete “\(plan.name)”?", isPresented: $confirmsDelete, titleVisibility: .visible) {
+                            Button("Delete Plan", role: .destructive) {
+                                showingInfoSheet = false
+                                onDelete?()
+                            }
+                        } message: {
+                            Text("The plan is deleted here and on any device you sync with.")
                         }
                         .toolbar {
                             ToolbarItem(placement: .cancellationAction) {

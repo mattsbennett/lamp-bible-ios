@@ -1354,12 +1354,8 @@ struct ModuleManagerView: View {
 
     private func deletePlan(_ plan: Plan) async {
         do {
-            // Delete plan and its days from database
-            try database.deletePlan(id: plan.id)
-
-            await syncManager.removeFromLibrary(
-                type: .plan, moduleId: plan.id, storage: await storage
-            )
+            // Unfollowed too, as the plan list deletes one.
+            try await ReadingPlanLibrary.delete(planId: plan.id)
 
             await loadModules()
         } catch {

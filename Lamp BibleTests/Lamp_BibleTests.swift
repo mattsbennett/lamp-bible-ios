@@ -4940,8 +4940,29 @@ final class NewPlanTests: XCTestCase {
 
         XCTAssertTrue(ReadingPlanLibrary.allPlans().contains { $0.id == id && $0.name == form.name })
         XCTAssertTrue(ReadingPlanLibrary.isUserPlan(id: id))
+        let bySource = ReadingPlanLibrary.plansBySource()
+        XCTAssertTrue(bySource.user.contains { $0.id == id })
+        XCTAssertFalse(bySource.bundled.contains { $0.id == id })
         let day = try XCTUnwrap(ReadingPlanLibrary.planDay(planId: id, day: 306))
         XCTAssertFalse(day.readings.isEmpty)
         XCTAssertEqual(day.readings.first?.sv, 45_001_001, "Romans 1")
+
+        // Deleted, it is no longer followed either.
+        try UserDatabase.shared.updateSettings { $0.addPlan(id) }
+        try await ReadingPlanLibrary.delete(planId: id)
+        XCTAssertFalse(ReadingPlanLibrary.allPlans().contains { $0.id == id })
+        XCTAssertFalse(UserDatabase.shared.getSettings().isPlanSelected(id))
+    }
+
+    func testThePreviewSaysWhatIsReadAndOnWhichDays() {
+        var form = NewPlanForm()
+        form.tracks = [PlanFormTrack(passages: "Matthew–John"), PlanFormTrack(passages: "Psalms", chaptersPerDay: 1)]
+        XCTAssertEqual(form.trackSummaries, ["Matthew–John, spread over the plan", "Psalms, a chapter a day"])
+        XCTAssertEqual(form.readingWeek, "every day")
+        form.restDays = [.saturday, .sunday]
+        XCTAssertEqual(form.readingWeek, "on weekdays")
+        // What the model on the phone once asked for "weekdays only".
+        form.restDays = [.sunday, .monday, .tuesday, .wednesday, .thursday, .friday]
+        XCTAssertEqual(form.readingWeek, "on Saturdays")
     }
 }
