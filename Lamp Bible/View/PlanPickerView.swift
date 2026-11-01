@@ -7,14 +7,18 @@
 
 import SwiftUI
 
+/// Which plans are followed, and the user's own plans made, kept and
+/// deleted: Lamp's plans in one group, the user's in another.
 struct PlanPickerView: View {
     @Environment(\.dismiss) var dismiss
     @State private var userSettings = UserDatabase.shared.getSettings()
     @State private var bundledPlans: [Plan] = []
     @State private var userPlans: [Plan] = []
     @State private var showsNewPlan = false
+    @State private var infoPlan: Plan?
     @State private var planToDelete: Plan?
     @State private var deleteError: String?
+    @State private var editMode: EditMode = .inactive
 
     init() {
         let plans = ReadingPlanLibrary.plansBySource()
@@ -25,15 +29,37 @@ struct PlanPickerView: View {
     var body: some View {
         // Pushed onto Plans' or Settings' stack, so New Plan is pushed there too.
         Form {
-            // Headed only when there are plans of the user's to set them apart from.
-            planSections(bundledPlans, titled: userPlans.isEmpty ? nil : "Included", deletable: false)
-            planSections(userPlans, titled: "Your Plans", deletable: true)
+            Section("Included") {
+                ForEach(bundledPlans, id: \.id) { plan in
+                    row(plan)
+                }
+            }
+
+            Section {
+                ForEach(userPlans, id: \.id) { plan in
+                    row(plan)
+                }
+                .onDelete { offsets in
+                    planToDelete = offsets.first.map { userPlans[$0] }
+                }
+                Button("New Plan", systemImage: "plus") { showsNewPlan = true }
+            } header: {
+                Text("Your Plans")
+            } footer: {
+                if !userPlans.isEmpty {
+                    Text("Plans you've made or added. Swipe left on one to delete it.")
+                }
+            }
         }
+        .environment(\.editMode, $editMode)
         .navigationDestination(isPresented: $showsNewPlan) {
             NewPlanView { _ in
                 reload()
                 showsNewPlan = false
             }
+        }
+        .sheet(item: $infoPlan) { plan in
+            PlanInfoSheet(plan: plan)
         }
         .confirmationDialog(
             "Delete “\(planToDelete?.name ?? "")”?",
@@ -60,33 +86,39 @@ struct PlanPickerView: View {
                     Image(systemName: "arrow.backward")
                 }
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button("New Plan", systemImage: "plus") { showsNewPlan = true }
+            if !userPlans.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(editMode.isEditing ? "Done" : "Edit") {
+                        withAnimation { editMode = editMode.isEditing ? .inactive : .active }
+                    }
+                }
             }
         }
     }
 
-    /// A section a plan, the first headed by where the plans come from.
-    @ViewBuilder
-    private func planSections(_ plans: [Plan], titled title: String?, deletable: Bool) -> some View {
-        ForEach(Array(plans.enumerated()), id: \.element.id) { index, plan in
-            Section {
-                Toggle(isOn: isFollowing(plan)) {
-                    Text(plan.name)
+    /// A plan's name and description, its details behind the info button,
+    /// and whether it is followed.
+    private func row(_ plan: Plan) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(plan.name)
+                if let description = plan.planDescription, !description.isEmpty {
+                    Text(description)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
-                .tint(.accentColor)
-                .swipeActions {
-                    if deletable {
-                        Button("Delete", systemImage: "trash") { planToDelete = plan }
-                            .tint(.red)
-                    }
-                }
-            } header: {
-                if index == 0, let title { Text(title) }
-            } footer: {
-                PlanFooterView(plan: plan, onDelete: deletable ? { Task { await delete(plan) } } : nil)
             }
+            Spacer(minLength: 0)
+            Button { infoPlan = plan } label: {
+                Image(systemName: "info.circle")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("About \(plan.name)")
+            Toggle(plan.name, isOn: isFollowing(plan))
+                .labelsHidden()
+                .tint(.accentColor)
         }
+        .padding(.vertical, 2)
     }
 
     /// Following a plan, or not, written straight to the settings.
@@ -119,6 +151,7 @@ struct PlanPickerView: View {
         let plans = ReadingPlanLibrary.plansBySource()
         bundledPlans = plans.bundled
         userPlans = plans.user
+        if userPlans.isEmpty { editMode = .inactive }
     }
 }
 

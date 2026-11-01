@@ -27,7 +27,7 @@
 		2FF8A37F705D44F2AB0765DD /* LampColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 471A3E15F4CF4428BD71A9D6 /* LampColors.swift */; };
 		B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */; };
 		D7A1C0A62F0B000000000001 /* NewPlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A1C0A52F0B000000000001 /* NewPlanView.swift */; };
-		B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */; };
+		B82DA2272B450DED00E8AC49 /* PlanInfoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2262B450DED00E8AC49 /* PlanInfoSheet.swift */; };
 		B84968D42AF72D5F00955089 /* PlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968D32AF72D5F00955089 /* PlanView.swift */; };
 		B84968DA2AF9FDEA00955089 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968D92AF9FDEA00955089 /* SettingsView.swift */; };
 		B84968DE2AFB3D4000955089 /* ExternalBibleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B84968DD2AFB3D4000955089 /* ExternalBibleApp.swift */; };
@@ -207,7 +207,7 @@
 		471A3E15F4CF4428BD71A9D6 /* LampColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampColors.swift; sourceTree = "<group>"; };
 		B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanPickerView.swift; sourceTree = "<group>"; };
 		D7A1C0A52F0B000000000001 /* NewPlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewPlanView.swift; sourceTree = "<group>"; };
-		B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanFooterView.swift; sourceTree = "<group>"; };
+		B82DA2262B450DED00E8AC49 /* PlanInfoSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanInfoSheet.swift; sourceTree = "<group>"; };
 		B84968D32AF72D5F00955089 /* PlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanView.swift; sourceTree = "<group>"; };
 		B84968D92AF9FDEA00955089 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B84968DD2AFB3D4000955089 /* ExternalBibleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalBibleApp.swift; sourceTree = "<group>"; };
@@ -479,7 +479,7 @@
 				B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */,
 				B87B2AFC2F03881D006DC53D /* LexiconView.swift */,
 				B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */,
-				B82DA2262B450DED00E8AC49 /* PlanFooterView.swift */,
+				B82DA2262B450DED00E8AC49 /* PlanInfoSheet.swift */,
 				B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */,
 				D7A1C0A52F0B000000000001 /* NewPlanView.swift */,
 				B84968D32AF72D5F00955089 /* PlanView.swift */,
@@ -821,7 +821,7 @@
 				B89229592F05FE3100A58F81 /* MarkdownConverter.swift in Sources */,
 				B851FFD52B7B221700C74C1D /* WrappingHStack.swift in Sources */,
 				B87B2ACF2F0081C5006DC53D /* NoteStorage.swift in Sources */,
-				B82DA2272B450DED00E8AC49 /* PlanFooterView.swift in Sources */,
+				B82DA2272B450DED00E8AC49 /* PlanInfoSheet.swift in Sources */,
 				B85B89A92F1F11E1004B4F61 /* WaveformView.swift in Sources */,
 				B85B898C2F19F230004B4F61 /* DevotionalStorage.swift in Sources */,
 				B85B898D2F19F230004B4F61 /* DevotionalImportExportManager.swift in Sources */,

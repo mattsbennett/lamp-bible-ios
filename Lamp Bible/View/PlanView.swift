@@ -355,8 +355,9 @@ struct PlanView: View {
 
                 Spacer()
 
+                // Following, making and deleting plans: more than adding one.
                 NavigationLink(destination: PlanPickerView()) {
-                    Label("Add", systemImage: "plus.circle.fill")
+                    Label("Manage", systemImage: "list.bullet.circle.fill")
                         .font(.subheadline)
                 }
                 .frame(minHeight: 44)
