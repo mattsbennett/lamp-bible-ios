@@ -3037,6 +3037,57 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(report.line, "deleted here 1: \(notesPath)", "a deletion here is said")
     }
 
+    /// A plan keeps its file in its own row rather than in `modules`. Once
+    /// taken it is held, so it is not fetched again, and a deletion on
+    /// another device takes it and its days away here.
+    func testAPlanIsHeldOnceTakenAndGoesWhenDeletedElsewhere() async throws {
+        let path = "Plans/\(moduleId!).lamp"
+        defer { try? database.deletePlan(id: moduleId) }
+        var form = NewPlanForm()
+        form.name = "Made on the Mac"
+        form.tracks = [PlanFormTrack(passages: "Romans 1–8")]
+        form.readingDays = 8
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(moduleId, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent(moduleId).appendingPathExtension("lamp")
+        _ = try LampModuleCompiler().compile(
+            data: try form.request().draft(id: moduleId).moduleJSON(),
+            sourceFilename: "\(moduleId!).json", destinationURL: url
+        )
+
+        _ = try await pass().run()
+        let revision = await server.seed(path, try Data(contentsOf: url))
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.recordingWrite(
+                path, revision: revision, replacing: nil, at: ModuleDatabase.nowMilliseconds()
+            )
+        }
+        _ = try await pass().run()
+        XCTAssertEqual(try database.getPlan(id: moduleId)?.name, "Made on the Mac")
+        let days = {
+            try self.database.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM plan_days WHERE plan_id = ?", arguments: [self.moduleId]) ?? 0
+            }
+        }
+        XCTAssertEqual(try days(), 8)
+
+        let taken = await server.fetches.filter { $0 == path }.count
+        _ = try await pass().run()
+        let again = await server.fetches.filter { $0 == path }.count
+        XCTAssertEqual(again, taken, "a plan held here is not fetched again")
+
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(
+                path, at: ModuleDatabase.nowMilliseconds() + 1_000, revision: revision
+            )
+        }
+        _ = try await pass().run()
+
+        XCTAssertNil(try database.getPlan(id: moduleId))
+        XCTAssertEqual(try days(), 0, "its days go with it")
+    }
+
     /// This device's default notes and writings land on the two paths core
     /// keeps whole; a second notes module, or a highlight set with a
     /// colliding ID, deletes like any other module.

@@ -541,6 +541,11 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             guard let held = heldModules[path] else { return }
             if held.type == .translation {
                 try database.deleteTranslation(id: held.id)
+            } else if held.type == .plan {
+                // Its days go with it. Whether it is still followed, and its
+                // ticks, arrive in the plan ledger from the device that
+                // deleted it.
+                try database.deletePlan(id: held.id)
             } else {
                 try database.deleteAllEntriesForModule(moduleId: held.id)
                 try database.deleteModule(id: held.id)
@@ -618,11 +623,16 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             guard let filePath = translation.filePath, !filePath.isEmpty else { return nil }
             return (.translation, translation.id, filePath, translation.fileHash)
         }
+        // Unclaimed, a plan was downloaded again on every pass, and a
+        // deletion elsewhere never reached it.
+        let plans = try database.installedPlanFiles().map {
+            (ModuleType.plan, $0.id, $0.filePath, $0.fileHash)
+        }
         let others = try database.getAllModules().compactMap { module -> (ModuleType, String, String, String?)? in
             guard !module.isEditable, module.type != .translation, !module.filePath.isEmpty else { return nil }
             return (module.type, module.id, module.filePath, module.fileHash)
         }
-        return translations + others
+        return translations + plans + others
     }
 
     /// Media present on this device, by server path.

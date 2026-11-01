@@ -2602,6 +2602,18 @@ class ModuleDatabase {
         }
     }
 
+    /// Plans taken in from a file, with that file: what the library holds of
+    /// them. A plan keeps its file in its own row, as a translation does,
+    /// and has no row in `modules`.
+    func installedPlanFiles() throws -> [(id: String, filePath: String, fileHash: String?)] {
+        try dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, file_path, file_hash FROM plans
+                WHERE file_path IS NOT NULL AND file_path != ''
+                """).map { (id: $0["id"], filePath: $0["file_path"], fileHash: $0["file_hash"]) }
+        }
+    }
+
     /// Get a specific plan by ID
     func getPlan(id: String) throws -> Plan? {
         try dbQueue.read { db in
