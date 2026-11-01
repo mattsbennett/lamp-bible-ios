@@ -3073,9 +3073,19 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(try days(), 8)
 
         let taken = await server.fetches.filter { $0 == path }.count
-        _ = try await pass().run()
+        let second = try await pass().run()
         let again = await server.fetches.filter { $0 == path }.count
         XCTAssertEqual(again, taken, "a plan held here is not fetched again")
+        guard case .synced(_, let report) = second else { return XCTFail("expected a synced pass") }
+        XCTAssertEqual(report.fetchedAgain, [], "nor said to be")
+
+        // Unclaimed, as every plan was: fetched again, and the pass says so.
+        try database.write { db in
+            try db.execute(sql: "UPDATE plans SET file_path = NULL WHERE id = ?", arguments: [moduleId])
+        }
+        guard case .synced(_, let unclaimed) = try await pass().run() else { return XCTFail("expected a synced pass") }
+        XCTAssertEqual(unclaimed.fetchedAgain, [path])
+        XCTAssertTrue(unclaimed.line.contains("fetched again, though held here 1: \(path)"))
 
         _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
             bundle.manifest = try bundle.manifest.removing(

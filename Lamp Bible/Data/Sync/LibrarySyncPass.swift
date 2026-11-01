@@ -102,6 +102,11 @@ struct LibrarySyncPass {
         var sent: [String] = []
         var deletionsSent: [String] = []
         var changedDuringPass: [String] = []
+        /// Brought down although this phone already held those very bytes:
+        /// something it holds without saying so, as plans once were. Each
+        /// costs a download every pass, and a deletion elsewhere never
+        /// reaches it.
+        var fetchedAgain: [String] = []
 
         init(_ outcome: LampSyncBundlePass.Outcome) {
             deletedHere = outcome.deletedLocally.sorted()
@@ -109,12 +114,14 @@ struct LibrarySyncPass {
             sent = outcome.uploaded.sorted()
             deletionsSent = outcome.tombstoned.sorted()
             changedDuringPass = outcome.changedDuringPass.sorted()
+            fetchedAgain = outcome.fetchedAgain.sorted()
         }
 
         var line: String {
             let parts = [
                 ("deleted here", deletedHere), ("brought down", broughtDown), ("sent", sent),
                 ("deletions sent", deletionsSent), ("changed during the pass", changedDuringPass),
+                ("fetched again, though held here", fetchedAgain),
             ].filter { !$0.1.isEmpty }.map { "\($0.0) \($0.1.count): \($0.1.joined(separator: ", "))" }
             return parts.isEmpty ? "nothing to do" : parts.joined(separator: "; ")
         }
