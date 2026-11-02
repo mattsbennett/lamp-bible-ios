@@ -761,7 +761,10 @@ class ModuleSyncManager: ObservableObject {
                     }
                 }
             } else if tableNames.contains("highlight_sets") && tableNames.contains("highlights") {
-                // Full GRDB schema - copy directly
+                // Full GRDB schema - copy directly. Only an import by hand
+                // reaches here: core's compiler and this app's export both
+                // write highlight_meta. Unlike that branch, this makes no
+                // `modules` row, so a pass could not claim what it brought.
                 try db.execute(sql: """
                     INSERT INTO highlight_sets (id, module_id, name, description, translation_id, created, last_modified)
                     SELECT id, module_id, name, description, translation_id, created, last_modified

@@ -107,6 +107,10 @@ struct LibrarySyncPass {
         /// costs a download every pass, and a deletion elsewhere never
         /// reaches it.
         var fetchedAgain: [String] = []
+        /// Deleted on another device and installed here, but held here
+        /// without saying so, so this pass leaves them: why something
+        /// deleted elsewhere is still on this phone pass after pass.
+        var deletionsNotCarriedOut: [String] = []
 
         init(_ outcome: LampSyncBundlePass.Outcome) {
             deletedHere = outcome.deletedLocally.sorted()
@@ -115,6 +119,7 @@ struct LibrarySyncPass {
             deletionsSent = outcome.tombstoned.sorted()
             changedDuringPass = outcome.changedDuringPass.sorted()
             fetchedAgain = outcome.fetchedAgain.sorted()
+            deletionsNotCarriedOut = outcome.deletionsNotCarriedOut.sorted()
         }
 
         var line: String {
@@ -122,6 +127,7 @@ struct LibrarySyncPass {
                 ("deleted here", deletedHere), ("brought down", broughtDown), ("sent", sent),
                 ("deletions sent", deletionsSent), ("changed during the pass", changedDuringPass),
                 ("fetched again, though held here", fetchedAgain),
+                ("deleted elsewhere, but kept here", deletionsNotCarriedOut),
             ].filter { !$0.1.isEmpty }.map { "\($0.0) \($0.1.count): \($0.1.joined(separator: ", "))" }
             return parts.isEmpty ? "nothing to do" : parts.joined(separator: "; ")
         }
@@ -346,7 +352,8 @@ struct LibrarySyncPass {
         case .plans: return .plan
         case .highlights: return .highlights
         case .quizzes: return .quiz
-        default: return nil
+        // No default: a kind core adds must be mapped here, or it would be
+        // planned, installed as nothing and never claimed.
         }
     }
 
@@ -635,11 +642,17 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         let plans = try database.installedPlanFiles().map {
             (ModuleType.plan, $0.id, $0.filePath, $0.fileHash)
         }
+        // Quizzes neither, and they keep no file of their own: each is held
+        // at the path its id spells, as the compiler names the file. Core
+        // honours that only where an install was recorded there.
+        let quizzes = try database.getAllQuizModules().map {
+            (ModuleType.quiz, $0.id, "\($0.id).lamp", String?.none)
+        }
         let others = try database.getAllModules().compactMap { module -> (ModuleType, String, String, String?)? in
             guard !module.isEditable, module.type != .translation, !module.filePath.isEmpty else { return nil }
             return (module.type, module.id, module.filePath, module.fileHash)
         }
-        return translations + plans + others
+        return translations + plans + quizzes + others
     }
 
     /// Media present on this device, by server path.

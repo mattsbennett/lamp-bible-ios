@@ -3124,6 +3124,100 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(try planDayCount(), 0, "its days go with it")
     }
 
+    /// Held here without saying so, a plan deleted elsewhere stays, as every
+    /// plan did before plans were claimed; the pass now says so.
+    func testADeletionLeftUndoneHereIsSaid() async throws {
+        defer { try? database.deletePlan(id: moduleId) }
+        let (path, revision) = try await takeAPlanMadeElsewhere()
+        try database.write { db in
+            try db.execute(sql: "UPDATE plans SET file_path = NULL WHERE id = ?", arguments: [moduleId])
+        }
+
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(
+                path, at: ModuleDatabase.nowMilliseconds() + 1_000, revision: revision
+            )
+        }
+        try await server.delete(path, condition: .ifRevision(revision))
+        guard case .synced(_, let report) = try await pass().run() else { return XCTFail("expected a synced pass") }
+
+        XCTAssertNotNil(try database.getPlan(id: moduleId))
+        XCTAssertEqual(report.deletionsNotCarriedOut, [path])
+        XCTAssertTrue(report.line.contains("deleted elsewhere, but kept here 1: \(path)"))
+    }
+
+    /// A quiz keeps neither a file nor a row in `modules`: it is held at the
+    /// path its id spells, so once taken it is not fetched again, and a
+    /// deletion on another device takes it and its questions away here.
+    func testAQuizIsHeldOnceTakenAndGoesWhenDeletedElsewhere() async throws {
+        let path = "Quizzes/\(moduleId!).lamp"
+        defer { try? database.deleteAllEntriesForModule(moduleId: moduleId) }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(moduleId, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent(moduleId).appendingPathExtension("lamp")
+        _ = try LampModuleCompiler().compile(
+            data: Data(#"""
+            {
+              "meta": {
+                "schemaVersion": "1.0", "id": "\#(moduleId!)", "type": "quiz",
+                "planId": "romans-in-a-week", "name": "Questions from the Mac",
+                "questionsPerReading": 1,
+                "ageGroups": [{"id": "adult", "label": "Adult", "ageRange": "18+"}]
+              },
+              "days": [{
+                "day": 1,
+                "readings": [{
+                  "sv": 45001001, "ev": 45001032,
+                  "quizzes": {"adult": [{
+                    "question": {"text": "Of what is Paul not ashamed?"},
+                    "answer": "The gospel, the power of God for salvation.",
+                    "theme": "doctrine", "christFocused": true,
+                    "references": [45001016]
+                  }]}
+                }]
+              }]
+            }
+            """#.utf8),
+            sourceFilename: "\(moduleId!).json", destinationURL: url
+        )
+        let questions = {
+            try self.database.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM quiz_questions WHERE quiz_module_id = ?", arguments: [self.moduleId]) ?? 0
+            }
+        }
+
+        _ = try await pass().run()
+        let revision = await server.seed(path, try Data(contentsOf: url))
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.recordingWrite(
+                path, revision: revision, replacing: nil, at: ModuleDatabase.nowMilliseconds()
+            )
+        }
+        _ = try await pass().run()
+        XCTAssertEqual(try database.getQuizModule(id: moduleId)?.name, "Questions from the Mac")
+        XCTAssertEqual(try questions(), 1)
+
+        let taken = await server.fetches.filter { $0 == path }.count
+        guard case .synced(_, let second) = try await pass().run() else { return XCTFail("expected a synced pass") }
+        let again = await server.fetches.filter { $0 == path }.count
+        XCTAssertEqual(again, taken, "a quiz held here is not fetched again")
+        XCTAssertEqual(second.fetchedAgain, [], "nor said to be")
+
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(
+                path, at: ModuleDatabase.nowMilliseconds() + 1_000, revision: revision
+            )
+        }
+        try await server.delete(path, condition: .ifRevision(revision))
+        guard case .synced(_, let report) = try await pass().run() else { return XCTFail("expected a synced pass") }
+
+        XCTAssertNil(try database.getQuizModule(id: moduleId))
+        XCTAssertEqual(try questions(), 0, "its questions go with it")
+        XCTAssertEqual(report.deletedHere, [path])
+        XCTAssertEqual(report.deletionsNotCarriedOut, [])
+    }
+
     /// This device's default notes and writings land on the two paths core
     /// keeps whole; a second notes module, or a highlight set with a
     /// colliding ID, deletes like any other module.
