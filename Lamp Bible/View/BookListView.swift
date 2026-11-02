@@ -14,6 +14,8 @@ struct BookListView: View {
     @Binding var translationId: String
     @Binding var translationAbbreviation: String
     let loadVersesClosure: () -> Void
+    /// Takes the reader to a verse chosen by holding its chapter, as BBCCCVVV.
+    let onPickVerse: (Int) -> Void
     var onTranslationChange: ((String) -> Void)? = nil
 
     private var userSettings: UserSettings {
@@ -41,7 +43,8 @@ struct BookListView: View {
     }
 
     var body: some View {
-        NavigationView {
+        // A stack, for the verses a held chapter pushes.
+        NavigationStack {
             List {
                 ForEach(books) { book in
                     NavigationLink(
@@ -50,7 +53,8 @@ struct BookListView: View {
                             showingBookPicker: $showingBookPicker,
                             book: book,
                             translationId: translationId,
-                            loadVersesClosure: loadVersesClosure
+                            loadVersesClosure: loadVersesClosure,
+                            onPickVerse: onPickVerse
                         )
                     ) {
                         Text(book.name)

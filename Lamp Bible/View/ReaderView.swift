@@ -1838,6 +1838,12 @@ struct ReaderView: View {
             loadVersesClosure: {
                 loadVerses(loadingCase: LOADING_CURRENT)
             },
+            onPickVerse: { verseId in
+                // As the lexicon's verse links do: another chapter loads
+                // and scrolls to the verse, and this one only scrolls.
+                requestScrollAnimated = false
+                requestScrollToVerseId = verseId
+            },
             onTranslationChange: { newTranslationId in
                 // Update translation metadata
                 if let translation = try? TranslationDatabase.shared.getTranslation(id: newTranslationId) {

@@ -2444,6 +2444,17 @@ class ModuleDatabase {
         }
     }
 
+    func getVerseNumbers(translationId: String, book: Int, chapter: Int) throws -> [Int] {
+        try dbQueue.read { db in
+            try Int.fetchAll(db, TranslationVerse
+                .select(Column("verse"))
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("book") == book)
+                .filter(Column("chapter") == chapter)
+                .order(Column("verse")))
+        }
+    }
+
     func getTotalVerseCount(translationId: String) throws -> Int {
         try dbQueue.read { db in
             try TranslationVerse

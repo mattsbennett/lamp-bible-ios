@@ -396,6 +396,20 @@ class BundledModuleDatabase {
         }
     }
 
+    /// The numbers of a chapter's verses, in order. A translation can leave
+    /// a verse out, so these are not always 1 through the count.
+    func getVerseNumbers(translationId: String, book: Int, chapter: Int) throws -> [Int] {
+        guard isAvailable else { return [] }
+        return try read { db in
+            try Int.fetchAll(db, TranslationVerse
+                .select(Column("verse"))
+                .filter(Column("translation_id") == translationId)
+                .filter(Column("book") == book)
+                .filter(Column("chapter") == chapter)
+                .order(Column("verse")))
+        }
+    }
+
     /// Get total verse count for a translation
     func getTotalVerseCount(translationId: String) throws -> Int {
         guard isAvailable else { return 0 }
@@ -1735,6 +1749,15 @@ class TranslationDatabase {
             return try bundledDb.getVerseCount(translationId: translationId, book: book, chapter: chapter)
         } else {
             return try userDb.getVerseCount(translationId: translationId, book: book, chapter: chapter)
+        }
+    }
+
+    /// The numbers of a chapter's verses, in order
+    func getVerseNumbers(translationId: String, book: Int, chapter: Int) throws -> [Int] {
+        if try bundledDb.isTranslationBundled(id: translationId) {
+            return try bundledDb.getVerseNumbers(translationId: translationId, book: book, chapter: chapter)
+        } else {
+            return try userDb.getVerseNumbers(translationId: translationId, book: book, chapter: chapter)
         }
     }
 
