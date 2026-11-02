@@ -3037,12 +3037,10 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(report.line, "deleted here 1: \(notesPath)", "a deletion here is said")
     }
 
-    /// A plan keeps its file in its own row rather than in `modules`. Once
-    /// taken it is held, so it is not fetched again, and a deletion on
-    /// another device takes it and its days away here.
-    func testAPlanIsHeldOnceTakenAndGoesWhenDeletedElsewhere() async throws {
+    /// A plan made on another device and taken in here, as the Mac's
+    /// "Made on the Mac" would be: its path and the revision taken.
+    private func takeAPlanMadeElsewhere() async throws -> (path: String, revision: String) {
         let path = "Plans/\(moduleId!).lamp"
-        defer { try? database.deletePlan(id: moduleId) }
         var form = NewPlanForm()
         form.name = "Made on the Mac"
         form.tracks = [PlanFormTrack(passages: "Romans 1–8")]
@@ -3065,12 +3063,22 @@ final class LibrarySyncPassTests: XCTestCase {
         }
         _ = try await pass().run()
         XCTAssertEqual(try database.getPlan(id: moduleId)?.name, "Made on the Mac")
-        let days = {
-            try self.database.read { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM plan_days WHERE plan_id = ?", arguments: [self.moduleId]) ?? 0
-            }
+        XCTAssertEqual(try planDayCount(), 8)
+        return (path, revision)
+    }
+
+    private func planDayCount() throws -> Int {
+        try database.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM plan_days WHERE plan_id = ?", arguments: [moduleId]) ?? 0
         }
-        XCTAssertEqual(try days(), 8)
+    }
+
+    /// A plan keeps its file in its own row rather than in `modules`. Once
+    /// taken it is held, so it is not fetched again, and a deletion on
+    /// another device takes it and its days away here.
+    func testAPlanIsHeldOnceTakenAndGoesWhenDeletedElsewhere() async throws {
+        defer { try? database.deletePlan(id: moduleId) }
+        let (path, revision) = try await takeAPlanMadeElsewhere()
 
         let taken = await server.fetches.filter { $0 == path }.count
         let second = try await pass().run()
@@ -3095,7 +3103,25 @@ final class LibrarySyncPassTests: XCTestCase {
         _ = try await pass().run()
 
         XCTAssertNil(try database.getPlan(id: moduleId))
-        XCTAssertEqual(try days(), 0, "its days go with it")
+        XCTAssertEqual(try planDayCount(), 0, "its days go with it")
+    }
+
+    /// As a phone meets a plan the Mac deleted: tombstoned, and the file
+    /// already reaped from the server, so the pass lists nothing there.
+    func testAPlanDeletedAndReapedElsewhereGoesHere() async throws {
+        defer { try? database.deletePlan(id: moduleId) }
+        let (path, revision) = try await takeAPlanMadeElsewhere()
+
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(
+                path, at: ModuleDatabase.nowMilliseconds() + 1_000, revision: revision
+            )
+        }
+        try await server.delete(path, condition: .ifRevision(revision))
+        _ = try await pass().run()
+
+        XCTAssertNil(try database.getPlan(id: moduleId))
+        XCTAssertEqual(try planDayCount(), 0, "its days go with it")
     }
 
     /// This device's default notes and writings land on the two paths core
