@@ -3124,6 +3124,45 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(try planDayCount(), 0, "its days go with it")
     }
 
+    /// As a phone meets decks a Mac deleted: named in the bundle's ledger,
+    /// whether or not the file has left the server yet.
+    func testADeckDeletedElsewhereGoesHere() async throws {
+        let decks = PresentationDeckStorage.shared
+        func deck(_ title: String) -> LampPresentationDeck {
+            var deck = LampPresentationDeck.starter(title: title)
+            deck.id = "pass-\(UUID().uuidString.lowercased())"
+            return deck
+        }
+        let reaped = deck("Reaped"), listed = deck("Still listed"), kept = deck("Kept")
+        let all = [reaped, listed, kept]
+        defer { for deck in all { try? decks.syncedStore.delete(id: deck.id) } }
+        func path(_ deck: LampPresentationDeck) -> String {
+            "\(LampPresentationDeckPortableLayout.directoryPath)/\(deck.id).lampdeck"
+        }
+        func held() -> Set<String> {
+            Set(decks.entries().map(\.id)).intersection(all.map(\.id))
+        }
+
+        _ = try await pass().run()
+        for deck in all {
+            await server.seed(path(deck), try decks.syncedStore.encoded(deck))
+        }
+        _ = try await pass().run()
+        XCTAssertEqual(held(), Set(all.map(\.id)))
+
+        var ledger = LampPresentationDeckDeletionLedger()
+        ledger.record(reaped.id)
+        ledger.record(listed.id)
+        let deletions = try ledger.encoded()
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.deckDeletions = deletions
+        }
+        try await server.delete(path(reaped), condition: .unconditional)
+        _ = try await pass().run()
+
+        XCTAssertEqual(held(), [kept.id])
+    }
+
     /// Held here without saying so, a plan deleted elsewhere stays, as every
     /// plan did before plans were claimed; the pass now says so.
     func testADeletionLeftUndoneHereIsSaid() async throws {
