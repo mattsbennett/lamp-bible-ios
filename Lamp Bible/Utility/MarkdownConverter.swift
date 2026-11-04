@@ -285,7 +285,7 @@ struct MarkdownConverter {
                     author: draft.author,
                     date: draft.date,
                     tags: draft.tags.isEmpty ? nil : draft.tags,
-                    category: draft.category.flatMap(DevotionalCategory.init(rawValue:)),
+                    category: draft.category,
                     series: series,
                     keyScriptures: draft.keyScriptures.map {
                         DevotionalKeyScripture(

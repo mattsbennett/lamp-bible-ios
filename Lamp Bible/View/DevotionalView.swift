@@ -421,13 +421,13 @@ struct DevotionalView: View {
                     Label(author, systemImage: "person")
                         .font(.caption)
                 }
-                if let category = devotional.meta.category {
-                    Text(category.rawValue.capitalized)
+                if let category = devotional.meta.categoryName {
+                    Text(category)
                         .font(.caption)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(category.kindColor.opacity(0.2))
-                        .foregroundColor(category.kindColor)
+                        .background(devotional.meta.kindColor.opacity(0.2))
+                        .foregroundColor(devotional.meta.kindColor)
                         .cornerRadius(4)
                 }
             }
@@ -2197,8 +2197,7 @@ struct MetadataEditorSheet: View {
     @State private var subtitle: String = ""
     @State private var author: String = ""
     @State private var date: Date = Date()
-    @State private var category: DevotionalCategory = .devotional
-    @State private var categoryPicked = false
+    @State private var category: String = ""
     @State private var tagsText: String = ""
 
     var body: some View {
@@ -2209,14 +2208,7 @@ struct MetadataEditorSheet: View {
                     TextField("Subtitle", text: $subtitle)
                     TextField("Author", text: $author)
                     DatePicker("Date", selection: $date, displayedComponents: .date)
-                    Picker("Category", selection: Binding(
-                        get: { category },
-                        set: { category = $0; categoryPicked = true }
-                    )) {
-                        ForEach(DevotionalCategory.allCases, id: \.self) { cat in
-                            Text(cat.rawValue.capitalized).tag(cat)
-                        }
-                    }
+                    DevotionalCategoryField(category: $category)
                 }
 
                 Section("Tags") {
@@ -2248,7 +2240,7 @@ struct MetadataEditorSheet: View {
         title = devotional.meta.title
         subtitle = devotional.meta.subtitle ?? ""
         author = devotional.meta.author ?? ""
-        category = devotional.meta.category ?? .devotional
+        category = devotional.meta.categoryName ?? ""
         tagsText = devotional.meta.tags?.joined(separator: ", ") ?? ""
 
         if let dateStr = devotional.meta.date {
@@ -2275,12 +2267,7 @@ struct MetadataEditorSheet: View {
         devotional.meta.subtitle = subtitle.isEmpty ? nil : subtitle
         devotional.meta.author = author.isEmpty ? nil : author
         devotional.meta.date = formatter.string(from: date)
-        // A category this version doesn't know shows as Devotional in the
-        // picker; it stays as it was unless one is picked here.
-        let unknownCategory = devotional.meta.categoryValue != nil && devotional.meta.category == nil
-        if categoryPicked || !unknownCategory {
-            devotional.meta.category = category
-        }
+        devotional.meta.setCategory(fromField: category)
         devotional.meta.tags = tags
         devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
 
@@ -2397,7 +2384,7 @@ extension Devotional {
                     author: "John Doe",
                     date: "2025-01-15",
                     tags: ["faith", "hope", "love"],
-                    category: .devotional
+                    category: "devotional"
                 ),
                 content: .blocks([
                     DevotionalContentBlock(type: .paragraph, content: DevotionalAnnotatedText(text: "This is a sample devotional with some content."))

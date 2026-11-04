@@ -288,7 +288,7 @@ struct MarkdownDevotionalConverter {
             author: parsed.values["author"],
             date: parsed.values["date"],
             tags: parsed.tags.isEmpty ? nil : parsed.tags,
-            category: parsed.values["category"].flatMap(DevotionalCategory.init(rawValue:)),
+            category: parsed.values["category"],
             series: series,
             keyScriptures: scriptures.isEmpty ? nil : scriptures,
             created: Int(Date().timeIntervalSince1970)

@@ -5,6 +5,7 @@
 //  Created by Claude on 2025-01-15.
 //
 
+import LampCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -23,7 +24,7 @@ struct DevotionalPickerView: View {
     @State private var sortOption: DevotionalSortOption = .dateNewest
     @State private var filterOptions: DevotionalFilterOptions = DevotionalFilterOptions()
     @State private var availableTags: [String] = []
-    @State private var availableCategories: [DevotionalCategory] = []
+    @State private var availableCategories: [String] = []
     @State private var isLoading: Bool = true
     @State private var showingNewDevotional: Bool = false
     @State private var showingSortMenu: Bool = false
@@ -76,10 +77,7 @@ struct DevotionalPickerView: View {
 
         // Apply category filter
         if !filterOptions.categories.isEmpty {
-            result = result.filter { devotional in
-                guard let category = devotional.meta.category else { return false }
-                return filterOptions.categories.contains(category)
-            }
+            result = result.filter { filterOptions.matchesCategory(of: $0.meta) }
         }
 
         // Apply date range filter
@@ -428,7 +426,7 @@ struct DevotionalPickerView: View {
                 }
 
                 ForEach(Array(filterOptions.categories), id: \.self) { category in
-                    DevotionalFilterChip(label: category.rawValue, icon: "folder") {
+                    DevotionalFilterChip(label: LampWritingCategory.displayName(category) ?? category, icon: "folder") {
                         filterOptions.categories.remove(category)
                     }
                 }
@@ -638,13 +636,13 @@ struct DevotionalListRow: View {
 
                 Spacer()
 
-                if let category = devotional.meta.category {
-                    Text(category.rawValue.capitalized)
+                if let category = devotional.meta.categoryName {
+                    Text(category)
                         .font(.caption2)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(category.kindColor.opacity(0.2))
-                        .foregroundColor(category.kindColor)
+                        .background(devotional.meta.kindColor.opacity(0.2))
+                        .foregroundColor(devotional.meta.kindColor)
                         .cornerRadius(4)
                 }
             }
@@ -748,10 +746,10 @@ struct DevotionalFilterSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var filterOptions: DevotionalFilterOptions
     let availableTags: [String]
-    let availableCategories: [DevotionalCategory]
+    let availableCategories: [String]
 
     @State private var selectedTags: Set<String> = []
-    @State private var selectedCategories: Set<DevotionalCategory> = []
+    @State private var selectedCategories: Set<String> = []
     @State private var startDate: Date = Date()
     @State private var endDate: Date = Date()
     @State private var useDateFilter: Bool = false
@@ -775,7 +773,7 @@ struct DevotionalFilterSheet: View {
                 if !availableCategories.isEmpty {
                     Section("Categories") {
                         ForEach(availableCategories, id: \.self) { category in
-                            Toggle(category.rawValue.capitalized, isOn: Binding(
+                            Toggle(LampWritingCategory.displayName(category) ?? category, isOn: Binding(
                                 get: { selectedCategories.contains(category) },
                                 set: { if $0 { selectedCategories.insert(category) } else { selectedCategories.remove(category) } }
                             ))
@@ -838,7 +836,7 @@ struct DevotionalEditorSheet: View {
     @State private var subtitle: String = ""
     @State private var author: String = ""
     @State private var date: Date = Date()
-    @State private var category: DevotionalCategory = .devotional
+    @State private var category: String = "Devotional"
     @State private var tagsText: String = ""
 
     var body: some View {
@@ -849,11 +847,7 @@ struct DevotionalEditorSheet: View {
                     TextField("Subtitle (optional)", text: $subtitle)
                     TextField("Author (optional)", text: $author)
                     DatePicker("Date", selection: $date, displayedComponents: .date)
-                    Picker("Category", selection: $category) {
-                        ForEach(DevotionalCategory.allCases, id: \.self) { cat in
-                            Text(cat.rawValue.capitalized).tag(cat)
-                        }
-                    }
+                    DevotionalCategoryField(category: $category)
                 }
 
                 Section("Tags") {
@@ -922,6 +916,43 @@ struct DevotionalEditorSheet: View {
             } catch {
                 print("Failed to save devotional: \(error)")
             }
+        }
+    }
+}
+
+// MARK: - Category Field
+
+/// A writing's kind: any the writer types, or one offered from the
+/// suggestions and the kinds the library already holds.
+struct DevotionalCategoryField: View {
+    @Binding var category: String
+
+    @State private var offered = LampWritingCategory.suggestions
+
+    var body: some View {
+        HStack {
+            Text("Category")
+            TextField("Category", text: $category, prompt: Text("None"))
+                .multilineTextAlignment(.trailing)
+            Menu {
+                ForEach(offered, id: \.self) { kind in
+                    let name = LampWritingCategory.displayName(kind) ?? kind
+                    // A kind already in the library goes in as it is written
+                    // there, not with the capital it is shown with.
+                    Button(name) {
+                        category = LampWritingCategory.suggestions.contains(kind) ? name : kind
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.up.chevron.down")
+                    .imageScale(.small)
+            }
+            .accessibilityLabel("Choose a Category")
+        }
+        .onAppear {
+            offered = LampWritingCategory.offered(
+                forLibraryHolding: (try? DevotionalStorage.shared.getUsedCategories()) ?? []
+            )
         }
     }
 }

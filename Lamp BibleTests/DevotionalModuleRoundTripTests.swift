@@ -74,7 +74,7 @@ final class DevotionalModuleRoundTripTests: XCTestCase {
                     author: "John Smith",
                     date: "2026-01-18",
                     tags: ["faith", "prayer"],
-                    category: .devotional,
+                    category: "devotional",
                     keyScriptures: [DevotionalKeyScripture(sv: 43_001_001, ev: nil, label: "John 1:1")],
                     created: 1_769_317_935,
                     lastModified: lastModified

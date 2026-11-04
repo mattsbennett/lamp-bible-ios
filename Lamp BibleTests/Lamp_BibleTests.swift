@@ -355,7 +355,7 @@ final class Lamp_BibleTests: XCTestCase {
         let rich = Devotional(
             meta: DevotionalMeta(
                 title: "Morning Hope", subtitle: "Beginning well", author: "A Reader",
-                date: "2026-08-03", tags: ["hope"], category: .reflection,
+                date: "2026-08-03", tags: ["hope"], category: "reflection",
                 series: DevotionalSeriesInfo(id: nil, name: "Daily Hope", order: 1),
                 keyScriptures: [DevotionalKeyScripture(
                     sv: 43_001_001, ev: nil, label: "John 1:1"
@@ -389,7 +389,7 @@ final class Lamp_BibleTests: XCTestCase {
         XCTAssertEqual(restored.meta.subtitle, "Beginning well")
         XCTAssertEqual(restored.meta.author, "A Reader")
         XCTAssertEqual(restored.meta.tags, ["hope"])
-        XCTAssertEqual(restored.meta.category, .reflection)
+        XCTAssertEqual(restored.meta.category, "reflection")
         XCTAssertEqual(restored.meta.series?.name, "Daily Hope")
         XCTAssertEqual(restored.meta.series?.order, 1)
         XCTAssertEqual(restored.meta.keyScriptures?.first?.sv, 43_001_001)
@@ -4474,10 +4474,10 @@ final class PresentationRemoteMemoryTests: XCTestCase {
     }
 }
 
-/// A category a newer app wrote, such as one the Mac offers before this
-/// version knows it, has to come through an edit here unchanged: the writing
-/// would otherwise go back up with its category erased.
-final class DevotionalUnknownCategoryTests: XCTestCase {
+/// A writing's kind is whatever its writer named it, by any device and through
+/// any route: a kind that is not one of the suggestions is kept, shown and
+/// offered like the rest.
+final class DevotionalOpenCategoryTests: XCTestCase {
     private func stored(category: String?) -> DevotionalEntry {
         var meta = DevotionalMeta(id: "W1", title: "Kept", created: 1, lastModified: 2)
         meta.categoryValue = category
@@ -4487,27 +4487,155 @@ final class DevotionalUnknownCategoryTests: XCTestCase {
         )
     }
 
-    func testAnUnknownCategorySurvivesBeingReadAndStoredAgain() throws {
+    func testAKindOffTheListIsKeptAndShown() throws {
         let reread = try XCTUnwrap(stored(category: "lament").toDevotional())
-        XCTAssertNil(reread.meta.category)
-        XCTAssertEqual(reread.meta.categoryValue, "lament")
+        XCTAssertEqual(reread.meta.category, "lament")
+        XCTAssertEqual(reread.meta.categoryName, "Lament")
+        XCTAssertEqual(reread.meta.kindColor, .gray, "only a suggestion has a hue of its own")
 
         var edited = reread
         edited.meta.title = "Edited here"
         XCTAssertEqual(DevotionalEntry(from: edited, moduleId: "devotionals").category, "lament")
     }
 
-    func testAKnownCategoryStillReadsAsItsCase() throws {
+    /// A kind keeps its writer's capitals, which could not be put back.
+    func testAKindKeepsItsCapitals() throws {
+        let reread = try XCTUnwrap(stored(category: "Q&A").toDevotional())
+        XCTAssertEqual(reread.meta.category, "Q&A")
+        XCTAssertEqual(reread.meta.categoryName, "Q&A")
+    }
+
+    func testASuggestionKeepsItsHueAndCanBeChanged() throws {
         let reread = try XCTUnwrap(stored(category: "prayer").toDevotional())
-        XCTAssertEqual(reread.meta.category, .prayer)
+        XCTAssertEqual(reread.meta.category, "prayer")
+        XCTAssertEqual(reread.meta.kindColor, .pink)
 
         var changed = reread
-        changed.meta.category = .study
+        changed.meta.category = "study"
         XCTAssertEqual(DevotionalEntry(from: changed, moduleId: "devotionals").category, "study")
     }
 
+    /// Shown as exhortation everywhere, as the Mac has it, without an edit
+    /// elsewhere in the writing rewriting what it was stored as.
+    func testALegacySermonReadsAsAnExhortation() throws {
+        let reread = try XCTUnwrap(stored(category: "sermon").toDevotional())
+        XCTAssertEqual(reread.meta.category, "exhortation")
+        XCTAssertEqual(reread.meta.categoryName, "Exhortation")
+        XCTAssertEqual(reread.meta.kindColor, .blue)
+
+        var edited = reread
+        edited.meta.title = "Edited here"
+        XCTAssertEqual(DevotionalEntry(from: edited, moduleId: "devotionals").category, "sermon")
+    }
+
+    /// Clearing the field in an editor leaves a writing with no kind.
+    func testBlankIsNoKind() {
+        var meta = DevotionalMeta(title: "Kept", category: "study")
+        meta.category = "  "
+        XCTAssertNil(meta.category)
+        XCTAssertNil(meta.categoryValue)
+        XCTAssertNil(meta.categoryName)
+    }
+
+    /// An editor shows `categoryName`, so a field left alone must not write
+    /// that form over how the kind was written.
+    func testAnEditorOnlyChangesAKindThatWasChanged() {
+        var meta = DevotionalMeta(title: "Kept")
+        meta.categoryValue = "lament"
+        meta.setCategory(fromField: "Lament")
+        XCTAssertEqual(meta.categoryValue, "lament")
+
+        meta.setCategory(fromField: " Q&A ")
+        XCTAssertEqual(meta.categoryValue, "Q&A")
+        meta.setCategory(fromField: "STUDY")
+        XCTAssertEqual(meta.categoryValue, "study", "a suggestion has one spelling")
+        meta.setCategory(fromField: "")
+        XCTAssertNil(meta.categoryValue)
+    }
+
+    /// The writing list filters in memory, on any spelling of a kind.
+    func testAFilterFindsAKindHoweverItWasWritten() {
+        func meta(_ category: String?) -> DevotionalMeta {
+            var meta = DevotionalMeta(title: "Kept")
+            meta.categoryValue = category
+            return meta
+        }
+        let handouts = DevotionalFilterOptions(categories: ["Handout"])
+        XCTAssertTrue(handouts.matchesCategory(of: meta("handout")))
+        XCTAssertFalse(handouts.matchesCategory(of: meta("study")))
+        XCTAssertFalse(handouts.matchesCategory(of: meta(nil)))
+        XCTAssertTrue(DevotionalFilterOptions(categories: ["exhortation"]).matchesCategory(of: meta("sermon")))
+        XCTAssertFalse(DevotionalFilterOptions(categories: [" "]).matchesCategory(of: meta(nil)))
+    }
+
+    /// Both importers once discarded any kind they did not know.
+    func testImportingMarkdownKeepsAKindOffTheList() throws {
+        let markdown = """
+        ---
+        id: "W1"
+        title: "Kept"
+        category: "lament"
+        ---
+
+        Body.
+        """
+        XCTAssertEqual(MarkdownDevotionalConverter.parseMarkdown(markdown)?.meta.category, "lament")
+
+        let database = ModuleDatabase.shared
+        let moduleID = "open-kinds-\(UUID().uuidString)"
+        try database.saveModule(Module(
+            id: moduleID, type: .devotional, name: "Imported", filePath: "imported.lamp"
+        ))
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: moduleID)
+            try? database.deleteModule(id: moduleID)
+        }
+        XCTAssertEqual(try MarkdownConverter.importDevotionalsFromMarkdown(markdown, moduleId: moduleID), 1)
+        XCTAssertEqual(try DevotionalStorage.shared.getUsedCategories(moduleId: moduleID), ["lament"])
+    }
+
+    /// Filters and the offered list hold every kind in the library, each
+    /// once however it was written, and filtering finds them all.
+    func testUsedKindsAreEachOneAndCanBeFilteredOn() throws {
+        let database = ModuleDatabase.shared
+        let moduleID = "open-kinds-\(UUID().uuidString)"
+        try database.saveModule(Module(
+            id: moduleID, type: .devotional, name: "Kinds", filePath: "kinds.lamp"
+        ))
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: moduleID)
+            try? database.deleteModule(id: moduleID)
+        }
+        for (id, category) in [
+            ("A", "Study"), ("B", "study"), ("C", "sermon"), ("D", "exhortation"),
+            ("E", "lament"), ("F", nil), ("G", "Handout"), ("H", "handout"),
+        ] {
+            var meta = DevotionalMeta(id: "\(moduleID)-\(id)", title: id)
+            meta.categoryValue = category
+            try database.saveDevotionalEntry(DevotionalEntry(
+                from: Devotional(meta: meta, content: .blocks([.paragraph("Body")])), moduleId: moduleID
+            ))
+        }
+        let storage = DevotionalStorage.shared
+        XCTAssertEqual(
+            try storage.getUsedCategories(moduleId: moduleID),
+            ["exhortation", "study", "Handout", "lament"]
+        )
+        XCTAssertTrue(try storage.getUsedCategories().contains("lament"), "and so does the library's list")
+
+        func titles(_ categories: Set<String>) throws -> [String] {
+            try storage.getDevotionals(
+                moduleId: moduleID, filter: DevotionalFilterOptions(categories: categories), sort: .titleAZ
+            ).map(\.meta.title)
+        }
+        XCTAssertEqual(try titles(["study"]), ["A", "B"])
+        XCTAssertEqual(try titles(["exhortation"]), ["C", "D"])
+        XCTAssertEqual(try titles(["lament"]), ["E"])
+        XCTAssertEqual(try titles(["handout"]), ["G", "H"])
+    }
+
     /// A shared or exported writing carries it too, under the same key.
-    func testJSONKeepsAnUnknownCategoryUnderItsKey() throws {
+    func testJSONKeepsAKindOffTheListUnderItsKey() throws {
         let json = #"{"schemaVersion":"1.0","id":"W1","type":"devotional","title":"Kept","category":"lament"}"#
         let meta = try JSONDecoder().decode(DevotionalMeta.self, from: Data(json.utf8))
         XCTAssertEqual(meta.categoryValue, "lament")

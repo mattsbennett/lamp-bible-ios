@@ -932,8 +932,8 @@ struct LampFilePreview {
         devotional?.meta.date
     }
 
-    var category: DevotionalCategory? {
-        devotional?.meta.category
+    var category: String? {
+        devotional?.meta.categoryName
     }
 
     var tags: [String]? {

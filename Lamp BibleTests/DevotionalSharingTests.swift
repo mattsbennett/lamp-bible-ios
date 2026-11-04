@@ -69,7 +69,7 @@ final class DevotionalSharingTests: XCTestCase {
                 author: "John Smith",
                 date: "2025-01-18",
                 tags: ["faith", "prayer"],
-                category: .devotional
+                category: "devotional"
             ),
             content: .blocks([.paragraph("The journey of faith is not always easy.")])
         )

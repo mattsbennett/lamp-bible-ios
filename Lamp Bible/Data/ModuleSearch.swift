@@ -52,7 +52,7 @@ struct ModuleSearchFilter {
     var monthDay: String? = nil  // Format: "01-15" for January 15 (legacy)
     var devotionalDate: String? = nil  // ISO 8601: YYYY-MM-DD
     var tags: Set<String>? = nil
-    var categories: Set<DevotionalCategory>? = nil
+    var categories: Set<String>? = nil
 
     // Dictionary filters
     var strongsKey: String? = nil  // Filter by Strong's number
@@ -928,7 +928,7 @@ class ModuleSearch {
                 date: filter.devotionalDate,
                 monthDay: filter.monthDay,
                 tags: filter.tags,
-                categories: filter.categories.map { Set($0.map(\.rawValue)) }
+                categories: filter.categories
             )
             let facets = criteria.sqlConditions(tableAlias: "d")
             conditions += facets.clauses

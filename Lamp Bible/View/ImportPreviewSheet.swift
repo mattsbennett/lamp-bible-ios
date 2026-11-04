@@ -91,7 +91,7 @@ struct ImportPreviewSheet: View {
                             }
 
                             if let category = preview.category {
-                                metadataRow(label: "Category", value: category.displayName, icon: "folder")
+                                metadataRow(label: "Category", value: category, icon: "folder")
                             }
 
                             if let tags = preview.tags, !tags.isEmpty {
@@ -331,7 +331,7 @@ struct ImportPreviewSheet: View {
                     author: "John Smith",
                     date: "2025-01-18",
                     tags: ["faith", "prayer", "morning"],
-                    category: .devotional
+                    category: "devotional"
                 ),
                 content: .blocks([
                     DevotionalContentBlock(

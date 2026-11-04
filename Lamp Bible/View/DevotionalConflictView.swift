@@ -253,13 +253,13 @@ struct DevotionalPreviewContent: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if let category = devotional.meta.category {
-                    Text(category.rawValue)
+                if let category = devotional.meta.categoryName {
+                    Text(category)
                         .font(.caption)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(category.kindColor.opacity(0.2))
-                        .foregroundColor(category.kindColor)
+                        .background(devotional.meta.kindColor.opacity(0.2))
+                        .foregroundColor(devotional.meta.kindColor)
                         .cornerRadius(4)
                 }
             }

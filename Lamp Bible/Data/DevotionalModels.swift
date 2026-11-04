@@ -7,31 +7,8 @@
 
 import Foundation
 import GRDB
+import LampCore
 import LampModuleKit
-
-// MARK: - Devotional Category
-
-enum DevotionalCategory: String, Codable, CaseIterable {
-    case devotional
-    case exhortation
-    case reflection
-    case study
-    case prayer
-    case testimony
-    case other
-
-    var displayName: String {
-        switch self {
-        case .devotional: return "Devotional"
-        case .exhortation: return "Exhortation"
-        case .reflection: return "Reflection"
-        case .study: return "Study"
-        case .prayer: return "Prayer"
-        case .testimony: return "Testimony"
-        case .other: return "Other"
-        }
-    }
-}
 
 // MARK: - Devotional Annotation Types
 
@@ -433,8 +410,8 @@ struct DevotionalMeta: Codable, Equatable {
     var author: String?
     var date: String?               // ISO 8601 format: YYYY-MM-DD
     var tags: [String]?
-    /// The category as written. Kept as a string so one this version
-    /// doesn't know, written by a newer app, survives an edit here.
+    /// The category as written, so a writing goes back up with what it came
+    /// with until someone changes it.
     var categoryValue: String?
     var series: DevotionalSeriesInfo?
     var keyScriptures: [DevotionalKeyScripture]?
@@ -447,10 +424,23 @@ struct DevotionalMeta: Codable, Equatable {
         case series, keyScriptures, created, lastModified
     }
 
-    /// The category, when it's one this version knows.
-    var category: DevotionalCategory? {
-        get { categoryValue.flatMap { DevotionalCategory(rawValue: $0) } }
-        set { categoryValue = newValue?.rawValue }
+    /// The kind of writing, in whatever words its writer chose. Core keeps
+    /// the vocabulary: blank is none, and a legacy `sermon` is `exhortation`.
+    var category: String? {
+        get { LampWritingCategory.canonical(categoryValue) }
+        set { categoryValue = LampWritingCategory.canonical(newValue) }
+    }
+
+    /// The category as shown.
+    var categoryName: String? {
+        LampWritingCategory.displayName(categoryValue)
+    }
+
+    /// Takes an editor's category field, which starts as `categoryName`. Left
+    /// that way the category stays as written, rather than taking on a
+    /// capital it was only shown with.
+    mutating func setCategory(fromField field: String) {
+        if field != categoryName { category = field }
     }
 
     init(
@@ -460,7 +450,7 @@ struct DevotionalMeta: Codable, Equatable {
         author: String? = nil,
         date: String? = nil,
         tags: [String]? = nil,
-        category: DevotionalCategory? = nil,
+        category: String? = nil,
         series: DevotionalSeriesInfo? = nil,
         keyScriptures: [DevotionalKeyScripture]? = nil,
         created: Int? = nil,
@@ -472,7 +462,7 @@ struct DevotionalMeta: Codable, Equatable {
         self.author = author
         self.date = date
         self.tags = tags
-        self.categoryValue = category?.rawValue
+        self.categoryValue = LampWritingCategory.canonical(category)
         self.series = series
         self.keyScriptures = keyScriptures
         self.created = created ?? Int(Date().timeIntervalSince1970)
@@ -1007,12 +997,18 @@ enum DevotionalSortOption: String, CaseIterable {
 
 struct DevotionalFilterOptions {
     var tags: Set<String> = []
-    var categories: Set<DevotionalCategory> = []
+    var categories: Set<String> = []
     var dateRange: ClosedRange<Date>?
     var searchQuery: String = ""
 
     var isEmpty: Bool {
         tags.isEmpty && categories.isEmpty && dateRange == nil && searchQuery.isEmpty
+    }
+
+    /// Whether a writing is of a kind asked for, however each was written.
+    func matchesCategory(of meta: DevotionalMeta) -> Bool {
+        guard let kind = LampWritingCategory.foldedKey(meta.categoryValue) else { return false }
+        return categories.contains { LampWritingCategory.foldedKey($0) == kind }
     }
 }
 

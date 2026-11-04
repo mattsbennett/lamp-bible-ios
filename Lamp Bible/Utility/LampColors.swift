@@ -64,18 +64,18 @@ extension Text {
     }
 }
 
-extension DevotionalCategory {
-    /// The category's own hue, telling the kinds of writing apart at a
-    /// glance; always shown with the category's name.
+extension DevotionalMeta {
+    /// The category's own hue, telling the suggested kinds of writing apart
+    /// at a glance; always shown with the category's name, which is all that
+    /// tells a kind the writer named apart from another.
     var kindColor: Color {
-        switch self {
-        case .devotional: .purple
-        case .exhortation: .blue
-        case .reflection: .green
-        case .study: .orange
-        case .prayer: .pink
-        case .testimony: .teal
-        case .other: .gray
+        switch category {
+        case "devotional": .purple
+        case "exhortation": .blue
+        case "reflection": .green
+        case "study": .orange
+        case "prayer": .pink
+        default: .gray
         }
     }
 }

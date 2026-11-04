@@ -92,8 +92,8 @@ class DevotionalStorage {
 
             // Apply category filter
             if !filter.categories.isEmpty {
-                let categoryStrings = filter.categories.map { $0.rawValue }
-                query = query.filter(categoryStrings.contains(Column("category")))
+                let stored = LampWritingCategory.storedValuesMatching(filter.categories)
+                query = query.filter(stored.contains(Column("category").collating(.nocase)))
             }
 
             // Apply sorting
@@ -179,18 +179,6 @@ class DevotionalStorage {
         }
     }
 
-    /// Get devotionals by category
-    func getDevotionalsByCategory(moduleId: String, category: DevotionalCategory) throws -> [Devotional] {
-        try db.read { db in
-            let entries = try DevotionalEntry
-                .filter(Column("module_id") == moduleId)
-                .filter(Column("category") == category.rawValue)
-                .order(Column("date").desc, Column("title"))
-                .fetchAll(db)
-            return entries.compactMap { $0.toDevotional() }
-        }
-    }
-
     /// Get devotionals in a series
     func getDevotionalsInSeries(moduleId: String, seriesId: String) throws -> [Devotional] {
         try db.read { db in
@@ -249,40 +237,20 @@ class DevotionalStorage {
 
     // MARK: - Category Operations
 
-    /// Get all categories used in a module
-    func getUsedCategories(moduleId: String) throws -> [DevotionalCategory] {
+    /// The categories in use, in one module or the whole library, in the
+    /// order core offers them. Each once, however it was written: `Handout`
+    /// and `handout` are one kind.
+    func getUsedCategories(moduleId: String? = nil) throws -> [String] {
         try db.read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT category FROM devotional_entries
-                WHERE module_id = ? AND category IS NOT NULL
-                ORDER BY category
-            """, arguments: [moduleId])
-
-            return rows.compactMap { row in
-                guard let categoryStr: String = row["category"] else { return nil }
-                return DevotionalCategory(rawValue: categoryStr)
+            var request = DevotionalEntry.select(Column("category"), as: String?.self).distinct()
+            if let moduleId {
+                request = request.filter(Column("module_id") == moduleId)
             }
-        }
-    }
-
-    /// Get category counts for a module
-    func getCategoryCounts(moduleId: String) throws -> [DevotionalCategory: Int] {
-        try db.read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT category, COUNT(*) as count FROM devotional_entries
-                WHERE module_id = ? AND category IS NOT NULL
-                GROUP BY category
-            """, arguments: [moduleId])
-
-            var counts: [DevotionalCategory: Int] = [:]
-            for row in rows {
-                if let categoryStr: String = row["category"],
-                   let category = DevotionalCategory(rawValue: categoryStr),
-                   let count: Int = row["count"] {
-                    counts[category] = count
-                }
+            let stored = try request.fetchAll(db)
+            let held = Set(stored.compactMap(LampWritingCategory.foldedKey))
+            return LampWritingCategory.offered(forLibraryHolding: stored).filter {
+                LampWritingCategory.foldedKey($0).map(held.contains) == true
             }
-            return counts
         }
     }
 

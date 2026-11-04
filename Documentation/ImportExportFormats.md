@@ -241,7 +241,7 @@ As we walk by faith today...
 | `author` | No | Author name |
 | `date` | No | ISO 8601 date (YYYY-MM-DD) |
 | `tags` | No | Array of tags |
-| `category` | No | One of: devotional, exhortation, reflection, study, prayer, testimony, other |
+| `category` | No | The kind of writing, in any words. The editors suggest devotional, exhortation, reflection, study and prayer; `sermon` reads as exhortation |
 | `series.id` | No | Series UUID |
 | `series.name` | No | Series display name |
 | `series.order` | No | Order within series |
