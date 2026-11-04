@@ -80,6 +80,56 @@ final class PresentationDeckSyncTests: XCTestCase {
 
     // MARK: - Published decks
 
+    /// A Mac keeps a deck whose writing has gone, and a starter nobody wrote
+    /// in, until someone deletes it there. The list leaves them out, and they
+    /// stay stored, so a pull neither brings them back nor counts them as new.
+    func testTheListLeavesOutDecksWithNothingBehindThem() throws {
+        var linked = LampPresentationDeck.starter(title: "Linked", source: .init(kind: .devotional, id: "abc-1"))
+        linked.id = "linked"
+        var orphaned = LampPresentationDeck.starter(title: "Orphaned", source: .init(kind: .devotional, id: "gone"))
+        orphaned.id = "orphaned"
+        var starter = LampPresentationDeck.starter()
+        starter.id = "starter"
+        var written = LampPresentationDeck.starter()
+        written.id = "written"
+        written.slides[1].blocks[1].text = "A thought of my own."
+        var named = LampPresentationDeck.starter(title: "Easter")
+        named.id = "named"
+        for deck in [linked, orphaned, starter, written, named] {
+            try decks.syncedStore.save(deck)
+        }
+        var imported = LampPresentationDeck.starter(title: "Opened here", source: .init(kind: .devotional, id: "gone"))
+        imported.id = "imported"
+        try decks.importedStore.save(imported)
+
+        XCTAssertEqual(
+            Set(decks.listedEntries(writingIDs: ["ABC-1"]).map(\.id)),
+            ["linked", "written", "named", "imported"]
+        )
+        XCTAssertEqual(decks.entries().count, 6, "nothing is removed")
+    }
+
+    func testEveryWritingHeldIsReadInCapitals() throws {
+        let database = ModuleDatabase.shared
+        let moduleID = "deck-writings-\(UUID().uuidString)"
+        try database.saveModule(Module(
+            id: moduleID, type: .devotional, name: "Writings", filePath: "writings.lamp"
+        ))
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: moduleID)
+            try? database.deleteModule(id: moduleID)
+        }
+        let writingID = UUID().uuidString.lowercased()
+        try database.saveDevotionalEntry(DevotionalEntry(
+            from: Devotional(
+                meta: DevotionalMeta(id: writingID, title: "Held"),
+                content: .blocks([.paragraph("Body")])
+            ),
+            moduleId: moduleID
+        ))
+        XCTAssertTrue(try DevotionalStorage.shared.getAllWritingIDs().contains(writingID.uppercased()))
+    }
+
     func testArchivePullStoresPublishedDecks() async throws {
         let archive = LampSyncArchive(entries: [
             try deckEntry(deck(id: "a", title: "Living Hope"), modifiedAt: .init(timeIntervalSince1970: 100)),

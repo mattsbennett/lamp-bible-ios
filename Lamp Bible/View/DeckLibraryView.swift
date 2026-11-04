@@ -124,7 +124,10 @@ struct DeckLibraryView: View {
     // MARK: - Actions
 
     private func reload() {
-        entries = PresentationDeckStorage.shared.entries()
+        let decks = PresentationDeckStorage.shared
+        // Unable to read the writings, list every deck rather than hide one.
+        entries = (try? DevotionalStorage.shared.getAllWritingIDs())
+            .map(decks.listedEntries(writingIDs:)) ?? decks.entries()
         if let pendingDeckID, !entries.contains(where: { $0.id == pendingDeckID }) {
             self.pendingDeckID = nil
         }

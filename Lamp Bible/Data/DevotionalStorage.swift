@@ -29,6 +29,14 @@ class DevotionalStorage {
         return entry.toDevotional()
     }
 
+    /// The ID of every writing held here, in any module, in capitals: they are
+    /// UUIDs, which one platform may spell in capitals and another not.
+    func getAllWritingIDs() throws -> Set<String> {
+        try db.read { db in
+            Set(try DevotionalEntry.select(Column("id"), as: String.self).fetchAll(db).map { $0.uppercased() })
+        }
+    }
+
     /// Get all devotionals for a module
     func getAllDevotionals(moduleId: String) throws -> [Devotional] {
         try db.read { db in

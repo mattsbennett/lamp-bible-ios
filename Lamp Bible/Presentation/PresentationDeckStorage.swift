@@ -39,6 +39,30 @@ struct PresentationDeckEntry: Identifiable, Sendable {
     func isLinked(toWriting writingID: String) -> Bool {
         linkedWritingID?.caseInsensitiveCompare(writingID) == .orderedSame
     }
+
+    /// A deck published from a Mac with nothing behind it: made from a writing
+    /// that has gone, or a starter nobody wrote in. A Mac keeps both until
+    /// someone deletes them there. A deck kept on this device is the user's
+    /// own, whatever it links to.
+    func isLeftover(writingIDs: Set<String>) -> Bool {
+        guard origin == .synced else { return false }
+        if let linkedWritingID {
+            return !writingIDs.contains(linkedWritingID.uppercased())
+        }
+        return deck.isUnwrittenStarter
+    }
+}
+
+private extension LampPresentationDeck {
+    /// Still what a new deck starts as. Slide Studio saves a deck the moment
+    /// it makes one, so this is published whether or not anyone wrote in it.
+    var isUnwrittenStarter: Bool {
+        func words(_ deck: LampPresentationDeck) -> [[String]] {
+            deck.slides.map { [$0.speakerNotes] + $0.blocks.map(\.text) }
+        }
+        let starter = LampPresentationDeck.starter()
+        return title == starter.title && words(self) == words(starter)
+    }
 }
 
 /// The device's deck files, kept in two directories so sync and the user never
@@ -94,6 +118,13 @@ struct PresentationDeckStorage: Sendable {
         return byID.values.sorted {
             $0.deck.title.localizedStandardCompare($1.deck.title) == .orderedAscending
         }
+    }
+
+    /// The decks to list, given the capitalised ID of every writing held here:
+    /// all but the leftovers. Those stay stored, since this device can't remove
+    /// a published deck and the next pull would bring it back.
+    func listedEntries(writingIDs: Set<String>) -> [PresentationDeckEntry] {
+        entries().filter { !$0.isLeftover(writingIDs: writingIDs) }
     }
 
     /// The decks made from one writing, so the writing can offer them.
