@@ -1434,6 +1434,9 @@ struct CommentaryAnnotationData: Codable {
     var mediaType: String?          // "image" or "audio"
     var caption: String?            // Optional caption for media
     var alignment: String?          // Image alignment: "left", "center", "right", "full"
+    // Text kept in a legacy font encoding, as its source has it
+    var unicode: String?            // What the span reads as
+    var sourceEncoding: String?     // The encoding it is written in (e.g., "accordance-greek")
 }
 
 /// Inline annotation within commentary text
@@ -1468,6 +1471,73 @@ struct AnnotatedText: Codable {
         self.text = text
         self.annotations = annotations
         self.footnoteRefs = footnoteRefs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        annotations = try container.decodeIfPresent([CommentaryAnnotation].self, forKey: .annotations)
+        footnoteRefs = try container.decodeIfPresent([FootnoteRef].self, forKey: .footnoteRefs)
+        readEncodedSpans()
+    }
+
+    /// A module keeps text set in a legacy font encoding as its source has it
+    /// ("oJ lo/gos" for ὁ λόγος) and gives each such span its Unicode reading.
+    /// It is read as that Unicode from here on, so the renderers, tap targets
+    /// and search matches all have one text, and whatever follows a span moves
+    /// with it. A span whose offsets don't land on its own text is left as
+    /// written.
+    private mutating func readEncodedSpans() {
+        guard var annotations, annotations.contains(where: { $0.data?.sourceEncoding != nil }) else { return }
+        let written = Array(text.unicodeScalars)
+        var read: [Unicode.Scalar] = []
+        read.reserveCapacity(written.count)
+        var spans: [(start: Int, end: Int, readStart: Int, readEnd: Int)] = []
+        var copied = 0
+
+        for index in annotations.indices.sorted(by: { annotations[$0].start < annotations[$1].start }) {
+            let annotation = annotations[index]
+            guard annotation.data?.sourceEncoding != nil,
+                  let unicode = annotation.data?.unicode, !unicode.isEmpty,
+                  annotation.start >= copied, annotation.end > annotation.start, annotation.end <= written.count,
+                  annotation.text?.unicodeScalars.elementsEqual(written[annotation.start..<annotation.end]) == true
+            else { continue }
+            read.append(contentsOf: written[copied..<annotation.start])
+            let readStart = read.count
+            read.append(contentsOf: unicode.unicodeScalars)
+            spans.append((annotation.start, annotation.end, readStart, read.count))
+            copied = annotation.end
+            annotations[index].text = unicode
+        }
+        guard !spans.isEmpty else { return }
+        read.append(contentsOf: written[copied...])
+
+        // An offset inside a span falls at its start or end, so that whatever
+        // it marks takes in the whole span.
+        func readOffset(_ offset: Int, roundingUp: Bool) -> Int {
+            var moved = offset
+            for span in spans {
+                if offset >= span.end {
+                    moved = offset - span.end + span.readEnd
+                } else if offset > span.start {
+                    return roundingUp ? span.readEnd : span.readStart
+                } else {
+                    break
+                }
+            }
+            return moved
+        }
+
+        for index in annotations.indices {
+            annotations[index].start = readOffset(annotations[index].start, roundingUp: false)
+            annotations[index].end = readOffset(annotations[index].end, roundingUp: true)
+        }
+        footnoteRefs = footnoteRefs?.map { FootnoteRef(id: $0.id, offset: readOffset($0.offset, roundingUp: true)) }
+        self.annotations = annotations
+
+        var readText = String.UnicodeScalarView()
+        readText.append(contentsOf: read)
+        text = String(readText)
     }
 }
 

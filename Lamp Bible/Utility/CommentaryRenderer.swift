@@ -383,6 +383,8 @@ struct CommentaryRenderer {
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = 6
         paragraphStyle.paragraphSpacing = 8
+        // Force LTR base direction to prevent RTL Hebrew from reordering mixed content
+        paragraphStyle.baseWritingDirection = .leftToRight
         result.addAttribute(.paragraphStyle, value: paragraphStyle, range: NSRange(location: 0, length: result.length))
 
         // Apply search term highlighting with yellow background
@@ -606,6 +608,8 @@ struct CommentaryRenderer {
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = 6
         paragraphStyle.paragraphSpacing = 8
+        // Force LTR base direction to prevent RTL Hebrew from reordering mixed content
+        paragraphStyle.baseWritingDirection = .leftToRight
         result.addAttribute(.paragraphStyle, value: paragraphStyle, range: NSRange(location: 0, length: result.length))
 
         // Apply search term highlighting with yellow background

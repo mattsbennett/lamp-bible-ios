@@ -5325,3 +5325,175 @@ final class NewPlanTests: XCTestCase {
         XCTAssertEqual(form.readingWeek, "on Saturdays")
     }
 }
+
+/// A module keeps text in a legacy font encoding as its source has it and
+/// gives each span its Unicode. Offsets count Unicode scalars, as the module's
+/// builder counts them, which is why these texts carry an emoji and a
+/// combining accent ahead of their spans.
+final class CommentaryEncodedSpanTests: XCTestCase {
+    private func span(_ type: String, _ start: Int, _ end: Int, _ text: String, reads unicode: String) -> [String: Any] {
+        ["type": type, "start": start, "end": end, "text": text,
+         "data": ["unicode": unicode, "sourceEncoding": "accordance-\(type)"]]
+    }
+
+    private func scripture(_ start: Int, _ end: Int) -> [String: Any] {
+        ["type": "scripture", "start": start, "end": end, "data": ["sv": 43_001_001]]
+    }
+
+    private func decoded(
+        _ text: String, _ annotations: [[String: Any]], footnoteRefs: [[String: Any]] = []
+    ) throws -> AnnotatedText {
+        let object: [String: Any] = ["text": text, "annotations": annotations, "footnote_refs": footnoteRefs]
+        return try JSONDecoder().decode(AnnotatedText.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    private func marked(_ annotation: CommentaryAnnotation, in text: AnnotatedText) -> String {
+        let scalars = Array(text.text.unicodeScalars)[annotation.start..<annotation.end]
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: scalars)
+        return String(view)
+    }
+
+    func testAnEncodedSpanReadsAsItsUnicode() throws {
+        let text = try decoded("see oJ lo/gos here", [span("greek", 4, 13, "oJ lo/gos", reads: "ὁ λόγος")])
+
+        XCTAssertEqual(text.text, "see ὁ λόγος here")
+        let greek = try XCTUnwrap(text.annotations?.first)
+        XCTAssertEqual(marked(greek, in: text), "ὁ λόγος")
+        XCTAssertEqual(greek.text, "ὁ λόγος")
+    }
+
+    func testOffsetsCountScalarsNotCharacters() throws {
+        // 🌿, space, c a f e, combining acute, space: 8 scalars, 7 characters.
+        let text = try decoded("🌿 cafe\u{301} oJ lo/gos", [span("greek", 8, 17, "oJ lo/gos", reads: "ὁ λόγος")])
+
+        XCTAssertEqual(text.text, "🌿 cafe\u{301} ὁ λόγος")
+    }
+
+    func testWhatFollowsASpanMovesWithItWhicheverWayItsLengthChanges() throws {
+        // A shorter reading, and then a longer one, ahead of what they move.
+        let longer = "\u{5E9}\u{5C1}\u{5B8}\u{5DC}\u{5D5}\u{5B9}\u{5DD}"
+        let text = try decoded(
+            "abc John 1:1 oJ lo/gos John 1:2 vDlUwM John 1:3.",
+            [scripture(4, 12), span("greek", 13, 22, "oJ lo/gos", reads: "ὁ λόγος"),
+             scripture(23, 31), span("hebrew", 32, 38, "vDlUwM", reads: longer), scripture(39, 47)],
+            footnoteRefs: [["id": "1", "offset": 3], ["id": "2", "offset": 22], ["id": "3", "offset": 38], ["id": "4", "offset": 48]]
+        )
+
+        XCTAssertEqual(text.text, "abc John 1:1 ὁ λόγος John 1:2 \(longer) John 1:3.")
+        let annotations = try XCTUnwrap(text.annotations)
+        XCTAssertEqual(annotations.map { marked($0, in: text) },
+                       ["John 1:1", "ὁ λόγος", "John 1:2", longer, "John 1:3"])
+
+        // Each marker stays against the text it followed.
+        let scalars = Array(text.text.unicodeScalars)
+        let refs = try XCTUnwrap(text.footnoteRefs)
+        XCTAssertEqual(refs.map(\.offset), [3, 20, 30 + longer.unicodeScalars.count, scalars.count])
+        XCTAssertEqual(scalars[refs[1].offset - 1], "ς")
+        XCTAssertEqual(scalars[refs[2].offset - 1], longer.unicodeScalars.last)
+    }
+
+    func testAnAnnotationCrossingASpanTakesInAllOfIt() throws {
+        // A reference that ends inside one, and a note marker inside one.
+        let text = try decoded(
+            "in 4:6a/10b, and to/te here",
+            [scripture(3, 7), span("greek", 6, 8, "a/", reads: "ά"), span("greek", 17, 22, "to/te", reads: "τότε")],
+            footnoteRefs: [["id": "1", "offset": 19]]
+        )
+
+        XCTAssertEqual(text.text, "in 4:6ά10b, and τότε here")
+        XCTAssertEqual(text.annotations.map { $0.map { marked($0, in: text) } }, ["4:6ά", "ά", "τότε"])
+        XCTAssertEqual(text.footnoteRefs?.first?.offset, Array("in 4:6ά10b, and τότε".unicodeScalars).count)
+    }
+
+    func testASpanNotLandingOnItsOwnTextIsLeftAsWritten() throws {
+        let text = try decoded(
+            "xx oJ yy qeou/ zz",
+            [span("greek", 3, 5, "ou", reads: "ΟΥ"),                // its offsets hold something else
+             span("greek", 9, 14, "qeou/", reads: "θεού"),          // this one is good
+             span("greek", 15, 99, "zz", reads: "ΖΖ"),              // past the end of the text
+             span("greek", 12, 14, "u/", reads: "ύ"),               // overlaps the good one
+             ["type": "greek", "start": 0, "end": 2, "text": "xx", "data": ["sourceEncoding": "accordance-greek"]]]
+        )
+
+        XCTAssertEqual(text.text, "xx oJ yy θεού zz")
+    }
+
+    func testTextWithNoEncodedSpansIsUntouched() throws {
+        // Greek already in Unicode has no sourceEncoding, even with a reading.
+        let text = try decoded(
+            "see λόγος in John 1:1",
+            [["type": "greek", "start": 4, "end": 9, "text": "λόγος", "data": ["unicode": "ΛΟΓΟΣ"]], scripture(13, 21)],
+            footnoteRefs: [["id": "1", "offset": 9]]
+        )
+
+        XCTAssertEqual(text.text, "see λόγος in John 1:1")
+        XCTAssertEqual(text.annotations?.map(\.start), [4, 13])
+        XCTAssertEqual(text.footnoteRefs?.first?.offset, 9)
+    }
+
+    func testReadingWhatWasReadChangesNothing() throws {
+        let text = try decoded(
+            "see oJ lo/gos in John 1:1",
+            [span("greek", 4, 13, "oJ lo/gos", reads: "ὁ λόγος"), scripture(17, 25)]
+        )
+
+        let again = try JSONDecoder().decode(AnnotatedText.self, from: JSONEncoder().encode(text))
+
+        XCTAssertEqual(again.text, text.text)
+        XCTAssertEqual(again.annotations?.map(\.start), text.annotations?.map(\.start))
+        XCTAssertEqual(again.annotations?.map(\.end), text.annotations?.map(\.end))
+    }
+
+    /// Every renderer has to draw the same text, with its note marker and its
+    /// styling on what they marked. The markers go in after the annotations.
+    func testEveryRendererDrawsTheTextAsRead() throws {
+        let text = try decoded(
+            "see oJ lo/gos in John 1:1",
+            [span("greek", 4, 13, "oJ lo/gos", reads: "ὁ λόγος"), scripture(17, 25)],
+            footnoteRefs: [["id": "1", "offset": 13]]
+        )
+        let expected = "see ὁ λόγος[1] in John 1:1"
+
+        XCTAssertEqual(String(CommentaryRenderer.render(text).characters), expected)
+        let withItems = CommentaryRenderer.renderUIKitWithItems(text)
+        XCTAssertEqual(withItems.attributedString.string, expected)
+        XCTAssertEqual(withItems.tappableItems.map(\.displayText), ["John 1:1", "1"])
+
+        let drawn = CommentaryRenderer.renderUIKit(text)
+        XCTAssertEqual(drawn.string, expected)
+        func isItalic(_ location: Int) -> Bool {
+            (drawn.attribute(.font, at: location, effectiveRange: nil) as? UIFont)?
+                .fontDescriptor.symbolicTraits.contains(.traitItalic) ?? false
+        }
+        let nsExpected = expected as NSString
+        XCTAssertFalse(isItalic(nsExpected.range(of: "see").location))
+        XCTAssertTrue(isItalic(nsExpected.range(of: "ὁ").location))
+        XCTAssertTrue(isItalic(nsExpected.range(of: "ς").location))
+        XCTAssertFalse(isItalic(nsExpected.range(of: " in").location))
+    }
+
+    /// With Latin letters as its code, a paragraph opening on Hebrew never
+    /// took its direction from it. "2 Sam. 22:1" would come out "Sam. 22:1 2".
+    func testAParagraphOpeningOnHebrewStillReadsLeftToRight() throws {
+        let text = try decoded("aOtUw (2 Sam. 22:1)", [span("hebrew", 0, 5, "aOtUw", reads: "\u{5D0}\u{5B9}\u{5EA}\u{5D5}\u{5B9}")])
+
+        for drawn in [CommentaryRenderer.renderUIKit(text), CommentaryRenderer.renderUIKitWithItems(text).attributedString] {
+            let style = drawn.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+            XCTAssertEqual(style?.baseWritingDirection, .leftToRight)
+        }
+    }
+
+    func testAUnitsCommentaryAndFootnotesAreRead() throws {
+        var unit = CommentaryUnit(moduleId: "NIC", book: 43, sv: 43_001_001, unitType: .pericope)
+        unit.commentaryJson = #"""
+            {"text":"see qeou/ here","annotations":[{"type":"greek","start":4,"end":9,"text":"qeou/","data":{"unicode":"θεού","sourceEncoding":"accordance-greek"}}]}
+            """#
+        unit.footnotesJson = #"""
+            [{"id":"97","content":{"text":"oJ lo/gos","annotations":[{"type":"greek","start":0,"end":9,"text":"oJ lo/gos","data":{"unicode":"ὁ λόγος","sourceEncoding":"accordance-greek"}}]}}]
+            """#
+
+        XCTAssertEqual(unit.commentary?.text, "see θεού here")
+        XCTAssertEqual(unit.footnotes?.first?.content.text, "ὁ λόγος")
+    }
+}
