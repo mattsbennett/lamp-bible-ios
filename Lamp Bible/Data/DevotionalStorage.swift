@@ -245,9 +245,7 @@ class DevotionalStorage {
             if let moduleId {
                 request = request.filter(Column("module_id") == moduleId)
             }
-            return LampWritingCategory.kindsHeld(try request.fetchAll(db)).sorted {
-                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-            }
+            return LampWritingCategory.kindsHeld(try request.fetchAll(db))
         }
     }
 
