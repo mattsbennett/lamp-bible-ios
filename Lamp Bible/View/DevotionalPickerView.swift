@@ -922,28 +922,63 @@ struct DevotionalEditorSheet: View {
 
 // MARK: - Category Field
 
-/// A writing's kind: any the writer types, or one offered from the
-/// suggestions and the kinds the library already holds.
+/// A writing's kind, chosen from the suggestions and the kinds the library
+/// already holds, or named by the writer under Custom. The list comes first:
+/// picking is the usual case, and a text field here hid it behind the keyboard.
 struct DevotionalCategoryField: View {
     @Binding var category: String
 
     @State private var offered = LampWritingCategory.suggestions
+    @State private var isNamingCustom = false
+    @State private var customName = ""
+
+    private var shownName: String {
+        category.isEmpty ? "None" : category
+    }
 
     var body: some View {
-        HStack {
-            Text("Category")
-            TextField("Category", text: $category, prompt: Text("None"))
-                .multilineTextAlignment(.trailing)
-            Menu {
-                ForEach(offered, id: \.self) { kind in
-                    let name = LampWritingCategory.displayName(kind) ?? kind
-                    Button(name) { category = name }
+        Menu {
+            ForEach(offered, id: \.self) { kind in
+                let name = LampWritingCategory.displayName(kind) ?? kind
+                Button {
+                    category = name
+                } label: {
+                    if LampWritingCategory.foldedKey(kind) == LampWritingCategory.foldedKey(category) {
+                        Label(name, systemImage: "checkmark")
+                    } else {
+                        Text(name)
+                    }
                 }
-            } label: {
+            }
+            Divider()
+            Button("Custom\u{2026}") {
+                customName = category
+                isNamingCustom = true
+            }
+            Button("None") { category = "" }
+        } label: {
+            HStack {
+                // A menu tints its label, relative styles included.
+                Text("Category")
+                    .foregroundStyle(Color.primary)
+                Spacer()
+                Text(shownName)
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down")
                     .imageScale(.small)
             }
-            .accessibilityLabel("Choose a Category")
+            .contentShape(Rectangle())
+        }
+        .menuOrder(.fixed)
+        .accessibilityLabel("Category")
+        .accessibilityValue(shownName)
+        .alert("Custom Category", isPresented: $isNamingCustom) {
+            TextField("Category", text: $customName)
+            Button("Cancel", role: .cancel) {}
+            Button("OK") {
+                category = customName.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
         }
         .onAppear {
             offered = LampWritingCategory.offered(
