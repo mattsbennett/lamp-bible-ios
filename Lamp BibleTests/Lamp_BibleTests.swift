@@ -4619,7 +4619,7 @@ final class DevotionalOpenCategoryTests: XCTestCase {
         let storage = DevotionalStorage.shared
         XCTAssertEqual(
             try storage.getUsedCategories(moduleId: moduleID),
-            ["exhortation", "study", "Handout", "lament"]
+            ["exhortation", "Handout", "lament", "study"]
         )
         XCTAssertTrue(try storage.getUsedCategories().contains("lament"), "and so does the library's list")
 

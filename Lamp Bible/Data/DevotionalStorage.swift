@@ -237,19 +237,16 @@ class DevotionalStorage {
 
     // MARK: - Category Operations
 
-    /// The categories in use, in one module or the whole library, in the
-    /// order core offers them. Each once, however it was written: `Handout`
-    /// and `handout` are one kind.
+    /// The categories in use, in one module or the whole library, by name.
+    /// Each once, however it was written: `Handout` and `handout` are one kind.
     func getUsedCategories(moduleId: String? = nil) throws -> [String] {
         try db.read { db in
             var request = DevotionalEntry.select(Column("category"), as: String?.self).distinct()
             if let moduleId {
                 request = request.filter(Column("module_id") == moduleId)
             }
-            let stored = try request.fetchAll(db)
-            let held = Set(stored.compactMap(LampWritingCategory.foldedKey))
-            return LampWritingCategory.offered(forLibraryHolding: stored).filter {
-                LampWritingCategory.foldedKey($0).map(held.contains) == true
+            return LampWritingCategory.kindsHeld(try request.fetchAll(db)).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
             }
         }
     }
