@@ -4547,6 +4547,10 @@ final class DevotionalOpenCategoryTests: XCTestCase {
 
         meta.setCategory(fromField: " Q&A ")
         XCTAssertEqual(meta.categoryValue, "Q&A")
+        meta.setCategory(fromField: "q&a")
+        XCTAssertEqual(meta.categoryValue, "q&a", "a change of capitals alone is still a change")
+        meta.setCategory(fromField: "Q&A")
+        XCTAssertEqual(meta.categoryValue, "Q&A")
         meta.setCategory(fromField: "STUDY")
         XCTAssertEqual(meta.categoryValue, "study", "a suggestion has one spelling")
         meta.setCategory(fromField: "")

@@ -937,11 +937,7 @@ struct DevotionalCategoryField: View {
             Menu {
                 ForEach(offered, id: \.self) { kind in
                     let name = LampWritingCategory.displayName(kind) ?? kind
-                    // A kind already in the library goes in as it is written
-                    // there, not with the capital it is shown with.
-                    Button(name) {
-                        category = LampWritingCategory.suggestions.contains(kind) ? name : kind
-                    }
+                    Button(name) { category = name }
                 }
             } label: {
                 Image(systemName: "chevron.up.chevron.down")
