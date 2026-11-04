@@ -4545,6 +4545,10 @@ final class DevotionalOpenCategoryTests: XCTestCase {
         meta.setCategory(fromField: "Lament")
         XCTAssertEqual(meta.categoryValue, "lament")
 
+        meta.categoryValue = "sermon"
+        meta.setCategory(fromField: "Exhortation")
+        XCTAssertEqual(meta.categoryValue, "sermon", "shown as an exhortation, not renamed one")
+
         meta.setCategory(fromField: " Q&A ")
         XCTAssertEqual(meta.categoryValue, "Q&A")
         meta.setCategory(fromField: "q&a")

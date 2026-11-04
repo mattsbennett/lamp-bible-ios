@@ -440,7 +440,7 @@ struct DevotionalMeta: Codable, Equatable {
     /// that way the category stays as written, rather than taking on a
     /// capital it was only shown with.
     mutating func setCategory(fromField field: String) {
-        if field != categoryName { category = field }
+        categoryValue = LampWritingCategory.kindToStore(shown: field, held: categoryValue)
     }
 
     init(
