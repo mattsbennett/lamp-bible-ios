@@ -355,7 +355,7 @@ class ModuleSearch {
         }
 
         if filter.types.contains(.notes) && hasTextQuery {
-            results.append(contentsOf: try searchNotes(ftsQuery: ftsQuery, filter: filter, limit: limit))
+            results.append(contentsOf: try searchNotes(query: LampSearchQuery(query), filter: filter, limit: limit))
         }
 
         if filter.types.contains(.translation) {
@@ -896,67 +896,35 @@ class ModuleSearch {
         }
     }
 
-    private func searchNotes(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+    private func searchNotes(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         try database.read { db in
-            var conditions = ["note_fts MATCH ?"]
-            var arguments: [DatabaseValueConvertible] = [ftsQuery]
+            try Self.noteResults(in: db, query: query, filter: filter, limit: limit)
+        }
+    }
 
-            if let moduleIds = filter.moduleIds {
-                let moduleIdArray = Array(moduleIds)
-                let placeholders = moduleIdArray.map { _ in "?" }.joined(separator: ", ")
-                conditions.append("n.module_id IN (\(placeholders))")
-                for id in moduleIdArray {
-                    arguments.append(id)
-                }
-            }
-
-            let whereClause = conditions.joined(separator: " AND ")
-            let sql = """
-                SELECT
-                    n.id, n.module_id, n.verse_id, n.title, n.content,
-                    n.book, n.chapter, n.verse,
-                    m.name as module_name,
-                    bm25(note_fts) as rank,
-                    snippet(note_fts, 1, '<mark>', '</mark>', '...', 32) as snippet
-                FROM note_fts f
-                JOIN note_entries n ON f.rowid = n.rowid
-                JOIN modules m ON n.module_id = m.id
-                WHERE \(whereClause)
-                ORDER BY rank
-                LIMIT ?
-            """
-            arguments.append(limit)
-
-            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                let title: String? = row["title"]
-                let book: Int = row["book"]
-                let chapter: Int = row["chapter"]
-                let verse: Int = row["verse"]
-
-                let displayTitle: String
-                if let t = title, !t.isEmpty {
-                    displayTitle = t
-                } else {
-                    let bookName = BookOsisCache.shared.displayName(for: book)
-                    // Verse 0 means chapter-level note, don't show ":0"
-                    if verse == 0 {
-                        displayTitle = "Note on \(bookName) \(chapter)"
-                    } else {
-                        displayTitle = "Note on \(bookName) \(chapter):\(verse)"
-                    }
-                }
-
-                return ModuleSearchResult(
-                    id: row["id"],
-                    moduleId: row["module_id"],
-                    moduleName: row["module_name"],
-                    moduleType: .notes,
-                    title: displayTitle,
-                    snippet: row["snippet"] ?? "",
-                    verseId: row["verse_id"],
-                    rank: -(row["rank"] as Double)
-                )
-            }
+    /// The phone's notes searched by core, as the Mac searches its own.
+    static func noteResults(
+        in db: Database,
+        query: LampSearchQuery,
+        filter: ModuleSearchFilter,
+        limit: Int
+    ) throws -> [ModuleSearchResult] {
+        let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'notes' ORDER BY name")
+            .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
+            .filter { filter.moduleIds?.contains($0.id) ?? true }
+        return try LampModuleSearch.notes(in: db, modules: modules, query: query, limit: limit).map { hit in
+            ModuleSearchResult(
+                // The note, as its sheet opens it.
+                id: String(hit.id.dropFirst("notes:\(hit.moduleID):".count)),
+                moduleId: hit.moduleID,
+                moduleName: hit.moduleName,
+                moduleType: .notes,
+                title: hit.title,
+                snippet: hit.snippet,
+                verseId: hit.startReference,
+                rank: 0,
+                holdsPhrase: hit.holdsPhrase
+            )
         }
     }
 

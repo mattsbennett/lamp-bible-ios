@@ -5112,6 +5112,36 @@ final class CoreModuleSearchTests: XCTestCase {
         XCTAssertEqual(together.first?.holdsPhrase, true)
         XCTAssertEqual(hits.first?.holdsPhrase, false, "one word is no phrase")
     }
+
+    func testNotesAreSearchedByCoreInThePhonesDatabase() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE modules (id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL);
+                CREATE TABLE note_entries (
+                    id TEXT PRIMARY KEY, module_id TEXT NOT NULL, verse_id INTEGER NOT NULL,
+                    book INTEGER NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
+                    title TEXT, content TEXT NOT NULL, search_text TEXT);
+                CREATE VIRTUAL TABLE note_fts USING fts5(
+                    title, search_text, content='note_entries', content_rowid='rowid');
+                INSERT INTO modules (id, type, name) VALUES ('mine', 'notes', 'Study Notes'), ('theirs', 'notes', 'Other');
+                INSERT INTO note_entries (id, module_id, verse_id, book, chapter, verse, title, content, search_text) VALUES
+                    ('n1', 'mine', 43003016, 43, 3, 16, NULL, 'For God so loved.', 'For God so loved. Compare Zuntz.'),
+                    ('n2', 'theirs', 43003017, 43, 3, 17, NULL, 'Zuntz again.', 'Zuntz again.');
+                INSERT INTO note_fts(note_fts) VALUES('rebuild');
+                """)
+        }
+        var filter = ModuleSearchFilter()
+        filter.moduleIds = ["mine"]
+        let hits = try queue.read { db in
+            try ModuleSearch.noteResults(in: db, query: LampSearchQuery("zuntz"), filter: filter, limit: 10)
+        }
+        XCTAssertEqual(hits.map(\.id), ["n1"], "the note, as its sheet opens it; the other notes aren't asked")
+        XCTAssertEqual(hits.first?.moduleName, "Study Notes")
+        XCTAssertEqual(hits.first?.verseId, 43_003_016)
+        XCTAssertEqual(hits.first?.title, "John 3:16")
+        XCTAssertTrue(hits.first?.snippet.contains("<mark>Zuntz</mark>") == true, "found by its footnote, shown by it")
+    }
 }
 
 final class SearchAuditFixTests: XCTestCase {
