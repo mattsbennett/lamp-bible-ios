@@ -5142,6 +5142,29 @@ final class CoreModuleSearchTests: XCTestCase {
         XCTAssertEqual(hits.first?.title, "John 3:16")
         XCTAssertTrue(hits.first?.snippet.contains("<mark>Zuntz</mark>") == true, "found by its footnote, shown by it")
     }
+
+    func testQuizzesAreSearchedByCoreInThePhonesDatabase() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE quiz_modules (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+                CREATE TABLE quiz_questions (
+                    id INTEGER PRIMARY KEY, quiz_module_id TEXT NOT NULL, day INTEGER NOT NULL, sv INTEGER NOT NULL,
+                    ev INTEGER NOT NULL, age_group TEXT NOT NULL, question_index INTEGER NOT NULL,
+                    question_json TEXT NOT NULL, answer_json TEXT NOT NULL, theme TEXT);
+                INSERT INTO quiz_modules (id, name) VALUES ('daily', 'Daily Quiz');
+                INSERT INTO quiz_questions (id, quiz_module_id, day, sv, ev, age_group, question_index, question_json, answer_json) VALUES
+                    (7, 'daily', 1, 1001001, 1001002, 'adult', 0, '{"text":"Who made the world?"}', '{"text":"God, our hope."}');
+                """)
+        }
+        let hits = try queue.read { db in
+            try ModuleSearch.quizResults(in: db, source: "user", query: LampSearchQuery("hope"), filter: ModuleSearchFilter(), limit: 10)
+        }
+        XCTAssertEqual(hits.map(\.id), ["quiz:user:7"], "the question, in the database its sheet reads it from")
+        XCTAssertEqual(hits.first?.title, "Who made the world?")
+        XCTAssertEqual(hits.first?.moduleName, "Daily Quiz")
+        XCTAssertEqual(hits.first?.verseId, 1_001_001)
+    }
 }
 
 final class SearchAuditFixTests: XCTestCase {
