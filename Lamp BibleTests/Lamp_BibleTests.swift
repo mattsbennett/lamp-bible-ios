@@ -4855,7 +4855,7 @@ final class CommentaryFootnoteSearchTests: XCTestCase {
     /// every column it has now.
     private func makeCurrentSchema(_ db: Database) throws {
         try db.execute(sql: """
-            CREATE TABLE modules (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE modules (id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL);
             CREATE TABLE commentary_units (
                 id TEXT PRIMARY KEY, module_id TEXT NOT NULL, book INTEGER NOT NULL, chapter INTEGER,
                 sv INTEGER NOT NULL, ev INTEGER, unit_type TEXT NOT NULL, level INTEGER, parent_id TEXT,
@@ -5024,11 +5024,17 @@ final class CommentaryFootnoteSearchTests: XCTestCase {
         }
     }
 
-    func testAHitOnlyInTheNotesIsShownByTheNoteWithItsGreekAsRead() throws {
+    /// Core searches the phone's own database: a unit found only by its note
+    /// shows the note, its Greek as read, and opens as the unit it is.
+    func testCommentaryIsSearchedByCoreInThePhonesDatabase() throws {
         let queue = try DatabaseQueue()
         try queue.write { db in
             try makeCurrentSchema(db)
-            try db.execute(sql: "INSERT INTO modules (id, name) VALUES ('NIC', 'The Gospel of John')")
+            try db.execute(sql: """
+                INSERT INTO modules (id, type, name) VALUES
+                    ('NIC', 'commentary', 'The Gospel of John'), ('OTHER', 'commentary', 'Another'),
+                    ('NOTES', 'notes', 'My Notes')
+                """)
             try db.execute(sql: """
                 INSERT INTO commentary_units
                 (id, module_id, book, chapter, sv, unit_type, title, commentary_json, footnotes_json, search_text, footnotes_text)
@@ -5036,25 +5042,34 @@ final class CommentaryFootnoteSearchTests: XCTestCase {
                         '{"text":"In the beginning was the word of God"}', ?,
                         'The Word\nIn the beginning was the word of God', 'Zuntz reads oJ lo/gos here')
                 """, arguments: [Self.noteJSON])
+            try db.execute(sql: """
+                INSERT INTO commentary_units (id, module_id, book, chapter, sv, unit_type, search_text, footnotes_text)
+                VALUES ('OTHER:1', 'OTHER', 43, 1, 43001001, 'pericope', 'Zuntz again', '')
+                """)
         }
 
-        func snippet(_ text: String) throws -> String? {
-            let query = LampSearchQuery(text)
+        func search(_ text: String, in modules: Set<String>? = nil) throws -> [ModuleSearchResult] {
+            var filter = ModuleSearchFilter()
+            filter.moduleIds = modules
             return try queue.read { db in
-                try ModuleSearch.commentaryHits(
-                    in: db, query: query, ftsQuery: query.fts5Query, filter: ModuleSearchFilter(), limit: 10
-                )
-            }.first?.snippet
+                try ModuleSearch.commentaryResults(in: db, query: LampSearchQuery(text), filter: filter, limit: 10)
+            }
         }
-        let note = try XCTUnwrap(try snippet("Zuntz"))
-        XCTAssertTrue(note.contains("<mark>Zuntz</mark>"), note)
-        XCTAssertTrue(note.contains("ὁ λόγος"), note)
-        XCTAssertFalse(note.contains("lo/gos"), note)
+        let note = try XCTUnwrap(try search("Zuntz", in: ["NIC"]).first)
+        XCTAssertEqual(try search("Zuntz", in: ["NIC"]).count, 1, "the other commentary isn't asked")
+        XCTAssertEqual(note.id, "NIC:43:pericope:1:2")
+        XCTAssertEqual(note.moduleId, "NIC")
+        XCTAssertEqual(note.moduleName, "The Gospel of John")
+        XCTAssertEqual(note.verseId, 43001001)
+        XCTAssertTrue(note.snippet.contains("<mark>Zuntz</mark>"), note.snippet)
+        XCTAssertTrue(note.snippet.contains("ὁ λόγος"), note.snippet)
+        XCTAssertFalse(note.snippet.contains("lo/gos"), note.snippet)
+        XCTAssertEqual(Set(try search("Zuntz").map(\.moduleId)), ["NIC", "OTHER"])
 
         // Where the text holds the words, it is what shows.
-        let body = try XCTUnwrap(try snippet("beginning"))
-        XCTAssertTrue(body.contains("<mark>beginning</mark>"), body)
-        XCTAssertFalse(body.contains("Zuntz"), body)
+        let body = try XCTUnwrap(try search("beginning").first)
+        XCTAssertTrue(body.snippet.contains("<mark>beginning</mark>"), body.snippet)
+        XCTAssertFalse(body.snippet.contains("Zuntz"), body.snippet)
     }
 }
 
