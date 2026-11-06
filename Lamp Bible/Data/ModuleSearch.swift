@@ -29,6 +29,9 @@ struct ModuleSearchResult: Identifiable {
     var highlightStyle: HighlightStyle? = nil  // Style for highlight results
     /// A highlight's own translation, which its offsets count into.
     var translationId: String? = nil
+    /// Whether the result's text holds the query's words together, which
+    /// core's merge ranks it by after its title.
+    var holdsPhrase = false
 
     // For navigation
     var book: Int? { verseId.map { $0 / 1000000 } }
@@ -376,14 +379,18 @@ class ModuleSearch {
             results.append(contentsOf: try searchHighlights(query: query, filter: filter, limit: limit))
         }
 
-        // A text search is merged as core merges the Mac's, by what each
-        // result shows, its modules taking turns among equals: the kinds'
-        // ranks are not on one scale. A search by key or colour alone has no
-        // words to rank by.
+        // A text search is merged as core merges the Mac's, by what names
+        // and shows each result and whether it holds the words together, the
+        // modules taking turns among equals: the kinds' own ranks are not on
+        // one scale. A search by key or colour alone has no words to rank by.
         if hasTextQuery {
             return LampModuleSearch.ranked(
                 results, by: LampSearchQuery(query), limit: limit,
-                showing: { [$0.title, $0.snippet] },
+                // A quiz result's title is its question, which shows it
+                // rather than names it.
+                named: { $0.moduleType == .quiz ? [] : [$0.title] },
+                shown: { $0.moduleType == .quiz ? [$0.title, $0.snippet] : [$0.snippet] },
+                holdingPhrase: { $0.holdsPhrase },
                 from: { ($0.moduleType.rawValue, $0.moduleId) }
             )
         }
@@ -430,7 +437,8 @@ class ModuleSearch {
                 title: hit.subtitle.map { "\(hit.title): \($0)" } ?? hit.title,
                 snippet: hit.snippet,
                 verseId: hit.startReference,
-                rank: 0
+                rank: 0,
+                holdsPhrase: hit.holdsPhrase
             )
         }
     }
@@ -671,7 +679,8 @@ class ModuleSearch {
                         snippet: snippet(hit.text),
                         verseId: nil,
                         rank: parsedQuery.textRank(in: [hit.key, hit.lemma, hit.text, hit.transliteration ?? ""]),
-                        strongsKey: hit.key
+                        strongsKey: hit.key,
+                        holdsPhrase: parsedQuery.holdsPhrase(hit.text)
                     ))
                 }
             } catch {
@@ -752,7 +761,8 @@ class ModuleSearch {
                             snippet: snippet(hit.text),
                             verseId: nil,
                             rank: parsedQuery.textRank(in: [hit.lemma, hit.text]),
-                            strongsKey: strongsNum.isEmpty ? hit.key : strongsNum
+                            strongsKey: strongsNum.isEmpty ? hit.key : strongsNum,
+                            holdsPhrase: parsedQuery.holdsPhrase(hit.text)
                         ))
                     }
                 }
@@ -814,7 +824,8 @@ class ModuleSearch {
                 title: hit.title,
                 snippet: hit.snippet,
                 verseId: hit.startReference,
-                rank: 0
+                rank: 0,
+                holdsPhrase: hit.holdsPhrase
             )
         }
     }
@@ -956,6 +967,7 @@ class ModuleSearch {
     private func searchTranslations(query: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         // Search both bundled and user translations via TranslationDatabase
         let translationDb = TranslationDatabase.shared
+        let parsedQuery = LampSearchQuery(query)
 
         // Determine which translations to search
         var translationIds: Set<String>? = filter.translationIds
@@ -988,7 +1000,11 @@ class ModuleSearch {
                 title: displayTitle,
                 snippet: result.snippet,
                 verseId: result.ref,
-                rank: result.rank
+                rank: result.rank,
+                holdsPhrase: parsedQuery.holdsPhrase(
+                    result.snippet.replacingOccurrences(of: "<mark>", with: "")
+                        .replacingOccurrences(of: "</mark>", with: "")
+                )
             )
         }
     }
@@ -1080,7 +1096,10 @@ class ModuleSearch {
                         limit: 200
                     ),
                     verseId: nil,
-                    rank: parsed.textRank(in: [plan.name, plan.author ?? "", plan.planDescription ?? ""])
+                    rank: parsed.textRank(in: [plan.name, plan.author ?? "", plan.planDescription ?? ""]),
+                    holdsPhrase: parsed.holdsPhrase(
+                        [plan.planDescription, plan.fullDescription].compactMap { $0 }.joined(separator: " ")
+                    )
                 )
             }
     }
@@ -1148,7 +1167,8 @@ class ModuleSearch {
                 title: question.isEmpty ? "Quiz Question" : question,
                 snippet: parsed.markedSnippet(answer, limit: 200),
                 verseId: row["sv"],
-                rank: parsed.textRank(in: [question, answer])
+                rank: parsed.textRank(in: [question, answer]),
+                holdsPhrase: parsed.holdsPhrase(question + " " + answer)
             )
         }
     }
@@ -1260,6 +1280,7 @@ class ModuleSearch {
                 result.highlightColor = LampHighlightSearch.normalizedColor(highlight.color)
                 result.highlightStyle = highlight.highlightStyle
                 result.translationId = translationId
+                result.holdsPhrase = searchQuery.holdsPhrase(verseText)
                 results.append(result)
 
                 if results.count >= limit { break }

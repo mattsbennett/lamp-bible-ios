@@ -5102,6 +5102,15 @@ final class CoreModuleSearchTests: XCTestCase {
         XCTAssertEqual(hits.first?.moduleName, "Mere Christianity")
         XCTAssertEqual(hits.first?.verseId, 58_011_001)
         XCTAssertEqual(hits.first?.moduleType, .book)
+
+        // Whether a section holds the words together comes from core, for
+        // the phone's merge to rank by.
+        let together = try queue.read { db in
+            try ModuleSearch.bookResults(in: db, query: LampSearchQuery("aim at heaven"), filter: ModuleSearchFilter(), limit: 10)
+        }
+        XCTAssertEqual(together.map(\.id), ["mere:hope"])
+        XCTAssertEqual(together.first?.holdsPhrase, true)
+        XCTAssertEqual(hits.first?.holdsPhrase, false, "one word is no phrase")
     }
 }
 
