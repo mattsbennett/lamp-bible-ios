@@ -443,156 +443,57 @@ class ModuleSearch {
         }
     }
 
+    /// The user's dictionaries, searched as core searches the Mac's and the
+    /// bundle's (`LampModuleSearch.dictionaryEntries`): the entry keyed or
+    /// headed by what was typed first, each dictionary keeping its own best
+    /// for the merge to cut.
     private func searchDictionaries(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         try database.read { db in
-            // Build module filter clause
-            var moduleCondition = ""
-            var moduleArgs: [DatabaseValueConvertible] = []
-            if let moduleIds = filter.moduleIds {
-                let userModuleIds = Self.userDictionaryIDs(in: moduleIds)
-                // Only bundled dictionaries chosen: none of the user's.
-                guard !userModuleIds.isEmpty else { return [] }
-                let placeholders = userModuleIds.map { _ in "?" }.joined(separator: ", ")
-                moduleCondition = "AND d.module_id IN (\(placeholders))"
-                moduleArgs = userModuleIds.map { $0 as DatabaseValueConvertible }
+            try Self.dictionaryResults(in: db, query: query, filter: filter, limit: limit)
+        }
+    }
+
+    static func dictionaryResults(
+        in db: Database,
+        query: LampSearchQuery,
+        filter: ModuleSearchFilter,
+        limit: Int
+    ) throws -> [ModuleSearchResult] {
+        var dictionaries = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'dictionary' ORDER BY name")
+            .map { (id: $0["id"] as String, name: $0["name"] as String) }
+        if let moduleIds = filter.moduleIds {
+            // Only bundled dictionaries chosen: none of the user's.
+            let chosen = Set(Self.userDictionaryIDs(in: moduleIds))
+            dictionaries = dictionaries.filter { chosen.contains($0.id) }
+        }
+        guard !dictionaries.isEmpty else { return [] }
+        let names = Dictionary(dictionaries.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let searchTerms = query.terms.map { $0.text.lowercased() }
+        // The sense that holds a search term, else the first.
+        func definition(_ sensesJSON: String?) -> String? {
+            guard let sensesJSON, let data = sensesJSON.data(using: .utf8),
+                  let senses = try? JSONDecoder().decode([DictionarySense].self, from: data) else { return nil }
+            for sense in senses {
+                let text = sense.definitionText ?? sense.shortDefinitionText ?? sense.gloss ?? ""
+                if searchTerms.contains(where: { text.lowercased().contains($0) }) { return text }
             }
-
-            // The index, asked as core asks one, the words holding a term
-            // found within words among them; or, where it can't answer, the
-            // entries found by LIKE and kept by the query's own rule.
-            let asked = try LampModuleSearch.indexQuery(query, index: "dictionary_fts", in: db)
-            if case .nothing = asked { return [] }
-            let searchTerms = query.terms.map { $0.text.lowercased() }
-            // The sense that holds a search term, else the first.
-            func definition(_ sensesJSON: String?) -> String? {
-                guard let sensesJSON, let data = sensesJSON.data(using: .utf8),
-                      let senses = try? JSONDecoder().decode([DictionarySense].self, from: data) else { return nil }
-                for sense in senses {
-                    let text = sense.definitionText ?? sense.shortDefinitionText ?? sense.gloss ?? ""
-                    if searchTerms.contains(where: { text.lowercased().contains($0) }) { return text }
-                }
-                return senses.first.flatMap { $0.definitionText ?? $0.shortDefinitionText ?? $0.gloss }
-            }
-            guard let ftsQuery = asked?.match else {
-                let columns = Set(try db.columns(in: "dictionary_entries").map(\.name))
-                let like = columns.contains("search_text")
-                    ? query.sqlLikePredicate(columns: ["d.key", "d.lemma", "d.search_text"])
-                    : query.sqlLikePredicate(columns: ["d.key", "d.lemma"], jsonColumns: ["d.senses_json"])
-                var arguments = StatementArguments(like.arguments)
-                arguments += StatementArguments(moduleArgs)
-                let rows = try Row.fetchCursor(db, sql: """
-                    SELECT d.id, d.module_id, d.key, d.lemma, d.senses_json, m.name AS module_name
-                    FROM dictionary_entries d
-                    JOIN modules m ON d.module_id = m.id
-                    WHERE \(like.condition) \(moduleCondition)
-                    ORDER BY d.key
-                    """, arguments: arguments)
-                var found: [ModuleSearchResult] = []
-                while found.count < limit, let row = try rows.next() {
-                    let key: String = row["key"]
-                    let lemma: String = row["lemma"]
-                    let sensesJSON: String? = row["senses_json"]
-                    guard query.matches([key, lemma, DictionarySearchText.text(fromSensesJSON: sensesJSON)].joined(separator: " "))
-                    else { continue }
-                    found.append(ModuleSearchResult(
-                        id: row["id"],
-                        moduleId: row["module_id"],
-                        moduleName: row["module_name"],
-                        moduleType: .dictionary,
-                        title: "\(lemma) (\(key))",
-                        snippet: definition(sensesJSON) ?? "",
-                        verseId: nil,
-                        rank: 0,
-                        strongsKey: key
-                    ))
-                }
-                return found
-            }
-
-            // FTS search
-            let ftsSql = """
-                SELECT
-                    d.id, d.module_id, d.key, d.lemma, d.senses_json,
-                    m.name as module_name,
-                    bm25(dictionary_fts) as rank,
-                    snippet(dictionary_fts, 1, '<mark>', '</mark>', '...', 32) as snippet
-                FROM dictionary_fts f
-                JOIN dictionary_entries d ON f.rowid = d.rowid
-                JOIN modules m ON d.module_id = m.id
-                WHERE dictionary_fts MATCH ? \(moduleCondition)
-                ORDER BY rank
-                LIMIT ?
-            """
-            var ftsArgs: [DatabaseValueConvertible] = [ftsQuery]
-            ftsArgs.append(contentsOf: moduleArgs)
-            ftsArgs.append(limit)
-
-            var results = try Row.fetchAll(db, sql: ftsSql, arguments: StatementArguments(ftsArgs)).map { row -> ModuleSearchResult in
-                let shortDef = definition(row["senses_json"])
-                let key: String = row["key"]
-                return ModuleSearchResult(
-                    id: row["id"],
-                    moduleId: row["module_id"],
-                    moduleName: row["module_name"],
-                    moduleType: .dictionary,
-                    title: "\(row["lemma"] as String) (\(key))",
-                    // Use parsed definition text instead of raw FTS snippet (which contains JSON)
-                    snippet: shortDef ?? "",
-                    verseId: nil,
-                    rank: -(row["rank"] as Double),
-                    strongsKey: key
-                )
-            }
-
-            // Also search by key (since key is not in FTS index)
-            // Extract potential key from query (e.g., "G2316" or "H430")
-            let keyPattern = query.plainText.uppercased()
-            if keyPattern.count >= 2 {
-                let keySql = """
-                    SELECT
-                        d.id, d.module_id, d.key, d.lemma, d.senses_json,
-                        m.name as module_name
-                    FROM dictionary_entries d
-                    JOIN modules m ON d.module_id = m.id
-                    WHERE d.key LIKE ? \(moduleCondition)
-                    LIMIT ?
-                """
-                var keyArgs: [DatabaseValueConvertible] = ["%\(keyPattern)%"]
-                keyArgs.append(contentsOf: moduleArgs)
-                keyArgs.append(limit)
-
-                let keyResults = try Row.fetchAll(db, sql: keySql, arguments: StatementArguments(keyArgs)).compactMap { row -> ModuleSearchResult? in
-                    let id: String = row["id"]
-                    // Skip if already in FTS results
-                    if results.contains(where: { $0.id == id }) {
-                        return nil
-                    }
-
-                    var shortDef: String? = nil
-                    if let sensesJson: String = row["senses_json"],
-                       let data = sensesJson.data(using: .utf8),
-                       let senses = try? JSONDecoder().decode([DictionarySense].self, from: data),
-                       let first = senses.first {
-                        shortDef = first.shortDefinitionText ?? first.gloss
-                    }
-
-                    let key: String = row["key"]
-                    return ModuleSearchResult(
-                        id: id,
-                        moduleId: row["module_id"],
-                        moduleName: row["module_name"],
-                        moduleType: .dictionary,
-                        title: "\(row["lemma"] as String) (\(key))",
-                        snippet: shortDef ?? "",
-                        verseId: nil,
-                        rank: 5.0,  // Good rank for key match
-                        strongsKey: key
-                    )
-                }
-                results.append(contentsOf: keyResults)
-            }
-
-            return results
+            return senses.first.flatMap { $0.definitionText ?? $0.shortDefinitionText ?? $0.gloss }
+        }
+        return try LampModuleSearch.dictionaryEntries(
+            in: db, dictionaries: dictionaries.map(\.id), query: query, limit: limit
+        ).map { hit in
+            ModuleSearchResult(
+                id: hit.entryID,
+                moduleId: hit.moduleID,
+                moduleName: names[hit.moduleID] ?? hit.moduleID,
+                moduleType: .dictionary,
+                title: "\(hit.lemma) (\(hit.key))",
+                snippet: definition(hit.sensesJSON) ?? "",
+                verseId: nil,
+                rank: 0,
+                strongsKey: hit.key,
+                holdsPhrase: query.holdsPhrase(definition(hit.sensesJSON) ?? "")
+            )
         }
     }
 

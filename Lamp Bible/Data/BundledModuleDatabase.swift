@@ -580,117 +580,19 @@ class BundledModuleDatabase {
                     .fetchAll(db)
                     .map(\.id)
             }
-            var moduleCondition = ""
-            var moduleArguments = StatementArguments()
-            if !moduleIds.isEmpty {
-                moduleCondition = "module_id IN (\(moduleIds.map { _ in "?" }.joined(separator: ", "))) AND"
-                moduleArguments += StatementArguments(moduleIds)
+            // As core searches the Mac's (`LampModuleSearch.dictionaryEntries`).
+            return try LampModuleSearch.dictionaryEntries(
+                in: db, dictionaries: moduleIds.isEmpty ? nil : moduleIds, query: parsed, limit: limit
+            ).map { hit in
+                DictionaryHit(
+                    key: hit.key,
+                    lemma: hit.lemma,
+                    transliteration: hit.transliteration,
+                    text: hit.searchText.flatMap { $0.isEmpty ? nil : $0 }
+                        ?? DictionarySearchText.text(fromSensesJSON: hit.sensesJSON)
+                )
             }
-
-            let columns = Set(try db.columns(in: "dictionary_entries").map(\.name))
-            let hasSearchText = columns.contains("search_text")
-            let searchColumns = ["key", "lemma", "transliteration", "search_text"].filter(columns.contains)
-            let like = parsed.sqlLikePredicate(columns: searchColumns, jsonColumns: ["senses_json"])
-            var condition = "(\(like.condition))"
-            var arguments = moduleArguments
-            arguments += StatementArguments(like.arguments)
-
-            // SQLite folds neither Greek accents and breathings nor Hebrew
-            // points, so "αγαπη" would never find ἀγάπη: a query in either
-            // script is matched against every headword here, accents set
-            // aside, and those entries are found alongside.
-            if query.unicodeScalars.contains(where: Self.isGreekOrHebrew) {
-                let ids = try Self.headwordMatches(for: parsed, moduleIds: moduleIds, in: db)
-                if !ids.isEmpty {
-                    condition = "(\(condition) OR id IN (\(ids.map { _ in "?" }.joined(separator: ", "))))"
-                    arguments += StatementArguments(ids)
-                }
-            }
-
-            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            arguments += [trimmed, trimmed, limit]
-            let textColumn = hasSearchText ? "search_text" : "NULL AS search_text"
-            return try Row.fetchAll(db, sql: """
-                SELECT key, lemma, transliteration, \(textColumn),
-                       CASE WHEN \(hasSearchText ? "search_text IS NULL OR search_text = ''" : "1") THEN senses_json END AS senses_json
-                FROM dictionary_entries
-                WHERE \(moduleCondition) \(condition)
-                ORDER BY
-                    CASE
-                        WHEN key = ? COLLATE NOCASE THEN 0
-                        WHEN lemma = ? COLLATE NOCASE THEN 1
-                        ELSE 2
-                    END,
-                    key, lemma
-                LIMIT ?
-                """, arguments: arguments).map { row in
-                    let searchText: String? = row["search_text"]
-                    return DictionaryHit(
-                        key: row["key"] ?? "",
-                        lemma: row["lemma"] ?? "",
-                        transliteration: row["transliteration"],
-                        text: searchText.flatMap { $0.isEmpty ? nil : $0 }
-                            ?? DictionarySearchText.text(fromSensesJSON: row["senses_json"])
-                    )
-                }
         }
-    }
-
-    /// Each module's headwords, accents, points, case and apostrophes folded
-    /// away, built on the first Greek or Hebrew search. The database is
-    /// read-only, so they never go stale.
-    private static var foldedHeadwords: [String: [(id: String, text: String, folded: String)]] = [:]
-    private static let foldedHeadwordsLock = NSLock()
-
-    private static func folded(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-            .filter { !"'’‘ʼ".contains($0) }
-    }
-
-    /// The entries whose headword matches, found among those holding every
-    /// word of the query once folded, which core's matcher then confirms:
-    /// it is too slow to run over every headword.
-    private static func headwordMatches(for parsed: LampSearchQuery, moduleIds: [String], in db: Database) throws -> [String] {
-        let words = parsed.plainText.split(whereSeparator: \.isWhitespace).map { folded(String($0)) }.filter { !$0.isEmpty }
-        let moduleKeys = moduleIds.isEmpty ? [""] : moduleIds
-        var ids: [String] = []
-        for moduleKey in moduleKeys {
-            foldedHeadwordsLock.lock()
-            var headwords = foldedHeadwords[moduleKey]
-            foldedHeadwordsLock.unlock()
-            if headwords == nil {
-                let rows = try Row.fetchAll(db, sql: """
-                    SELECT id, key, lemma, transliteration FROM dictionary_entries
-                    WHERE \(moduleKey.isEmpty ? "1" : "module_id = ?")
-                    """, arguments: moduleKey.isEmpty ? [] : [moduleKey])
-                // Each read optional, spelled out: a headword without a
-                // transliteration read as a plain String traps in GRDB.
-                let built = rows.compactMap { row -> (id: String, text: String, folded: String)? in
-                    let key: String? = row["key"]
-                    let lemma: String? = row["lemma"]
-                    let transliteration: String? = row["transliteration"]
-                    let id: DatabaseValue = row["id"]
-                    guard let identifier = String.fromDatabaseValue(id) ?? Int64.fromDatabaseValue(id).map(String.init) else {
-                        return nil
-                    }
-                    let text = [key, lemma, transliteration].compactMap { $0 }.joined(separator: " ")
-                    return (identifier, text, folded(text))
-                }
-                foldedHeadwordsLock.lock()
-                foldedHeadwords[moduleKey] = built
-                foldedHeadwordsLock.unlock()
-                headwords = built
-            }
-            ids += (headwords ?? []).filter { headword in
-                words.allSatisfy { headword.folded.contains($0) } && parsed.matches(headword.text)
-            }.map(\.id)
-        }
-        return ids
-    }
-
-    private static func isGreekOrHebrew(_ scalar: Unicode.Scalar) -> Bool {
-        (0x0370...0x03FF).contains(scalar.value) || (0x1F00...0x1FFF).contains(scalar.value)
-            || (0x0590...0x05FF).contains(scalar.value)
     }
 
     /// Get all bundled modules

@@ -5075,6 +5075,39 @@ final class CommentaryFootnoteSearchTests: XCTestCase {
 
 /// The phone's databases searched by core, as the Mac searches its own.
 final class CoreModuleSearchTests: XCTestCase {
+    /// The user's dictionaries are searched by core, as the Mac's and the
+    /// bundle's are: the entry keyed by what was typed first, a typed word
+    /// where a word starts, `*` within one, Greek with its accents aside.
+    func testDictionariesAreSearchedByCoreInThePhonesDatabase() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE modules (id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL);
+                CREATE TABLE dictionary_entries (
+                    id TEXT PRIMARY KEY, module_id TEXT NOT NULL, key TEXT NOT NULL, lemma TEXT NOT NULL,
+                    transliteration TEXT, pronunciation TEXT, senses_json TEXT NOT NULL, search_text TEXT);
+                INSERT INTO modules VALUES ('lex', 'dictionary', 'My Lexicon'), ('other', 'dictionary', 'Other');
+                INSERT INTO dictionary_entries VALUES
+                    ('lex:G25', 'lex', 'G25', 'ἀγαπάω', 'agapaō', NULL, '[{"definition":"to love"}]', 'to love'),
+                    ('lex:G27', 'lex', 'G27', 'ἀγαπητός', 'agapētos', NULL, '[{"definition":"beloved"}]', 'beloved'),
+                    ('lex:G26', 'lex', 'G26', 'ἀγάπη', 'agapē', NULL, '[{"definition":"love, goodwill"}]', 'love, goodwill'),
+                    ('other:1', 'other', 'love', 'love', NULL, NULL, '[{"definition":"affection"}]', 'affection');
+                """)
+        }
+        func search(_ text: String, _ modules: Set<String>? = nil) throws -> [String] {
+            var filter = ModuleSearchFilter()
+            filter.moduleIds = modules
+            return try queue.read { db in
+                try ModuleSearch.dictionaryResults(in: db, query: LampSearchQuery(text), filter: filter, limit: 10)
+            }.map(\.id)
+        }
+        XCTAssertEqual(try search("love", ["lex"]), ["lex:G25", "lex:G26"], "not beloved")
+        XCTAssertEqual(try search("*love", ["lex"]), ["lex:G25", "lex:G26", "lex:G27"])
+        XCTAssertEqual(try search("love", ["other"]), ["other:1"], "keyed by what was typed")
+        XCTAssertEqual(try search("αγαπη", ["lex"]), ["lex:G26", "lex:G27"], "headwords it starts, accents set aside")
+        XCTAssertEqual(Set(try search("love")), ["lex:G25", "lex:G26", "other:1"], "each dictionary heard from")
+    }
+
     /// Verses are searched by core, each translation keeping its own best,
     /// and `*faith` finds "unfaithful" by reading the text until the phone
     /// has listed its index's words, and through them after.
