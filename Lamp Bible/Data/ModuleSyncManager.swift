@@ -431,6 +431,34 @@ class ModuleSyncManager: ObservableObject {
         }
     }
 
+    /// Copies a commentary module's units, with the footnote text a module
+    /// carries for search; one from before it gets its text written here. A
+    /// standalone module's units are named for it (`standaloneModuleId`),
+    /// having no module of their own.
+    static func copyCommentaryUnits(
+        from dbAlias: String,
+        standaloneModuleId: String?,
+        in db: Database
+    ) throws {
+        let sourceColumns = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(commentary_units)")
+            .compactMap { $0["name"] as String? }
+        let carriesFootnotesText = sourceColumns.contains("footnotes_text")
+        let lastRowid = try Int64.fetchOne(db, sql: "SELECT max(rowid) FROM commentary_units") ?? 0
+        try db.execute(sql: """
+            INSERT INTO commentary_units
+            (id, module_id, book, chapter, sv, ev, unit_type, level, parent_id,
+             title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index,
+             footnotes_text)
+            SELECT \(standaloneModuleId == nil ? "id, module_id" : "? || ':' || id, ?"), book, chapter, sv, ev, unit_type, level, parent_id,
+                   title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index,
+                   \(carriesFootnotesText ? "footnotes_text" : "NULL")
+            FROM \(dbAlias).commentary_units
+            """, arguments: StatementArguments(standaloneModuleId.map { [$0, $0] } ?? []))
+        if !carriesFootnotesText {
+            try CommentaryFootnoteSearchText.fill(in: db, after: lastRowid)
+        }
+    }
+
     /// Copy one validated source into the caller's active transaction.
     private func copySQLiteModuleRows(
         fileInfo: ModuleFileInfo,
@@ -519,14 +547,7 @@ class ModuleSyncManager: ObservableObject {
                         """, arguments: [fileInfo.id, fileInfo.id, seriesName, seriesAbbrev])
 
                     // Copy commentary units (standalone format - no module_id column)
-                    try db.execute(sql: """
-                        INSERT INTO commentary_units
-                        (id, module_id, book, chapter, sv, ev, unit_type, level, parent_id,
-                         title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index)
-                        SELECT ? || ':' || id, ?, book, chapter, sv, ev, unit_type, level, parent_id,
-                               title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index
-                        FROM \(dbAlias).commentary_units
-                        """, arguments: [fileInfo.id, fileInfo.id])
+                    try Self.copyCommentaryUnits(from: dbAlias, standaloneModuleId: fileInfo.id, in: db)
                 }
             } else {
                 // Traditional format with module_id in tables
@@ -554,14 +575,7 @@ class ModuleSyncManager: ObservableObject {
                     """)
 
                 // Copy commentary units
-                try db.execute(sql: """
-                    INSERT INTO commentary_units
-                    (id, module_id, book, chapter, sv, ev, unit_type, level, parent_id,
-                     title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index)
-                    SELECT id, module_id, book, chapter, sv, ev, unit_type, level, parent_id,
-                           title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index
-                    FROM \(dbAlias).commentary_units
-                    """)
+                try Self.copyCommentaryUnits(from: dbAlias, standaloneModuleId: nil, in: db)
             }
 
         case .book:

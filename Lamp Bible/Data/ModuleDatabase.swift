@@ -1492,6 +1492,16 @@ class ModuleDatabase {
             try index.installTriggers(in: db)
         }
 
+        // A commentary's footnotes join its search. The column only: the index
+        // is made again with it by `CommentaryFootnoteSearch`, off the launch
+        // path, because a commentary's index can run to hundreds of megabytes.
+        migrator.registerMigration("v32_commentary_footnotes_text") { db in
+            guard try db.tableExists("commentary_units"),
+                  try !db.columns(in: "commentary_units").contains(where: { $0.name == "footnotes_text" })
+            else { return }
+            try db.execute(sql: "ALTER TABLE commentary_units ADD COLUMN footnotes_text TEXT")
+        }
+
         return migrator
     }
 
@@ -3611,12 +3621,18 @@ struct ExternalContentSearchIndex: Equatable {
         columns: ["lemma", "search_text"], tokenize: nil
     )
 
+    /// A commentary unit by its title, its text and its footnotes, each as
+    /// plain text (`CommentaryFootnoteSearchText`).
+    static let commentary = ExternalContentSearchIndex(
+        name: "commentary_units_fts", content: "commentary_units", rowid: "rowid",
+        columns: ["title", "search_text", "footnotes_text"], tokenize: nil
+    )
+
     static let all: [ExternalContentSearchIndex] = [
         .init(name: "translation_verses_fts", content: "translation_verses", rowid: "id",
               columns: ["text"], tokenize: "unicode61 remove_diacritics 2"),
         dictionary,
-        .init(name: "commentary_units_fts", content: "commentary_units", rowid: "rowid",
-              columns: ["title", "search_text"], tokenize: nil),
+        commentary,
         .init(name: "note_fts", content: "note_entries", rowid: "rowid",
               columns: ["title", "search_text"], tokenize: nil),
     ]
@@ -3630,12 +3646,14 @@ struct ExternalContentSearchIndex: Equatable {
     }
 
     /// Whether the index and its content are here, with every column it
-    /// indexes: a migration before the one adding a column must leave the
-    /// index alone, or its triggers would name a column not yet made.
+    /// indexes in both: a migration before the one adding a column must leave
+    /// the index alone, or its triggers would name a column not yet made, and
+    /// so must anything before the index is made again with it.
     func exists(in db: Database) throws -> Bool {
         guard try db.tableExists(name), try db.tableExists(content) else { return false }
         let present = Set(try db.columns(in: content).map(\.name))
-        return columns.allSatisfy(present.contains)
+        let indexed = Set(try db.columns(in: name).map(\.name))
+        return columns.allSatisfy { present.contains($0) && indexed.contains($0) }
     }
 
     func installTriggers(in db: Database) throws {
@@ -3745,6 +3763,17 @@ enum SearchIndexRepair {
         return report
     }
 
+    /// Makes the index again in its own columns, in batches, and swaps it in
+    /// for the one there, whatever that one indexed.
+    static func replace(
+        _ index: ExternalContentSearchIndex,
+        in queue: DatabaseQueue,
+        options: Options = Options()
+    ) throws {
+        try clearLeftovers(of: index, in: queue, options: options)
+        try rebuildBySwapping(index, in: queue, options: options)
+    }
+
     private static func rebuildBySwapping(
         _ index: ExternalContentSearchIndex,
         in queue: DatabaseQueue,
@@ -3794,10 +3823,10 @@ enum SearchIndexRepair {
         try drainStale(index, in: queue, options: options)
     }
 
-    private static func clearLeftovers(
+    static func clearLeftovers(
         of index: ExternalContentSearchIndex,
         in queue: DatabaseQueue,
-        options: Options
+        options: Options = Options()
     ) throws {
         // A copy that never went live: it holds no more than the content.
         if try queue.read({ try $0.tableExists("\(index.name)_rebuild") }) {
@@ -3835,9 +3864,10 @@ enum SearchIndexRepair {
     }
 }
 
-/// Runs `SearchIndexRepair` once per install, and fills in any user
-/// dictionary entry's search text not yet written, in the background, and
-/// lets sync wait for it: sync is what writes the content these indexes read.
+/// Runs `SearchIndexRepair` once per install, fills in any user dictionary
+/// entry's search text not yet written, and brings footnotes into the
+/// commentary index, in the background, and lets sync wait for it: sync is
+/// what writes the content these indexes read.
 @MainActor
 enum SearchIndexMaintenance {
     private static let completedKey = "SearchIndexRepair.completed.v1"
@@ -3862,6 +3892,10 @@ enum SearchIndexMaintenance {
                 // Nothing to do, and one quick query, once every entry has it.
                 let filled = try DictionarySearchText.fillMissing(in: queue)
                 if filled > 0 { print("[SearchIndex] wrote search text for \(filled) dictionary entries") }
+                let started = Date()
+                if try CommentaryFootnoteSearch.upgrade(queue) {
+                    print("[SearchIndex] added footnotes to the commentary index in \(Int(Date().timeIntervalSince(started)))s")
+                }
             } catch {
                 // Not marked done: the next launch picks up where this stopped.
                 print("[SearchIndex] maintenance stopped: \(error)")
@@ -3934,5 +3968,138 @@ enum DictionarySearchText {
             total += written
             if written < batch { return total }
         }
+    }
+}
+
+/// A commentary unit's footnotes as plain text, for its search index: each
+/// note's text, as a commentary module carries it in `footnotes_text`. A
+/// module built before that column gets it written here, as core's compiler
+/// writes it (`JSONSupport.plainText`, which core keeps to itself).
+enum CommentaryFootnoteSearchText {
+    static func text(fromFootnotesJSON json: String?) -> String {
+        guard let json, let data = json.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data) else { return "" }
+        return plainText(value)
+    }
+
+    private static func plainText(_ value: Any) -> String {
+        if let string = value as? String { return string }
+        if let array = value as? [Any] {
+            return array.map(plainText).filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        if let object = value as? [String: Any] {
+            if let text = object["text"] as? String { return text }
+            let textKeys = [
+                "title", "content", "children", "introduction", "sections",
+                "blocks", "subsections", "conclusion", "caption", "items",
+                "tableData", "headers", "rows",
+            ]
+            return textKeys
+                .compactMap { object[$0] }
+                .map(plainText)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+        return ""
+    }
+
+    /// Writes the text of each unit without it, among those after `rowid`:
+    /// the ones an import has just added.
+    @discardableResult
+    static func fill(in db: Database, after rowid: Int64) throws -> Int {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT rowid, footnotes_json FROM commentary_units
+            WHERE rowid > ? AND footnotes_text IS NULL
+            """, arguments: [rowid])
+        for row in rows {
+            try db.execute(
+                sql: "UPDATE commentary_units SET footnotes_text = ? WHERE rowid = ?",
+                arguments: [text(fromFootnotesJSON: row["footnotes_json"]), row["rowid"] as Int64]
+            )
+        }
+        return rows.count
+    }
+
+    /// Every unit's, in batches, so the app's own writes get between them.
+    /// In rowid order: a unit's text comes after its JSON, so a scan from the
+    /// start each batch would read the whole commentary again every time.
+    static func fillMissing(in queue: DatabaseQueue, batch: Int = 500) throws -> Int {
+        var total = 0
+        var last = Int64.min
+        while true {
+            let written: (count: Int, last: Int64?) = try queue.write { db in
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT rowid, footnotes_json FROM commentary_units
+                    WHERE rowid > ? AND footnotes_text IS NULL ORDER BY rowid LIMIT ?
+                    """, arguments: [last, batch])
+                for row in rows {
+                    try db.execute(
+                        sql: "UPDATE commentary_units SET footnotes_text = ? WHERE rowid = ?",
+                        arguments: [text(fromFootnotesJSON: row["footnotes_json"]), row["rowid"] as Int64]
+                    )
+                }
+                return (rows.count, rows.last?["rowid"])
+            }
+            total += written.count
+            guard written.count == batch, let through = written.last else { return total }
+            last = through
+        }
+    }
+}
+
+/// Brings footnotes into the commentary search index once v32 has given
+/// each unit a `footnotes_text`, by filling it in and making the index again
+/// with it. Off the launch path, on the maintenance connection: a commentary's
+/// index can run to hundreds of megabytes.
+///
+/// The old index stays live and exact until the new one is swapped in. Its
+/// update trigger is first kept to the columns it indexes, so that writing
+/// each unit's notes doesn't index its body over again: that made the upgrade
+/// take nearly four times as long, on a copy of the NIC.
+enum CommentaryFootnoteSearch {
+    /// Whether it had anything to do. A run cut short is finished by the next.
+    @discardableResult
+    static func upgrade(
+        _ queue: DatabaseQueue,
+        options: SearchIndexRepair.Options = SearchIndexRepair.Options(),
+        batch: Int = 500
+    ) throws -> Bool {
+        let index = ExternalContentSearchIndex.commentary
+        let needed: Bool = try queue.read { db in
+            guard try db.tableExists(index.name), try db.tableExists(index.content),
+                  try db.columns(in: index.content).contains(where: { $0.name == "footnotes_text" })
+            else { return false }
+            return try !index.exists(in: db)
+        }
+        guard needed else {
+            // A swap whose old index was still being dropped.
+            if try queue.read({ try $0.tableExists(index.name) }) {
+                try SearchIndexRepair.clearLeftovers(of: index, in: queue, options: options)
+            }
+            return false
+        }
+
+        // The index as v4 made it. Its triggers are put right too, as v27 only
+        // did that for an index already in every column it now indexes.
+        let old = ExternalContentSearchIndex(
+            name: index.name, content: index.content, rowid: index.rowid,
+            columns: ["title", "search_text"], tokenize: nil
+        )
+        try queue.write { db in
+            guard try db.columns(in: index.name).map(\.name) == old.columns else { return }
+            try old.installTriggers(in: db)
+            try db.execute(sql: "DROP TRIGGER \(index.name)_update")
+            try db.execute(sql: """
+                CREATE TRIGGER \(index.name)_update AFTER UPDATE OF title, search_text ON \(index.content) BEGIN
+                    INSERT INTO \(index.name)(\(index.name), rowid, title, search_text)
+                    VALUES ('delete', old.rowid, old.title, old.search_text);
+                    INSERT INTO \(index.name)(rowid, title, search_text)
+                    VALUES (new.rowid, new.title, new.search_text);
+                END
+                """)
+        }
+        _ = try CommentaryFootnoteSearchText.fillMissing(in: queue, batch: batch)
+        try SearchIndexRepair.replace(index, in: queue, options: options)
+        return true
     }
 }

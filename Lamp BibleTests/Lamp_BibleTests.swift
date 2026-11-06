@@ -4802,6 +4802,10 @@ final class DictionarySearchTextTests: XCTestCase {
             XCTAssertFalse(try ExternalContentSearchIndex.dictionary.exists(in: db))
             XCTAssertNoThrow(try ExternalContentSearchIndex.installTriggers(in: db))
             try db.execute(sql: "ALTER TABLE dictionary_entries ADD COLUMN search_text TEXT")
+            // Nor until the index is made again in it, as v31 does.
+            XCTAssertFalse(try ExternalContentSearchIndex.dictionary.exists(in: db))
+            try db.execute(sql: "DROP TABLE dictionary_fts")
+            try db.execute(sql: ExternalContentSearchIndex.dictionary.createIndexSQL(named: "dictionary_fts"))
             XCTAssertTrue(try ExternalContentSearchIndex.dictionary.exists(in: db))
         }
     }
@@ -4837,6 +4841,220 @@ final class DictionarySearchTextTests: XCTestCase {
             // The JSON's field names are no longer indexed.
             XCTAssertEqual(try hits("definition"), [])
         }
+    }
+}
+
+final class CommentaryFootnoteSearchTests: XCTestCase {
+    /// A note on John 1:1 whose Greek a module keeps in its font encoding,
+    /// with the Unicode it reads as.
+    private static let noteJSON = #"""
+        [{"id":"97","content":{"text":"Zuntz reads oJ lo/gos here","annotations":[{"type":"greek","start":12,"end":21,"text":"oJ lo/gos","data":{"unicode":"ὁ λόγος","sourceEncoding":"accordance-greek"}}]}}]
+        """#
+
+    /// The units table as v4 made it, with v32's column, and the index in
+    /// every column it has now.
+    private func makeCurrentSchema(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE modules (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE commentary_units (
+                id TEXT PRIMARY KEY, module_id TEXT NOT NULL, book INTEGER NOT NULL, chapter INTEGER,
+                sv INTEGER NOT NULL, ev INTEGER, unit_type TEXT NOT NULL, level INTEGER, parent_id TEXT,
+                title TEXT, suffix TEXT, introduction_json TEXT, translation_json TEXT, commentary_json TEXT,
+                footnotes_json TEXT, search_text TEXT NOT NULL, order_index INTEGER NOT NULL DEFAULT 0,
+                footnotes_text TEXT);
+            """)
+        try db.execute(sql: ExternalContentSearchIndex.commentary.createIndexSQL(named: "commentary_units_fts"))
+        try ExternalContentSearchIndex.commentary.installTriggers(in: db)
+    }
+
+    private func hits(_ db: Database, _ query: String) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT c.id FROM commentary_units_fts f JOIN commentary_units c ON f.rowid = c.rowid
+            WHERE commentary_units_fts MATCH ? ORDER BY c.id
+            """, arguments: [query])
+    }
+
+    private func assertExact(_ db: Database, file: StaticString = #filePath, line: UInt = #line) throws {
+        XCTAssertEqual(
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM commentary_units_fts_docsize"),
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM commentary_units"),
+            "each unit indexed once", file: file, line: line
+        )
+        // With rank 1 the check compares the index with the content table.
+        XCTAssertNoThrow(try db.execute(sql: """
+            INSERT INTO commentary_units_fts(commentary_units_fts, rank) VALUES ('integrity-check', 1)
+            """), "the index agrees with its units", file: file, line: line)
+    }
+
+    func testTheTextIsTheNotesNotTheJSONTheyAreStoredIn() {
+        let json = #"[{"id":"1","content":{"text":"See Zuntz, 91","annotations":[{"type":"greek","start":0,"end":3,"text":"See","data":{"unicode":"Σεε","sourceEncoding":"accordance-greek"}}]}},{"id":"2","content":{"title":"Note","children":[{"text":"a table"},{"rows":[["x"]]}]}}]"#
+        let text = CommentaryFootnoteSearchText.text(fromFootnotesJSON: json)
+        XCTAssertEqual(text, "See Zuntz, 91 Note a table x")
+        XCTAssertFalse(text.contains("accordance"))
+        XCTAssertEqual(CommentaryFootnoteSearchText.text(fromFootnotesJSON: "not json"), "")
+        XCTAssertEqual(CommentaryFootnoteSearchText.text(fromFootnotesJSON: nil), "")
+    }
+
+    func testAnOldIndexIsMadeAgainWithTheFootnotesAndKeptExact() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("commentary-footnotes-\(UUID().uuidString).sqlite")
+        defer { for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: url.path + suffix) } }
+        let queue = try DatabaseQueue(path: url.path)
+        try queue.write { db in
+            // As v4 made them, triggers and all.
+            try db.execute(sql: """
+                CREATE TABLE commentary_units (
+                    id TEXT PRIMARY KEY, module_id TEXT NOT NULL, title TEXT,
+                    footnotes_json TEXT, search_text TEXT NOT NULL);
+                CREATE VIRTUAL TABLE commentary_units_fts USING fts5(
+                    title, search_text, content='commentary_units', content_rowid='rowid');
+                CREATE TRIGGER commentary_units_fts_insert AFTER INSERT ON commentary_units BEGIN
+                    INSERT INTO commentary_units_fts(rowid, title, search_text)
+                    VALUES (new.rowid, new.title, new.search_text);
+                END;
+                CREATE TRIGGER commentary_units_fts_update AFTER UPDATE ON commentary_units BEGIN
+                    UPDATE commentary_units_fts SET title = new.title, search_text = new.search_text
+                    WHERE rowid = new.rowid;
+                END;
+                CREATE TRIGGER commentary_units_fts_delete AFTER DELETE ON commentary_units BEGIN
+                    DELETE FROM commentary_units_fts WHERE rowid = old.rowid;
+                END;
+                """)
+            for unit in 0..<30 {
+                try db.execute(
+                    sql: "INSERT INTO commentary_units (id, module_id, title, footnotes_json, search_text) VALUES (?, 'NIC', ?, ?, ?)",
+                    arguments: [
+                        String(format: "u%02d", unit), "Unit \(unit)",
+                        unit % 2 == 0 ? Self.noteJSON : nil, "unit \(unit) on grace",
+                    ]
+                )
+            }
+            // v32.
+            try db.execute(sql: "ALTER TABLE commentary_units ADD COLUMN footnotes_text TEXT")
+            // v27 and the repair pass it by until it is made again.
+            XCTAssertFalse(try ExternalContentSearchIndex.commentary.exists(in: db))
+            try ExternalContentSearchIndex.installTriggers(in: db)
+            XCTAssertEqual(try String.fetchOne(db, sql: """
+                SELECT sql FROM sqlite_master WHERE name = 'commentary_units_fts_insert'
+                """)?.contains("footnotes_text"), false)
+        }
+
+        var options = SearchIndexRepair.Options()
+        options.batchRows = 7
+        XCTAssertTrue(try CommentaryFootnoteSearch.upgrade(queue, options: options, batch: 4))
+        XCTAssertFalse(try CommentaryFootnoteSearch.upgrade(queue))
+
+        try queue.write { db in
+            XCTAssertEqual(try db.columns(in: "commentary_units_fts").map(\.name), ["title", "search_text", "footnotes_text"])
+            XCTAssertTrue(try ExternalContentSearchIndex.commentary.exists(in: db))
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM commentary_units WHERE footnotes_text IS NULL"), 0)
+            XCTAssertEqual(try hits(db, "Zuntz").count, 15)
+            XCTAssertEqual(try hits(db, "grace").count, 30)
+            try assertExact(db)
+
+            // And its triggers keep it so.
+            try db.execute(sql: "UPDATE commentary_units SET footnotes_text = 'Metzger agrees' WHERE id = 'u00'")
+            try db.execute(sql: "UPDATE commentary_units SET search_text = 'unit 1 on mercy' WHERE id = 'u01'")
+            try db.execute(sql: "DELETE FROM commentary_units WHERE id = 'u02'")
+            try db.execute(sql: """
+                INSERT INTO commentary_units (id, module_id, title, search_text, footnotes_text)
+                VALUES ('u99', 'NIC', 'Unit 99', 'unit 99', 'Zuntz again')
+                """)
+            try assertExact(db)
+            XCTAssertEqual(try hits(db, "Metzger"), ["u00"])
+            XCTAssertEqual(try hits(db, "mercy"), ["u01"])
+            XCTAssertEqual(try hits(db, "Zuntz").count, 14)
+            XCTAssertEqual(try String.fetchAll(db, sql: """
+                SELECT name FROM sqlite_master WHERE name LIKE '%_stale%' OR name LIKE '%_rebuild%'
+                """), [])
+        }
+    }
+
+    func testAnOldIndexLeftHalfDroppedIsClearedByTheNextLaunch() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try makeCurrentSchema(db)
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE commentary_units_fts_stale USING fts5(
+                    title, search_text, content='commentary_units', content_rowid='rowid')
+                """)
+        }
+        XCTAssertFalse(try CommentaryFootnoteSearch.upgrade(queue))
+        XCTAssertFalse(try queue.read { try $0.tableExists("commentary_units_fts_stale") })
+    }
+
+    func testAnImportCarriesAModulesNoteTextAndWritesItForAnOlderOne() throws {
+        let queue = try DatabaseQueue()
+        try queue.writeWithoutTransaction { db in
+            try makeCurrentSchema(db)
+            // A standalone module of today: its units have no module of their own.
+            try db.execute(sql: "ATTACH DATABASE ':memory:' AS today")
+            try db.execute(sql: """
+                CREATE TABLE today.commentary_units (
+                    id TEXT, book INTEGER, chapter INTEGER, sv INTEGER, ev INTEGER, unit_type TEXT, level INTEGER,
+                    parent_id TEXT, title TEXT, suffix TEXT, introduction_json TEXT, translation_json TEXT,
+                    commentary_json TEXT, footnotes_json TEXT, search_text TEXT, order_index INTEGER,
+                    footnotes_text TEXT NOT NULL DEFAULT '');
+                INSERT INTO today.commentary_units (id, book, sv, unit_type, footnotes_json, search_text, order_index, footnotes_text)
+                VALUES ('43:pericope:1:2', 43, 43001001, 'pericope', '[]', 'In the beginning', 0, 'as the module wrote it');
+                """)
+            try ModuleSyncManager.copyCommentaryUnits(from: "today", standaloneModuleId: "NIC", in: db)
+
+            // One from before the column, in the traditional layout.
+            try db.execute(sql: "ATTACH DATABASE ':memory:' AS older")
+            try db.execute(sql: """
+                CREATE TABLE older.commentary_units (
+                    id TEXT, module_id TEXT, book INTEGER, chapter INTEGER, sv INTEGER, ev INTEGER, unit_type TEXT,
+                    level INTEGER, parent_id TEXT, title TEXT, suffix TEXT, introduction_json TEXT,
+                    translation_json TEXT, commentary_json TEXT, footnotes_json TEXT, search_text TEXT,
+                    order_index INTEGER);
+                """)
+            try db.execute(sql: """
+                INSERT INTO older.commentary_units (id, module_id, book, sv, unit_type, footnotes_json, search_text, order_index)
+                VALUES ('OLD:1', 'OLD', 43, 43001001, 'pericope', ?, 'In the beginning', 0)
+                """, arguments: [Self.noteJSON])
+            try ModuleSyncManager.copyCommentaryUnits(from: "older", standaloneModuleId: nil, in: db)
+
+            let rows = try Row.fetchAll(db, sql: "SELECT id, module_id, footnotes_text FROM commentary_units ORDER BY id")
+            XCTAssertEqual(rows.map { $0["id"] as String }, ["NIC:43:pericope:1:2", "OLD:1"])
+            XCTAssertEqual(rows.map { $0["module_id"] as String }, ["NIC", "OLD"])
+            XCTAssertEqual(rows.map { $0["footnotes_text"] as String }, ["as the module wrote it", "Zuntz reads oJ lo/gos here"])
+            XCTAssertEqual(try hits(db, "Zuntz"), ["OLD:1"])
+            try assertExact(db)
+        }
+    }
+
+    func testAHitOnlyInTheNotesIsShownByTheNoteWithItsGreekAsRead() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try makeCurrentSchema(db)
+            try db.execute(sql: "INSERT INTO modules (id, name) VALUES ('NIC', 'The Gospel of John')")
+            try db.execute(sql: """
+                INSERT INTO commentary_units
+                (id, module_id, book, chapter, sv, unit_type, title, commentary_json, footnotes_json, search_text, footnotes_text)
+                VALUES ('NIC:43:pericope:1:2', 'NIC', 43, 1, 43001001, 'pericope', 'The Word',
+                        '{"text":"In the beginning was the word of God"}', ?,
+                        'The Word\nIn the beginning was the word of God', 'Zuntz reads oJ lo/gos here')
+                """, arguments: [Self.noteJSON])
+        }
+
+        func snippet(_ text: String) throws -> String? {
+            let query = LampSearchQuery(text)
+            return try queue.read { db in
+                try ModuleSearch.commentaryHits(
+                    in: db, query: query, ftsQuery: query.fts5Query, filter: ModuleSearchFilter(), limit: 10
+                )
+            }.first?.snippet
+        }
+        let note = try XCTUnwrap(try snippet("Zuntz"))
+        XCTAssertTrue(note.contains("<mark>Zuntz</mark>"), note)
+        XCTAssertTrue(note.contains("ὁ λόγος"), note)
+        XCTAssertFalse(note.contains("lo/gos"), note)
+
+        // Where the text holds the words, it is what shows.
+        let body = try XCTUnwrap(try snippet("beginning"))
+        XCTAssertTrue(body.contains("<mark>beginning</mark>"), body)
+        XCTAssertFalse(body.contains("Zuntz"), body)
     }
 }
 

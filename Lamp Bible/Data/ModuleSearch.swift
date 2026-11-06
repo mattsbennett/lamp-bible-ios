@@ -340,7 +340,9 @@ class ModuleSearch {
         }
 
         if filter.types.contains(.commentary) && hasTextQuery {
-            results.append(contentsOf: try searchCommentaries(ftsQuery: ftsQuery, filter: filter, limit: limit))
+            results.append(contentsOf: try searchCommentaries(
+                query: LampSearchQuery(query), ftsQuery: ftsQuery, filter: filter, limit: limit
+            ))
         }
 
         if filter.types.contains(.book) && hasTextQuery {
@@ -805,13 +807,18 @@ class ModuleSearch {
 
     /// The user's commentaries and the bundled ones, the Treasury and the
     /// cross-references, whose units and index are in the bundled database.
-    private func searchCommentaries(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+    private func searchCommentaries(
+        query: LampSearchQuery,
+        ftsQuery: String,
+        filter: ModuleSearchFilter,
+        limit: Int
+    ) throws -> [ModuleSearchResult] {
         var hits = try database.read { db in
-            try commentaryHits(in: db, ftsQuery: ftsQuery, filter: filter, limit: limit)
+            try Self.commentaryHits(in: db, query: query, ftsQuery: ftsQuery, filter: filter, limit: limit)
         }
         if BundledModuleDatabase.shared.available {
             hits += try BundledModuleDatabase.shared.read { db in
-                try commentaryHits(in: db, ftsQuery: ftsQuery, filter: filter, limit: limit)
+                try Self.commentaryHits(in: db, query: query, ftsQuery: ftsQuery, filter: filter, limit: limit)
             }
         }
         // Titled once the reads are done: a book's name comes from the
@@ -845,7 +852,7 @@ class ModuleSearch {
         }
     }
 
-    private struct CommentaryHit {
+    struct CommentaryHit {
         let id: String
         let moduleId: String
         let moduleName: String
@@ -858,8 +865,11 @@ class ModuleSearch {
         let rank: Double
     }
 
-    private func commentaryHits(
+    /// The units matching a search in one database, the user's or the bundled
+    /// one, which index each unit's footnotes too where they have the column.
+    static func commentaryHits(
         in db: Database,
+        query: LampSearchQuery,
         ftsQuery: String,
         filter: ModuleSearchFilter,
         limit: Int
@@ -881,9 +891,9 @@ class ModuleSearch {
             SELECT
                 c.id, c.module_id, c.sv, c.ev, c.title, c.unit_type,
                 c.book, c.chapter,
+                c.introduction_json, c.translation_json, c.commentary_json, c.footnotes_json,
                 m.name as module_name,
-                bm25(commentary_units_fts) as rank,
-                snippet(commentary_units_fts, 1, '<mark>', '</mark>', '...', 32) as snippet
+                bm25(commentary_units_fts) as rank
             FROM commentary_units_fts f
             JOIN commentary_units c ON f.rowid = c.rowid
             JOIN modules m ON c.module_id = m.id
@@ -904,10 +914,31 @@ class ModuleSearch {
                 sv: sv,
                 book: row["book"],
                 chapter: row["chapter"] ?? (sv / 1000) % 1000,
-                snippet: row["snippet"] ?? "",
+                snippet: commentarySnippet(row, query: query),
                 rank: -(row["rank"] as Double)
             )
         }
+    }
+
+    /// A hit's text around the search words, or its footnotes' where only
+    /// they hold them. Cut from the text as read (`AnnotatedText`) rather than
+    /// the index, which keeps a commentary's encoded Greek and Hebrew as the
+    /// module spells them ("lo/gos"), so that they show as λόγος here as in the
+    /// commentary itself.
+    private static func commentarySnippet(_ row: Row, query: LampSearchQuery) -> String {
+        func decoded<T: Decodable>(_ type: T.Type, _ column: String) -> T? {
+            guard let json: String = row[column], let data = json.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(type, from: data)
+        }
+        var text = ["introduction_json", "translation_json", "commentary_json"]
+            .compactMap { decoded(AnnotatedText.self, $0)?.text }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if !query.matches(text), let notes = decoded([CommentaryFootnote].self, "footnotes_json") {
+            let footnotes = notes.map(\.content.text).filter { !$0.isEmpty }.joined(separator: " ")
+            if query.matches(footnotes) { text = footnotes }
+        }
+        return query.markedSnippet(snippetSource(text, for: query), limit: 200)
     }
 
     private func searchDevotionals(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
