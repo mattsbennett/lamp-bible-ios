@@ -479,24 +479,15 @@ class BundledModuleDatabase {
         } ?? availableTranslationIds
         guard !searchableTranslationIds.isEmpty else { return [] }
 
-        let ftsQuery = prepareFTSQuery(query)
-        guard !ftsQuery.isEmpty else { return [] }
-
         return try read { db in
             try TranslationVerseSearch.results(
                 in: db,
-                ftsQuery: ftsQuery,
+                query: LampSearchQuery(query),
                 translationIds: searchableTranslationIds,
                 bookRange: bookRange,
                 limit: limit
             )
         }
-    }
-
-    /// Bundled translations answer the same grammar as installed ones.
-    /// See `ModuleDatabase.prepareFTSQuery`.
-    private func prepareFTSQuery(_ query: String) -> String {
-        LampSearchQuery(query).fts5Query
     }
 
     // MARK: - Lexicon (Dictionary) Queries
@@ -1708,8 +1699,17 @@ class TranslationDatabase {
             ))
         }
 
-        // Sort by rank and limit total results
-        return Array(allResults.sorted { $0.rank > $1.rank }.prefix(limit))
+        // Each translation's best, the room shared between them as core
+        // shares it on the Mac, rather than the best of all of them together:
+        // ranks from one translation's verses don't weigh against another's.
+        // What's left over goes in order of name, as the Mac lists them.
+        let byTranslation = Dictionary(grouping: allResults, by: \.translationId)
+        let order = byTranslation.keys.sorted { first, second in
+            let names = (byTranslation[first]?.first?.translationName ?? first, byTranslation[second]?.first?.translationName ?? second)
+            let order = names.0.localizedStandardCompare(names.1)
+            return order == .orderedSame ? first < second : order == .orderedAscending
+        }
+        return LampModuleSearch.sharedEvenly(order.map { byTranslation[$0] ?? [] }, limit: limit)
     }
 
     // MARK: - Book Metadata

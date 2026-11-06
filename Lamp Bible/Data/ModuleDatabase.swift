@@ -2542,27 +2542,15 @@ class ModuleDatabase {
         bookRange: ClosedRange<Int>? = nil,
         limit: Int = 50
     ) throws -> [TranslationSearchResult] {
-        let ftsQuery = prepareFTSQuery(query)
-        guard !ftsQuery.isEmpty else { return [] }
-
         return try dbQueue.read { db in
             try TranslationVerseSearch.results(
                 in: db,
-                ftsQuery: ftsQuery,
+                query: LampSearchQuery(query),
                 translationIds: translationIds,
                 bookRange: bookRange,
                 limit: limit
             )
         }
-    }
-
-    /// The one search grammar, shared with Mac search and the unified module
-    /// search: each word matches as a prefix and all words must appear, while a
-    /// quoted run stays a phrase. Escaping it here instead would make a verse
-    /// search of two words a phrase search, so "faith works" would miss
-    /// "faith without works".
-    private func prepareFTSQuery(_ query: String) -> String {
-        LampSearchQuery(query).fts5Query
     }
 
     // MARK: - Translation Bulk Operations
@@ -3214,67 +3202,47 @@ private extension Array {
 /// to the ranking, or to the `<mark>` snippet the results list renders, would
 /// have made a bundled translation's results look and sort differently from an
 /// installed one's.
+/// Verses matching a query, as core searches them for both apps
+/// (`LampModuleSearch.verses`): each translation's best ranked, at most
+/// `limit` of each, so that one using the words more often can't crowd out
+/// another; or, where the index can't answer, as for `*faith` without a list
+/// of its words, found by reading the text.
 enum TranslationVerseSearch {
     /// `translationIds` nil or empty searches every translation in `db`.
     static func results(
         in db: Database,
-        ftsQuery: String,
+        query: LampSearchQuery,
         translationIds: Set<String>?,
         bookRange: ClosedRange<Int>?,
         limit: Int
     ) throws -> [TranslationSearchResult] {
-        var conditions = ["translation_verses_fts MATCH ?"]
-        var arguments: [DatabaseValueConvertible] = [ftsQuery]
-
-        if let ids = translationIds, !ids.isEmpty {
-            let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
-            conditions.append("v.translation_id IN (\(placeholders))")
-            for id in ids { arguments.append(id) }
-        }
-
-        // OT, NT, or a chosen span of books.
-        if let bookRange {
-            conditions.append("v.book BETWEEN ? AND ?")
-            arguments.append(bookRange.lowerBound)
-            arguments.append(bookRange.upperBound)
-        }
-
-        arguments.append(limit)
-
-        let sql = """
-            SELECT
-                v.id,
-                v.translation_id,
-                t.name as translation_name,
-                t.abbreviation as translation_abbrev,
-                v.ref,
-                v.book,
-                v.chapter,
-                v.verse,
-                bm25(translation_verses_fts) as rank,
-                snippet(translation_verses_fts, 0, '<mark>', '</mark>', '...', 32) as snippet
-            FROM translation_verses_fts f
-            JOIN translation_verses v ON f.rowid = v.id
-            JOIN translations t ON v.translation_id = t.id
-            WHERE \(conditions.joined(separator: " AND "))
-            ORDER BY rank
-            LIMIT ?
-        """
-
-        return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-            TranslationSearchResult(
-                id: "\(row["translation_id"] as String):\(row["ref"] as Int)",
-                translationId: row["translation_id"],
-                translationName: row["translation_name"],
-                translationAbbrev: row["translation_abbrev"],
-                ref: row["ref"],
-                book: row["book"],
-                chapter: row["chapter"],
-                verse: row["verse"],
-                snippet: row["snippet"] ?? "",
-                // bm25 scores better matches more negatively; the results list
-                // sorts on rank descending.
-                rank: -(row["rank"] as Double)
+        let names = Dictionary(
+            try Row.fetchAll(db, sql: "SELECT id, name, abbreviation FROM translations").map {
+                ($0["id"] as String, (name: $0["name"] as String, abbreviation: $0["abbreviation"] as String))
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let hits = try LampModuleSearch.verses(
+            in: db,
+            translations: translationIds.flatMap { $0.isEmpty ? nil : $0.sorted() },
+            query: query, bookRange: bookRange, limit: limit
+        )
+        var place: [String: Int] = [:]
+        return hits.map { hit in
+            place[hit.translationID, default: 0] += 1
+            return TranslationSearchResult(
+                id: "\(hit.translationID):\(hit.reference)",
+                translationId: hit.translationID,
+                translationName: names[hit.translationID]?.name ?? hit.translationID,
+                translationAbbrev: names[hit.translationID]?.abbreviation ?? hit.translationID,
+                ref: hit.reference,
+                book: hit.book,
+                chapter: hit.chapter,
+                verse: hit.verse,
+                snippet: query.markedSnippet(hit.text, limit: 200),
+                // Its place in its translation, the best highest, as the
+                // results lists sort on rank descending.
+                rank: -Double(place[hit.translationID] ?? 0)
             )
         }
     }
@@ -3867,11 +3835,33 @@ enum SearchIndexRepair {
 /// Runs `SearchIndexRepair` once per install, fills in any user dictionary
 /// entry's search text not yet written, and brings footnotes into the
 /// commentary index, in the background, and lets sync wait for it: sync is
-/// what writes the content these indexes read.
+/// what writes the content these indexes read. Then, and after each sync or
+/// import, makes the word lists of the indexes written since (`SearchWordLists`).
 @MainActor
 enum SearchIndexMaintenance {
     private static let completedKey = "SearchIndexRepair.completed.v1"
     private static var task: Task<Void, Never>?
+    private static var wordListTask: Task<Void, Never>?
+
+    /// The word lists of the indexes written since they were made, after any
+    /// maintenance running or refresh asked for before, one at a time.
+    static func refreshWordLists() {
+        let previous = wordListTask ?? task
+        wordListTask = Task.detached(priority: .utility) {
+            await previous?.value
+            do {
+                var config = Configuration()
+                config.busyMode = .timeout(10)
+                let queue = try DatabaseQueue(path: ModuleDatabase.shared.fileURL.path, configuration: config)
+                defer { try? queue.close() }
+                let started = Date()
+                let kept = try SearchWordLists.refresh(queue)
+                if kept > 0 { print("[SearchIndex] listed the words of \(kept) indexes in \(Int(Date().timeIntervalSince(started) * 1000)) ms") }
+            } catch {
+                print("[SearchIndex] word lists stopped: \(error)")
+            }
+        }
+    }
 
     static func start(defaults: UserDefaults = .standard) {
         guard task == nil else { return }
@@ -3896,6 +3886,9 @@ enum SearchIndexMaintenance {
                 if try CommentaryFootnoteSearch.upgrade(queue) {
                     print("[SearchIndex] added footnotes to the commentary index in \(Int(Date().timeIntervalSince(started)))s")
                 }
+                let listing = Date()
+                let kept = try SearchWordLists.refresh(queue)
+                if kept > 0 { print("[SearchIndex] listed the words of \(kept) indexes in \(Int(Date().timeIntervalSince(listing) * 1000)) ms") }
             } catch {
                 // Not marked done: the next launch picks up where this stopped.
                 print("[SearchIndex] maintenance stopped: \(error)")
@@ -3905,6 +3898,29 @@ enum SearchIndexMaintenance {
 
     static func waitUntilFinished() async {
         await task?.value
+    }
+}
+
+/// The words of each of the phone's full-text indexes, for a search for part
+/// of a word (`*faith`), kept as core keeps a module's (`LampSearchWords`):
+/// read with nothing held, then kept in a write as short as the inserts, and
+/// only for an index still as it was read. An index written since, as the
+/// notes' is whenever one is edited, is read as text by such a search until
+/// its list is made again.
+enum SearchWordLists {
+    /// Makes the list of each index without one as it now is; how many.
+    @discardableResult
+    static func refresh(_ queue: DatabaseQueue) throws -> Int {
+        let stale = try queue.read { db in
+            try LampSearchWords.indexes(in: db).filter { try !LampSearchWords.isCurrent(index: $0, in: db) }
+        }
+        var kept = 0
+        for index in stale {
+            guard let vocabulary = try queue.writeWithoutTransaction({ try LampSearchWords.vocabulary(of: index, in: $0) })
+            else { continue }
+            if try queue.write({ try LampSearchWords.write(vocabulary, in: $0) }) { kept += 1 }
+        }
+        return kept
     }
 }
 

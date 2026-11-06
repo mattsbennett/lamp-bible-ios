@@ -5075,6 +5075,64 @@ final class CommentaryFootnoteSearchTests: XCTestCase {
 
 /// The phone's databases searched by core, as the Mac searches its own.
 final class CoreModuleSearchTests: XCTestCase {
+    /// Verses are searched by core, each translation keeping its own best,
+    /// and `*faith` finds "unfaithful" by reading the text until the phone
+    /// has listed its index's words, and through them after.
+    func testVersesAreSearchedByCoreEachTranslationKeepingItsBest() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE translations (id TEXT PRIMARY KEY, name TEXT NOT NULL, abbreviation TEXT NOT NULL);
+                CREATE TABLE translation_verses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, translation_id TEXT NOT NULL, ref INTEGER NOT NULL,
+                    book INTEGER NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL, text TEXT NOT NULL);
+                CREATE VIRTUAL TABLE translation_verses_fts USING fts5(
+                    text, content='translation_verses', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+                INSERT INTO translations VALUES ('KJV', 'King James Version', 'KJV'), ('WEB', 'World English Bible', 'WEB');
+                INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text) VALUES
+                    ('KJV', 58011001, 58, 11, 1, 'Now faith is the substance of things hoped for.'),
+                    ('KJV', 58011006, 58, 11, 6, 'But without faith it is impossible to please him.'),
+                    ('KJV', 40025021, 40, 25, 21, 'Well done, thou good and faithful servant.'),
+                    ('KJV', 40017017, 40, 17, 17, 'O faithless and perverse generation.'),
+                    ('WEB', 58011001, 58, 11, 1, 'Now faith is assurance of things hoped for.'),
+                    ('WEB', 45001017, 45, 1, 17, 'The righteous shall live by faith.');
+                INSERT INTO translation_verses_fts(translation_verses_fts) VALUES('rebuild');
+                """)
+        }
+        let one = try queue.read { db in
+            try TranslationVerseSearch.results(in: db, query: LampSearchQuery("faith"), translationIds: nil, bookRange: nil, limit: 1)
+        }
+        XCTAssertEqual(Set(one.map(\.translationId)), ["KJV", "WEB"], "each translation heard from")
+        XCTAssertEqual(one.first { $0.translationId == "WEB" }?.translationName, "World English Bible")
+        XCTAssertTrue(one.allSatisfy { $0.snippet.contains("<mark>faith</mark>") })
+
+        func within() throws -> Set<Int> {
+            Set(try queue.read { db in
+                try TranslationVerseSearch.results(
+                    in: db, query: LampSearchQuery("*faith"), translationIds: ["KJV"], bookRange: nil, limit: 10
+                )
+            }.map(\.ref))
+        }
+        XCTAssertEqual(try within(), [58_011_001, 58_011_006, 40_025_021, 40_017_017], "by reading the text")
+        XCTAssertEqual(try SearchWordLists.refresh(queue), 1)
+        XCTAssertEqual(try within(), [58_011_001, 58_011_006, 40_025_021, 40_017_017], "through the index's words")
+        XCTAssertEqual(try SearchWordLists.refresh(queue), 0, "a list as its index now is is kept")
+
+        let plain = try queue.read { db in
+            try TranslationVerseSearch.results(
+                in: db, query: LampSearchQuery("faith"), translationIds: ["KJV"], bookRange: 58...58, limit: 10
+            )
+        }
+        XCTAssertEqual(Set(plain.map(\.ref)), [58_011_001, 58_011_006], "a typed word starts one, in the books asked")
+
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text) VALUES ('KJV', 62005004, 62, 5, 4, 'Even our faith.')")
+            try db.execute(sql: "INSERT INTO translation_verses_fts(rowid, text) VALUES (last_insert_rowid(), 'Even our faith.')")
+        }
+        XCTAssertEqual(try within().count, 5, "an index written since is read as text")
+        XCTAssertEqual(try SearchWordLists.refresh(queue), 1, "and listed again")
+    }
+
     func testBooksAreSearchedByCoreInThePhonesDatabase() throws {
         let queue = try DatabaseQueue()
         try queue.write { db in

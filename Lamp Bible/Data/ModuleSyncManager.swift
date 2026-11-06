@@ -1729,6 +1729,7 @@ class ModuleSyncManager: ObservableObject {
         }
 
         print("[ModuleSyncManager] Imported module from file: \(moduleId)")
+        await SearchIndexMaintenance.refreshWordLists()
     }
 
     /// Marks an edited module for the library pass to publish, and asks for

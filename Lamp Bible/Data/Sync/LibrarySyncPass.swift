@@ -784,6 +784,8 @@ extension LibrarySyncPass {
         let archiveRevision = storage is WebDAVModuleStorage && !isInUse(at: storage)
             ? knownArchiveRevision() : nil
         let outcome = try await pass.run(knownArchiveRevision: archiveRevision)
+        // What it installed or changed is in the indexes, not yet their lists.
+        await SearchIndexMaintenance.refreshWordLists()
         switch outcome {
         case .synced(let revision, _): remember(revision, for: pass.source)
         case .notMigrated, .phoneLibrary: remember(nil, for: pass.source)

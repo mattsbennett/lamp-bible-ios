@@ -317,11 +317,11 @@ class ModuleSearch {
     func search(query: String, filter: ModuleSearchFilter = .default, limit: Int = 50) throws -> [ModuleSearchResult] {
         var results: [ModuleSearchResult] = []
 
-        // Escape FTS5 special characters and prepare query
-        let ftsQuery = prepareFTSQuery(query)
-
-        // Allow empty query for dictionary key search or highlight color-only search
-        let hasTextQuery = !ftsQuery.isEmpty
+        // Words to find, even where an index can't ask for them by itself,
+        // as `*faith`, whose FTS query is empty. A query without any allows a
+        // dictionary key search or a highlight colour search.
+        let parsedQuery = LampSearchQuery(query)
+        let hasTextQuery = !parsedQuery.isEmpty && !parsedQuery.plainText.isEmpty
         let hasKeyFilter = filter.strongsKey != nil
         let hasColorFilter = filter.highlightColorOnly && filter.highlightColors != nil
 
@@ -330,7 +330,7 @@ class ModuleSearch {
         if filter.types.contains(.dictionary) {
             // User dictionaries (SQLite)
             if hasTextQuery {
-                results.append(contentsOf: try searchDictionaries(ftsQuery: ftsQuery, filter: filter, limit: limit))
+                results.append(contentsOf: try searchDictionaries(query: parsedQuery, filter: filter, limit: limit))
             } else if hasKeyFilter {
                 // Key-only search for user dictionaries
                 results.append(contentsOf: try searchDictionariesByKey(filter: filter, limit: limit))
@@ -443,7 +443,7 @@ class ModuleSearch {
         }
     }
 
-    private func searchDictionaries(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+    private func searchDictionaries(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         try database.read { db in
             // Build module filter clause
             var moduleCondition = ""
@@ -455,6 +455,58 @@ class ModuleSearch {
                 let placeholders = userModuleIds.map { _ in "?" }.joined(separator: ", ")
                 moduleCondition = "AND d.module_id IN (\(placeholders))"
                 moduleArgs = userModuleIds.map { $0 as DatabaseValueConvertible }
+            }
+
+            // The index, asked as core asks one, the words holding a term
+            // found within words among them; or, where it can't answer, the
+            // entries found by LIKE and kept by the query's own rule.
+            let asked = try LampModuleSearch.indexQuery(query, index: "dictionary_fts", in: db)
+            if case .nothing = asked { return [] }
+            let searchTerms = query.terms.map { $0.text.lowercased() }
+            // The sense that holds a search term, else the first.
+            func definition(_ sensesJSON: String?) -> String? {
+                guard let sensesJSON, let data = sensesJSON.data(using: .utf8),
+                      let senses = try? JSONDecoder().decode([DictionarySense].self, from: data) else { return nil }
+                for sense in senses {
+                    let text = sense.definitionText ?? sense.shortDefinitionText ?? sense.gloss ?? ""
+                    if searchTerms.contains(where: { text.lowercased().contains($0) }) { return text }
+                }
+                return senses.first.flatMap { $0.definitionText ?? $0.shortDefinitionText ?? $0.gloss }
+            }
+            guard let ftsQuery = asked?.match else {
+                let columns = Set(try db.columns(in: "dictionary_entries").map(\.name))
+                let like = columns.contains("search_text")
+                    ? query.sqlLikePredicate(columns: ["d.key", "d.lemma", "d.search_text"])
+                    : query.sqlLikePredicate(columns: ["d.key", "d.lemma"], jsonColumns: ["d.senses_json"])
+                var arguments = StatementArguments(like.arguments)
+                arguments += StatementArguments(moduleArgs)
+                let rows = try Row.fetchCursor(db, sql: """
+                    SELECT d.id, d.module_id, d.key, d.lemma, d.senses_json, m.name AS module_name
+                    FROM dictionary_entries d
+                    JOIN modules m ON d.module_id = m.id
+                    WHERE \(like.condition) \(moduleCondition)
+                    ORDER BY d.key
+                    """, arguments: arguments)
+                var found: [ModuleSearchResult] = []
+                while found.count < limit, let row = try rows.next() {
+                    let key: String = row["key"]
+                    let lemma: String = row["lemma"]
+                    let sensesJSON: String? = row["senses_json"]
+                    guard query.matches([key, lemma, DictionarySearchText.text(fromSensesJSON: sensesJSON)].joined(separator: " "))
+                    else { continue }
+                    found.append(ModuleSearchResult(
+                        id: row["id"],
+                        moduleId: row["module_id"],
+                        moduleName: row["module_name"],
+                        moduleType: .dictionary,
+                        title: "\(lemma) (\(key))",
+                        snippet: definition(sensesJSON) ?? "",
+                        verseId: nil,
+                        rank: 0,
+                        strongsKey: key
+                    ))
+                }
+                return found
             }
 
             // FTS search
@@ -475,34 +527,8 @@ class ModuleSearch {
             ftsArgs.append(contentsOf: moduleArgs)
             ftsArgs.append(limit)
 
-            // Extract search terms for finding matching sense
-            let searchTerms = ftsQuery
-                .replacingOccurrences(of: "\"", with: "")
-                .replacingOccurrences(of: "*", with: "")
-                .components(separatedBy: .whitespaces)
-                .filter { !$0.isEmpty }
-                .map { $0.lowercased() }
-
             var results = try Row.fetchAll(db, sql: ftsSql, arguments: StatementArguments(ftsArgs)).map { row -> ModuleSearchResult in
-                var shortDef: String? = nil
-                if let sensesJson: String = row["senses_json"],
-                   let data = sensesJson.data(using: .utf8),
-                   let senses = try? JSONDecoder().decode([DictionarySense].self, from: data) {
-                    // Find the sense that contains a search term (not just first sense)
-                    for sense in senses {
-                        let defText = sense.definitionText ?? sense.shortDefinitionText ?? sense.gloss ?? ""
-                        let defLower = defText.lowercased()
-                        if searchTerms.contains(where: { defLower.contains($0) }) {
-                            shortDef = defText
-                            break
-                        }
-                    }
-                    // Fall back to first sense if no match found
-                    if shortDef == nil, let first = senses.first {
-                        shortDef = first.definitionText ?? first.shortDefinitionText ?? first.gloss
-                    }
-                }
-
+                let shortDef = definition(row["senses_json"])
                 let key: String = row["key"]
                 return ModuleSearchResult(
                     id: row["id"],
@@ -520,7 +546,7 @@ class ModuleSearch {
 
             // Also search by key (since key is not in FTS index)
             // Extract potential key from query (e.g., "G2316" or "H430")
-            let keyPattern = ftsQuery.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "*", with: "").uppercased()
+            let keyPattern = query.plainText.uppercased()
             if keyPattern.count >= 2 {
                 let keySql = """
                     SELECT
@@ -1096,15 +1122,6 @@ class ModuleSearch {
                 holdsPhrase: hit.holdsPhrase
             )
         }
-    }
-
-    // MARK: - FTS Query Preparation
-
-    /// The one search grammar. Every searcher below is handed the result of
-    /// this, except the translation searchers, which take the raw query and
-    /// apply the same grammar themselves.
-    private func prepareFTSQuery(_ query: String) -> String {
-        LampSearchQuery(query).fts5Query
     }
 
     // MARK: - Highlight Search
