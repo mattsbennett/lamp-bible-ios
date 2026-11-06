@@ -351,7 +351,7 @@ class ModuleSearch {
         }
 
         if filter.types.contains(.devotional) && hasTextQuery {
-            results.append(contentsOf: try searchDevotionals(ftsQuery: ftsQuery, filter: filter, limit: limit))
+            results.append(contentsOf: try searchDevotionals(query: LampSearchQuery(query), filter: filter, limit: limit))
         }
 
         if filter.types.contains(.notes) && hasTextQuery {
@@ -830,69 +830,57 @@ class ModuleSearch {
         }
     }
 
-    private func searchDevotionals(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+    private func searchDevotionals(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         try database.read { db in
-            var conditions = ["devotional_entries_fts MATCH ?"]
-            var arguments: [DatabaseValueConvertible] = [ftsQuery]
+            try Self.devotionalResults(in: db, query: query, filter: filter, limit: limit)
+        }
+    }
 
-            if let moduleIds = filter.moduleIds {
-                let moduleIdArray = Array(moduleIds)
-                let placeholders = moduleIdArray.map { _ in "?" }.joined(separator: ", ")
-                conditions.append("d.module_id IN (\(placeholders))")
-                for id in moduleIdArray {
-                    arguments.append(id)
-                }
-            }
-
-            let criteria = LampDevotionalSearchCriteria(
-                date: filter.devotionalDate,
-                monthDay: filter.monthDay,
-                tags: filter.tags,
-                categories: filter.categories
+    /// The phone's writings searched by core, as the Mac searches its own,
+    /// by the words and the date, tags and kind the filter asks for.
+    static func devotionalResults(
+        in db: Database,
+        query: LampSearchQuery,
+        filter: ModuleSearchFilter,
+        limit: Int
+    ) throws -> [ModuleSearchResult] {
+        let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'devotional' ORDER BY name")
+            .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
+            .filter { filter.moduleIds?.contains($0.id) ?? true }
+        let criteria = LampDevotionalSearchCriteria(
+            date: filter.devotionalDate,
+            monthDay: filter.monthDay,
+            tags: filter.tags,
+            categories: filter.categories
+        )
+        let hits = try LampModuleSearch.devotionals(in: db, modules: modules, query: query, criteria: criteria, limit: limit)
+        guard !hits.isEmpty else { return [] }
+        // The subtitle, date and tags the list shows, which core's results
+        // don't carry.
+        let ids = hits.map { String($0.id.dropFirst("devotional:\($0.moduleID):".count)) }
+        let details = Dictionary(
+            try Row.fetchAll(db, sql: """
+                SELECT id, subtitle, date, tags FROM devotional_entries
+                WHERE id IN (\(ids.map { _ in "?" }.joined(separator: ", ")))
+                """, arguments: StatementArguments(ids)).map { ($0["id"] as String, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return zip(hits, ids).map { hit, id in
+            let subtitle: String? = details[id]?["subtitle"]
+            let tags: String? = details[id]?["tags"]
+            return ModuleSearchResult(
+                id: id,
+                moduleId: hit.moduleID,
+                moduleName: hit.moduleName,
+                moduleType: .devotional,
+                title: subtitle.map { "\(hit.title): \($0)" } ?? hit.title,
+                snippet: hit.snippet,
+                verseId: nil,
+                rank: 0,
+                monthDay: details[id]?["date"],
+                tags: tags?.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) },
+                holdsPhrase: hit.holdsPhrase
             )
-            let facets = criteria.sqlConditions(tableAlias: "d")
-            conditions += facets.clauses
-            arguments += facets.arguments
-
-            let whereClause = conditions.joined(separator: " AND ")
-            let sql = """
-                SELECT
-                    d.id, d.module_id, d.title, d.subtitle, d.date, d.tags, d.category,
-                    m.name as module_name,
-                    bm25(devotional_entries_fts) as rank,
-                    snippet(devotional_entries_fts, 2, '<mark>', '</mark>', '...', 32) as snippet
-                FROM devotional_entries_fts f
-                JOIN devotional_entries d ON f.id = d.id
-                JOIN modules m ON d.module_id = m.id
-                WHERE \(whereClause)
-                ORDER BY rank
-                LIMIT ?
-            """
-            arguments.append(limit)
-
-            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map { row in
-                let tagsStr: String? = row["tags"]
-                let tagList = tagsStr?.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
-                let dateStr: String? = row["date"]
-
-                // Format display title with subtitle if available
-                let title: String = row["title"]
-                let subtitle: String? = row["subtitle"]
-                let displayTitle = subtitle != nil ? "\(title): \(subtitle!)" : title
-
-                return ModuleSearchResult(
-                    id: row["id"],
-                    moduleId: row["module_id"],
-                    moduleName: row["module_name"],
-                    moduleType: .devotional,
-                    title: displayTitle,
-                    snippet: row["snippet"] ?? "",
-                    verseId: nil,
-                    rank: -(row["rank"] as Double),
-                    monthDay: dateStr,  // Use date field for monthDay (backward compatible)
-                    tags: tagList
-                )
-            }
         }
     }
 

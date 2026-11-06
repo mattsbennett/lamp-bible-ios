@@ -5165,6 +5165,37 @@ final class CoreModuleSearchTests: XCTestCase {
         XCTAssertEqual(hits.first?.moduleName, "Daily Quiz")
         XCTAssertEqual(hits.first?.verseId, 1_001_001)
     }
+
+    func testWritingsAreSearchedByCoreWithTheirDateAndTags() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE modules (id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL);
+                CREATE TABLE devotional_entries (
+                    id TEXT PRIMARY KEY, module_id TEXT NOT NULL, title TEXT NOT NULL, subtitle TEXT, author TEXT,
+                    date TEXT, tags TEXT, category TEXT, series_name TEXT, series_order INTEGER,
+                    key_scriptures_json TEXT, summary_json TEXT, content_json TEXT NOT NULL, search_text TEXT);
+                CREATE VIRTUAL TABLE devotional_entries_fts USING fts5(id UNINDEXED, title, search_text);
+                INSERT INTO modules (id, type, name) VALUES ('mine', 'devotional', 'My Writing');
+                INSERT INTO devotional_entries (id, module_id, title, subtitle, date, tags, category, content_json, search_text) VALUES
+                    ('w1', 'mine', 'Abiding', 'John 15', '2026-02-01', 'Prayer, Fruit', 'Reflection',
+                     '[{"type":"paragraph","content":{"text":"Abide in the vine."}}]', 'Abiding John 15 Abide in the vine.'),
+                    ('w2', 'mine', 'Vines', NULL, '2026-02-02', 'Gardens', 'Study',
+                     '[{"type":"paragraph","content":{"text":"The vine and its branches."}}]', 'Vines The vine and its branches.');
+                INSERT INTO devotional_entries_fts(id, title, search_text) SELECT id, title, search_text FROM devotional_entries;
+                """)
+        }
+        var filter = ModuleSearchFilter()
+        filter.tags = ["prayer"]
+        let hits = try queue.read { db in
+            try ModuleSearch.devotionalResults(in: db, query: LampSearchQuery("vine"), filter: filter, limit: 10)
+        }
+        XCTAssertEqual(hits.map(\.id), ["w1"], "the writing, as its sheet opens it, by the tag asked for")
+        XCTAssertEqual(hits.first?.title, "Abiding: John 15")
+        XCTAssertEqual(hits.first?.monthDay, "2026-02-01")
+        XCTAssertEqual(hits.first?.tags, ["Prayer", "Fruit"])
+        XCTAssertTrue(hits.first?.snippet.contains("<mark>vine</mark>") == true, hits.first?.snippet ?? "")
+    }
 }
 
 final class SearchAuditFixTests: XCTestCase {
