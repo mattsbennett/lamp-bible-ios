@@ -1029,8 +1029,6 @@ class ModuleSearch {
 
     /// Search highlights - either by verse text or by color only
     private func searchHighlights(query: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
-        var results: [ModuleSearchResult] = []
-
         // Get highlight sets to search
         let allSets = try database.getAllHighlightSets()
         var setsToSearch: [HighlightSet] = allSets
@@ -1047,92 +1045,60 @@ class ModuleSearch {
 
         guard !setsToSearch.isEmpty else { return [] }
 
-        // The grammar every other search follows: words in any order, quoted
-        // phrases, a word's start.
+        // Chosen and ordered by core, as the Mac's are: each set's newest
+        // first, of the colours, books and words asked for, the sets taking
+        // turns. A text search is ranked by the merge after; a search by
+        // colour alone keeps this order.
         let searchQuery = LampSearchQuery(query)
-        let hasTextQuery = !searchQuery.isEmpty
-
+        let hasTextQuery = !searchQuery.isEmpty && !searchQuery.plainText.isEmpty
+        var entries: [String: [Int64: HighlightEntry]] = [:]
+        var sets: [(id: String, highlights: [LampVerseHighlight])] = []
         for set in setsToSearch {
-            // Get all highlights for this set
-            var highlights = try database.getAllHighlights(setId: set.id)
-
-            // Filter by color if specified
-            if let colorFilter = filter.highlightColors, !colorFilter.isEmpty {
-                highlights = highlights.filter { entry in
-                    LampHighlightSearch.matchesColor(entry.color, in: colorFilter)
+            let highlights = try database.getAllHighlights(setId: set.id)
+            entries[set.id] = Dictionary(highlights.compactMap { entry in entry.id.map { ($0, entry) } },
+                                         uniquingKeysWith: { first, _ in first })
+            sets.append((set.id, highlights.compactMap { entry in
+                entry.id.map { id in
+                    LampVerseHighlight(
+                        id: id, setID: set.id, translationID: set.translationId, reference: entry.ref,
+                        startOffset: entry.sc, endOffset: entry.ec,
+                        style: LampHighlightStyle(rawValue: entry.style) ?? .highlight, color: entry.color
+                    )
                 }
-            }
-            if let bookRange = filter.bookRange {
-                highlights = highlights.filter { bookRange.contains($0.ref / 1_000_000) }
-            }
-
-            guard !highlights.isEmpty else { continue }
-
-            // Get verse texts for highlighted verses from the translation
-            let translationId = set.translationId
-            let verseRefs = Array(Set(highlights.map { $0.ref }))
-
-            // Fetch verses from translation
-            let versesById = try getVerseTexts(translationId: translationId, refs: verseRefs)
-
-            // Create results for each highlight
-            for highlight in highlights {
-                guard let verseText = versesById[highlight.ref] else { continue }
-
-                if hasTextQuery {
-                    guard searchQuery.matches(verseText) else { continue }
-                }
-
-                // Build result
-                let bookId = highlight.ref / 1_000_000
-                let chapter = (highlight.ref % 1_000_000) / 1000
-                let verse = highlight.ref % 1000
-                let bookName = BookOsisCache.shared.displayName(for: bookId)
-                let title = "\(bookName) \(chapter):\(verse)"
-
-                // Create snippet - show highlighted portion marked for styling
-                let snippet = LampHighlightSearch.markedSnippet(
-                    text: verseText, startOffset: highlight.sc, endOffset: highlight.ec
-                )
-
-                // By the highlighted words first, then the verse: the
-                // snippet starts with its mark, so compared as a whole it
-                // could never equal the query or start with it. A search by
-                // colour alone puts the newest first, by the row's ID, which
-                // grows as highlights are made.
-                let rank: Double
-                if hasTextQuery {
-                    let characters = Array(verseText)
-                    let lower = min(max(highlight.sc, 0), characters.count)
-                    let upper = min(max(highlight.ec, lower), characters.count)
-                    rank = searchQuery.textRank(in: [String(characters[lower..<upper]), verseText])
-                } else {
-                    rank = Double(highlight.id ?? 0)
-                }
-
-                var result = ModuleSearchResult(
-                    id: "highlight-\(set.id)-\(highlight.id ?? 0)",
-                    moduleId: set.id,
-                    moduleName: set.name,
-                    moduleType: .highlights,
-                    title: title,
-                    snippet: snippet,
-                    verseId: highlight.ref,
-                    rank: rank
-                )
-                result.highlightColor = LampHighlightSearch.normalizedColor(highlight.color)
-                result.highlightStyle = highlight.highlightStyle
-                result.translationId = translationId
-                result.holdsPhrase = searchQuery.holdsPhrase(verseText)
-                results.append(result)
-
-                if results.count >= limit { break }
-            }
-
-            if results.count >= limit { break }
+            }))
         }
-
-        return results
+        let names = Dictionary(setsToSearch.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let hits = try LampModuleSearch.highlights(
+            in: sets, query: hasTextQuery ? searchQuery : nil, colors: filter.highlightColors,
+            bookRange: filter.bookRange, limit: limit
+        ) { translationId, references in
+            try getVerseTexts(translationId: translationId, refs: Array(references))
+        }
+        return hits.enumerated().map { place, hit in
+            let highlight = hit.highlight
+            let bookName = BookOsisCache.shared.displayName(for: highlight.reference / 1_000_000)
+            let chapter = (highlight.reference % 1_000_000) / 1000
+            let verse = highlight.reference % 1000
+            var result = ModuleSearchResult(
+                id: "highlight-\(hit.setID)-\(highlight.id)",
+                moduleId: hit.setID,
+                moduleName: names[hit.setID] ?? hit.setID,
+                moduleType: .highlights,
+                title: "\(bookName) \(chapter):\(verse)",
+                // The highlighted portion, marked for styling.
+                snippet: LampHighlightSearch.markedSnippet(
+                    text: hit.text, startOffset: highlight.startOffset, endOffset: highlight.endOffset
+                ),
+                verseId: highlight.reference,
+                // Core's order, the best highest, as the results sort.
+                rank: -Double(place)
+            )
+            result.highlightColor = LampHighlightSearch.normalizedColor(highlight.color)
+            result.highlightStyle = entries[hit.setID]?[highlight.id]?.highlightStyle ?? .highlight
+            result.translationId = highlight.translationID
+            result.holdsPhrase = hit.holdsPhrase
+            return result
+        }
     }
 
     /// Helper to get verse texts from a translation
