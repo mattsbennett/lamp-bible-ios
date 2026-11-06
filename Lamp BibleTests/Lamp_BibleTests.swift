@@ -5073,6 +5073,38 @@ final class CommentaryFootnoteSearchTests: XCTestCase {
     }
 }
 
+/// The phone's databases searched by core, as the Mac searches its own.
+final class CoreModuleSearchTests: XCTestCase {
+    func testBooksAreSearchedByCoreInThePhonesDatabase() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE book_modules (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+                CREATE TABLE book_sections (
+                    id TEXT PRIMARY KEY, module_id TEXT NOT NULL, title TEXT NOT NULL, subtitle TEXT,
+                    key_scriptures_json TEXT, search_text TEXT NOT NULL DEFAULT '');
+                CREATE VIRTUAL TABLE book_sections_fts USING fts5(
+                    title, search_text, content='book_sections', content_rowid='rowid');
+                INSERT INTO book_modules (id, title) VALUES ('mere', 'Mere Christianity'), ('other', 'Another Book');
+                INSERT INTO book_sections (id, module_id, title, subtitle, key_scriptures_json, search_text) VALUES
+                    ('mere:hope', 'mere', 'Hope', 'Book 3, Chapter 10', '[{"sv":58011001,"label":"Heb 11:1"}]', 'Aim at Heaven.'),
+                    ('other:1', 'other', 'One', NULL, NULL, 'Hope elsewhere.');
+                INSERT INTO book_sections_fts(book_sections_fts) VALUES('rebuild');
+                """)
+        }
+        var filter = ModuleSearchFilter()
+        filter.moduleIds = ["mere"]
+        let hits = try queue.read { db in
+            try ModuleSearch.bookResults(in: db, query: LampSearchQuery("hope"), filter: filter, limit: 10)
+        }
+        XCTAssertEqual(hits.map(\.id), ["mere:hope"], "the section, as the book opens at it; the other book isn't asked")
+        XCTAssertEqual(hits.first?.title, "Hope: Book 3, Chapter 10")
+        XCTAssertEqual(hits.first?.moduleName, "Mere Christianity")
+        XCTAssertEqual(hits.first?.verseId, 58_011_001)
+        XCTAssertEqual(hits.first?.moduleType, .book)
+    }
+}
+
 final class SearchAuditFixTests: XCTestCase {
     func testAKeyInACommaJoinedTagIsCountedAndListed() throws {
         let queue = try DatabaseQueue()

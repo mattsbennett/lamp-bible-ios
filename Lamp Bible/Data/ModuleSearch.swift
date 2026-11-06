@@ -344,7 +344,7 @@ class ModuleSearch {
         }
 
         if filter.types.contains(.book) && hasTextQuery {
-            results.append(contentsOf: try searchBooks(ftsQuery: ftsQuery, filter: filter, limit: limit))
+            results.append(contentsOf: try searchBooks(query: LampSearchQuery(query), filter: filter, limit: limit))
         }
 
         if filter.types.contains(.devotional) && hasTextQuery {
@@ -394,77 +394,45 @@ class ModuleSearch {
 
     // MARK: - Type-Specific Search
 
-    private func searchBooks(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
+    /// The user's books and the bundled ones.
+    private func searchBooks(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         var results = try database.read { db in
-            try searchBooks(in: db, ftsQuery: ftsQuery, filter: filter, limit: limit)
+            try Self.bookResults(in: db, query: query, filter: filter, limit: limit)
         }
 
         if BundledModuleDatabase.shared.hasBookModulesTable() {
             results.append(contentsOf: try BundledModuleDatabase.shared.read { db in
-                try searchBooks(in: db, ftsQuery: ftsQuery, filter: filter, limit: limit)
+                try Self.bookResults(in: db, query: query, filter: filter, limit: limit)
             })
         }
 
         return results
     }
 
-    private func searchBooks(
+    /// One database's books searched by core, as the Mac searches its own.
+    static func bookResults(
         in db: Database,
-        ftsQuery: String,
+        query: LampSearchQuery,
         filter: ModuleSearchFilter,
         limit: Int
     ) throws -> [ModuleSearchResult] {
-        var conditions = ["book_sections_fts MATCH ?"]
-        var arguments: [DatabaseValueConvertible] = [ftsQuery]
-
-        if let moduleIds = filter.moduleIds {
-            guard !moduleIds.isEmpty else { return [] }
-            let sortedIds = moduleIds.sorted()
-            let placeholders = sortedIds.map { _ in "?" }.joined(separator: ", ")
-            conditions.append("s.module_id IN (\(placeholders))")
-            arguments.append(contentsOf: sortedIds)
-        }
-
-        arguments.append(limit)
-        let rows = try Row.fetchAll(
-            db,
-            sql: """
-                SELECT s.id, s.module_id, s.title, s.subtitle, s.key_scriptures_json,
-                       b.title AS module_name,
-                       bm25(book_sections_fts) AS rank,
-                       snippet(book_sections_fts, 1, '<mark>', '</mark>', '...', 32) AS snippet
-                FROM book_sections_fts f
-                JOIN book_sections s ON f.rowid = s.rowid
-                JOIN book_modules b ON s.module_id = b.id
-                WHERE \(conditions.joined(separator: " AND "))
-                ORDER BY rank
-                LIMIT ?
-                """,
-            arguments: StatementArguments(arguments)
-        )
-
-        return rows.map { row in
-            let title: String = row["title"]
-            let subtitle: String? = row["subtitle"]
-            return ModuleSearchResult(
-                id: row["id"],
-                moduleId: row["module_id"],
-                moduleName: row["module_name"],
+        guard try db.tableExists("book_modules") else { return [] }
+        let modules = try Row.fetchAll(db, sql: "SELECT id, title FROM book_modules ORDER BY title")
+            .map { LampSearchedModule(id: $0["id"], name: $0["title"]) }
+            .filter { filter.moduleIds?.contains($0.id) ?? true }
+        return try LampModuleSearch.books(in: db, modules: modules, query: query, limit: limit).map { hit in
+            ModuleSearchResult(
+                // The section, as the book opens at it.
+                id: String(hit.id.dropFirst("book:\(hit.moduleID):".count)),
+                moduleId: hit.moduleID,
+                moduleName: hit.moduleName,
                 moduleType: .book,
-                title: subtitle.map { "\(title): \($0)" } ?? title,
-                snippet: row["snippet"] ?? "",
-                verseId: firstScriptureReference(in: row["key_scriptures_json"]),
-                rank: -(row["rank"] as Double)
+                title: hit.subtitle.map { "\(hit.title): \($0)" } ?? hit.title,
+                snippet: hit.snippet,
+                verseId: hit.startReference,
+                rank: 0
             )
         }
-    }
-
-    private func firstScriptureReference(in json: String?) -> Int? {
-        guard let json,
-              let data = json.data(using: .utf8),
-              let ranges = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-              let first = ranges.first else { return nil }
-        return first["sv"] as? Int
     }
 
     private func searchDictionaries(ftsQuery: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
