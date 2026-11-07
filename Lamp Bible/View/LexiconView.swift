@@ -2237,11 +2237,13 @@ struct LexiconEntryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Which lexicon this is, a quiet line above the word: in capitals,
-            // as the entry's section labels are set, a long name such as
-            // "Complete Word Study Dictionary: Old Testament" shouted.
-            Text(entry.lexiconName)
+            // Which lexicon this is, a quiet line above the word: capitals, but
+            // small and faint, since at the section labels' size and colour a
+            // long name such as "Complete Word Study Dictionary: Old
+            // Testament" shouted.
+            Text(entry.lexiconName.uppercased())
                 .font(caption2Font)
+                .tracking(0.4)
                 .foregroundStyle(.tertiary)
 
             // Header: the lemma (with a homograph's Roman numeral), and on
