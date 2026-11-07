@@ -229,7 +229,7 @@ struct PlanPickerView: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("This week")
+                    Text("This week · \(weekRange(days))")
                         .font(.footnote.weight(.semibold))
                     Spacer()
                     Text("\(weekRead) of \(weekTotal) readings read")
@@ -295,6 +295,12 @@ struct PlanPickerView: View {
             let read = (0..<total).filter { completedReadingIds.contains("\(plan.id)_\(dayNum)_\($0)_\(year)") }.count
             return PlanWeekStrip.Day(date: date, read: read, total: total, isToday: date == today, isAhead: date > today)
         }
+    }
+
+    /// "Nov 2–8", or "Oct 27 – Nov 2" across a month's end.
+    private func weekRange(_ days: [PlanWeekStrip.Day]) -> String {
+        guard let first = days.first?.date, let last = days.last?.date else { return "" }
+        return (first..<last).formatted(.interval.month(.abbreviated).day())
     }
 
     /// Following a plan, or not, written straight to the settings.
