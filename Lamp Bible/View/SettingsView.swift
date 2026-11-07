@@ -169,31 +169,53 @@ struct SettingsView: View {
             Form {
                 let generator = UINotificationFeedbackGenerator()
 
+                Section {
+                    SettingsIdentityCard(
+                        moduleCount: moduleCount,
+                        syncSummary: syncBackend == .none ? "On this iPhone" : "Syncs with \(syncBackend.displayName)"
+                    )
+                }
+
                 // MARK: - Tool Settings
                 Section {
                     NavigationLink {
-                        ModuleSettingsView(userSettings: $userSettings)
-                    } label: {
-                        Label("Settings", systemImage: "slider.horizontal.3")
-                    }
-
-                    NavigationLink {
                         ModuleManagerView()
                     } label: {
-                        Label("Manager", systemImage: "shippingbox")
+                        SettingsRowLabel(
+                            title: "Module Manager",
+                            subtitle: "Install, import and remove modules",
+                            systemImage: "shippingbox.fill",
+                            color: .accentColor
+                        )
+                    }
+                    // The row's former name, kept for automation.
+                    .accessibilityIdentifier("Manager")
+
+                    NavigationLink {
+                        ModuleSettingsView(userSettings: $userSettings)
+                    } label: {
+                        SettingsRowLabel(
+                            title: "Translations & Lexicons",
+                            subtitle: "Default translation, word hints, lexicon order",
+                            systemImage: "character.book.closed.fill",
+                            color: .indigo
+                        )
                     }
                 } header: {
-                    VStack(alignment: .leading) {
-                        Text("Modules").padding(.bottom, 8).padding(.top, 15)
-                    }
+                    Text("Modules").lampSectionHeader()
                 }
-                .headerProminence(.increased)
 
                 // MARK: - Sync Settings
                 Section {
-                    Picker("Sync Method", selection: $syncBackend) {
+                    Picker(selection: $syncBackend) {
                         ForEach(SyncBackend.allCases, id: \.self) { backend in
                             Text(backend.displayName).tag(backend)
+                        }
+                    } label: {
+                        Label {
+                            Text("Sync Method")
+                        } icon: {
+                            LampIconTile(systemName: "arrow.triangle.2.circlepath", color: .blue)
                         }
                     }
                     .onChange(of: syncBackend) { oldValue, newValue in
@@ -253,12 +275,18 @@ struct SettingsView: View {
 
                     case .none:
                         HStack {
-                            Text("Status")
+                            Label {
+                                Text("Status")
+                            } icon: {
+                                LampIconTile(systemName: "iphone", color: .gray)
+                            }
                             Spacer()
-                            Text("Local Only").foregroundStyle(.secondary)
-                            Image(systemName: "iphone")
-                                .foregroundStyle(.secondary)
+                            // The state, not the method again: the row above
+                            // already says Local Only.
+                            Text("Not Syncing")
+                                .foregroundStyle(LampTheme.caption)
                         }
+                        .accessibilityElement(children: .combine)
                     }
 
                     // Sync status (for all backends except none)
@@ -397,8 +425,9 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text("Sync")
+                    Text("Sync").lampSectionHeader()
                 } footer: {
+                    Group {
                     switch syncBackend {
                     case .icloudDrive:
                         if iCloudAvailable {
@@ -409,8 +438,10 @@ struct SettingsView: View {
                     case .webdav:
                         Text("Sync to your own server (Synology, Nextcloud, ownCloud, etc.). Files stored in specified WebDAV path directory.")
                     case .none:
-                        Text("Data stays on this device only. Not synced to cloud.")
+                            Text("Your library stays on this device and isn't synced.")
                     }
+                    }
+                    .foregroundStyle(LampTheme.caption)
                 }
                 .task {
                     // Reload settings from database in case they weren't available at app launch
@@ -441,7 +472,7 @@ struct SettingsView: View {
                             Text("Right").tag("right")
                         }
                     } header: {
-                        Text("Notes Panel")
+                        Text("Notes Panel").lampSectionHeader()
                     }
                 }
 
@@ -454,76 +485,111 @@ struct SettingsView: View {
                             userSettings = UserDatabase.shared.getSettings()
                         }
                     )) {
-                        Text("In-app Bible")
+                        Label {
+                            Text("In-app Bible")
+                        } icon: {
+                            LampIconTile(systemName: "book.fill", color: .accentColor)
+                        }
                     }.tint(.accentColor)
                 } header: {
-                    VStack(alignment: .leading) {
-                        Text("Reading Plan Settings").padding(.bottom, 8).padding(.top, 15)
-                    }
+                    Text("Reading Plans").lampSectionHeader()
                 } footer: {
+                    Group {
                     Text("Tapping a reading opens it in Lamp Bible’s reader, and Start Reading goes through the day’s readings in order.")
+                    }
+                    .foregroundStyle(LampTheme.caption)
                 }
-                .headerProminence(.increased)
 
                 Section {
-                    ForEach(externalApps) { app in
-                        HStack {
-                            Button {
-                                try? UserDatabase.shared.updateSettings { $0.planExternalBible = app.name }
-                                userSettings = UserDatabase.shared.getSettings()
-                                generator.notificationOccurred(.success)
-                            } label: {
-                                Text(app.name).tint(.primary)
+                    // Apps that can be chosen get rows; those not installed are
+                    // named once, in a line, rather than as rows that do nothing.
+                    let choosable = externalApps.filter { $0.application == nil || $0.isInstalled }
+                    let uninstalled = externalApps.filter { $0.application != nil && !$0.isInstalled }
+                    ForEach(choosable) { app in
+                        let chosen = userSettings.planExternalBible == app.name
+                            || (userSettings.planExternalBible == nil && app.name == "None")
+                        Button {
+                            try? UserDatabase.shared.updateSettings { $0.planExternalBible = app.name }
+                            userSettings = UserDatabase.shared.getSettings()
+                            generator.notificationOccurred(.success)
+                        } label: {
+                            HStack {
+                                Text(app.name)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if chosen {
+                                    Image(systemName: "checkmark")
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(.tint)
+                                }
                             }
-                            .disabled(app.application != nil && !app.isInstalled)
-                            Spacer()
-                            if (userSettings.planExternalBible == app.name || (userSettings.planExternalBible == nil && app.name == "None")) {
-                                Text(Image(systemName: "checkmark")).foregroundColor(.accentColor)
-                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(chosen ? .isSelected : [])
+                    }
+                    if !uninstalled.isEmpty {
+                        Label {
+                            Text("Also works with \(ListFormatter.localizedString(byJoining: uninstalled.map(\.name))), once installed on this iPhone.")
+                                .font(.footnote)
+                                .foregroundStyle(LampTheme.caption)
+                        } icon: {
+                            Image(systemName: "arrow.down.app")
+                                .foregroundStyle(LampTheme.caption)
                         }
                     }
                 } header: {
-                    Text("External Bible")
+                    Text("Open Readings In").lampSectionHeader()
                 } footer: {
-                    Text("Each reading gets a button that opens it in this app. With the in-app Bible off, tapping a reading opens it here instead.")
+                    Group {
+                    Text("Each reading gets a button that opens it in the chosen app. With the in-app Bible off, tapping a reading opens it there instead.")
+                    }
+                    .foregroundStyle(LampTheme.caption)
                 }
 
                 Section {
                     HStack {
+                        Label {
+                            Text("Reading Rate")
+                        } icon: {
+                            LampIconTile(systemName: "gauge.with.dots.needle.67percent", color: .orange)
+                        }
                         Spacer()
-                        Text("\(Int(planWpm)) wpm")
-                        Spacer()
+                        Text("\(Int(planWpm)) words a minute")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
-                    Slider(value: $planWpm, in: 70...400, step: 1) { editing in
+                    .accessibilityElement(children: .combine)
+                    Slider(value: $planWpm, in: 70...400, step: 1) {
+                        Text("Reading Rate")
+                    } minimumValueLabel: {
+                        Image(systemName: "tortoise.fill").foregroundStyle(.secondary)
+                    } maximumValueLabel: {
+                        Image(systemName: "hare.fill").foregroundStyle(.secondary)
+                    } onEditingChanged: { editing in
                         if !editing {
                             try? UserDatabase.shared.updateSettings { $0.planWpm = planWpm }
                             userSettings = UserDatabase.shared.getSettings()
                             planViewRefreshID = UUID()
                         }
                     }
-                    Text("Presets (Adult Avg)").font(.system(size: 12)).textCase(.uppercase).foregroundStyle(Color.secondary).padding(.bottom, -10)
-                    Button("Aloud") {
-                        let aloudSetting = 183.0
-                        planWpm = aloudSetting
-                        try? UserDatabase.shared.updateSettings { $0.planWpm = aloudSetting }
-                        userSettings = UserDatabase.shared.getSettings()
-                        planViewRefreshID = UUID()
-                        generator.notificationOccurred(.success)
-                    }
-                    Button("Silent") {
-                        let silentSetting = 238.0
-                        planWpm = silentSetting
-                        try? UserDatabase.shared.updateSettings { $0.planWpm = silentSetting }
-                        userSettings = UserDatabase.shared.getSettings()
-                        planViewRefreshID = UUID()
-                        generator.notificationOccurred(.success)
+                    HStack(spacing: 10) {
+                        Text("Adult average")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        wpmPreset("Aloud", wpm: 183, generator: generator)
+                        wpmPreset("Silent", wpm: 238, generator: generator)
                     }
                 } header: {
-                    Text("Reading Rate (WPM)")
+                    Text("Reading Rate").lampSectionHeader()
                 } footer: {
+                    Group {
                     Text("Sets both the reading time estimates for plan readings and the pace Read Aloud speaks at.")
+                    }
+                    .foregroundStyle(LampTheme.caption)
                 }
-                .listRowSeparator(.hidden)
 
                 readAloudSection
 
@@ -537,7 +603,11 @@ struct SettingsView: View {
                             handleNotificationToggle(oldValue: oldValue, newValue: newValue)
                         }
                     )) {
-                        Text("Remind me daily")
+                        Label {
+                            Text("Remind Me Daily")
+                        } icon: {
+                            LampIconTile(systemName: "bell.fill", color: .red)
+                        }
                     }.tint(.accentColor)
                     DatePicker("Reminder time", selection: Binding(
                         get: { userSettings.planNotificationDate },
@@ -550,7 +620,7 @@ struct SettingsView: View {
                     ), displayedComponents: .hourAndMinute)
                         .disabled(!userSettings.planNotification)
                 } header: {
-                    Text("Daily Plan Reminder")
+                    Text("Daily Plan Reminder").lampSectionHeader()
                 }
                 .alert("No reading plans", isPresented: $showingNotificationAlert) {
                     NavigationLink(destination: PlanPickerView()) {
@@ -567,24 +637,21 @@ struct SettingsView: View {
                 .textCase(nil)
 
                 Section {
-                    Link(destination: URL(string: "https://lampbible.com/privacy/apps")!) {
-                        Label("Privacy", systemImage: "hand.raised")
-                    }
-                    Link(destination: URL(string: "https://lampbible.com/content-licences")!) {
-                        Label("Content Licences", systemImage: "doc.text")
-                    }
-                    Link(destination: URL(string: "https://lampbible.com/software-licences")!) {
-                        Label("Software Licences", systemImage: "chevron.left.forwardslash.chevron.right")
-                    }
+                    aboutLink("Privacy", url: "https://lampbible.com/privacy/apps", systemImage: "hand.raised.fill", color: .blue)
+                    aboutLink("Content Licences", url: "https://lampbible.com/content-licences", systemImage: "doc.text.fill", color: .gray)
+                    aboutLink("Software Licences", url: "https://lampbible.com/software-licences", systemImage: "chevron.left.forwardslash.chevron.right", color: .gray)
                 } header: {
-                    Text("About")
+                    Text("About").lampSectionHeader()
                 } footer: {
+                    Group {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Privacy disclosures and licence notices for bundled content and software.")
                         // Which build this is decides which sync it speaks, so
                         // the Mac's migration can ask for it by number.
                         Text("Version \(Self.appVersion)")
                     }
+                    }
+                    .foregroundStyle(LampTheme.caption)
                 }
 
 #if DEBUG
@@ -600,9 +667,12 @@ struct SettingsView: View {
                         Text("Reset Module Database")
                     }
                 } header: {
-                    Text("Debug")
+                    Text("Debug").lampSectionHeader()
                 } footer: {
+                    Group {
                     Text("Temporarily renders the reader text with minimal formatting and no interactions to help diagnose scroll performance. Restart the app after changing.")
+                    }
+                    .foregroundStyle(LampTheme.caption)
                 }
                 .alert("Reset Database?", isPresented: $showingDatabaseResetAlert) {
                     Button("Cancel", role: .cancel) { }
@@ -620,6 +690,9 @@ struct SettingsView: View {
                 }
 #endif
             }
+            // Even room between groups, so a footer never sits against the
+            // next group's header.
+            .listSectionSpacing(20)
             .navigationBarBackButtonHidden(true)
             .navigationTitle("Settings")
             .toolbar {
@@ -749,6 +822,44 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingDevotionalConflicts) {
                 DevotionalConflictView()
+            }
+        }
+    }
+
+    /// A reading-rate preset: filled when it is the rate set now.
+    private func wpmPreset(_ title: String, wpm: Double, generator: UINotificationFeedbackGenerator) -> some View {
+        let isCurrent = Int(planWpm) == Int(wpm)
+        return Button {
+            planWpm = wpm
+            try? UserDatabase.shared.updateSettings { $0.planWpm = wpm }
+            userSettings = UserDatabase.shared.getSettings()
+            planViewRefreshID = UUID()
+            generator.notificationOccurred(.success)
+        } label: {
+            Text("\(title) · \(Int(wpm))")
+                .font(.subheadline.weight(.medium))
+                .monospacedDigit()
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .tint(isCurrent ? .accentColor : .secondary)
+        .accessibilityLabel("\(title), \(Int(wpm)) words a minute")
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    private func aboutLink(_ title: String, url: String, systemImage: String, color: Color) -> some View {
+        Link(destination: URL(string: url)!) {
+            HStack {
+                Label {
+                    Text(title).foregroundStyle(.primary)
+                } icon: {
+                    LampIconTile(systemName: systemImage, color: color)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.forward")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -1281,8 +1392,13 @@ private struct ReadAloudSettingsSection: View {
     var body: some View {
         Section {
             Toggle(isOn: $followsText) {
-                Text("Follow Along")
+                Label {
+                    Text("Follow Along")
+                } icon: {
+                    LampIconTile(systemName: "waveform", color: .purple)
+                }
             }
+            .tint(.accentColor)
 
             if voices.isEmpty {
                 Text(noVoiceText)
@@ -1303,13 +1419,16 @@ private struct ReadAloudSettingsSection: View {
                 }
             }
         } header: {
-            Text("Read Aloud")
+            Text("Read Aloud").lampSectionHeader()
         } footer: {
+            Group {
             if let languageName, !voices.isEmpty {
                 Text("Follow Along highlights each verse as it's spoken and keeps it on screen. The voice applies to \(languageName) translations.")
             } else {
                 Text("Follow Along highlights each verse as it's spoken and keeps it on screen.")
             }
+            }
+            .foregroundStyle(LampTheme.caption)
         }
         .task(id: translationId) {
             load()
@@ -1332,6 +1451,86 @@ private struct ReadAloudSettingsSection: View {
     }
 }
 
+/// A settings row that leads somewhere: its tile, its name, and a line on
+/// what is there, so a row's name never has to explain itself alone.
+private struct SettingsRowLabel: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        // A Label, as every other row's icon is, so all the tiles share
+        // one column and one inset.
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(LampTheme.caption)
+            }
+            .padding(.vertical, 2)
+        } icon: {
+            LampIconTile(systemName: systemImage, color: color)
+        }
+    }
+}
+
+/// The top of Settings: the app, its version, and the library at a glance.
+private struct SettingsIdentityCard: View {
+    let moduleCount: Int?
+    let syncSummary: String
+
+    /// Compact: the app and the library in two lines, not a banner.
+    var body: some View {
+        HStack(spacing: 14) {
+            AppIconImage()
+                .frame(width: 46, height: 46)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Lamp Bible")
+                    .font(.headline)
+                Text(moduleCount.map { "\($0) modules · \(syncSummary)" } ?? syncSummary)
+                    .font(.footnote)
+                    .foregroundStyle(LampTheme.caption)
+                Text("Version \(SettingsView.appVersion)")
+                    .font(.footnote)
+                    .foregroundStyle(LampTheme.caption)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The app's own icon, from the bundle; a tile if it can't be read.
+private struct AppIconImage: View {
+    private static let icon: UIImage? = {
+        guard let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
+              let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+              let files = primary["CFBundleIconFiles"] as? [String],
+              let name = files.last
+        else { return nil }
+        return UIImage(named: name)
+    }()
+
+    var body: some View {
+        if let icon = Self.icon {
+            Image(uiImage: icon)
+                .resizable()
+                .clipShape(RoundedRectangle(cornerRadius: 10.5, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10.5, style: .continuous)
+                        .strokeBorder(LampTheme.hairline)
+                }
+                .accessibilityHidden(true)
+        } else {
+            LampIconTile(systemName: "book.closed.fill", size: 46)
+        }
+    }
+}
+
 struct SettingsViewPreview: View {
     @State var previewUUID = UUID()
 
@@ -1345,4 +1544,41 @@ struct SettingsViewPreview: View {
 
 #Preview {
     SettingsViewPreview()
+}
+
+// MARK: - Section header
+
+/// One header style for every grouped section, so no screen mixes large
+/// black headings with small grey ones.
+struct LampSectionHeaderStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color.primary.opacity(0.72))
+            .textCase(nil)
+    }
+}
+
+extension View {
+    func lampSectionHeader() -> some View {
+        modifier(LampSectionHeaderStyle())
+    }
+}
+
+// MARK: - Icon tile
+
+/// A white glyph on a filled rounded square, as Settings marks its rows.
+struct LampIconTile: View {
+    let systemName: String
+    var color: Color = .accentColor
+    var size: CGFloat = 30
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: size * 0.5, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(color.gradient, in: RoundedRectangle(cornerRadius: size * 0.27, style: .continuous))
+            .accessibilityHidden(true)
+    }
 }

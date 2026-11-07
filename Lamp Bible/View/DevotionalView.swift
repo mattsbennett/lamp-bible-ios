@@ -71,6 +71,13 @@ struct DevotionalView: View {
     @State private var syncStatus: ModuleSyncStatus = .synced
     @State private var syncPollingTask: Task<Void, Never>?
     @State private var showingSyncStatusPopover: Bool = false
+    /// No sync service is set up: the writing is simply kept on this device,
+    /// which is a choice, not a failure.
+    @State private var syncIsOff: Bool = false
+
+    /// The title header has scrolled up under the bar, so the bar shows the
+    /// title instead.
+    @State private var headerScrolledAway: Bool = false
 
     // Preview sheet navigation (for scripture/strongs references)
     @State private var previewState: PreviewSheetState? = nil
@@ -139,12 +146,50 @@ struct DevotionalView: View {
     }
 
 
+    /// The page the writing sits on, matched by the editor's own background
+    /// (tiptap-editor/src/editor.css, --bg-color): the reader's white, and in
+    /// dark the panel charcoal rather than the reader's black, which is harsh
+    /// under a long stretch of one's own prose.
+    static let pageColor = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor.lampPanelBackground.resolvedColor(with: traits)
+            : UIColor.lampReaderBackground.resolvedColor(with: traits)
+    })
+
+    /// The text has the caret. The formatting tools show only then, over the
+    /// keyboard, as a writing app's do; the page above stays clear.
+    @State private var editorFocused = false
+    @State private var focusLossTask: Task<Void, Never>?
+
+    private var showsFormattingBar: Bool {
+        mode == .edit && editMode == .visual && editorFocused
+    }
+
+    /// The title is drawn at the top of the page in reading and in visual
+    /// editing; markdown editing shows the raw text alone.
+    private var showsDocumentHeader: Bool {
+        mode == .read || (mode == .edit && editMode == .visual)
+    }
+
+    private var barTitle: String {
+        if mode == .present { return "" }
+        if showsDocumentHeader && !headerScrolledAway { return "" }
+        return devotional.meta.title
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            modeTopChrome
             tiptapWebView
         }
-        .navigationTitle(mode == .present ? "" : devotional.meta.title)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if showsFormattingBar {
+                richTextFormattingToolbar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: showsFormattingBar)
+        .background(Self.pageColor.ignoresSafeArea())
+        .navigationTitle(barTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(mode == .present)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -381,76 +426,75 @@ struct DevotionalView: View {
 
     @State private var tiptapCoordinator: TipTapEditorCoordinator?
 
-    @ViewBuilder
-    private var modeTopChrome: some View {
-        switch mode {
-        case .edit:
-            if editMode == .visual {
-                richTextFormattingToolbar
-                Divider()
-            }
-        case .read:
-            // Header is rendered inside TipTap WebView so it scrolls with content
-            EmptyView()
-        case .present:
-            // No header in present mode
-            EmptyView()
-        }
+    /// "2026-11-06" as a reader would write it.
+    private var displayDate: String? {
+        guard let raw = devotional.meta.date else { return nil }
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withFullDate]
+        parser.timeZone = TimeZone.current
+        guard let date = parser.date(from: raw) else { return raw }
+        return date.formatted(date: .long, time: .omitted)
     }
 
+    /// The top of the page: what kind of writing and when, its title, what it
+    /// is on. Drawn by the host over the editor's top padding, so it scrolls
+    /// with the text. While writing, a tap on it opens the details to edit.
     @ViewBuilder
     private var readModeHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
+            let category = devotional.meta.categoryName
+            if category != nil || displayDate != nil {
+                HStack(spacing: 6) {
+                    if let category {
+                        Text(category.uppercased())
+                    }
+                    if category != nil, displayDate != nil {
+                        Text("·")
+                    }
+                    if let date = displayDate {
+                        Text(date.uppercased())
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .tracking(0.6)
+                .foregroundStyle(LampTheme.caption)
+                .lineLimit(1)
+            }
+
             Text(devotional.meta.title)
-                .font(.title)
-                .fontWeight(.bold)
+                .font(.system(.largeTitle, design: .serif).weight(.bold))
+                .fixedSize(horizontal: false, vertical: true)
 
-            if let subtitle = devotional.meta.subtitle {
+            if let subtitle = devotional.meta.subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.title3)
-                    .foregroundColor(.secondary)
+                    .font(.system(.title3, design: .serif))
+                    .foregroundStyle(LampTheme.readerText.opacity(0.72))
             }
 
-            // Metadata row
-            HStack(spacing: 16) {
-                if let date = devotional.meta.date {
-                    Label(date, systemImage: "calendar")
-                        .font(.caption)
-                }
-                if let author = devotional.meta.author {
-                    Label(author, systemImage: "person")
-                        .font(.caption)
-                }
-                if let category = devotional.meta.categoryName {
-                    Text(category)
-                        .font(.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(devotional.meta.kindColor.opacity(0.2))
-                        .foregroundColor(devotional.meta.kindColor)
-                        .cornerRadius(4)
-                }
+            if let author = devotional.meta.author, !author.isEmpty {
+                Label(author, systemImage: "person")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-            .foregroundColor(.secondary)
 
             // Tags
             if let tags = devotional.meta.tags, !tags.isEmpty {
                 DevotionalFlowLayout(spacing: 6) {
                     ForEach(tags, id: \.self) { tag in
                         Text(tag)
-                            .font(.caption)
-                            .padding(.horizontal, 8)
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 9)
                             .padding(.vertical, 4)
-                            .background(Color(.tertiarySystemFill))
-                            .foregroundColor(.secondary)
-                            .cornerRadius(8)
+                            .background(Color(.tertiarySystemFill), in: Capsule())
+                            .foregroundStyle(.secondary)
                     }
                 }
+                .padding(.top, 2)
             }
 
             // Key scriptures
             if let scriptures = devotional.meta.keyScriptures, !scriptures.isEmpty {
-                HStack {
+                HStack(spacing: 6) {
                     Image(systemName: "book")
                         .font(.caption)
                     ForEach(scriptures, id: \.sv) { scripture in
@@ -460,11 +504,20 @@ struct DevotionalView: View {
                         }
                     }
                 }
+                .foregroundStyle(.secondary)
             }
 
             Divider()
+                .padding(.top, 10)
         }
-        .padding(.top, 12)
+        .padding(.top, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if mode == .edit { showingMetadataEditor = true }
+        }
+        .accessibilityAddTraits(mode == .edit ? .isButton : [])
+        .accessibilityHint(mode == .edit ? "Edits the title and details" : "")
     }
 
     private var tiptapWebView: some View {
@@ -478,6 +531,10 @@ struct DevotionalView: View {
                 devotionalId: devotional.meta.id,
                 moduleId: moduleId,
                 header: readModeHeader,
+                showsHeader: showsDocumentHeader,
+                onHeaderScrolledAway: { away in
+                    if headerScrolledAway != away { headerScrolledAway = away }
+                },
                 onCoordinatorReady: { coordinator in
                     tiptapCoordinator = coordinator
 
@@ -496,6 +553,23 @@ struct DevotionalView: View {
 
                     coordinator.onFootnoteTapped = { id in
                         coordinator.scrollToFootnote(id)
+                    }
+
+                    // Focus comes and goes for a moment as the page changes
+                    // under an edit; only a loss that lasts hides the tools.
+                    coordinator.onFocusChanged = { focused in
+                        DispatchQueue.main.async {
+                            focusLossTask?.cancel()
+                            if focused {
+                                if !editorFocused { editorFocused = true }
+                            } else {
+                                focusLossTask = Task { @MainActor in
+                                    try? await Task.sleep(for: .milliseconds(350))
+                                    guard !Task.isCancelled else { return }
+                                    editorFocused = false
+                                }
+                            }
+                        }
                     }
 
                     // Set present padding if starting in present mode
@@ -524,7 +598,9 @@ struct DevotionalView: View {
                 }
             }
         }
-        .ignoresSafeArea(.container, edges: [.top, .bottom])
+        // Under the bars at both ends while reading; above the formatting
+        // tools while they show, so the caret is never kept beneath them.
+        .ignoresSafeArea(.container, edges: showsFormattingBar ? [.top] : [.top, .bottom])
     }
 
     // MARK: - Content Sync
@@ -560,133 +636,146 @@ struct DevotionalView: View {
         // No-op: TipTap editor syncs markdown content automatically via the binding
     }
 
+    /// The formatting tools as one calm bar of eight, grouped by kind: text
+    /// style, emphasis, lists, quotation, links, and everything inserted.
+    /// It fits the phone's width; at the largest text sizes it scrolls.
     private var richTextFormattingToolbar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                // Text style menu
-                Menu {
-                    Button("Paragraph") { tiptapCoordinator?.applyStyle(.paragraph) }
-                    Button("Heading 1") { tiptapCoordinator?.applyStyle(.heading1) }
-                    Button("Heading 2") { tiptapCoordinator?.applyStyle(.heading2) }
-                    Button("Heading 3") { tiptapCoordinator?.applyStyle(.heading3) }
-                } label: {
-                    formattingButton(icon: "textformat.size", label: "Aa")
-                }
-
-                Divider().frame(height: 24)
-
-                // Bold
-                Button(action: { tiptapCoordinator?.applyStyle(.bold) }) {
-                    formattingButton(icon: "bold", label: nil)
-                }
-
-                // Italic
-                Button(action: { tiptapCoordinator?.applyStyle(.italic) }) {
-                    formattingButton(icon: "italic", label: nil)
-                }
-
-                Divider().frame(height: 24)
-
-                // Bullet list
-                Button(action: { tiptapCoordinator?.applyStyle(.bullet) }) {
-                    formattingButton(icon: "list.bullet", label: nil)
-                }
-
-                // Numbered list
-                Button(action: { tiptapCoordinator?.applyStyle(.numberedList) }) {
-                    formattingButton(icon: "list.number", label: nil)
-                }
-
-                // Decrease indent
-                Button(action: { tiptapCoordinator?.applyStyle(.outdent) }) {
-                    formattingButton(icon: "decrease.indent", label: nil)
-                }
-
-                // Increase indent
-                Button(action: { tiptapCoordinator?.applyStyle(.indent) }) {
-                    formattingButton(icon: "increase.indent", label: nil)
-                }
-
-                Divider().frame(height: 24)
-
-                // Quote (menu with Regular/Scripture options)
-                Menu {
-                    Button(action: {
-                        tiptapCoordinator?.applyStyle(.quote)
-                    }) {
-                        Label("Regular Quote", systemImage: "text.quote")
-                    }
-
-                    Button(action: {
-                        showingScriptureQuoteSheet = true
-                    }) {
-                        Label("Scripture Quote", systemImage: "book.closed")
-                    }
-                } label: {
-                    formattingButton(icon: "text.quote", label: nil)
-                }
-
-                Divider().frame(height: 24)
-
-                // Horizontal rule
-                Button(action: { tiptapCoordinator?.insertHorizontalRule() }) {
-                    formattingButton(icon: "minus", label: nil)
-                }
-
-                // Table
-                Button(action: { showingTableInsert = true }) {
-                    formattingButton(icon: "tablecells", label: nil)
-                }
-
-                Divider().frame(height: 24)
-
-                // Link
-                Button(action: { openLinkEditor() }) {
-                    formattingButton(icon: "link", label: nil)
-                }
-
-                // Remove link
-                Button(action: { tiptapCoordinator?.removeLink() }) {
-                    formattingButton(icon: "link.badge.minus", label: nil)
-                }
-
-                // Footnote
-                Button(action: { openFootnoteEditor() }) {
-                    formattingButton(icon: "note.text", label: nil)
-                }
-
-                Divider().frame(height: 24)
-
-                // Media insertion menu
-                Menu {
-                    Button(action: {
-                        tiptapCoordinator?.resignFirstResponder()
-                        showingImagePicker = true
-                    }) {
-                        Label("Add Image", systemImage: "photo")
-                    }
-
-                    Button(action: {
-                        tiptapCoordinator?.resignFirstResponder()
-                        showingAudioRecorder = true
-                    }) {
-                        Label("Record Audio", systemImage: "mic")
-                    }
-
-                    Button(action: {
-                        tiptapCoordinator?.resignFirstResponder()
-                        showingAudioFilePicker = true
-                    }) {
-                        Label("Import Audio", systemImage: "waveform")
-                    }
-                } label: {
-                    formattingButton(icon: "photo.badge.plus", label: nil)
-                }
+        ViewThatFits(in: .horizontal) {
+            formattingBar
+            ScrollView(.horizontal, showsIndicators: false) {
+                formattingBar
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
         }
-        .background(Color(.systemGray6))
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
+    }
+
+    private var formattingBar: some View {
+        HStack(spacing: 2) {
+            Menu {
+                Button("Paragraph") { tiptapCoordinator?.applyStyle(.paragraph) }
+                Button("Heading 1") { tiptapCoordinator?.applyStyle(.heading1) }
+                Button("Heading 2") { tiptapCoordinator?.applyStyle(.heading2) }
+                Button("Heading 3") { tiptapCoordinator?.applyStyle(.heading3) }
+                Divider()
+                Button(action: { tiptapCoordinator?.applyStyle(.indent) }) {
+                    Label("Increase Indent", systemImage: "increase.indent")
+                }
+                Button(action: { tiptapCoordinator?.applyStyle(.outdent) }) {
+                    Label("Decrease Indent", systemImage: "decrease.indent")
+                }
+            } label: {
+                formattingButton(icon: "textformat", label: nil)
+            }
+            .accessibilityLabel("Text Style")
+
+            formattingDivider
+
+            Button(action: { tiptapCoordinator?.applyStyle(.bold) }) {
+                formattingButton(icon: "bold", label: nil)
+            }
+            .accessibilityLabel("Bold")
+
+            Button(action: { tiptapCoordinator?.applyStyle(.italic) }) {
+                formattingButton(icon: "italic", label: nil)
+            }
+            .accessibilityLabel("Italic")
+
+            formattingDivider
+
+            Button(action: { tiptapCoordinator?.applyStyle(.bullet) }) {
+                formattingButton(icon: "list.bullet", label: nil)
+            }
+            .accessibilityLabel("Bulleted List")
+
+            Button(action: { tiptapCoordinator?.applyStyle(.numberedList) }) {
+                formattingButton(icon: "list.number", label: nil)
+            }
+            .accessibilityLabel("Numbered List")
+
+            formattingDivider
+
+            // Quote (menu with Regular/Scripture options)
+            Menu {
+                Button(action: {
+                    tiptapCoordinator?.applyStyle(.quote)
+                }) {
+                    Label("Regular Quote", systemImage: "text.quote")
+                }
+
+                Button(action: {
+                    showingScriptureQuoteSheet = true
+                }) {
+                    Label("Scripture Quote", systemImage: "book.closed")
+                }
+            } label: {
+                formattingButton(icon: "text.quote", label: nil)
+            }
+            .accessibilityLabel("Quote")
+
+            Menu {
+                Button(action: { openLinkEditor() }) {
+                    Label("Add Link…", systemImage: "link")
+                }
+                Button(action: { tiptapCoordinator?.removeLink() }) {
+                    Label("Remove Link", systemImage: "link.badge.minus")
+                }
+            } label: {
+                formattingButton(icon: "link", label: nil)
+            }
+            .accessibilityLabel("Link")
+
+            // Everything placed in the text rather than applied to it
+            Menu {
+                Button(action: { openFootnoteEditor() }) {
+                    Label("Footnote…", systemImage: "note.text")
+                }
+                Button(action: { tiptapCoordinator?.insertHorizontalRule() }) {
+                    Label("Divider", systemImage: "minus")
+                }
+                Button(action: { showingTableInsert = true }) {
+                    Label("Table…", systemImage: "tablecells")
+                }
+                Divider()
+                Button(action: {
+                    tiptapCoordinator?.resignFirstResponder()
+                    showingImagePicker = true
+                }) {
+                    Label("Add Image", systemImage: "photo")
+                }
+
+                Button(action: {
+                    tiptapCoordinator?.resignFirstResponder()
+                    showingAudioRecorder = true
+                }) {
+                    Label("Record Audio", systemImage: "mic")
+                }
+
+                Button(action: {
+                    tiptapCoordinator?.resignFirstResponder()
+                    showingAudioFilePicker = true
+                }) {
+                    Label("Import Audio", systemImage: "waveform")
+                }
+            } label: {
+                formattingButton(icon: "plus.circle", label: nil)
+            }
+            .accessibilityLabel("Insert")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        // The tools in the text's own colour: a row of accent-coloured
+        // glyphs would outshout the writing beneath them.
+        .tint(Color.primary)
+        .formattingBarSurface()
+    }
+
+    private var formattingDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: 1, height: 20)
+            .padding(.horizontal, 4)
     }
 
     private func openLinkEditor() {
@@ -875,16 +964,15 @@ struct DevotionalView: View {
     private func formattingButton(icon: String, label: String?) -> some View {
         HStack(spacing: 2) {
             Image(systemName: icon)
-                .font(.system(size: 16))
+                .font(.system(size: 17, weight: .medium))
             if let label = label {
                 Text(label)
                     .font(.system(size: 14, weight: .semibold))
             }
         }
-        .foregroundColor(.primary)
-        .frame(width: label != nil ? 44 : 36, height: 36)
-        .background(Color(.systemBackground))
-        .cornerRadius(6)
+        .foregroundStyle(.primary)
+        .frame(width: label != nil ? 48 : 38, height: 36)
+        .contentShape(Rectangle())
     }
 
     private func toggleEditMode() {
@@ -900,94 +988,124 @@ struct DevotionalView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarTrailing) {
-            HStack(spacing: 16) {
-                // Font size (read mode only)
-                if mode == .read {
-                    Menu {
-                        Button(action: { fontSize = max(12, fontSize - 2) }) {
-                            Label("Smaller", systemImage: "textformat.size.smaller")
-                        }
-                        Button(action: { fontSize = min(32, fontSize + 2) }) {
-                            Label("Larger", systemImage: "textformat.size.larger")
-                        }
-                    } label: {
-                        Image(systemName: "textformat.size")
-                    }
-                }
-
-                // Sync status (edit mode only)
-                if mode == .edit {
-                    Button {
-                        showingSyncStatusPopover = true
-                    } label: {
-                        switch syncStatus {
-                        case .synced:
-                            Image(systemName: "checkmark.icloud.fill")
-                                .foregroundStyle(.green)
-                        case .syncing:
-                            Image(systemName: "arrow.triangle.2.circlepath.icloud")
-                                .foregroundStyle(.secondary)
-                        case .notSynced:
-                            Image(systemName: "exclamationmark.icloud")
-                                .foregroundStyle(.orange)
-                        case .notAvailable:
-                            Image(systemName: "xmark.icloud")
-                                .foregroundStyle(.red)
-                        }
-                    }
-                    .popover(isPresented: $showingSyncStatusPopover) {
-                        syncStatusPopoverContent
-                    }
-                }
-
-                if !linkedDecks.isEmpty {
-                    slidesButton
-                }
-
-                // Share
+        // One row of controls at the top and nothing over the text: the
+        // writing's own actions, a menu of the rest, and the way into or out
+        // of editing.
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            // Font size (read mode only)
+            if mode == .read {
                 Menu {
-                    Button(action: shareDevotional) {
-                        Label("Share Devotional File", systemImage: "doc")
+                    Button(action: { fontSize = max(12, fontSize - 2) }) {
+                        Label("Smaller", systemImage: "textformat.size.smaller")
                     }
-                    ShareLink("Share as Markdown", item: markdownContent)
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }
-            }
-        }
-
-        // Bottom toolbar with single mode button (hidden in present mode)
-        if mode != .present {
-            ToolbarItem(placement: .bottomBar) {
-                Spacer()
-            }
-            ToolbarItem(placement: .bottomBar) {
-                Menu {
-                    Button(action: { withAnimation { mode = .present } }) {
-                        Label("Present", systemImage: "rectangle.expand.vertical")
-                    }
-                    Button(action: { withAnimation { mode = .read } }) {
-                        Label("Read", systemImage: "book")
-                    }
-                    Divider()
-                    Button(action: { switchToMarkdownEdit() }) {
-                        Label("Markdown Edit", systemImage: "chevron.left.forwardslash.chevron.right")
-                    }
-                    Button(action: { switchToVisualEdit() }) {
-                        Label("Visual Edit", systemImage: "eye")
-                    }
-                    Divider()
-                    Button(action: { showingMetadataEditor = true }) {
-                        Label("Edit Metadata", systemImage: "info")
+                    Button(action: { fontSize = min(32, fontSize + 2) }) {
+                        Label("Larger", systemImage: "textformat.size.larger")
                     }
                 } label: {
-                    Image(systemName: modeIcon)
-                        .font(.body.weight(.semibold))
+                    Image(systemName: "textformat.size")
+                }
+                .accessibilityLabel("Text Size")
+            }
+
+            // Sync status, while writing, when there is a sync to report on.
+            // Sync that is off by choice is said in the menu, not flagged here.
+            if mode == .edit && !syncIsOff {
+                Button {
+                    showingSyncStatusPopover = true
+                } label: {
+                    switch syncStatus {
+                    case .synced:
+                        Image(systemName: "checkmark.icloud")
+                            .foregroundStyle(.green)
+                    case .syncing:
+                        Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                            .foregroundStyle(.secondary)
+                    case .notSynced:
+                        Image(systemName: "exclamationmark.icloud")
+                            .foregroundStyle(.orange)
+                    case .notAvailable:
+                        Image(systemName: "xmark.icloud")
+                            .foregroundStyle(.red)
+                    }
+                }
+                .accessibilityLabel(syncAccessibilityLabel)
+                .popover(isPresented: $showingSyncStatusPopover) {
+                    syncStatusPopoverContent
                 }
             }
+
+            if !linkedDecks.isEmpty {
+                slidesButton
+            }
+
+            // Share
+            Menu {
+                Button(action: shareDevotional) {
+                    Label("Share Writing File", systemImage: "doc")
+                }
+                ShareLink("Share as Markdown", item: markdownContent)
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("Share")
+
+            // The other views and editors
+            Menu {
+                Button(action: { withAnimation { mode = .present } }) {
+                    Label("Present", systemImage: "rectangle.expand.vertical")
+                }
+                Button(action: { withAnimation { mode = .read } }) {
+                    Label("Read", systemImage: "book")
+                }
+                Divider()
+                Button(action: { switchToMarkdownEdit() }) {
+                    Label("Markdown Edit", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Button(action: { switchToVisualEdit() }) {
+                    Label("Visual Edit", systemImage: "pencil")
+                }
+                Divider()
+                Button(action: { showingMetadataEditor = true }) {
+                    Label("Edit Metadata", systemImage: "info")
+                }
+                if mode == .edit && syncIsOff {
+                    Divider()
+                    Section("Sync is off. This writing is saved on this device.") {}
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .accessibilityLabel("More")
         }
 
+        // Into editing from reading; out of it when done.
+        ToolbarItem(placement: .topBarTrailing) {
+            switch mode {
+            case .read:
+                Button(action: switchToVisualEdit) {
+                    Image(systemName: "pencil")
+                }
+                .accessibilityLabel("Edit")
+            case .edit:
+                // Worded: a bare check left what it finished unsaid.
+                Button(action: { withAnimation { mode = .read } }) {
+                    Text("Done")
+                        .fontWeight(.semibold)
+                }
+                .modifier(ProminentToolbarButton())
+            case .present:
+                EmptyView()
+            }
+        }
+    }
+
+    private var syncAccessibilityLabel: String {
+        switch syncStatus {
+        case .synced: "Synced"
+        case .syncing: "Syncing"
+        case .notSynced: "Waiting to sync"
+        case .notAvailable: syncIsOff ? "Sync is off" : "Sync unavailable"
+        }
     }
 
     /// Opens the deck made from this writing, or offers the choice when there
@@ -1033,23 +1151,6 @@ struct DevotionalView: View {
         withAnimation {
             mode = .edit
             editMode = .markdown
-        }
-    }
-
-    private var modeIcon: String {
-        switch mode {
-        case .present: return "rectangle.expand.vertical"
-        case .read: return "book"
-        case .edit:
-            return editMode == .visual ? "eye" : "chevron.left.forwardslash.chevron.right"
-        }
-    }
-
-    private var modeLabel: String {
-        switch mode {
-        case .present: return "Present"
-        case .read: return "Read"
-        case .edit: return editMode == .visual ? "Visual" : "Markdown"
         }
     }
 
@@ -1534,8 +1635,10 @@ struct DevotionalView: View {
     private func checkSyncStatus() async {
         let fileName = "\(moduleId).lamp"
         if let storage = SyncCoordinator.shared.activeStorage {
+            syncIsOff = false
             syncStatus = await storage.getSyncStatus(type: .devotional, fileName: fileName)
         } else {
+            syncIsOff = true
             syncStatus = .notAvailable
         }
     }
@@ -1567,9 +1670,15 @@ struct DevotionalView: View {
                     .foregroundStyle(.orange)
                 Text("Waiting to sync")
             case .notAvailable:
-                Image(systemName: "xmark.icloud")
-                    .foregroundStyle(.red)
-                Text("Sync unavailable")
+                if syncIsOff {
+                    Image(systemName: "icloud.slash")
+                        .foregroundStyle(.secondary)
+                    Text("Sync is off. This writing is saved on this device.")
+                } else {
+                    Image(systemName: "xmark.icloud")
+                        .foregroundStyle(.red)
+                    Text("Sync unavailable")
+                }
             }
         }
         .padding()
@@ -2421,6 +2530,30 @@ struct TableInsertSheet: View {
                     Button("Insert", action: onInsert)
                 }
             }
+        }
+    }
+}
+
+private extension View {
+    /// Liquid Glass where the OS has it; before iOS 26 a quiet filled capsule.
+    @ViewBuilder
+    func formattingBarSurface() -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular, in: Capsule())
+        } else {
+            background(Color(.secondarySystemBackground), in: Capsule())
+        }
+    }
+}
+
+/// The toolbar's confirming action in the accent, where the OS draws one
+/// (iOS 26's prominent glass); a plain tinted button before.
+private struct ProminentToolbarButton: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.buttonStyle(.glassProminent)
+        } else {
+            content.tint(.accentColor)
         }
     }
 }

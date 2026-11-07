@@ -7,8 +7,11 @@
 
 import Foundation
 import SwiftUI
+import NaturalLanguage
 import UIKit
 import GRDB
+import LampModuleKit
+import CoreText
 
 // MARK: - Custom Layout Manager for Compact Backgrounds
 
@@ -19,8 +22,44 @@ class CompactBackgroundLayoutManager: NSLayoutManager {
     /// Amount to trim from bottom of background rects (where line spacing is added)
     var lineSpacingTrim: CGFloat = 0
 
+    /// How much of the trim comes off the top rather than the bottom: the
+    /// font's own line height carries a little room above the capitals, so a
+    /// highlight sits best a touch below the line's top.
+    var trimTopFraction: CGFloat = 1.0 / 3.0
+
     /// Corner radius for highlight backgrounds (0 = square corners)
-    var cornerRadius: CGFloat = 3
+    var cornerRadius: CGFloat = 4
+
+    /// Where the container is being drawn, for mapping the background rects
+    /// back into container coordinates.
+    private var drawingOrigin: CGPoint = .zero
+
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+        drawingOrigin = origin
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+    }
+
+    /// The right edge of the marked text on the line a rect covers, short of
+    /// any space the line ends with: TextKit runs a highlight on to the
+    /// margin when a line wraps at a space inside it.
+    private func inkMaxX(for rect: CGRect, characterRange charRange: NSRange) -> CGFloat? {
+        guard let container = textContainers.first, let storage = textStorage else { return nil }
+        let local = rect.offsetBy(dx: -drawingOrigin.x, dy: -drawingOrigin.y)
+        let onLine = glyphRange(forBoundingRect: local, in: container)
+        let marked = glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
+        let glyphs = NSIntersectionRange(onLine, marked)
+        guard glyphs.length > 0 else { return nil }
+        var chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        let text = storage.string as NSString
+        while chars.length > 0,
+              let scalar = Unicode.Scalar(text.character(at: chars.location + chars.length - 1)),
+              CharacterSet.whitespacesAndNewlines.contains(scalar) {
+            chars.length -= 1
+        }
+        guard chars.length > 0 else { return nil }
+        let inked = glyphRange(forCharacterRange: chars, actualCharacterRange: nil)
+        return boundingRect(forGlyphRange: inked, in: container).maxX + drawingOrigin.x
+    }
 
     override func fillBackgroundRectArray(_ rectArray: UnsafePointer<CGRect>, count rectCount: Int, forCharacterRange charRange: NSRange, color: UIColor) {
         guard let context = UIGraphicsGetCurrentContext() else {
@@ -34,9 +73,14 @@ class CompactBackgroundLayoutManager: NSLayoutManager {
         for i in 0..<rectCount {
             var rect = rectArray[i]
 
+            // End the band where the marked words end, plus a hair of padding.
+            if let maxX = inkMaxX(for: rect, characterRange: charRange), maxX + 2 < rect.maxX {
+                rect.size.width = max(0, maxX + 2 - rect.minX)
+            }
+
             // Adjust rect to trim line spacing
             if lineSpacingTrim > 0 && rect.height > lineSpacingTrim {
-                rect.origin.y += lineSpacingTrim / 3  // Shift down to center
+                rect.origin.y += lineSpacingTrim * trimTopFraction
                 rect.size.height -= lineSpacingTrim
             }
 
@@ -167,14 +211,40 @@ struct ChapterNavigationButton: View {
     // Arrow color - inverts when threshold reached
     private var arrowColor: Color {
         if isThresholdReached {
-            return Color(UIColor.systemBackground)
+            return LampTheme.readerBackground
         } else {
             return Color.secondary.opacity(0.4 + clampedProgress * 0.3)
         }
     }
 
+    /// At rest the button says where it goes: a chevron and the chapter's
+    /// name, rather than a pale arrow that read as decoration.
+    private var isAtRest: Bool { progress <= 0 }
+
     var body: some View {
         Button(action: action) {
+            if isAtRest, let label {
+                HStack(spacing: 6) {
+                    Image(systemName: direction == .previous ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(label)
+                        .font(.footnote.weight(.medium))
+                }
+                .foregroundStyle(LampTheme.caption)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .contentShape(Capsule())
+            } else {
+                pullIndicator
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .frame(height: 36)
+        .accessibilityLabel(label.map { direction == .previous ? "Previous: \($0)" : "Next: \($0)" } ?? (direction == .previous ? "Previous" : "Next"))
+    }
+
+    private var pullIndicator: some View {
             ZStack {
                 if isThresholdReached {
                     // Filled circle when threshold reached
@@ -206,10 +276,6 @@ struct ChapterNavigationButton: View {
                 }
             }
             .animation(.easeOut(duration: 0.15), value: isThresholdReached)
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-        .frame(height: 44)
     }
 }
 
@@ -269,7 +335,8 @@ struct ChapterTextView: UIViewRepresentable {
     let verses: [TranslationVerse]
     let headings: [TranslationHeading]
     let fontSize: CGFloat
-    let lineSpacing: CGFloat
+    /// Serif (the default, as the Mac reader's) or sans.
+    var typeface: LampProseTypeface = .serif
     let bookName: String
     let chapter: Int
     let showBookTitle: Bool
@@ -298,6 +365,48 @@ struct ChapterTextView: UIViewRepresentable {
         Coordinator(self)
     }
 
+    /// How the chapter is set at this size: leading, spacing, the verse
+    /// numbers' size. Shared with anything else that sets scripture.
+    private var scripture: LampTheme.Scripture { LampTheme.Scripture(bodySize: fontSize) }
+
+    /// Extra space under each body line.
+    private var lineSpacing: CGFloat { scripture.lineSpacing }
+
+    /// The body face at a size, in the chosen typeface.
+    private func bodyFont(_ size: CGFloat, weight: UIFont.Weight = .regular, italic: Bool = false) -> UIFont {
+        switch typeface {
+        case .serif:
+            return LampTheme.serif(size: size, weight: weight, italic: italic)
+        case .sansSerif:
+            let base = UIFont.systemFont(ofSize: size, weight: weight)
+            guard italic, let slanted = base.fontDescriptor.withSymbolicTraits(.traitItalic) else { return base }
+            return UIFont(descriptor: slanted, size: size)
+        }
+    }
+
+    /// The same face with capitals drawn as small capitals.
+    private func smallCapitals(_ font: UIFont) -> UIFont {
+        let descriptor = font.fontDescriptor.addingAttributes([
+            .featureSettings: [
+                [UIFontDescriptor.FeatureKey.type: kUpperCaseType,
+                 UIFontDescriptor.FeatureKey.selector: kUpperCaseSmallCapsSelector],
+                [UIFontDescriptor.FeatureKey.type: kLowerCaseType,
+                 UIFontDescriptor.FeatureKey.selector: kLowerCaseSmallCapsSelector],
+            ],
+        ])
+        return UIFont(descriptor: descriptor, size: font.pointSize)
+    }
+
+    /// Fit highlight backgrounds to the text rather than the whole line pitch,
+    /// leaving a small gap between the bands of consecutive lines.
+    private func configureHighlightBands(_ layoutManager: CompactBackgroundLayoutManager) {
+        // The band covers the font's own line height; the leading under it
+        // stays clear, so a highlight over several lines reads as lines, not
+        // a slab.
+        layoutManager.lineSpacingTrim = lineSpacing + fontSize * 0.04
+        layoutManager.trimTopFraction = 0.25
+    }
+
     /// Move the read-aloud cursor. Cheap by design: it repositions one sibling view
     /// in the gutter, leaving the attributed string and verse positions untouched,
     /// so advancing a verse costs nothing near the text rendering path.
@@ -320,7 +429,7 @@ struct ChapterTextView: UIViewRepresentable {
         let textContainer = NSTextContainer()
         let layoutManager = CompactBackgroundLayoutManager()
         // Trim line spacing from highlight backgrounds so they fit the text height
-        layoutManager.lineSpacingTrim = lineSpacing * 1.2
+        configureHighlightBands(layoutManager)
         let textStorage = NSTextStorage()
         textStorage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
@@ -330,9 +439,10 @@ struct ChapterTextView: UIViewRepresentable {
         textView.isSelectable = !isSimplifiedText
         textView.isScrollEnabled = false
         // Big scrolling text: keep it opaque to avoid expensive blending/compositing while scrolling.
-        textView.backgroundColor = UIColor.systemBackground
+        textView.backgroundColor = UIColor.lampReaderBackground
         textView.isOpaque = true
-        textView.textContainerInset = UIEdgeInsets(top: 0, left: 15, bottom: 20, right: 15)
+        let margin = LampTheme.Scripture.margin
+        textView.textContainerInset = UIEdgeInsets(top: 0, left: margin, bottom: 20, right: margin)
         // Performance optimization: Draw on background thread
         textView.layer.drawsAsynchronously = true
         textView.textContainer.lineFragmentPadding = 0
@@ -375,6 +485,11 @@ struct ChapterTextView: UIViewRepresentable {
 
             // Preserve selection during rebuild
             let savedSelection = textView.selectedRange
+
+            // The size may have changed, and the bands with it.
+            if let layoutManager = textView.layoutManager as? CompactBackgroundLayoutManager {
+                configureHighlightBands(layoutManager)
+            }
 
             if isSimplifiedText {
                 textView.attributedText = buildSimplifiedAttributedString()
@@ -458,12 +573,11 @@ struct ChapterTextView: UIViewRepresentable {
 
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = lineSpacing
-        paragraphStyle.lineHeightMultiple = 1.2
 
         let textAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: fontSize),
+            .font: bodyFont(fontSize),
             .paragraphStyle: paragraphStyle,
-            .foregroundColor: UIColor.label
+            .foregroundColor: UIColor.lampReaderText
         ]
 
         // Keep headings minimal and consistent.
@@ -483,6 +597,61 @@ struct ChapterTextView: UIViewRepresentable {
         return result
     }
 
+    /// The chapter's opening: the book's name as a small-capital overline over
+    /// a large chapter numeral, or, at a book's first chapter, the book's name
+    /// as the title over a "Chapter 1" overline. One large element either way,
+    /// so the opening is quiet and the text starts high on the screen.
+    private func chapterOpening() -> NSAttributedString {
+        let result = NSMutableAttributedString()
+
+        let overlineStyle = NSMutableParagraphStyle()
+        overlineStyle.alignment = .center
+        overlineStyle.paragraphSpacingBefore = 0
+        overlineStyle.paragraphSpacing = 0
+
+        let titleStyle = NSMutableParagraphStyle()
+        titleStyle.alignment = .center
+        titleStyle.paragraphSpacingBefore = 0
+        titleStyle.paragraphSpacing = fontSize * 0.2
+
+        let overlineAttributes: [NSAttributedString.Key: Any] = [
+            .font: LampTheme.overline(size: max(12, fontSize * 0.78)),
+            .kern: 1.6,
+            .foregroundColor: UIColor.lampCaption,
+            .paragraphStyle: overlineStyle
+        ]
+
+        if showBookTitle && chapter == 1 {
+            // Book title, then a quiet "Chapter 1" under it.
+            let titleAttributes: [NSAttributedString.Key: Any] = [
+                .font: bodyFont(fontSize * 1.75, weight: .semibold),
+                .foregroundColor: UIColor.lampReaderText,
+                .paragraphStyle: {
+                    let style = titleStyle.mutableCopy() as! NSMutableParagraphStyle
+                    style.paragraphSpacing = 2
+                    style.paragraphSpacingBefore = 8
+                    return style
+                }()
+            ]
+            result.append(NSAttributedString(string: "\(bookName)\n", attributes: titleAttributes))
+            var chapterAttributes = overlineAttributes
+            let chapterStyle = overlineStyle.mutableCopy() as! NSMutableParagraphStyle
+            chapterStyle.paragraphSpacingBefore = 2
+            chapterStyle.paragraphSpacing = fontSize * 0.45
+            chapterAttributes[.paragraphStyle] = chapterStyle
+            result.append(NSAttributedString(string: "Chapter \(chapter)\n", attributes: chapterAttributes))
+        } else {
+            result.append(NSAttributedString(string: "\(bookName)\n", attributes: overlineAttributes))
+            let numeralAttributes: [NSAttributedString.Key: Any] = [
+                .font: bodyFont(fontSize * 2.2, weight: .regular),
+                .foregroundColor: UIColor.lampReaderText,
+                .paragraphStyle: titleStyle
+            ]
+            result.append(NSAttributedString(string: "\(chapter)\n", attributes: numeralAttributes))
+        }
+        return result
+    }
+
     private func buildAttributedString(coordinator: Coordinator) -> NSAttributedString {
         let result = NSMutableAttributedString()
         coordinator.verseRanges.removeAll()
@@ -491,57 +660,33 @@ struct ChapterTextView: UIViewRepresentable {
 
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = lineSpacing
-        paragraphStyle.lineHeightMultiple = 1.2
 
         let textAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: fontSize),
+            .font: bodyFont(fontSize),
             .paragraphStyle: paragraphStyle,
-            .foregroundColor: UIColor.label
+            .foregroundColor: UIColor.lampReaderText
         ]
 
         // Superscription (verse 0) uses muted italic text like headings
         let superscriptionAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.italicSystemFont(ofSize: fontSize),
+            .font: bodyFont(fontSize, italic: true),
             .paragraphStyle: paragraphStyle,
-            .foregroundColor: UIColor.secondaryLabel
+            .foregroundColor: UIColor.lampCaption
         ]
 
-        let headerParagraphStyle = NSMutableParagraphStyle()
-        headerParagraphStyle.alignment = .center
-        headerParagraphStyle.paragraphSpacingBefore = 20
-        headerParagraphStyle.paragraphSpacing = 20
+        result.append(chapterOpening())
 
-        let bookTitleAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.boldSystemFont(ofSize: 28),
-            .paragraphStyle: headerParagraphStyle,
-            .foregroundColor: UIColor.label
-        ]
-
-        let chapterTitleAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.boldSystemFont(ofSize: 20),
-            .paragraphStyle: headerParagraphStyle,
-            .foregroundColor: UIColor.label
-        ]
-
-        // Add book title if this is chapter 1
-        if showBookTitle && chapter == 1 {
-            let bookTitle = NSAttributedString(string: "\(bookName)\n", attributes: bookTitleAttributes)
-            result.append(bookTitle)
-        }
-
-        // Add chapter title
-        let chapterTitle = NSAttributedString(string: "\(bookName) \(chapter)\n", attributes: chapterTitleAttributes)
-        result.append(chapterTitle)
-
-        // Section heading styles
+        // Section headings: the body face, semibold and a touch larger, in the
+        // text's own colour. Grey made them recede to the level of verse numbers.
         let sectionHeadingParagraphStyle = NSMutableParagraphStyle()
-        sectionHeadingParagraphStyle.paragraphSpacingBefore = lineSpacing * 1.5
-        sectionHeadingParagraphStyle.paragraphSpacing = lineSpacing * 0.5
+        sectionHeadingParagraphStyle.paragraphSpacingBefore = scripture.headingSpacingBefore
+        sectionHeadingParagraphStyle.paragraphSpacing = scripture.headingSpacingAfter
+        sectionHeadingParagraphStyle.lineSpacing = 2
 
         let sectionHeadingAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.boldSystemFont(ofSize: fontSize),
+            .font: bodyFont(scripture.headingSize, weight: .semibold),
             .paragraphStyle: sectionHeadingParagraphStyle,
-            .foregroundColor: UIColor.secondaryLabel
+            .foregroundColor: UIColor.lampReaderText
         ]
 
         // Build heading lookup by full verse reference (book*1000000 + chapter*1000 + verse)
@@ -553,14 +698,15 @@ struct ChapterTextView: UIViewRepresentable {
 
         // Chapter title style for mid-content chapter headings (multi-chapter readings)
         let midChapterTitleParagraphStyle = NSMutableParagraphStyle()
-        midChapterTitleParagraphStyle.paragraphSpacingBefore = lineSpacing * 2.5
-        midChapterTitleParagraphStyle.paragraphSpacing = lineSpacing * 0.5
+        midChapterTitleParagraphStyle.paragraphSpacingBefore = fontSize * 2
+        midChapterTitleParagraphStyle.paragraphSpacing = fontSize * 0.4
         midChapterTitleParagraphStyle.alignment = .center
 
         let midChapterTitleAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: fontSize * 1.1, weight: .semibold),
+            .font: LampTheme.overline(size: max(12, fontSize * 0.85)),
+            .kern: 1.6,
             .paragraphStyle: midChapterTitleParagraphStyle,
-            .foregroundColor: UIColor.secondaryLabel
+            .foregroundColor: UIColor.lampCaption
         ]
 
         // Track current chapter for multi-chapter readings
@@ -568,8 +714,11 @@ struct ChapterTextView: UIViewRepresentable {
 
         // Add verses
         for (index, verse) in verses.enumerated() {
-            // Where the titles and headings leading into this verse begin
-            let leadInStart = result.length
+            // Where the titles and headings leading into this verse begin. The
+            // first verse takes in the chapter's opening too, so a chapter
+            // opened at its start shows its title rather than tucking it
+            // under the header.
+            let leadInStart = index == 0 ? 0 : result.length
 
             // Detect chapter change and insert chapter heading
             if verse.chapter != currentChapter {
@@ -597,22 +746,26 @@ struct ChapterTextView: UIViewRepresentable {
 
             let verseParagraphStyle = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
             if let poetry = verse.poetry, poetry.stanzaBreak == true {
-                verseParagraphStyle.paragraphSpacingBefore = lineSpacing * 1.5
-            } else if verse.paragraph && index > 0 {
-                verseParagraphStyle.paragraphSpacingBefore = lineSpacing
+                verseParagraphStyle.paragraphSpacingBefore = scripture.paragraphSpacing * 1.4
             } else if hadHeadingsBeforeVerse {
-                verseParagraphStyle.paragraphSpacingBefore = lineSpacing
+                verseParagraphStyle.paragraphSpacingBefore = 0
+            } else if verse.paragraph && index > 0 {
+                verseParagraphStyle.paragraphSpacingBefore = scripture.paragraphSpacing
             }
 
             // Poetry indentation
             let poetryIndent = verse.poetry?.indent ?? 0
             let indentString = poetryIndent > 0 ? String(repeating: "    ", count: poetryIndent) : ""
 
-            // Verse number (superscript style)
+            // Verse number: small sans figures raised above the line, firm
+            // enough to find when scanning but quieter than the text.
             let verseNumberAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: fontSize * 0.75),
-                .foregroundColor: UIColor.secondaryLabel,
-                .baselineOffset: fontSize * 0.3,
+                .font: UIFont.monospacedDigitSystemFont(ofSize: scripture.verseNumberSize, weight: .semibold),
+                .foregroundColor: UIColor.lampVerseNumber,
+                .baselineOffset: scripture.verseNumberBaselineOffset,
+                // A little air between the number and its verse, so it stays
+                // clear of a highlight that starts with the text.
+                .kern: fontSize * 0.07,
                 .paragraphStyle: verseParagraphStyle,
                 .verseId: verse.ref
             ]
@@ -631,7 +784,9 @@ struct ChapterTextView: UIViewRepresentable {
             }
             // Skip verse number for superscriptions (verse 0)
             if !isSuperscription {
-                let verseNumber = NSAttributedString(string: "\(verse.verse) ", attributes: verseNumberAttributes)
+                // A no-break space ties the number to the verse's first word, so a
+                // number is never left alone at the end of a line.
+                let verseNumber = NSAttributedString(string: "\(verse.verse)\u{00A0}", attributes: verseNumberAttributes)
                 result.append(verseNumber)
                 coordinator.verseNumberRanges[verse.ref] = NSRange(location: verseNumberStart, length: verseNumber.length)
             }
@@ -762,7 +917,7 @@ struct ChapterTextView: UIViewRepresentable {
 
                     case .added:
                         var addedAttributes = verseTextAttributes
-                        addedAttributes[.font] = UIFont.italicSystemFont(ofSize: fontSize)
+                        addedAttributes[.font] = bodyFont(fontSize, italic: true)
                         if inRedLetter {
                             addedAttributes[.foregroundColor] = UIColor.lampWordsOfChrist
                         }
@@ -770,14 +925,20 @@ struct ChapterTextView: UIViewRepresentable {
 
                     case .divineName:
                         var divineNameAttributes = verseTextAttributes
-                        // Small caps effect for divine name (LORD, GOD)
-                        if let descriptor = UIFont.systemFont(ofSize: fontSize).fontDescriptor.withSymbolicTraits([.traitBold]) {
-                            divineNameAttributes[.font] = UIFont(descriptor: descriptor, size: fontSize)
-                        }
                         if inRedLetter {
                             divineNameAttributes[.foregroundColor] = UIColor.lampWordsOfChrist
                         }
-                        result.append(NSAttributedString(string: annotatedText, attributes: divineNameAttributes))
+                        // The divine name (LORD, GOD) in small capitals, as printed
+                        // Bibles set it: the first letter full height, the rest small.
+                        let initial = String(annotatedText.prefix(1))
+                        let rest = String(annotatedText.dropFirst())
+                        result.append(NSAttributedString(string: initial, attributes: divineNameAttributes))
+                        if !rest.isEmpty {
+                            var smallCapAttributes = divineNameAttributes
+                            smallCapAttributes[.font] = smallCapitals(bodyFont(fontSize))
+                            smallCapAttributes[.kern] = fontSize * 0.03
+                            result.append(NSAttributedString(string: rest, attributes: smallCapAttributes))
+                        }
 
                     default:
                         // footnote, selah, variant - render as plain text (with red letter if applicable)
@@ -908,7 +1069,7 @@ struct ChapterTextView: UIViewRepresentable {
                 switch highlight.highlightStyle {
                 case .highlight:
                     // Background color fill with alpha
-                    let backgroundColor = highlight.highlightColor.uiColor.withAlphaComponent(0.4)
+                    let backgroundColor = UIColor.lampHighlightFill(highlight.highlightColor.uiColor)
                     result.addAttribute(.backgroundColor, value: backgroundColor, range: highlightRange)
 
                 case .underlineSolid:
@@ -1025,6 +1186,52 @@ struct ChapterTextView: UIViewRepresentable {
             })
         }
 
+        /// The word whose lexicon entry is open, marked in the text so the
+        /// dimmed page behind the sheet still shows which word it is.
+        private var lookedUpWordRange: NSRange?
+        private var clearLookedUpObserver: NSObjectProtocol?
+
+        /// The word's attributes before it was marked, put back afterwards.
+        private var lookedUpWordOriginal: NSAttributedString?
+
+        func markLookedUpWord(_ range: NSRange) {
+            guard let textView, range.location != NSNotFound, range.length > 0,
+                  range.location + range.length <= textView.textStorage.length else { return }
+            clearLookedUpWord()
+            let storage = textView.textStorage
+            lookedUpWordOriginal = storage.attributedSubstring(from: range)
+            storage.addAttributes([
+                .backgroundColor: (UIColor(named: "AccentColor") ?? .systemRed).withAlphaComponent(0.30),
+                .underlineStyle: NSUnderlineStyle.thick.rawValue,
+                .underlineColor: UIColor(named: "AccentColor") ?? .systemRed,
+            ], range: range)
+            lookedUpWordRange = range
+            if clearLookedUpObserver == nil {
+                clearLookedUpObserver = NotificationCenter.default.addObserver(
+                    forName: .lampLookedUpWordDismissed, object: nil, queue: .main
+                ) { [weak self] _ in
+                    self?.clearLookedUpWord()
+                }
+            }
+        }
+
+        func clearLookedUpWord() {
+            guard let textView, let range = lookedUpWordRange, let original = lookedUpWordOriginal else { return }
+            lookedUpWordRange = nil
+            lookedUpWordOriginal = nil
+            let storage = textView.textStorage
+            // Only if the text is still the one marked: a rebuild replaces it.
+            guard range.location + range.length <= storage.length,
+                  storage.attributedSubstring(from: range).string == original.string else { return }
+            storage.replaceCharacters(in: range, with: original)
+        }
+
+        deinit {
+            if let clearLookedUpObserver {
+                NotificationCenter.default.removeObserver(clearLookedUpObserver)
+            }
+        }
+
         private var versePositionsDirty: Bool = true
         private var lastVersePositionsContainerWidth: CGFloat = 0
         private var versePositionsWorkItem: DispatchWorkItem?
@@ -1041,7 +1248,7 @@ struct ChapterTextView: UIViewRepresentable {
             // Create a key that uniquely identifies the content (including highlights)
             let verseIds = parent.verses.map { $0.ref }.description
             let highlightCount = parent.highlightsByVerse.values.reduce(0) { $0 + $1.count }
-            return "\(verseIds)-\(parent.fontSize)-\(parent.chapter)-\(parent.showStrongsHints)-\(highlightCount)"
+            return "\(verseIds)-\(parent.fontSize)-\(parent.typeface.rawValue)-\(parent.chapter)-\(parent.showStrongsHints)-\(highlightCount)"
         }
 
         func markVersePositionsDirty() {
@@ -1145,10 +1352,12 @@ struct ChapterTextView: UIViewRepresentable {
 
             guard characterIndex < textView.attributedText.length else { return }
 
-            let attributes = textView.attributedText.attributes(at: characterIndex, effectiveRange: nil)
+            var wordRange = NSRange(location: NSNotFound, length: 0)
+            let attributes = textView.attributedText.attributes(at: characterIndex, effectiveRange: &wordRange)
 
             // Check if tapped on a Strong's annotated word
             if let annotatedWord = attributes[.strongsWord] as? AnnotatedWord {
+                markLookedUpWord(wordRange)
                 parent.onShowStrongs(annotatedWord)
                 return
             }
@@ -1589,6 +1798,11 @@ struct ChapterTextView: UIViewRepresentable {
 }
 
 // Custom attribute keys for verse IDs and Strong's annotations
+extension Notification.Name {
+    /// The lexicon sheet for a tapped word closed: the word's mark goes.
+    static let lampLookedUpWordDismissed = Notification.Name("LampLookedUpWordDismissed")
+}
+
 extension NSAttributedString.Key {
     static let verseId = NSAttributedString.Key("verseId")
     static let strongsWord = NSAttributedString.Key("strongsWord")  // Stores AnnotatedWord
@@ -1627,6 +1841,8 @@ private struct PlanSpeechInputs: Equatable {
 }
 
 struct ReaderView: View {
+    /// Serif or sans for scripture, under the key the Mac reader uses.
+    @AppStorage("reader.typeface") private var readerTypeface = LampProseTypeface.serif.rawValue
     @Environment(\.dismiss) var dismiss
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
     @ObservedObject private var highlightManager = HighlightManager.shared
@@ -2381,7 +2597,11 @@ struct ReaderView: View {
     /// current verse from, so the tool panel follows to the verse asked for
     /// rather than the one before it.
     private func scrollTarget(forVerseAt y: CGFloat) -> CGFloat {
-        max(0, y + ScrollSyncCoordinator.shared.readerTextTop)
+        // The first verse's lead-in is the chapter's start: go to the very top,
+        // previous-chapter button and all, rather than leave that button
+        // tucked under the header, where its label showed through the glass.
+        guard y > 0 else { return 0 }
+        return max(0, y + ScrollSyncCoordinator.shared.readerTextTop)
     }
 
     static func noVoiceMessage(for languageCode: String?) -> String {
@@ -2528,14 +2748,14 @@ struct ReaderView: View {
                                     label: previousNavTarget.label,
                                     action: previousNavTarget.action
                                 )
-                                .padding(.bottom, 20)
+                                .padding(.bottom, 6)
                             }
 
                             ChapterTextView(
                                 verses: Array(verses),
                                 headings: headings,
                                 fontSize: CGFloat(userSettings.readerFontSize),
-                                lineSpacing: 12,
+                                typeface: LampProseTypeface(rawValue: readerTypeface) ?? .serif,
                                 bookName: bookName,
                                 chapter: chapterNumber,
                                 showBookTitle: showBookTitle,
@@ -2610,6 +2830,12 @@ struct ReaderView: View {
                             }
                         }
                     }
+                    // A firm edge under the header: with the soft one, the
+                    // chapter's title showed ghosted through the controls.
+                    .lampHardTopEdge()
+                    // The page's own scrim sits under the bottom bar; the system's
+                    // blur on top of it only smudged the last readable line.
+                    .lampHiddenBottomEdgeEffect()
                     .task(id: scrollContainerId) {
                         isProgrammaticScroll = true
                         scrollDebouncer.cancel()
@@ -2833,7 +3059,7 @@ struct ReaderView: View {
                                 label: nextNavTarget.label,
                                 action: nextNavTarget.action
                             )
-                            .background(Color(UIColor.systemBackground))
+                            .background(LampTheme.readerBackground)
                             Spacer()
                         }
                     } else if pullProgressBottom > 0 {
@@ -2846,11 +3072,13 @@ struct ReaderView: View {
                                 label: nextNavTarget.label,
                                 action: nextNavTarget.action
                             )
-                            .background(Color(UIColor.systemBackground))
+                            .background(LampTheme.readerBackground)
                         }
                     }
                 }
             } // GeometryReader
+            // The page's own near black in dark, behind the text and under the bars.
+            .background(LampTheme.readerBackground.ignoresSafeArea())
             // The toolbar is attached out here, past the GeometryReader's scope,
             // so the width its items need is carried across in state.
             .onGeometryChange(for: CGFloat.self) { proxy in
@@ -2917,7 +3145,9 @@ struct ReaderView: View {
             }) {
                 searchSheet
             }
-            .sheet(item: $selectedStrongsWord) { word in
+            .sheet(item: $selectedStrongsWord, onDismiss: {
+                NotificationCenter.default.post(name: .lampLookedUpWordDismissed, object: nil)
+            }) { word in
                 LexiconSheetView(
                     word: word.text,
                     strongs: word.strongs,
@@ -2929,6 +3159,9 @@ struct ReaderView: View {
                     }
                 )
                 .presentationDetents([.medium, .large])
+                // Opaque at every height: at medium a glass sheet let the
+                // highlighted verses behind show through the definition.
+                .presentationBackground(LampTheme.sheetBackground)
             }
             .sheet(isPresented: $showingQuizSheet, onDismiss: {
                 // The sheet may have changed the age group preference; pick up
@@ -2951,7 +3184,6 @@ struct ReaderView: View {
                         ev: reading.ev,
                         readingDescription: reading.description
                     )
-                    .presentationDetents([.medium, .large])
                 }
             }
             .sheet(isPresented: $showingThemeEditor) {
@@ -3914,6 +4146,21 @@ struct QuizSheetView: View {
     @State private var showingSpeechTransport = false
     @AppStorage("quizContextAmount") private var contextAmount: SearchContextAmount = .oneVerse
     @AppStorage("quizAlwaysShowAnswers") private var alwaysShowAnswers: Bool = false
+    @State private var detent: PresentationDetent = .large
+    /// The verse the question cites, set out under it so it can be weighed
+    /// before the answer is shown.
+    @State private var passage: QuizPassage?
+    /// More of the page lies below the fold: the cue to scroll shows. Taken
+    /// as so until the page's end is reported on screen, which is reported
+    /// only when it changes.
+    @State private var moreBelow = true
+
+    /// Whether this OS reports where the page ends (iOS 18); without it the
+    /// cue is never shown.
+    private static var tracksPageEnd: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
+    }
 
     /// Answers are visible either because this question was revealed by tapping,
     /// or because the always-show preference is on.
@@ -4007,159 +4254,84 @@ struct QuizSheetView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Age group picker
-                if quizModule.ageGroups.count > 1 {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(quizModule.ageGroups) { group in
-                                Button {
-                                    selectedAgeGroup = group.id
-                                    saveAgeGroupPreference(group.id)
-                                    reloadQuestions()
-                                } label: {
-                                    Text(group.label)
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 6)
-                                        .background(selectedAgeGroup == group.id ? Color.accentColor : Color.secondary.opacity(0.15))
-                                        .foregroundStyle(selectedAgeGroup == group.id ? .white : .primary)
-                                        .clipShape(Capsule())
-                                }
-                            }
-                        }
-                        .padding(.horizontal)
-                    }
-                    .padding(.vertical, 10)
-
-                    Divider()
-                }
-
                 if questions.isEmpty {
+                    quizHeader(progressCount: 0)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
                     Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "questionmark.circle")
-                            .font(.largeTitle)
-                            .foregroundStyle(.tertiary)
-                        Text("No questions available")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Text("Try selecting a different age group")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+                    ContentUnavailableView {
+                        Label("No Questions Here", systemImage: "questionmark.circle")
+                    } description: {
+                        Text("Try another age group from the menu above.")
                     }
                     Spacer()
                 } else if let question = currentQuestion {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
-                            // Progress
-                            HStack {
-                                Text("Question \(currentIndex + 1) of \(questions.count)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            quizHeader(progressCount: questions.count)
 
-                                Spacer()
+                            questionCard(for: question)
 
-                                // Theme badge
-                                if let theme = question.themeEnum {
-                                    Text(theme.rawValue.capitalized)
-                                        .font(.caption2)
-                                        .fontWeight(.medium)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(Color.secondary.opacity(0.15))
-                                        .clipShape(Capsule())
-                                }
-
-
-                            }
-
-                            // Question text with tappable references
-                            quizAnnotatedText(for: question.questionJson)
-
-                            // Answer
                             if isAnswerVisible {
-                                Divider()
-
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Answer")
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundStyle(.secondary)
-                                    quizAnnotatedText(for: question.answerJson)
-                                }
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                answerCard(for: question)
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                             } else {
-                                Button {
-                                    speech.stop()
-                                    withAnimation(.easeOut(duration: 0.2)) {
-                                        showAnswer = true
-                                    }
-                                } label: {
-                                    Text("Show Answer")
-                                        .font(.subheadline)
-                                        .fontWeight(.medium)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background(Color.accentColor.opacity(0.12))
-                                        .foregroundStyle(.accent)
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                if let passage, passage.questionID == question.id {
+                                    passageCard(passage, question: question)
+                                        .transition(.opacity)
                                 }
                             }
+
+                            // The end of the page: while it is out of sight,
+                            // the cue to scroll shows.
+                            Color.clear
+                                .frame(height: 1)
+                                .quizReportsVisible { visible in
+                                    if moreBelow == visible { moreBelow = !visible }
+                                }
                         }
-                        .padding()
+                        .padding(.horizontal, 20)
+                        .padding(.top, 4)
+                        .padding(.bottom, 28)
                         // Room for the floating button to scroll clear of, so the
                         // last of the answer isn't stuck underneath it. Only while
                         // it's on screen — otherwise it's dead space.
                         .padding(.bottom, isQuizSpeechActive ? SpeechFloatingButton.diameter + 24 : 0)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isAnswerVisible)
                     }
+                    .quizHardBottomEdge()
+                    .task(id: question.id) { await loadPassage(for: question) }
                     // Anchored to the scroll area, which ends where the question
                     // navigation begins — so the button clears it without the
                     // measured offset the reader needs for its floating toolbar.
                     .overlay(alignment: .bottom) { floatingSpeechButton }
                     .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isQuizSpeechActive)
-
-                    // Navigation
-                    Divider()
-                    HStack {
-                        Image(systemName: "chevron.left")
-                            .foregroundStyle(currentIndex == 0 ? .tertiary : .primary)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                if currentIndex > 0 { goToQuestion(currentIndex - 1) }
-                            }
-
-                        Spacer()
-
-                        // Progress dots
-                        HStack(spacing: 6) {
-                            ForEach(0..<questions.count, id: \.self) { i in
-                                Circle()
-                                    .fill(i == currentIndex ? Color.accentColor : Color.secondary.opacity(0.3))
-                                    .frame(width: 7, height: 7)
-                            }
-                        }
-
-                        Spacer()
-
-                        Image(systemName: "chevron.right")
-                            .foregroundStyle(currentIndex == questions.count - 1 ? .tertiary : .primary)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                if currentIndex < questions.count - 1 { goToQuestion(currentIndex + 1) }
-                            }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        questionNavigation
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 4)
                 }
             }
+            .background(LampTheme.groupedBackground.ignoresSafeArea())
+            // The quiz's own voice: rounded, as a friendly tutor speaks, where
+            // the text being studied keeps the reading serif.
+            .fontDesign(.rounded)
+            .sensoryFeedback(.success, trigger: showAnswer) { _, shown in shown }
             .navigationTitle("Quiz: \(readingDescription)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
+                }
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 1) {
+                        Text("Quiz")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(readingDescription)
+                            .font(.headline)
+                            .lineLimit(1)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     // Stop lives in the transport and the menu, not here: a toolbar
@@ -4208,6 +4380,10 @@ struct QuizSheetView: View {
                 // one. Re-derive so the picker and the questions always agree.
                 reloadQuestions()
             }
+            // Opened full height: a question and its answer need the room, and
+            // the reading behind would only compete with them. Medium stays a
+            // drag away for looking back at the text.
+            .presentationDetents([.medium, .large], selection: $detent)
             .onChange(of: alwaysShowAnswers) {
                 speech.stop()
             }
@@ -4217,13 +4393,336 @@ struct QuizSheetView: View {
         }
     }
 
-    // MARK: - Annotated Text Rendering
+    // MARK: - Pieces
+
+    /// Where the reader is in the quiz, with the steps back and ahead either
+    /// side of it: moving between questions belongs with the progress, and
+    /// the bottom keeps one action.
+    @ViewBuilder
+    private func quizHeader(progressCount: Int) -> some View {
+        if progressCount > 0 {
+            HStack(spacing: 10) {
+                Button {
+                    if currentIndex > 0 { goToQuestion(currentIndex - 1) }
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .buttonStyle(QuizStepButtonStyle())
+                .disabled(currentIndex == 0)
+                .accessibilityLabel("Previous Question")
+
+                QuizProgressBar(count: progressCount, current: currentIndex)
+
+                Button {
+                    goToQuestion(currentIndex + 1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .buttonStyle(QuizStepButtonStyle())
+                .disabled(currentIndex >= progressCount - 1)
+                .accessibilityLabel(isAnswerVisible ? "Next Question" : "Skip to Next Question")
+            }
+        } else if quizModule.ageGroups.count > 1 {
+            ageGroupMenu
+        }
+    }
+
+    /// The age groups as a menu: one labelled control that always shows the
+    /// group in play, where a row of chips ran off the edge of the sheet.
+    private var ageGroupMenu: some View {
+        Menu {
+            Picker("Questions For", selection: Binding(
+                get: { selectedAgeGroup },
+                set: { selectAgeGroup($0) }
+            )) {
+                ForEach(quizModule.ageGroups) { group in
+                    Text(group.label).tag(group.id)
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "person.2.fill")
+                    .font(.caption)
+                    .foregroundStyle(LampTheme.caption)
+                Text(selectedAgeGroupLabel ?? "Everyone")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color(uiColor: .label))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(LampTheme.caption)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(LampTheme.tileFill, in: Capsule())
+        }
+        .accessibilityLabel("Questions for \(selectedAgeGroupLabel ?? "everyone")")
+    }
+
+    /// The question on its own card, under the kind of question it is. Once
+    /// the answer is out it steps down a size, so the answer has the room.
+    private func questionCard(for question: QuizQuestion) -> some View {
+        VStack(alignment: .leading, spacing: isAnswerVisible ? 10 : 16) {
+            HStack(spacing: 12) {
+                if isAnswerVisible {
+                    // With the answer out, the question's header steps down to
+                    // a line, so the answer has the room.
+                    Label {
+                        Text("\(question.themeEnum?.rawValue.capitalized ?? "Question") · Question \(currentIndex + 1) of \(questions.count)")
+                    } icon: {
+                        Image(systemName: question.themeEnum.map(Self.symbol(for:)) ?? "questionmark")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(LampTheme.caption)
+                } else {
+                    QuizThemeTile(symbol: question.themeEnum.map(Self.symbol(for:)) ?? "questionmark")
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(question.themeEnum?.rawValue.capitalized ?? "Question")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(Color(uiColor: .label))
+                        Text("Question \(currentIndex + 1) of \(questions.count)")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(LampTheme.caption)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                Spacer(minLength: 8)
+                // Who the questions are worded for, beside the question it words.
+                if quizModule.ageGroups.count > 1 {
+                    ageGroupMenu
+                }
+            }
+            quizAnnotatedText(for: question.questionJson, style: isAnswerVisible ? .questionCompact : .question)
+        }
+        .padding(isAnswerVisible ? 16 : 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .quizCard(cornerRadius: LampTheme.Radius.panel)
+    }
+
+    /// The cited verse, in the reading serif, to weigh before answering. A
+    /// tap opens it in its context, as the reference in the question does.
+    private func passageCard(_ passage: QuizPassage, question: QuizQuestion) -> some View {
+        Button {
+            guard let url = URL(string: "lampbible://quiz-ref/\(passage.sv)/\(passage.ev)") else { return }
+            handleQuizURL(url, annotatedText: QuizTextParser.parse(question.questionJson))
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "book.closed.fill")
+                        .font(.caption)
+                    Text(passage.label)
+                        .font(.footnote.weight(.bold))
+                    Spacer(minLength: 8)
+                    Text("Read in Context")
+                        .font(.footnote.weight(.semibold))
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                }
+                .foregroundStyle(Color.lampLink)
+                Text(passageText(passage))
+                    .font(.system(.body, design: .serif))
+                    .fontDesign(.serif)
+                    .lineSpacing(5)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, 18)
+            .padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .quizCard(cornerRadius: LampTheme.Radius.card)
+            .overlay(alignment: .leading) {
+                // A quotation's bar, as the reader sets off quoted scripture.
+                Capsule()
+                    .fill(LampTheme.caption.opacity(0.6))
+                    .frame(width: 3)
+                    .padding(.vertical, 14)
+                    .padding(.leading, 6)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens the verse in its context")
+    }
+
+    /// The verses as the reader sets them: small raised numbers, the cited
+    /// verses in the text colour and the verse after them lighter.
+    private func passageText(_ passage: QuizPassage) -> AttributedString {
+        var result = AttributedString()
+        for (index, verse) in passage.verses.enumerated() {
+            var number = AttributedString((index > 0 ? " " : "") + "\(verse.number)\u{00A0}")
+            number.font = .system(.caption2, design: .serif).weight(.semibold)
+            number.baselineOffset = 5
+            number.foregroundColor = LampTheme.verseNumber
+            var body = AttributedString(verse.text)
+            body.foregroundColor = verse.isCited ? LampTheme.readerText : LampTheme.caption
+            result += number + body
+        }
+        // A cited range longer than shown is marked as going on.
+        let lastShownCited = passage.verses.last(where: \.isCited).map { passage.sv / 1_000 * 1_000 + $0.number }
+        if let lastShownCited, passage.ev > lastShownCited {
+            result += AttributedString(" …")
+        }
+        return result
+    }
+
+    private func answerCard(for question: QuizQuestion) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label {
+                Text("Answer")
+                    .foregroundStyle(Color(uiColor: .label))
+            } icon: {
+                Image(systemName: "lightbulb.fill")
+                    .foregroundStyle(Color.accentColor)
+            }
+            .font(.subheadline.weight(.bold))
+            quizAnnotatedText(for: question.answerJson, style: .answer)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .quizCard(cornerRadius: LampTheme.Radius.panel)
+    }
+
+    /// One action at a time, the width of the page: Show Answer, then Next
+    /// Question (Done on the last). Stepping back or skipping ahead is up by
+    /// the progress bar.
+    private var questionNavigation: some View {
+        let isLast = currentIndex >= questions.count - 1
+        let showsMoreCue = Self.tracksPageEnd && isAnswerVisible && moreBelow
+        return VStack(spacing: 10) {
+            // The answer goes on below the fold: said here, in the bar, rather
+            // than laid over the lines it is about.
+            if showsMoreCue {
+                Label("The answer continues below", systemImage: "arrow.down")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(LampTheme.caption)
+                    .transition(.opacity)
+            }
+            primaryAction(isLast: isLast)
+        }
+        .animation(.easeOut(duration: 0.2), value: showsMoreCue)
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
+        .background {
+            LampTheme.groupedBackground
+                .ignoresSafeArea(edges: .bottom)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(LampTheme.hairline).frame(height: 1)
+                }
+        }
+    }
 
     @ViewBuilder
-    private func quizAnnotatedText(for json: String) -> some View {
+    private func primaryAction(isLast: Bool) -> some View {
+        Group {
+            if isAnswerVisible {
+                Button(action: advance) {
+                    HStack(spacing: 6) {
+                        Text(isLast ? "Done" : "Next Question")
+                        if !isLast {
+                            Image(systemName: "arrow.right")
+                                .font(.body.weight(.bold))
+                        }
+                    }
+                }
+            } else {
+                Button {
+                    speech.stop()
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        showAnswer = true
+                    }
+                } label: {
+                    Text("Show Answer")
+                }
+            }
+        }
+        .buttonStyle(QuizPrimaryButtonStyle())
+    }
+
+    private func advance() {
+        if currentIndex < questions.count - 1 {
+            goToQuestion(currentIndex + 1)
+        } else {
+            dismiss()
+        }
+    }
+
+    private func selectAgeGroup(_ id: String) {
+        guard id != selectedAgeGroup else { return }
+        selectedAgeGroup = id
+        saveAgeGroupPreference(id)
+        reloadQuestions()
+    }
+
+    /// The question's first verse reference, read from the reader's
+    /// translation: its first verse.
+    private func loadPassage(for question: QuizQuestion) async {
+        let parsed = QuizTextParser.parse(question.questionJson)
+        let text = parsed.text
+        guard let annotation = parsed.annotations?.first(where: {
+            ($0.type == .scripture || $0.type == .crossref) && $0.data?.sv != nil
+        }), let sv = annotation.data?.sv else {
+            passage = nil
+            return
+        }
+        let ev = max(annotation.data?.ev ?? sv, sv)
+        var label = ""
+        if annotation.start >= 0, annotation.end <= text.count, annotation.start < annotation.end {
+            let start = text.index(text.startIndex, offsetBy: annotation.start)
+            let end = text.index(text.startIndex, offsetBy: annotation.end)
+            label = String(text[start..<end])
+        }
+        let translationId = UserDatabase.shared.getSettings().readerTranslationId
+        // Up to two cited verses, and the one after them as context, set
+        // apart in a lighter tone. Verse ids count up within a chapter, and a
+        // verse past the chapter's end simply isn't found.
+        let lastCited = min(ev, sv + 1)
+        let verses = await Task.detached(priority: .userInitiated) {
+            (sv...(lastCited + 1)).compactMap { ref -> QuizPassage.Verse? in
+                guard let text = (try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref))?.text
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+                return QuizPassage.Verse(number: ref % 1_000, text: text, isCited: ref <= lastCited)
+            }
+        }.value
+        guard !Task.isCancelled else { return }
+        passage = verses.contains(where: \.isCited) ? QuizPassage(
+            questionID: question.id,
+            label: label.isEmpty ? "The Verse" : label,
+            sv: sv,
+            ev: ev,
+            verses: verses
+        ) : nil
+    }
+
+    /// A symbol for each kind of question, drawn in the text's own grey: the
+    /// kind is named beside it, so it needs no colour of its own.
+    static func symbol(for theme: QuizTheme) -> String {
+        switch theme {
+        case .narrative: "book.pages"
+        case .character: "person"
+        case .doctrine: "building.columns"
+        case .prophecy: "scroll"
+        case .typology: "square.on.square"
+        case .salvation: "heart"
+        case .commandment: "list.bullet.rectangle"
+        case .geography: "map"
+        case .history: "clock"
+        case .wisdom: "lightbulb"
+        }
+    }
+
+    // MARK: - Annotated Text Rendering
+
+    /// The question is set larger than its answer, as a prompt is.
+    enum QuizTextStyle {
+        case question, questionCompact, answer
+    }
+
+    @ViewBuilder
+    private func quizAnnotatedText(for json: String, style: QuizTextStyle = .answer) -> some View {
         let parsed = QuizTextParser.parse(json)
         SelectableQuizText(
-            attributedText: buildQuizAttributedString(from: parsed),
+            attributedText: buildQuizAttributedString(from: parsed, style: style),
             onLinkTap: { url in
                 handleQuizURL(url, annotatedText: parsed)
             }
@@ -4233,15 +4732,47 @@ struct QuizSheetView: View {
     /// Build an NSAttributedString with tappable links for scripture annotations.
     /// UIKit-flavoured because the quiz text is rendered by a UITextView, which is
     /// what provides selection and the native callout menu.
-    private func buildQuizAttributedString(from annotatedText: AnnotatedText) -> NSAttributedString {
-        let text = annotatedText.text
+    private func buildQuizAttributedString(from annotatedText: AnnotatedText, style: QuizTextStyle = .answer) -> NSAttributedString {
+        // A long answer in short paragraphs: the space after every second
+        // sentence becomes a line break. A swap of one character for one, so
+        // the annotations' offsets still fall where they did.
+        let text = Self.keepingReferencesTogether(
+            style == .answer ? Self.paragraphed(annotatedText.text) : annotatedText.text,
+            annotations: annotatedText.annotations ?? []
+        )
+        let paragraph = NSMutableParagraphStyle()
+        let font: UIFont
+        var leadFont: UIFont?
+        switch style {
+        case .question, .questionCompact:
+            // The quiz's rounded voice, a prompt's weight.
+            // Medium, not bold: five lines of heavy type read as a block.
+            let size: CGFloat = style == .question ? 20 : 16
+            let base = UIFont.systemFont(ofSize: size, weight: .medium)
+            let rounded = base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? base
+            font = UIFontMetrics(forTextStyle: style == .question ? .title2 : .headline).scaledFont(for: rounded)
+            paragraph.lineSpacing = style == .question ? 3 : 2
+        case .answer:
+            // Explanations are read, so they take the reading serif and its
+            // leading; the first sentence, the gist, is set a weight heavier
+            // so a long answer has somewhere to start.
+            let metrics = UIFontMetrics(forTextStyle: .body)
+            font = metrics.scaledFont(for: LampTheme.serif(size: 18))
+            leadFont = metrics.scaledFont(for: LampTheme.serif(size: 18, weight: .semibold))
+            paragraph.lineSpacing = max(0, font.pointSize * LampTheme.Scripture.leading - font.lineHeight)
+            paragraph.paragraphSpacing = font.pointSize * 0.55
+        }
         let result = NSMutableAttributedString(
             string: text,
             attributes: [
-                .font: UIFont.preferredFont(forTextStyle: .body),
-                .foregroundColor: UIColor.label
+                .font: font,
+                .foregroundColor: style == .answer ? UIColor.lampReaderText : UIColor.label,
+                .paragraphStyle: paragraph
             ]
         )
+        if let leadFont, let lead = Self.firstSentenceRange(in: text) {
+            result.addAttribute(.font, value: leadFont, range: lead)
+        }
 
         guard let annotations = annotatedText.annotations else { return result }
 
@@ -4263,6 +4794,73 @@ struct QuizSheetView: View {
         }
 
         return result
+    }
+
+    /// `text` with the spaces inside its verse references made non-breaking,
+    /// so "Hosea 3:1" never breaks between book and verse. One character for
+    /// one, so the annotations' offsets still hold.
+    static func keepingReferencesTogether(_ text: String, annotations: [CommentaryAnnotation]) -> String {
+        var characters = Array(text)
+        var changed = false
+        for annotation in annotations where annotation.type == .scripture || annotation.type == .crossref {
+            guard annotation.start >= 0, annotation.end <= characters.count, annotation.start < annotation.end else { continue }
+            for index in annotation.start..<annotation.end where characters[index] == " " {
+                characters[index] = "\u{00A0}"
+                changed = true
+            }
+        }
+        return changed ? String(characters) : text
+    }
+
+    /// `text` with the space after every second sentence made a line break,
+    /// when it runs long enough to want paragraphs. Same length as `text`.
+    static func paragraphed(_ text: String, sentencesPerParagraph: Int = 2, minimumLength: Int = 240) -> String {
+        guard text.count >= minimumLength, !text.contains("\n") else { return text }
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var breaks: [String.Index] = []
+        var count = 0
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            count += 1
+            if count % sentencesPerParagraph == 0, range.upperBound < text.endIndex {
+                // The whitespace that ends the token, if there is one.
+                var end = range.upperBound
+                while end > range.lowerBound, text[text.index(before: end)].isWhitespace {
+                    end = text.index(before: end)
+                }
+                if end < range.upperBound, text[end] == " " {
+                    breaks.append(end)
+                }
+            }
+            return true
+        }
+        guard !breaks.isEmpty else { return text }
+        var characters = Array(text)
+        for index in breaks {
+            characters[text.distance(from: text.startIndex, to: index)] = "\n"
+        }
+        return String(characters)
+    }
+
+    /// The first sentence of `text`, as an NSRange, when there is more than one.
+    static func firstSentenceRange(in text: String) -> NSRange? {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var first: Range<String.Index>?
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            first = range
+            return false
+        }
+        // Only a sentence short enough to read as a gist; a long one set in
+        // bold is a heavy block, not a lead.
+        guard let first, first.upperBound < text.endIndex, text[first].count <= 140 else { return nil }
+        // The token carries the space after the sentence; leave that plain.
+        var end = first.upperBound
+        while end > first.lowerBound, text[text.index(before: end)].isWhitespace {
+            end = text.index(before: end)
+        }
+        guard end > first.lowerBound else { return nil }
+        return NSRange(first.lowerBound..<end, in: text)
     }
 
     /// Handle tapped scripture reference URL from quiz text
@@ -4326,6 +4924,155 @@ struct QuizSheetView: View {
         )
         currentIndex = 0
         showAnswer = false
+    }
+}
+
+/// The verse a question cites, ready to show under it.
+struct QuizPassage: Equatable {
+    let questionID: Int64
+    let label: String
+    let sv: Int
+    let ev: Int
+    /// The cited verses, then a verse after them for context.
+    let verses: [Verse]
+
+    struct Verse: Equatable {
+        let number: Int
+        let text: String
+        /// Cited by the question, rather than shown around it.
+        let isCited: Bool
+    }
+}
+
+/// The quiz's main action: a solid accent key with a darker lip beneath, that
+/// sinks onto the lip when pressed, so it feels like something to press.
+private struct QuizPrimaryButtonStyle: ButtonStyle {
+    static let height: CGFloat = 54
+    static let lip: CGFloat = 3
+
+    func makeBody(configuration: ButtonStyleConfiguration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        configuration.label
+            .font(.body.weight(.bold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.height)
+            .background(shape.fill(Color.accentColor))
+            .contentShape(shape)
+            .offset(y: configuration.isPressed ? Self.lip : 0)
+            .background {
+                shape
+                    .fill(Color.accentColor)
+                    .overlay(shape.fill(Color.black.opacity(0.2)))
+                    .offset(y: Self.lip)
+            }
+            .padding(.bottom, Self.lip)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+    }
+}
+
+/// Back and ahead beside the progress bar: small round keys on the tile
+/// fill, quiet beside the one main action.
+private struct QuizStepButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: ButtonStyleConfiguration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(isEnabled ? Color(uiColor: .label) : LampTheme.caption.opacity(0.5))
+            .frame(width: 36, height: 36)
+            .background(Circle().fill(LampTheme.tileFill))
+            .contentShape(Circle())
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+/// A kind of question as a small coloured tile, like a lesson's mark: the
+/// accent, deepening downward, with the kind's symbol in white.
+private struct QuizThemeTile: View {
+    let symbol: String
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(LinearGradient(
+                colors: [Color.accentColor.opacity(0.82), Color.accentColor],
+                startPoint: .top,
+                endPoint: .bottom
+            ))
+            .frame(width: 44, height: 44)
+            .overlay {
+                Image(systemName: symbol)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+/// How far through the quiz: a thick bar, filled to the question on screen,
+/// with a soft highlight along its top.
+private struct QuizProgressBar: View {
+    let count: Int
+    let current: Int
+
+    private var fraction: CGFloat {
+        count > 0 ? CGFloat(current + 1) / CGFloat(count) : 0
+    }
+
+    var body: some View {
+        Capsule()
+            .fill(LampTheme.rule)
+            .frame(height: 12)
+            .overlay(alignment: .leading) {
+                GeometryReader { proxy in
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: max(12, proxy.size.width * fraction))
+                        .overlay(alignment: .top) {
+                            Capsule()
+                                .fill(.white.opacity(0.35))
+                                .frame(height: 3)
+                                .padding(.horizontal, 6)
+                                .padding(.top, 2.5)
+                        }
+                }
+            }
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: current)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Question \(current + 1) of \(count)")
+    }
+}
+
+private extension View {
+    /// A quiz card: the card fill with a hairline, so its edge holds on the
+    /// dark sheet, where the fill alone is barely lighter than the ground.
+    func quizCard(cornerRadius: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return background(LampTheme.card, in: shape)
+            .overlay(shape.strokeBorder(LampTheme.hairline))
+    }
+
+    /// Tells whether this view is on screen in its scroll view (iOS 18, which
+    /// reports scroll visibility); earlier, it is taken as always seen.
+    @ViewBuilder
+    func quizReportsVisible(_ report: @escaping (Bool) -> Void) -> some View {
+        if #available(iOS 18.0, *) {
+            onScrollVisibilityChange(threshold: 0.01, report)
+        } else {
+            self
+        }
+    }
+
+    /// A firm edge where the page meets the quiz's bottom bar (iOS 26), so no
+    /// half-faded line of the answer is left to read through it.
+    @ViewBuilder
+    func quizHardBottomEdge() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.hard, for: .bottom)
+        } else {
+            self
+        }
     }
 }
 

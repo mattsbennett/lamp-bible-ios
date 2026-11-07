@@ -6,9 +6,13 @@
 //
 
 import SwiftUI
+import LampModuleKit
 
 struct ReaderNavigationToolbarView: View {
     @Environment(\.dismiss) var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+    /// The More menu is showing its view settings page.
+    @State private var showingViewOptions = false
     @Binding var userSettings: UserSettings
     @Binding var readingMetaData: [ReadingMetaData]?
     @Binding var translationId: String
@@ -17,6 +21,8 @@ struct ReaderNavigationToolbarView: View {
     @Binding var showingBookPicker: Bool
     @Binding var showingOptionsMenu: Bool
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
+    /// Serif or sans for scripture, under the key the Mac reader uses.
+    @AppStorage("reader.typeface") private var readerTypeface = LampProseTypeface.serif.rawValue
     let readerDismiss: DismissAction
     var onHideToolbars: (() -> Void)? = nil
 
@@ -147,7 +153,11 @@ struct ReaderNavigationToolbarView: View {
                     .buttonStyle(.plain)
                     .modifier(HeaderGlass(shape: Circle()))
                     .popover(isPresented: $showingOptionsMenu) {
+                        // Carried in explicitly: a popover left open across a
+                        // switch to dark kept drawing itself light.
                         optionsMenuContent
+                            .environment(\.colorScheme, colorScheme)
+                            .preferredColorScheme(colorScheme)
                     }
                 }
             }
@@ -302,191 +312,252 @@ struct ReaderNavigationToolbarView: View {
     }
 
     @ViewBuilder
+    /// The menu opens on highlighting, the task it is mostly used for; the
+    /// reader's view settings are a page of their own behind one row, so the
+    /// menu covers less of the passage and doesn't mix the two.
     private var optionsMenuContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Highlights section
-            highlightsSectionContent
-
-            // Bible options section
-            VStack(alignment: .leading, spacing: 0) {
-                if let hideToolbars = onHideToolbars {
-                    Button {
-                        showingOptionsMenu = false
-                        hideToolbars()
-                    } label: {
-                        Label("Hide Toolbars", systemImage: "eye.slash")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-
-                    Divider()
-                }
-
-                if !isHorizontalSplit {
-                    // Show/Hide Tools only when not in horizontal split (tool panel has its own controls then)
-                    Button {
-                        notesPanelVisible.toggle()
-                    } label: {
-                        Label(
-                            notesPanelVisible ? "Hide Tools" : "Show Tools",
-                            systemImage: notesPanelVisible ? "rectangle.portrait" : "inset.filled.bottomhalf.rectangle.portrait"
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                }
-            }
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-            .cornerRadius(14)
-
-            // Bible font size controls
-            HStack(spacing: 0) {
-                Button {
-                    if userSettings.readerFontSize > 12 {
-                        try? UserDatabase.shared.updateSettings { settings in
-                            settings.readerFontSize = settings.readerFontSize - 2
-                        }
-                        userSettings.readerFontSize -= 2
-                    }
-                } label: {
-                    Image(systemName: "textformat.size.smaller")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(userSettings.readerFontSize <= 12)
-
-                Divider()
-                    .frame(height: 20)
-
-                Button {
-                    if userSettings.readerFontSize < 30 {
-                        try? UserDatabase.shared.updateSettings { settings in
-                            settings.readerFontSize = settings.readerFontSize + 2
-                        }
-                        userSettings.readerFontSize += 2
-                    }
-                } label: {
-                    Image(systemName: "textformat.size.larger")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(userSettings.readerFontSize >= 30)
-            }
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-            .cornerRadius(14)
-
-            // Tool options section (only in horizontal split mode)
-            if isHorizontalSplit {
-                // Section header
-                Text("Tool Panel")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
-                    .padding(.top, 4)
-
-                VStack(alignment: .leading, spacing: 0) {
-                    // Scroll link toggle
-                    Button {
-                        isScrollLinked.toggle()
-                    } label: {
-                        Label(
-                            isScrollLinked ? "Unlink Scroll" : "Link Scroll",
-                            systemImage: isScrollLinked ? "link.circle.fill" : "link.circle"
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-
-                    Divider()
-
-                    // Split orientation toggle
-                    if let toggleOrientation = onToggleSplitOrientation {
-                        Button {
-                            showingOptionsMenu = false
-                            toggleOrientation()
-                        } label: {
-                            Label("Split Below", systemImage: "rectangle.split.1x2")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-
-                        Divider()
-                    }
-
-                    // Hide tool panel
-                    if let hidePanel = onHideToolPanel {
-                        Button {
-                            showingOptionsMenu = false
-                            hidePanel()
-                        } label: {
-                            Label("Hide Tools", systemImage: "rectangle.portrait")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    }
-                }
-                .background(Color(UIColor.secondarySystemGroupedBackground))
-                .cornerRadius(14)
-
-                // Tool font size controls
-                HStack(spacing: 0) {
-                    Button {
-                        if toolFontSize > 12 {
-                            toolFontSize -= 2
-                        }
-                    } label: {
-                        Image(systemName: "textformat.size.smaller")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(toolFontSize <= 12)
-
-                    Divider()
-                        .frame(height: 20)
-
-                    Button {
-                        if toolFontSize < 24 {
-                            toolFontSize += 2
-                        }
-                    } label: {
-                        Image(systemName: "textformat.size.larger")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(toolFontSize >= 24)
-                }
-                .background(Color(UIColor.secondarySystemGroupedBackground))
-                .cornerRadius(14)
+        Group {
+            if showingViewOptions {
+                viewOptionsPage
+            } else {
+                highlightsPage
             }
         }
         .font(.body)
         .fontWeight(.regular)
         .padding(12)
-        .background(Color(UIColor.systemGroupedBackground))
+        .frame(width: 320)
+        .background(LampTheme.menuBackground)
         .presentationCompactAdaptation(.popover)
+        .animation(.easeInOut(duration: 0.2), value: showingViewOptions)
+        .onDisappear { showingViewOptions = false }
+    }
+
+    private var highlightsPage: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Highlights: style, colour, the set they go in, and showing them.
+            menuCaption("Highlights")
+            highlightsSectionContent
+
+            VStack(spacing: 0) {
+                menuRow("View Options", systemImage: "textformat.size", showsChevron: true) {
+                    showingViewOptions = true
+                }
+            }
+            .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+            .padding(.top, 6)
+        }
+    }
+
+    private var viewOptionsPage: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                showingViewOptions = false
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Highlights")
+                }
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 4)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // The reader itself: its chrome and how scripture is set.
+            menuCaption("View")
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    if let hideToolbars = onHideToolbars {
+                        menuTile("Hide Toolbars", systemImage: "eye.slash") {
+                            showingOptionsMenu = false
+                            hideToolbars()
+                        }
+                    }
+                    if !isHorizontalSplit {
+                        // Show/Hide Tools only when not in horizontal split (tool panel has its own controls then)
+                        menuTile(
+                            notesPanelVisible ? "Hide Tools" : "Show Tools",
+                            systemImage: notesPanelVisible ? "rectangle.portrait" : "inset.filled.bottomhalf.rectangle.portrait"
+                        ) {
+                            notesPanelVisible.toggle()
+                        }
+                    }
+                }
+                .padding(8)
+
+                Divider().padding(.horizontal, 14)
+
+                HStack(spacing: 10) {
+                    Picker("Typeface", selection: $readerTypeface) {
+                        Text("Serif").tag(LampProseTypeface.serif.rawValue)
+                        Text("Sans").tag(LampProseTypeface.sansSerif.rawValue)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: .infinity)
+
+                    textSizeStepper(
+                        canDecrease: userSettings.readerFontSize > 12,
+                        canIncrease: userSettings.readerFontSize < 30,
+                        decrease: {
+                            try? UserDatabase.shared.updateSettings { settings in
+                                settings.readerFontSize = settings.readerFontSize - 2
+                            }
+                            userSettings.readerFontSize -= 2
+                        },
+                        increase: {
+                            try? UserDatabase.shared.updateSettings { settings in
+                                settings.readerFontSize = settings.readerFontSize + 2
+                            }
+                            userSettings.readerFontSize += 2
+                        }
+                    )
+                    .frame(width: 112)
+                }
+                .padding(.leading, 12)
+                .padding(.trailing, 6)
+                .padding(.vertical, 4)
+            }
+            .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+
+            // Tool options section (only in horizontal split mode)
+            if isHorizontalSplit {
+                menuCaption("Tool Panel")
+                    .padding(.top, 6)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    // Scroll link toggle
+                    menuRow(
+                        isScrollLinked ? "Unlink Scroll" : "Link Scroll",
+                        systemImage: isScrollLinked ? "link.circle.fill" : "link.circle"
+                    ) {
+                        isScrollLinked.toggle()
+                    }
+
+                    // Split orientation toggle
+                    if let toggleOrientation = onToggleSplitOrientation {
+                        Divider().padding(.leading, 52)
+                        menuRow("Split Below", systemImage: "rectangle.split.1x2") {
+                            showingOptionsMenu = false
+                            toggleOrientation()
+                        }
+                    }
+
+                    // Hide tool panel
+                    if let hidePanel = onHideToolPanel {
+                        Divider().padding(.leading, 52)
+                        menuRow("Hide Tools", systemImage: "rectangle.portrait") {
+                            showingOptionsMenu = false
+                            hidePanel()
+                        }
+                    }
+                }
+                .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+
+                // Tool font size controls
+                textSizeStepper(
+                    canDecrease: toolFontSize > 12,
+                    canIncrease: toolFontSize < 24,
+                    decrease: { toolFontSize -= 2 },
+                    increase: { toolFontSize += 2 }
+                )
+                .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+            }
+        }
+    }
+
+
+    /// A small heading over a group of the menu's controls.
+    private func menuCaption(_ title: String) -> some View {
+        Text(title)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(LampTheme.caption)
+            .padding(.horizontal, 6)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    /// A half-width action: its icon over its name.
+    private func menuTile(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18))
+                    .frame(height: 22)
+                Text(title)
+                    .font(.footnote.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(Color.primary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 60)
+            .background(LampTheme.menuBackground, in: RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+
+    /// One action in the menu: an icon in a fixed column, then its name.
+    private func menuRow(_ title: String, systemImage: String, showsChevron: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 17))
+                    .frame(width: 24)
+                    .foregroundStyle(Color.primary)
+                Text(title)
+                Spacer(minLength: 0)
+                if showsChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .accessibilityLabel(title)
+    }
+
+    /// Smaller and larger text, each a letter drawn at the size it moves toward.
+    private func textSizeStepper(
+        canDecrease: Bool,
+        canIncrease: Bool,
+        decrease: @escaping () -> Void,
+        increase: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 0) {
+            Button(action: decrease) {
+                Text("A")
+                    .font(.system(size: 14, weight: .medium, design: .serif))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canDecrease)
+            .accessibilityLabel("Smaller Text")
+
+            Divider()
+                .frame(height: 22)
+
+            Button(action: increase) {
+                Text("A")
+                    .font(.system(size: 22, weight: .medium, design: .serif))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canIncrease)
+            .accessibilityLabel("Larger Text")
+        }
     }
 
     @ViewBuilder
@@ -499,7 +570,7 @@ struct ReaderNavigationToolbarView: View {
             } : nil)
 
             Divider()
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 14)
 
             // Highlight set chooser
             if !HighlightManager.shared.availableSets.isEmpty {
@@ -516,50 +587,55 @@ struct ReaderNavigationToolbarView: View {
                         }
                     }
                 } label: {
-                    HStack {
-                        Label {
-                            Text(HighlightManager.shared.availableSets.first { $0.id == HighlightManager.shared.activeSetId }?.name ?? "Select Set")
-                        } icon: {
-                            Image(systemName: "folder")
-                        }
-                        Spacer()
+                    HStack(spacing: 14) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 17))
+                            .frame(width: 24)
+                        Text(HighlightManager.shared.availableSets.first { $0.id == HighlightManager.shared.activeSetId }?.name ?? "Select Set")
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
                         Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
+                    .foregroundStyle(Color.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 12)
 
                 Divider()
-                    .padding(.horizontal, 8)
+                    .padding(.leading, 52)
             }
 
             // Show/Hide Highlights
             Button {
                 HighlightManager.shared.highlightsHidden.toggle()
             } label: {
-                Label {
-                    Text(HighlightManager.shared.highlightsHidden ? "Show Highlights" : "Hide Highlights")
-                } icon: {
-                    if HighlightManager.shared.highlightsHidden {
-                        Image(systemName: "highlighter")
-                    } else {
-                        Image("highlighter.slash")
+                HStack(spacing: 14) {
+                    Group {
+                        if HighlightManager.shared.highlightsHidden {
+                            Image(systemName: "highlighter")
+                        } else {
+                            Image("highlighter.slash")
+                        }
                     }
+                    .font(.system(size: 17))
+                    .frame(width: 24)
+                    Text(HighlightManager.shared.highlightsHidden ? "Show Highlights" : "Hide Highlights")
+                    Spacer(minLength: 0)
                 }
+                .foregroundStyle(Color.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 14)
             .padding(.vertical, 12)
         }
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(14)
+        .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
     }
 }
 

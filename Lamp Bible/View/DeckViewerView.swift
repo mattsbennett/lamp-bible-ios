@@ -54,6 +54,9 @@ struct DeckViewerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var index = 0
+    /// Where the deck opens; the library's outline can open it partway.
+    var initialIndex = 0
+    @State private var didApplyInitialIndex = false
     @State private var showsChrome = true
     @State private var showsNotes = false
     @State private var showsSlideList = false
@@ -72,35 +75,81 @@ struct DeckViewerView: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { proxy in
+            let layout = ChromeLayout(
+                screen: proxy.size,
+                safeArea: proxy.safeAreaInsets,
+                slideRatio: deck.aspectRatio.ratio
+            )
+            ZStack {
+                Color.black
 
-            if slides.isEmpty {
-                ContentUnavailableView(
-                    "Nothing to Show",
-                    systemImage: "rectangle.on.rectangle.slash",
-                    description: Text("Every slide in this deck is hidden.")
-                )
-                .foregroundStyle(.white)
-            } else {
-                // The bar insets the slide rather than floating over it. A
-                // widescreen slide fills the height in landscape, so an overlay
-                // hides the one line most worth reading — the slide's title.
-                slidePager
-                    .safeAreaInset(edge: .top, spacing: 0) {
-                        if showsChrome {
-                            chromeBar.transition(.opacity)
-                        }
+                if slides.isEmpty {
+                    ContentUnavailableView(
+                        "Nothing to Show",
+                        systemImage: "rectangle.on.rectangle.slash",
+                        description: Text("Every slide in this deck is hidden.")
+                    )
+                    .foregroundStyle(.white)
+                    .overlay(alignment: .topLeading) {
+                        closeButton.padding(.leading, max(proxy.safeAreaInsets.leading, 16)).padding(.top, 12)
                     }
+                } else if layout.usesSideBands {
+                    // A widescreen slide on a phone held sideways leaves a band
+                    // of black either side. The controls live there, so the
+                    // slide keeps the full height of the screen and nothing is
+                    // laid over it.
+                    slidePager
+                    if showsChrome {
+                        sideBandChrome(layout)
+                            .transition(.opacity)
+                    }
+                } else {
+                    // No room beside the slide: the bar insets it rather than
+                    // floating over it, since an overlay would hide the one
+                    // line most worth reading, the slide's title.
+                    slidePager
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            if showsChrome {
+                                chromeBar.transition(.opacity)
+                            }
+                        }
+                }
             }
         }
-        .statusBarHidden(!showsChrome)
+        // Measured edge to edge: the black bands beside the slide run into
+        // the rounded corners and the sensor housing, and the controls are
+        // placed within them clear of both.
+        .ignoresSafeArea()
+        .environment(\.colorScheme, .dark)
+        .statusBarHidden(true)
         .persistentSystemOverlays(showsChrome ? .automatic : .hidden)
         .sheet(isPresented: $showsNotes) { notesSheet }
         .sheet(isPresented: $showsSlideList) { slideListSheet }
-        .onAppear { DeckViewerOrientation.requestLandscape() }
+        .onAppear {
+            DeckViewerOrientation.requestLandscape()
+            if !didApplyInitialIndex {
+                didApplyInitialIndex = true
+                index = min(max(initialIndex, 0), max(slides.count - 1, 0))
+            }
+        }
         .onDisappear { DeckViewerOrientation.release() }
     }
+
+    /// Where the controls go: beside the slide when the black bands either
+    /// side are wide enough for a button, otherwise in a bar above it.
+    private struct ChromeLayout {
+        let screen: CGSize
+        let safeArea: EdgeInsets
+        let slideRatio: CGFloat
+
+        /// The slide at the screen's full height.
+        var slideWidth: CGFloat { screen.height * slideRatio }
+        var bandWidth: CGFloat { (screen.width - slideWidth) / 2 }
+        var usesSideBands: Bool { bandWidth >= DeckViewerView.controlSize + 16 }
+    }
+
+    static let controlSize: CGFloat = 44
 
     // MARK: - Slides
 
@@ -109,11 +158,16 @@ struct DeckViewerView: View {
             ForEach(Array(slides.enumerated()), id: \.element.id) { position, slide in
                 LampPresentationSlideCanvas(slide: slide, deck: deck, store: store)
                     .aspectRatio(deck.aspectRatio.ratio, contentMode: .fit)
+                    // The slide's own ground stays inside the slide, rather
+                    // than spilling into the home indicator's margin.
+                    .clipped()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
                     .tag(position)
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
+        .ignoresSafeArea()
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) { showsChrome.toggle() }
@@ -122,54 +176,129 @@ struct DeckViewerView: View {
 
     // MARK: - Chrome
 
+    /// Close at the top of the left band; the slide list, presenter notes and
+    /// the position at the right, as a player keeps them out of the picture.
+    private func sideBandChrome(_ layout: ChromeLayout) -> some View {
+        HStack(spacing: 0) {
+            VStack {
+                closeButton
+                Spacer()
+            }
+            .frame(width: layout.bandWidth)
+
+            Spacer(minLength: 0)
+
+            VStack(spacing: 12) {
+                slideListButton
+                if currentNotes != nil {
+                    notesButton
+                }
+                Spacer()
+                positionLabel
+                    .padding(.bottom, 4)
+            }
+            .frame(width: layout.bandWidth)
+        }
+        .padding(.vertical, 22)
+    }
+
     private var chromeBar: some View {
         HStack(spacing: 14) {
-            Button {
-                dismiss()
-            } label: {
-                    Image(systemName: "xmark")
-                        .font(.headline)
-                        .frame(width: 34, height: 34)
-                }
-                .accessibilityLabel("Close deck")
+            closeButton
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(deck.title)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    if !slides.isEmpty {
-                        Text("Slide \(index + 1) of \(slides.count)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(deck.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                if !slides.isEmpty {
+                    Text("Slide \(index + 1) of \(slides.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-
-                Spacer(minLength: 0)
-
-                if currentNotes != nil {
-                    Button {
-                        showsNotes = true
-                    } label: {
-                        Image(systemName: "note.text")
-                            .font(.headline)
-                            .frame(width: 34, height: 34)
-                    }
-                    .accessibilityLabel("Presenter notes")
-                }
-
-                Button {
-                    showsSlideList = true
-                } label: {
-                    Image(systemName: "square.grid.2x2")
-                        .font(.headline)
-                        .frame(width: 34, height: 34)
-                }
-                .accessibilityLabel("Choose slide")
-                .disabled(slides.isEmpty)
             }
+            .foregroundStyle(.white)
+
+            Spacer(minLength: 0)
+
+            if currentNotes != nil {
+                notesButton
+            }
+            slideListButton
+        }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
+    }
+
+    private var closeButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.body.weight(.semibold))
+                .frame(width: Self.controlSize, height: Self.controlSize)
+        }
+        .foregroundStyle(.white)
+        .deckControlSurface()
+        .accessibilityLabel("Close deck")
+    }
+
+    private var slideListButton: some View {
+        Button {
+            showsSlideList = true
+        } label: {
+            Image(systemName: "square.grid.2x2")
+                .font(.body.weight(.semibold))
+                .frame(width: Self.controlSize, height: Self.controlSize)
+        }
+        .foregroundStyle(.white)
+        .deckControlSurface()
+        .accessibilityLabel("Choose slide")
+        .disabled(slides.isEmpty)
+    }
+
+    private var notesButton: some View {
+        Button {
+            showsNotes = true
+        } label: {
+            Image(systemName: "text.bubble")
+                .font(.body.weight(.semibold))
+                .frame(width: Self.controlSize, height: Self.controlSize)
+        }
+        .foregroundStyle(.white)
+        .deckControlSurface()
+        .accessibilityLabel("Presenter notes")
+    }
+
+    /// The slide's place in the deck as a ring filling round, with the number
+    /// inside and the count under it. It is a control: a tap opens the slide
+    /// list.
+    private var positionLabel: some View {
+        Button {
+            showsSlideList = true
+        } label: {
+            VStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .stroke(.white.opacity(0.22), lineWidth: 4)
+                    Circle()
+                        .trim(from: 0, to: CGFloat(index + 1) / CGFloat(max(slides.count, 1)))
+                        .stroke(.white, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Text("\(index + 1)")
+                        .font(.headline.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .minimumScaleFactor(0.7)
+                }
+                .frame(width: Self.controlSize, height: Self.controlSize)
+                .animation(.easeOut(duration: 0.25), value: index)
+                Text("of \(slides.count)")
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Slide \(index + 1) of \(slides.count)")
+        .accessibilityHint("Opens the list of slides")
     }
 
     // MARK: - Sheets
@@ -234,7 +363,7 @@ struct DeckViewerView: View {
                 }
                 .padding()
             }
-            .navigationTitle("Slides")
+            .navigationTitle(deck.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -247,7 +376,20 @@ struct DeckViewerView: View {
 
 extension DeckViewerView {
     /// Opens a stored deck, its images resolved wherever it was kept.
-    init(entry: PresentationDeckEntry) {
-        self.init(deck: entry.deck, store: PresentationDeckStorage.shared.store(for: entry))
+    init(entry: PresentationDeckEntry, startingAt initialIndex: Int = 0) {
+        self.init(deck: entry.deck, store: PresentationDeckStorage.shared.store(for: entry), initialIndex: initialIndex)
+    }
+}
+
+private extension View {
+    /// Liquid Glass where the OS has it; the app still ships to iOS 17, which
+    /// gets a dark material in the same circle.
+    @ViewBuilder
+    func deckControlSurface() -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            background(.ultraThinMaterial, in: Circle())
+        }
     }
 }

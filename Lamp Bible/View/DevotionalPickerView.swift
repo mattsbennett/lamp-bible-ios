@@ -53,6 +53,14 @@ struct DevotionalPickerView: View {
         devotionalModules.first { $0.id == selectedModuleId }
     }
 
+    /// A module's name as the library shows it. The default module was
+    /// created as "My Devotionals"; what it holds is all the person's
+    /// writing, of which a devotional is one kind.
+    static func displayName(of module: Module?) -> String {
+        guard let module else { return "Writing" }
+        return module.name == "My Devotionals" ? "My Writing" : module.name
+    }
+
     // Filtered results
     private var filteredDevotionals: [Devotional] {
         var result = devotionals
@@ -119,7 +127,14 @@ struct DevotionalPickerView: View {
                 devotionalList
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
+        .background(LampTheme.groupedBackground.ignoresSafeArea())
+        // Standalone, the list is the writing's home: its module as a large
+        // title, switched from the title's own menu.
+        .navigationTitle(Self.displayName(of: selectedModule))
+        .navigationBarTitleDisplayMode(onSelect == nil ? .large : .inline)
+        .toolbarTitleMenu {
+            moduleButtons
+        }
         .toolbar {
             if let onBack = onBack {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -129,35 +144,33 @@ struct DevotionalPickerView: View {
                 }
             }
 
+            if onSelect != nil {
             ToolbarItem(placement: .principal) {
                 Menu {
-                    ForEach(devotionalModules, id: \.id) { module in
-                        Button {
-                            if selectedModuleId != module.id {
-                                selectedModuleId = module.id
-                                loadDevotionals()
-                            }
-                        } label: {
-                            HStack {
-                                Text(module.name)
-                                if module.id == selectedModuleId {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
+                    moduleButtons
                 } label: {
                     HStack(spacing: 4) {
-                        Text(selectedModule?.name ?? "Devotionals")
+                        Text(Self.displayName(of: selectedModule))
                             .fontWeight(.semibold)
                         Image(systemName: "chevron.down")
                             .font(.caption)
                     }
                 }
             }
+            }
 
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
+                    // Also on the large title's own menu; here too, where it
+                    // is in plain sight.
+                    if onSelect == nil {
+                        Menu {
+                            moduleButtons
+                        } label: {
+                            Label("Module", systemImage: "books.vertical")
+                        }
+                    }
+
                     Menu {
                         ForEach(DevotionalSortOption.allCases, id: \.self) { option in
                             Button(action: { sortOption = option }) {
@@ -191,7 +204,7 @@ struct DevotionalPickerView: View {
                     }
 
                     Button(action: { showingFileImporter = true }) {
-                        Label("Import Devotional", systemImage: "doc.badge.plus")
+                        Label("Import Writing", systemImage: "doc.badge.plus")
                     }
 
                     Divider()
@@ -212,10 +225,7 @@ struct DevotionalPickerView: View {
                     Spacer()
                 }
                 ToolbarItem(placement: .bottomBar) {
-                    Button(action: { showingNewDevotional = true }) {
-                        Image(systemName: "plus")
-                            .font(.body.weight(.semibold))
-                    }
+                    newWritingButton
                 }
             }
         }
@@ -363,25 +373,53 @@ struct DevotionalPickerView: View {
     // MARK: - Subviews
 
     private var searchBar: some View {
-        HStack {
+        HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
 
-            TextField("Search devotionals...", text: $searchText)
+            // A placeholder of our own: the field's own is too faint to read.
+            TextField("", text: $searchText)
                 .textFieldStyle(.plain)
+                .accessibilityLabel("Search writing")
+                .overlay(alignment: .leading) {
+                    if searchText.isEmpty {
+                        Text("Search writing")
+                            .foregroundStyle(.secondary)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
 
             if !searchText.isEmpty {
                 Button(action: { searchText = "" }) {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                 }
+                .accessibilityLabel("Clear Search")
             }
         }
-        .padding(10)
-        .background(Color(.systemGray6))
-        .cornerRadius(10)
-        .padding(.horizontal)
+        .padding(.horizontal, 14)
+        .frame(minHeight: 44)
+        .background(Color(.secondarySystemGroupedBackground), in: Capsule())
+        .padding(.horizontal, 20)
         .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
+    /// The one action this list exists for, in the accent so it is found at
+    /// once.
+    @ViewBuilder
+    private var newWritingButton: some View {
+        let button = Button(action: { showingNewDevotional = true }) {
+            Image(systemName: "plus")
+                .font(.body.weight(.semibold))
+        }
+        .accessibilityLabel("New Writing")
+        if #available(iOS 26.0, *) {
+            button.buttonStyle(.glassProminent)
+        } else {
+            button
+        }
     }
 
     private var conflictBanner: some View {
@@ -455,20 +493,20 @@ struct DevotionalPickerView: View {
                 .foregroundColor(.secondary)
 
             if !searchText.isEmpty || hasActiveFilters {
-                Text("No devotionals found")
+                Text("No writing found")
                     .font(.headline)
                 Text("Try adjusting your search or filters")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             } else {
-                Text("No Devotionals Yet")
+                Text("No Writing Yet")
                     .font(.headline)
-                Text("Create your first devotional to get started")
+                Text("Start your first piece: a study, a reflection, a prayer.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
 
                 Button(action: { showingNewDevotional = true }) {
-                    Label("New Devotional", systemImage: "plus")
+                    Label("New Writing", systemImage: "plus")
                 }
                 .buttonStyle(.bordered)
                 .tint(.primary)
@@ -478,43 +516,105 @@ struct DevotionalPickerView: View {
         .centeredInVisibleSpace()
     }
 
-    private var devotionalList: some View {
-        List {
-            ForEach(filteredDevotionals, id: \.meta.id) { devotional in
-                if let onSelect = onSelect {
-                    // When used with onSelect callback (e.g., in ToolPanel)
-                    Button {
-                        onSelect(devotional)
-                    } label: {
-                        DevotionalListRow(devotional: devotional, hasSlides: hasSlides(devotional))
+    /// The modules writing can live in, to switch between.
+    @ViewBuilder
+    private var moduleButtons: some View {
+        ForEach(devotionalModules, id: \.id) { module in
+            Button {
+                if selectedModuleId != module.id {
+                    selectedModuleId = module.id
+                    loadDevotionals()
+                }
+            } label: {
+                HStack {
+                    Text(Self.displayName(of: module))
+                    if module.id == selectedModuleId {
+                        Image(systemName: "checkmark")
                     }
-                    .buttonStyle(.plain)
-                    .listRowSeparator(.hidden, edges: devotional.meta.id == filteredDevotionals.first?.meta.id ? .top : [])
-                    .listRowSeparator(devotional.meta.id == filteredDevotionals.last?.meta.id ? .hidden : .visible, edges: .bottom)
-                } else {
-                    // When used standalone - navigate to DevotionalView
-                    NavigationLink {
-                        DevotionalView(
-                            devotional: devotional,
-                            moduleId: selectedModuleId,
-                            initialMode: .read,
-                            onBack: {
-                                loadDevotionals()
-                            }
-                        )
-                    } label: {
-                        DevotionalListRow(devotional: devotional, hasSlides: hasSlides(devotional))
-                    }
-                    .listRowSeparator(.hidden, edges: devotional.meta.id == filteredDevotionals.first?.meta.id ? .top : [])
-                    .listRowSeparator(devotional.meta.id == filteredDevotionals.last?.meta.id ? .hidden : .visible, edges: .bottom)
                 }
             }
-            .onDelete(perform: deleteDevotionals)
+        }
+    }
+
+    /// Each piece its own card.
+    private var devotionalList: some View {
+        List {
+            Section {
+                ForEach(filteredDevotionals, id: \.meta.id) { devotional in
+                    Group {
+                        if let onSelect = onSelect {
+                            // When used with onSelect callback (e.g., in ToolPanel)
+                            Button {
+                                onSelect(devotional)
+                            } label: {
+                                DevotionalListRow(devotional: devotional, hasSlides: hasSlides(devotional))
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            // When used standalone - navigate to DevotionalView.
+                            // The link sits behind the card, so the card draws
+                            // its own disclosure mark in its own colour.
+                            ZStack {
+                                NavigationLink {
+                                    DevotionalView(
+                                        devotional: devotional,
+                                        moduleId: selectedModuleId,
+                                        initialMode: .read,
+                                        onBack: {
+                                            loadDevotionals()
+                                        }
+                                    )
+                                } label: {
+                                    EmptyView()
+                                }
+                                .opacity(0)
+                                DevotionalListRow(devotional: devotional, hasSlides: hasSlides(devotional), showsDisclosure: true)
+                            }
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 32, bottom: 6, trailing: 28))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(cardBackground)
+                }
+                .onDelete(perform: deleteDevotionals)
+
+            } header: {
+                Text(listHeader)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(LampTheme.caption)
+                    .textCase(nil)
+                    .padding(.leading, 4)
+            }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.top, 4, for: .scrollContent)
         .refreshable {
             loadDevotionals()
         }
+    }
+
+    /// A list row's card, inset from the screen's edges and from its
+    /// neighbours.
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous)
+            .fill(LampTheme.card)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+    }
+
+    /// How many pieces, and in what order, above the list.
+    private var listHeader: String {
+        let count = filteredDevotionals.count
+        let pieces = count == 1 ? "1 piece" : "\(count) pieces"
+        let order = switch sortOption {
+        case .dateNewest: "Newest first"
+        case .dateOldest: "Oldest first"
+        case .titleAZ: "A to Z"
+        case .titleZA: "Z to A"
+        case .lastModified: "Recently edited"
+        }
+        return "\(pieces) · \(order)"
     }
 
     // MARK: - Actions
@@ -614,81 +714,122 @@ struct DevotionalListRow: View {
     let devotional: Devotional
     /// A slide deck was made from this writing; the writing opens it.
     var hasSlides: Bool = false
+    /// Draws its own chevron: the list's link sits behind the card.
+    var showsDisclosure: Bool = false
 
-    init(devotional: Devotional, hasSlides: Bool = false) {
+    init(devotional: Devotional, hasSlides: Bool = false, showsDisclosure: Bool = false) {
         self.devotional = devotional
         self.hasSlides = hasSlides
+        self.showsDisclosure = showsDisclosure
     }
 
-    private var dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        return f
-    }()
+    /// "2026-11-06" as a reader would write it.
+    private var displayDate: String? {
+        guard let raw = devotional.meta.date else { return nil }
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withFullDate]
+        parser.timeZone = TimeZone.current
+        guard let date = parser.date(from: raw) else { return raw }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    /// The opening of the text, so a row can be told from its neighbours
+    /// by what it says and not only by its title.
+    private var excerpt: String? {
+        let markdown = devotional.markdownContent ?? MarkdownDevotionalConverter.contentToMarkdown(devotional)
+        return Self.excerpt(fromMarkdown: markdown)
+    }
+
+    /// Plain prose from the first paragraphs of some Markdown: headings,
+    /// quotation and list markers, emphasis, links and note markers removed.
+    static func excerpt(fromMarkdown markdown: String, limit: Int = 180) -> String? {
+        var pieces: [String] = []
+        var length = 0
+        for rawLine in markdown.split(whereSeparator: \.isNewline) {
+            var line = rawLine.trimmingCharacters(in: .whitespaces)
+            // Headings, rules, tables, images and note definitions say
+            // little about the writing.
+            if line.isEmpty || line.hasPrefix("#") || line.hasPrefix("|") || line.hasPrefix("![")
+                || line.hasPrefix("[^") || line.allSatisfy({ "-*_ ".contains($0) }) {
+                continue
+            }
+            for prefix in ["> ", ">", "- ", "* ", "+ "] where line.hasPrefix(prefix) {
+                line.removeFirst(prefix.count)
+            }
+            line = line.replacingOccurrences(of: #"^\d+\.\s+"#, with: "", options: .regularExpression)
+            line = line.replacingOccurrences(of: #"\[\^[^\]]*\]"#, with: "", options: .regularExpression)
+            line = line.replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            line = line.replacingOccurrences(of: #"[*_`~]+"#, with: "", options: .regularExpression)
+            line = line.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            pieces.append(line)
+            length += line.count
+            if length >= limit { break }
+        }
+        let text = pieces.joined(separator: " ")
+        return text.isEmpty ? nil : text
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Title and category
-            HStack {
-                Text(devotional.meta.title)
-                    .font(.headline)
-                    .lineLimit(1)
-
-                Spacer()
-
-                if let category = devotional.meta.categoryName {
-                    Text(category)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(devotional.meta.kindColor.opacity(0.2))
-                        .foregroundColor(devotional.meta.kindColor)
-                        .cornerRadius(4)
-                }
+        HStack(alignment: .center, spacing: 12) {
+            details
+            if showsDisclosure {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(LampTheme.caption)
+                    .accessibilityHidden(true)
             }
+        }
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(devotional.meta.title)
+                .font(.system(.title3, design: .serif).weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
 
             // Subtitle
-            if let subtitle = devotional.meta.subtitle {
+            if let subtitle = devotional.meta.subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(LampTheme.caption)
                     .lineLimit(1)
+            }
+
+            // The opening, in the writing's own serif.
+            if let excerpt {
+                Text(excerpt)
+                    .font(.system(.subheadline, design: .serif))
+                    .foregroundStyle(LampTheme.readerText.opacity(0.85))
+                    .lineSpacing(2)
+                    .lineLimit(2)
+                    .padding(.top, 2)
             }
 
             // Metadata row
-            HStack(spacing: 12) {
-                // Date
-                if let dateStr = devotional.meta.date {
-                    HStack(spacing: 4) {
-                        Image(systemName: "calendar")
-                            .font(.caption2)
-                        Text(dateStr)
-                            .font(.caption)
-                    }
-                    .foregroundColor(.secondary)
+            HStack(spacing: 6) {
+                if let date = displayDate {
+                    Text(date)
                 }
-
-                // Author
-                if let author = devotional.meta.author {
-                    HStack(spacing: 4) {
-                        Image(systemName: "person")
-                            .font(.caption2)
-                        Text(author)
-                            .font(.caption)
-                    }
-                    .foregroundColor(.secondary)
+                if let category = devotional.meta.categoryName {
+                    if displayDate != nil { Text("·") }
+                    Text(category)
                 }
-
+                if let author = devotional.meta.author, !author.isEmpty {
+                    Text("·")
+                    Text(author)
+                }
                 if hasSlides {
-                    HStack(spacing: 4) {
-                        Image(systemName: "rectangle.on.rectangle")
-                            .font(.caption2)
-                        Text("Slides")
-                            .font(.caption)
-                    }
-                    .foregroundColor(.secondary)
+                    Text("·")
+                    Label("Slides", systemImage: "rectangle.on.rectangle")
+                        .labelStyle(.titleAndIcon)
                 }
             }
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(LampTheme.caption)
+            .lineLimit(1)
+            .padding(.top, 4)
 
             // Tags
             if let tags = devotional.meta.tags, !tags.isEmpty {
@@ -696,23 +837,23 @@ struct DevotionalListRow: View {
                     HStack(spacing: 4) {
                         ForEach(tags.prefix(3), id: \.self) { tag in
                             Text(tag)
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color(.tertiarySystemFill))
-                                .foregroundColor(.secondary)
-                                .cornerRadius(4)
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(LampTheme.tileFill, in: Capsule())
+                                .foregroundStyle(LampTheme.caption)
                         }
                         if tags.count > 3 {
                             Text("+\(tags.count - 3)")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
+                .padding(.top, 2)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
 }
 
@@ -855,7 +996,7 @@ struct DevotionalEditorSheet: View {
                         .textInputAutocapitalization(.never)
                 }
             }
-            .navigationTitle("New Devotional")
+            .navigationTitle("New Writing")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

@@ -1386,6 +1386,7 @@ window.editorAPI = {
 
   setTheme(isDark) {
     document.body.classList.toggle('dark', isDark)
+    document.body.classList.toggle('light', !isDark)
   },
 
   setFontSize(size) {

@@ -16,6 +16,15 @@ enum ModuleSource: String, CaseIterable {
     case all = "All"
     case bundled = "Built In"
     case user = "User"
+
+    /// The segment's name: "Yours" for what you added or made.
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .bundled: "Built In"
+        case .user: "Yours"
+        }
+    }
 }
 
 // MARK: - Commentary Series Group
@@ -207,6 +216,9 @@ struct ModuleManagerView: View {
     // Edit module metadata
     @State private var moduleToEdit: Module? = nil
 
+    /// Says an import finished, which otherwise showed only as a new row.
+    @State private var toast: LampToast? = nil
+
     private let database = ModuleDatabase.shared
     private let syncManager = ModuleSyncManager.shared
     private var storage: ModuleStorage? {
@@ -241,11 +253,32 @@ struct ModuleManagerView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Filter controls
-                VStack(spacing: 8) {
-                    // Type filter row
+                // Filter controls in one row: where from (a menu), then what kind.
+                VStack(spacing: 10) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
+                            Menu {
+                                Picker("Source", selection: $selectedSource) {
+                                    ForEach(ModuleSource.allCases, id: \.self) { source in
+                                        Text(source.title).tag(source)
+                                    }
+                                }
+                            } label: {
+                                FilterChipLabel(
+                                    title: selectedSource == .all ? "Any Source" : selectedSource.title,
+                                    systemImage: "line.3.horizontal.decrease",
+                                    isSelected: selectedSource != .all,
+                                    showsMenuIndicator: true
+                                )
+                            }
+                            .accessibilityLabel("Source")
+                            .accessibilityValue(selectedSource.title)
+
+                            Rectangle()
+                                .fill(LampTheme.hairline)
+                                .frame(width: 1, height: 22)
+                                .accessibilityHidden(true)
+
                             FilterChip(title: "All", isSelected: selectedType == nil) {
                                 selectedType = nil
                             }
@@ -257,26 +290,18 @@ struct ModuleManagerView: View {
                         }
                         .padding(.horizontal)
                     }
-
-                    // Source filter row
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(ModuleSource.allCases, id: \.self) { source in
-                                FilterChip(
-                                    title: source.rawValue,
-                                    isSelected: selectedSource == source,
-                                    color: source == .bundled ? .purple : (source == .user ? .green : .accentColor)
-                                ) {
-                                    selectedSource = source
-                                }
-                            }
+                    // Fade the trailing edge, so chips past it read as more to scroll to.
+                    .mask {
+                        HStack(spacing: 0) {
+                            Color.black
+                            LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .leading, endPoint: .trailing)
+                                .frame(width: 28)
                         }
-                        .padding(.horizontal)
                     }
-                }
-                .padding(.vertical, 8)
 
-                Divider()
+                }
+                .padding(.top, 4)
+                .padding(.bottom, 10)
 
                 if isLoading {
                     Spacer()
@@ -298,7 +323,22 @@ struct ModuleManagerView: View {
                         Image(systemName: "arrow.backward")
                     }
                 }
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Menu {
+                        Button {
+                            showingImportSheet = true
+                        } label: {
+                            Label("Import Module", systemImage: "square.and.arrow.down")
+                        }
+                        Button {
+                            showingCreateModule = true
+                        } label: {
+                            Label("Create New Module", systemImage: "plus.square")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+
                     Button {
                         syncAllModules()
                     } label: {
@@ -309,27 +349,10 @@ struct ModuleManagerView: View {
                         }
                     }
                     .disabled(isSyncing)
-                }
-                ToolbarItem(placement: .bottomBar) {
-                    Spacer()
-                }
-                ToolbarItem(placement: .bottomBar) {
-                    Menu {
-                        Button {
-                            showingCreateModule = true
-                        } label: {
-                            Label("Create New Module", systemImage: "plus.square")
-                        }
-                        Button {
-                            showingImportSheet = true
-                        } label: {
-                            Label("Import Module", systemImage: "square.and.arrow.down")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                    }
+                    .accessibilityLabel("Sync")
                 }
             }
+            .lampToast($toast)
             .task {
                 await loadModules()
             }
@@ -498,8 +521,10 @@ struct ModuleManagerView: View {
                     }
 
                     try await syncManager.importModuleDocumentFromFile(url: url, moduleType: moduleType)
+                    let name = try? syncManager.existingModuleName(forDocumentAt: url)
                     url.stopAccessingSecurityScopedResource()
                     await loadModules()
+                    announceImport(name: name, type: moduleType)
                 } catch {
                     url.stopAccessingSecurityScopedResource()
                     print("[ModuleManagerView] Failed to import .lamp module: \(error)")
@@ -582,7 +607,9 @@ struct ModuleManagerView: View {
         Task {
             do {
                 try await syncManager.importModuleDocumentFromFile(url: url, moduleType: moduleType)
+                let name = try? syncManager.existingModuleName(forDocumentAt: url)
                 await loadModules()
+                announceImport(name: name, type: moduleType, replaced: true)
             } catch {
                 alertMessage = "Failed to import module: \(error.localizedDescription)"
                 showingAlert = true
@@ -591,6 +618,21 @@ struct ModuleManagerView: View {
             pendingImportURL = nil
             pendingImportType = nil
         }
+    }
+
+    /// The confirmation an import finished: what came in, and where it went.
+    private func announceImport(name: String??, type: ModuleType, replaced: Bool = false) {
+        let title: String
+        if let name = name ?? nil, !name.isEmpty {
+            title = replaced ? "Updated “\(name)”" : "Imported “\(name)”"
+        } else {
+            title = replaced ? "Module Updated" : "Module Imported"
+        }
+        let message = type == .book
+            ? "Book · open it from Books"
+            : "\(type.displayName) · ready to use"
+        toast = LampToast(title: title, message: message)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     @ViewBuilder
@@ -723,7 +765,7 @@ struct ModuleManagerView: View {
         List {
             // Translations section
             if !filteredTranslations.isEmpty {
-                Section(header: Text("Translations")) {
+                Section(header: Text("Translations").lampSectionHeader()) {
                     ForEach(Array(filteredTranslations.enumerated()), id: \.element.id) { index, displayModule in
                         moduleRow(for: displayModule)
                             .listRowSeparator(index == filteredTranslations.count - 1 ? .hidden : .visible, edges: .bottom)
@@ -735,7 +777,7 @@ struct ModuleManagerView: View {
             let hasDictionaries = !filteredDictionarySeries.isEmpty || !filteredDictionaries.isEmpty
             if hasDictionaries {
                 let totalDictItems = filteredDictionarySeries.count + filteredDictionaries.count
-                Section(header: Text("Dictionaries")) {
+                Section(header: Text("Dictionaries").lampSectionHeader()) {
                     // Dictionary series groups first
                     ForEach(Array(filteredDictionarySeries.enumerated()), id: \.element.id) { index, series in
                         let isLast = filteredDictionaries.isEmpty && index == filteredDictionarySeries.count - 1
@@ -756,7 +798,7 @@ struct ModuleManagerView: View {
 
             // Commentary series section
             if !filteredCommentarySeries.isEmpty {
-                Section(header: Text("Commentaries")) {
+                Section(header: Text("Commentaries").lampSectionHeader()) {
                     ForEach(Array(filteredCommentarySeries.enumerated()), id: \.element.id) { index, series in
                         CommentarySeriesRow(series: series)
                             .contentShape(Rectangle())
@@ -770,7 +812,7 @@ struct ModuleManagerView: View {
 
             // Highlights section
             if !filteredHighlights.isEmpty {
-                Section(header: Text("Highlights")) {
+                Section(header: Text("Highlights").lampSectionHeader()) {
                     ForEach(Array(filteredHighlights.enumerated()), id: \.element.id) { index, highlightSet in
                         HighlightSetModuleRow(
                             highlightSet: highlightSet,
@@ -788,7 +830,7 @@ struct ModuleManagerView: View {
 
             // Other modules (notes, devotionals, etc.)
             if !filteredOtherModules.isEmpty {
-                Section(header: Text("Other")) {
+                Section(header: Text("Other").lampSectionHeader()) {
                     ForEach(Array(filteredOtherModules.enumerated()), id: \.element.id) { index, displayModule in
                         moduleRow(for: displayModule)
                             .listRowSeparator(index == filteredOtherModules.count - 1 ? .hidden : .visible, edges: .bottom)
@@ -798,7 +840,7 @@ struct ModuleManagerView: View {
 
             // Reading Plans section
             if !filteredPlans.isEmpty && selectedType == nil {
-                Section(header: Text("Reading Plans")) {
+                Section(header: Text("Reading Plans").lampSectionHeader()) {
                     ForEach(Array(filteredPlans.enumerated()), id: \.element.plan.id) { index, item in
                         PlanRow(plan: item.plan, isBundled: item.isBundled, onDelete: item.isBundled ? nil : {
                             Task { await deletePlan(item.plan) }
@@ -810,7 +852,7 @@ struct ModuleManagerView: View {
 
             // Quizzes section
             if !filteredQuizzes.isEmpty {
-                Section(header: Text("Quizzes")) {
+                Section(header: Text("Quizzes").lampSectionHeader()) {
                     ForEach(Array(filteredQuizzes.enumerated()), id: \.element.quiz.id) { index, item in
                         QuizRow(quiz: item.quiz, isBundled: item.isBundled)
                             .contentShape(Rectangle())
@@ -823,6 +865,7 @@ struct ModuleManagerView: View {
             }
         }
         .listStyle(.plain)
+        .contentMargins(.top, 0, for: .scrollContent)
         .refreshable {
             await loadModules()
         }
@@ -1457,15 +1500,46 @@ struct FilterChip: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.subheadline)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(isSelected ? color : Color.secondary.opacity(0.15))
-                .foregroundColor(isSelected ? .white : .primary)
-                .clipShape(Capsule())
+            FilterChipLabel(title: title, isSelected: isSelected, color: color)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+/// A filter chip as the shared tokens draw a selected tile: quiet fill when
+/// off; a light accent wash, an accent border and a semibold label when on,
+/// so selection never rests on a loud solid colour alone.
+struct FilterChipLabel: View {
+    let title: String
+    var systemImage: String? = nil
+    let isSelected: Bool
+    var color: Color = .accentColor
+    var showsMenuIndicator = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.semibold))
+            }
+            Text(title)
+            if showsMenuIndicator {
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+            }
+        }
+        .font(.subheadline.weight(isSelected ? .semibold : .regular))
+        .foregroundStyle(isSelected ? color : Color.primary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(isSelected ? color.opacity(0.16) : LampTheme.tileFill, in: Capsule())
+        .overlay {
+            if isSelected {
+                Capsule().strokeBorder(color, lineWidth: 1.5)
+            }
+        }
+        .contentShape(Capsule())
     }
 }
 
@@ -1488,61 +1562,29 @@ struct ModuleRow: View {
         !module.isBundled
     }
 
+    private var meta: [String] {
+        var parts: [String] = []
+        // A translation's abbreviation is on its tile.
+        if module.type != .translation, let version = module.version, let first = version.first, first.isNumber {
+            parts.append("Version \(version)")
+        }
+        if let count = module.entryCount {
+            parts.append(ModuleListStyle.countText(count, for: module.type))
+        }
+        if module.isEditable { parts.append("Editable") }
+        return parts
+    }
+
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(module.name)
-                    .font(.headline)
-
-                HStack(spacing: 6) {
-                    // Type badge
-                    Text(module.type.displayName)
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.2))
-                        .clipShape(Capsule())
-
-                    // Source badge
-                    Text(module.isBundled ? "Built In" : "User")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(module.isBundled ? Color.purple : Color.green)
-                        .clipShape(Capsule())
-
-                    if module.isEditable {
-                        Text("Editable")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if let version = module.version {
-                        Text("v\(version)")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    if let count = module.entryCount {
-                        Text("\(count) entries")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-
-                if let description = module.description, !description.isEmpty {
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-
-            Spacer()
+        HStack(alignment: .top, spacing: 14) {
+            ModuleTile(type: module.type, abbreviation: module.type == .translation ? module.version : nil)
+            ModuleRowText(
+                title: module.name,
+                meta: meta,
+                isBundled: module.isBundled,
+                description: module.description
+            )
+            Spacer(minLength: 0)
 
             // Only show menu for user modules
             if hasActions {
@@ -1631,6 +1673,150 @@ struct ModuleRow: View {
     }
 }
 
+// MARK: - Module List Pieces
+
+enum ModuleListStyle {
+    /// Each kind's colour, as search marks results by kind.
+    static func color(for type: ModuleType) -> Color {
+        switch type {
+        case .translation: return .gray
+        case .notes: return .blue
+        case .commentary: return .green
+        case .book: return .brown
+        case .devotional: return .orange
+        case .dictionary: return .purple
+        case .plan: return .teal
+        case .highlights: return .yellow
+        case .quiz: return .indigo
+        }
+    }
+
+    static func symbol(for type: ModuleType) -> String {
+        switch type {
+        case .translation: return "book.closed.fill"
+        case .notes: return "note.text"
+        case .commentary: return "text.book.closed.fill"
+        case .book: return "book.fill"
+        case .devotional: return "pencil.line"
+        case .dictionary: return "character.book.closed.fill"
+        case .plan: return "calendar"
+        case .highlights: return "highlighter"
+        case .quiz: return "questionmark.bubble.fill"
+        }
+    }
+
+    /// "31,086 verses", "5,624 entries": what a module's count counts.
+    static func countText(_ count: Int, for type: ModuleType) -> String {
+        let number = count.formatted()
+        switch type {
+        case .translation: return count == 1 ? "1 verse" : "\(number) verses"
+        case .book: return count == 1 ? "1 section" : "\(number) sections"
+        case .notes: return count == 1 ? "1 note" : "\(number) notes"
+        case .devotional: return count == 1 ? "1 writing" : "\(number) writings"
+        default: return count == 1 ? "1 entry" : "\(number) entries"
+        }
+    }
+}
+
+/// A module's mark at the head of its row: a translation's abbreviation set
+/// in serif, as a Bible's spine carries it, or the glyph for its kind.
+struct ModuleTile: View {
+    let type: ModuleType
+    var abbreviation: String? = nil
+
+    /// "ASVs" is the ASV with Strong's numbers; the name already says so,
+    /// and on a tile the trailing "s" reads as a typo.
+    private var shownAbbreviation: String? {
+        guard let abbreviation, !abbreviation.isEmpty else { return nil }
+        if abbreviation.count > 2, abbreviation.hasSuffix("s"),
+           abbreviation.dropLast().allSatisfy({ $0.isUppercase || $0.isNumber }) {
+            return String(abbreviation.dropLast())
+        }
+        return abbreviation
+    }
+
+    var body: some View {
+        let color = ModuleListStyle.color(for: type)
+        Group {
+            if let shown = shownAbbreviation {
+                // Set as a Bible's spine is: cream serif capitals on cloth,
+                // in the colours of the library's covers.
+                let pair = LampArtPalette.pair(for: abbreviation ?? shown)
+                Text(shown)
+                    .font(.system(size: 14, weight: .semibold, design: .serif))
+                    .tracking(0.6)
+                    .foregroundStyle(Color(red: 0.99, green: 0.95, blue: 0.86))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+                    .padding(.horizontal, 5)
+                    .frame(width: 48, height: 48)
+                    .background(
+                        LinearGradient(colors: [pair.top, pair.bottom], startPoint: .top, endPoint: .bottom),
+                        in: RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous)
+                    )
+            } else {
+                Image(systemName: ModuleListStyle.symbol(for: type))
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 48, height: 48)
+                    .background(color.opacity(0.16), in: RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A module row's words: its name, a line of facts, where it came from, and
+/// its description.
+struct ModuleRowText: View {
+    let title: String
+    let meta: [String]
+    let isBundled: Bool
+    let description: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 5) {
+                if !meta.isEmpty {
+                    Text(verbatim: meta.joined(separator: " · "))
+                    Text(verbatim: "·")
+                }
+                Label(isBundled ? "Built in" : "Yours", systemImage: isBundled ? "checkmark.seal.fill" : "person.crop.circle.fill")
+                    .labelStyle(ModuleSourceLabelStyle())
+            }
+            .font(.subheadline)
+            .foregroundStyle(Color.primary.opacity(0.7))
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            // A step below the facts: smaller and in the caption grey, so the
+            // names and counts lead and the description is there to consult.
+            if let description, !description.isEmpty {
+                Text(description)
+                    .font(.footnote)
+                    .foregroundStyle(LampTheme.caption)
+                    .lineLimit(2)
+                    .padding(.top, 1)
+            }
+        }
+        // The row's separator starts under the name, not the tile.
+        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+    }
+}
+
+private struct ModuleSourceLabelStyle: LabelStyle {
+    func makeBody(configuration: LabelStyleConfiguration) -> some View {
+        HStack(spacing: 3) {
+            configuration.icon
+                .font(.caption)
+            configuration.title
+        }
+    }
+}
+
 // MARK: - Highlight Set Module Row
 
 struct HighlightSetModuleRow: View {
@@ -1641,55 +1827,14 @@ struct HighlightSetModuleRow: View {
     @State private var showingDeleteConfirmation: Bool = false
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(highlightSet.set.name)
-                    .font(.headline)
-
-                HStack(spacing: 6) {
-                    // Type badge
-                    Text("Highlights")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.2))
-                        .clipShape(Capsule())
-
-                    // Translation badge
-                    Text(highlightSet.translationName)
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.orange)
-                        .clipShape(Capsule())
-
-                    // Source badge
-                    Text("User")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.green)
-                        .clipShape(Capsule())
-
-                    Text("\(highlightSet.highlightCount) highlights")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-
-                if let description = highlightSet.set.description, !description.isEmpty {
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-
+        HStack(alignment: .top, spacing: 14) {
+            ModuleTile(type: .highlights)
+            ModuleRowText(
+                title: highlightSet.set.name,
+                meta: [highlightSet.translationName, highlightSet.highlightCount == 1 ? "1 highlight" : "\(highlightSet.highlightCount) highlights"],
+                isBundled: false,
+                description: highlightSet.set.description
+            )
             Spacer()
 
             if onEdit != nil || onDelete != nil {
@@ -1745,47 +1890,14 @@ struct PlanRow: View {
     @State private var showingDeleteConfirmation: Bool = false
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(plan.name)
-                    .font(.headline)
-
-                HStack(spacing: 6) {
-                    // Type badge
-                    Text("Reading Plan")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.2))
-                        .clipShape(Capsule())
-
-                    // Source badge
-                    Text(isBundled ? "Built In" : "User")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(isBundled ? Color.purple : Color.green)
-                        .clipShape(Capsule())
-
-                    if let duration = plan.duration {
-                        Text("\(duration) days")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-
-                if let description = plan.planDescription, !description.isEmpty {
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-
+        HStack(alignment: .top, spacing: 14) {
+            ModuleTile(type: .plan)
+            ModuleRowText(
+                title: plan.name,
+                meta: ["Reading Plan"] + (plan.duration.map { ["\($0) days"] } ?? []),
+                isBundled: isBundled,
+                description: plan.planDescription
+            )
             Spacer()
 
             // Delete action for user plans
@@ -1824,52 +1936,21 @@ struct QuizRow: View {
     var isBundled: Bool = true
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(quiz.name)
-                    .font(.headline)
-
-                HStack(spacing: 6) {
-                    // Type badge
-                    Text("Quiz")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.2))
-                        .clipShape(Capsule())
-
-                    // Source badge
-                    Text(isBundled ? "Built In" : "User")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(isBundled ? Color.purple : Color.green)
-                        .clipShape(Capsule())
-
-                    let ageGroupCount = quiz.ageGroups.count
-                    if ageGroupCount > 0 {
-                        Text("\(ageGroupCount) age group\(ageGroupCount == 1 ? "" : "s")")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-
-                if let description = quiz.description, !description.isEmpty {
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-
+        let ageGroupCount = quiz.ageGroups.count
+        HStack(alignment: .top, spacing: 14) {
+            ModuleTile(type: .quiz)
+            ModuleRowText(
+                title: quiz.name,
+                meta: ["Quiz"] + (ageGroupCount > 0 ? ["\(ageGroupCount) age group\(ageGroupCount == 1 ? "" : "s")"] : []),
+                isBundled: isBundled,
+                description: quiz.description
+            )
             Spacer()
 
             Image(systemName: "chevron.right")
-                .foregroundStyle(.tertiary)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 12)
         }
         .padding(.vertical, 4)
     }
@@ -1945,7 +2026,7 @@ extension ModuleType {
         case .dictionary: return "Dictionary"
         case .commentary: return "Commentary"
         case .book: return "Book"
-        case .devotional: return "Devotional"
+        case .devotional: return "Writing"
         case .notes: return "Notes"
         case .plan: return "Plan"
         case .highlights: return "Highlights"
@@ -2109,62 +2190,20 @@ struct CommentarySeriesRow: View {
     let series: CommentarySeriesGroup
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Text(series.displayName)
-                        .font(.headline)
-                    if let abbrev = series.abbreviation {
-                        Text("(\(abbrev))")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    // Type badge
-                    Text("Commentary")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.2))
-                        .clipShape(Capsule())
-
-                    // Source badge
-                    Text(series.isBundled ? "Built In" : "User")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(series.isBundled ? Color.purple : Color.green)
-                        .clipShape(Capsule())
-
-                    Text("\(series.bookCount) books")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-
-                // Publisher/editor info if available
-                if let publisher = series.publisher {
-                    Text(publisher)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Text(series.bookNames)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
+        HStack(alignment: .top, spacing: 14) {
+            ModuleTile(type: .commentary, abbreviation: series.abbreviation)
+            ModuleRowText(
+                title: series.displayName,
+                meta: ["Commentary", series.bookCount == 1 ? "1 book" : "\(series.bookCount) books"],
+                isBundled: series.isBundled,
+                description: series.publisher ?? series.bookNames
+            )
             Spacer()
 
             Image(systemName: "chevron.right")
-                .foregroundStyle(.tertiary)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 12)
         }
         .padding(.vertical, 4)
     }
@@ -2391,48 +2430,20 @@ struct DictionarySeriesRow: View {
     let series: DictionarySeriesGroup
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(series.displayName)
-                    .font(.headline)
-
-                HStack(spacing: 6) {
-                    // Type badge
-                    Text("Dictionary")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.2))
-                        .clipShape(Capsule())
-
-                    // Source badge - check if all bundled
-                    let allBundled = series.modules.allSatisfy { $0.isBundled }
-                    Text(allBundled ? "Built In" : "User")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(allBundled ? Color.purple : Color.green)
-                        .clipShape(Capsule())
-
-                    Text("\(series.moduleCount) modules")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-
-                Text(series.moduleNames)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
+        HStack(alignment: .top, spacing: 14) {
+            ModuleTile(type: .dictionary)
+            ModuleRowText(
+                title: series.displayName,
+                meta: ["Dictionary", series.moduleCount == 1 ? "1 module" : "\(series.moduleCount) modules"],
+                isBundled: series.modules.allSatisfy { $0.isBundled },
+                description: series.moduleNames
+            )
             Spacer()
 
             Image(systemName: "chevron.right")
-                .foregroundStyle(.tertiary)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 12)
         }
         .padding(.vertical, 4)
     }

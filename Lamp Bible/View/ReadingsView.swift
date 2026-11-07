@@ -20,6 +20,9 @@ struct ReadingsView: View {
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
     @State private var completedReadingIds: Set<String> = UserDatabase.shared.getCompletedReadingIds()
     @State private var readerCount: Int = UserDatabase.shared.getSettings().planReaderCount
+    /// The opening verse of the next reading not yet read, for the card
+    /// that invites the reader in.
+    @State private var upNext: (ref: Int, text: String)?
     @Binding var date: Date
     let planMetaData: PlanMetaData
     let stackHorizontally: Bool
@@ -39,20 +42,21 @@ struct ReadingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            summary
-                .padding(.horizontal, 5)
-            readThroughButton
+        VStack(alignment: .leading, spacing: 22) {
+            hero
                 .if(stackHorizontally) { view in
-                    view.frame(maxWidth: 325)
+                    view.frame(maxWidth: 560)
                 }
-            ConditionalStack(isHorizonalStack: stackHorizontally) {
-                ForEach(Array(readings.enumerated()), id: \.element.id) { index, reading in
-                    card(reading)
-                        .id(index)
-                }
-                Spacer()
+            VStack(alignment: .leading, spacing: 10) {
+                Text("^[\(readings.count) Reading](inflect: true)")
+                    .lampSectionHeader()
+                    .padding(.horizontal, 6)
+                    .accessibilityAddTraits(.isHeader)
+                readingsList
             }
+        }
+        .task(id: readings.first(where: { !isRead($0) })?.sv) {
+            await loadUpNext()
         }
         .onAppear {
             syncFromDatabase()
@@ -67,11 +71,64 @@ struct ReadingsView: View {
         }
     }
 
+    // MARK: - Hero
+
+    /// The day at a glance: which plan, where it stands in the year, how far
+    /// through the day's readings, and the way through them. Set on the
+    /// plan's own warm ground so the day's task is the first thing seen.
+    private var hero: some View {
+        let readCount = readings.filter(isRead).count
+        return VStack(alignment: .leading, spacing: 0) {
+            if let eyebrow = heroEyebrow {
+                Text(eyebrow)
+                    .font(.caption.weight(.bold))
+                    .tracking(1.2)
+                    .foregroundStyle(.white.opacity(0.88))
+                    .padding(.bottom, 6)
+            }
+            Text(planMetaData.plan.name)
+                .font(.title.weight(.bold))
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+            summary(readCount: readCount)
+                .padding(.top, 8)
+            progressBar(readCount: readCount)
+                .padding(.top, 14)
+            if let reading = readings.first(where: { !isRead($0) }),
+               let upNext, upNext.ref == reading.sv {
+                upNextExcerpt(reading: reading, text: upNext.text)
+                    .padding(.top, 18)
+            }
+            readThroughButton
+                .padding(.top, 18)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            HeroBackground()
+                .clipShape(RoundedRectangle(cornerRadius: LampTheme.Radius.panel, style: .continuous))
+        }
+        .shadow(color: Color(red: 0.55, green: 0.1, blue: 0.2).opacity(0.22), radius: 18, y: 8)
+    }
+
+    /// "Day 310 of 365": where a year-long plan stands on this date.
+    private var heroEyebrow: String? {
+        let calendar = Calendar.current
+        let date = planMetaData.date
+        guard let duration = planMetaData.plan.duration, duration >= 365,
+              let day = calendar.ordinality(of: .day, in: .year, for: date),
+              let days = calendar.range(of: .day, in: .year, for: date)?.count
+        else {
+            return date.formatted(.dateTime.weekday(.wide).month(.wide).day()).uppercased()
+        }
+        return "DAY \(day) OF \(days)"
+    }
+
     // MARK: - Summary
 
-    private var summary: some View {
-        let readCount = readings.filter(isRead).count
-        return HStack(spacing: 6) {
+    private func summary(readCount: Int) -> some View {
+        HStack(spacing: 6) {
             Text("^[\(readings.count) reading](inflect: true)")
             if planMetaData.isFullyResolved {
                 Text("·")
@@ -79,14 +136,30 @@ struct ReadingsView: View {
             }
             Spacer()
             if readCount == readings.count {
-                Label("All read", systemImage: "checkmark")
-                    .foregroundStyle(.tint)
-            } else if readCount > 0 {
+                Label("All read", systemImage: "checkmark.circle.fill")
+                    .fontWeight(.semibold)
+            } else {
                 Text("\(readCount) of \(readings.count) read")
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
             }
         }
         .font(.subheadline)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.white.opacity(0.92))
+    }
+
+    /// One segment per reading, filled as each is read.
+    private func progressBar(readCount: Int) -> some View {
+        HStack(spacing: 5) {
+            ForEach(readings, id: \.id) { reading in
+                Capsule()
+                    .fill(isRead(reading) ? Color.white : Color.white.opacity(0.28))
+                    .frame(height: 6)
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Progress")
+        .accessibilityValue("\(readCount) of \(readings.count) read")
     }
 
     // MARK: - Read Through
@@ -101,47 +174,28 @@ struct ReadingsView: View {
         let allRead = firstUnread == nil
         let started = readings.contains(where: isRead)
         if userSettings.planInAppBible {
-            readThroughStyle(allRead: allRead) {
-                NavigationLink {
-                    reader(at: next)
-                } label: {
-                    Label(
-                        allRead ? "Read Again" : started ? "Continue Reading" : "Start Reading",
-                        systemImage: "book.fill"
-                    )
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                }
+            NavigationLink {
+                reader(at: next)
+            } label: {
+                HeroButtonLabel(
+                    title: allRead ? "Read Again" : started ? "Continue Reading" : "Start Reading",
+                    systemImage: "book.fill",
+                    prominent: !allRead
+                )
             }
+            .buttonStyle(HeroButtonStyle())
         } else if let app = externalApp, let next {
-            readThroughStyle(allRead: allRead) {
-                Button {
-                    openExternally(next, in: app)
-                } label: {
-                    Label(
-                        allRead ? "Read Again in \(app.name)"
-                            : started ? "Continue in \(app.name)" : "Start in \(app.name)",
-                        systemImage: "arrow.up.forward.app"
-                    )
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                }
+            Button {
+                openExternally(next, in: app)
+            } label: {
+                HeroButtonLabel(
+                    title: allRead ? "Read Again in \(app.name)"
+                        : started ? "Continue in \(app.name)" : "Start in \(app.name)",
+                    systemImage: "arrow.up.forward.app",
+                    prominent: !allRead
+                )
             }
-        }
-    }
-
-    /// Prominent while there's reading left; once all is read it steps back,
-    /// leaving the day's readings to say they're done.
-    @ViewBuilder
-    private func readThroughStyle<Content: View>(allRead: Bool, @ViewBuilder content: () -> Content) -> some View {
-        if allRead {
-            content()
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-        } else {
-            content()
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+            .buttonStyle(HeroButtonStyle())
         }
     }
 
@@ -154,19 +208,123 @@ struct ReadingsView: View {
         )
     }
 
-    // MARK: - Reading Card
+    // MARK: - Up Next
 
-    private func card(_ reading: ReadingMetaData) -> some View {
+    /// The next reading's opening words, set in the reader's serif, so the
+    /// day opens on the text itself rather than only a list of it.
+    private func upNextExcerpt(reading: ReadingMetaData, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("UP NEXT · \(verseReference(reading.sv).uppercased())")
+                .font(.caption2.weight(.bold))
+                .tracking(1.0)
+                .foregroundStyle(.white.opacity(0.78))
+            Text(Self.excerpt(text))
+                .font(.system(size: 18, weight: .regular, design: .serif))
+                .lineSpacing(3)
+                .foregroundStyle(.white)
+                .lineLimit(4)
+                .multilineTextAlignment(.leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// A verse cut where it pauses, not mid-word: at the last sentence end
+    /// that fits, or else the last clause, so the card holds three lines.
+    static func excerpt(_ text: String, limit: Int = 150) -> String {
+        guard text.count > limit else { return text }
+        let head = String(text.prefix(limit))
+        let minimum = limit / 3
+        func lastIndex(of marks: Set<Character>) -> String.Index? {
+            var found: String.Index?
+            var index = head.startIndex
+            while index < head.endIndex {
+                if marks.contains(head[index]), head.distance(from: head.startIndex, to: index) >= minimum {
+                    found = index
+                }
+                index = head.index(after: index)
+            }
+            return found
+        }
+        if let end = lastIndex(of: [".", "?", "!"]) {
+            return String(head[...end])
+        }
+        if let end = lastIndex(of: [",", ";", ":"]) {
+            return String(head[..<end]) + "…"
+        }
+        return head.trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    /// "Hosea 3:1"
+    private func verseReference(_ ref: Int) -> String {
+        let book = ref / 1_000_000
+        let chapter = (ref % 1_000_000) / 1_000
+        let verse = ref % 1_000
+        return "\(BookOsisCache.shared.displayName(for: book)) \(chapter):\(verse)"
+    }
+
+    /// Reads the verse off the main thread: it's a database query, and this
+    /// runs whenever the next reading changes.
+    private func loadUpNext() async {
+        guard let reading = readings.first(where: { !isRead($0) }) else {
+            upNext = nil
+            return
+        }
+        if upNext?.ref == reading.sv { return }
+        let translationId = userSettings.readerTranslationId
+        let ref = reading.sv
+        let text = await Task.detached(priority: .utility) {
+            (try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref))?.text
+        }.value
+        guard !Task.isCancelled else { return }
+        if let text, !text.isEmpty {
+            upNext = (ref, text.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else {
+            upNext = nil
+        }
+    }
+
+    // MARK: - Readings
+
+    /// The day's readings in one card on a phone; on a wide screen, each its
+    /// own card side by side.
+    @ViewBuilder
+    private var readingsList: some View {
+        if stackHorizontally {
+            ConditionalStack(isHorizonalStack: true) {
+                ForEach(Array(readings.enumerated()), id: \.element.id) { index, reading in
+                    row(reading)
+                        .frame(width: 325)
+                        .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+                        .id(index)
+                }
+            }
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(readings.enumerated()), id: \.element.id) { index, reading in
+                    if index > 0 {
+                        Divider().padding(.leading, 62)
+                    }
+                    row(reading)
+                        .id(index)
+                }
+            }
+            .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+        }
+    }
+
+    private func row(_ reading: ReadingMetaData) -> some View {
         let read = isRead(reading)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 6) {
                 Button {
                     toggleRead(reading)
                 } label: {
                     Image(systemName: read ? "checkmark.circle.fill" : "circle")
-                        .font(.title2)
+                        .font(.system(size: 26, weight: .regular))
                         .foregroundStyle(.tint)
-                        .frame(width: 44, height: 44)
+                        .symbolEffect(.bounce, value: read)
+                        .frame(width: 48, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -175,61 +333,60 @@ struct ReadingsView: View {
                 .accessibilityHint(read ? "Marks this reading unread" : "Marks this reading read")
 
                 opener(for: reading) {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(reading.description)
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(read ? .secondary : .primary)
-                            Text(details(reading))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                        if let glyph = openerGlyph {
-                            Image(systemName: glyph)
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(reading.description)
+                            .font(.headline)
+                            .foregroundStyle(read ? .secondary : .primary)
+                        Text(details(reading))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
-                    .frame(minHeight: 44)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
                 }
-            }
 
-            HStack {
+                // What the count is, and the readers it's shared among.
                 ReaderSplitControl(
                     chapterVerseCounts: reading.chapterVerseCounts,
                     isResolved: reading.isResolved,
-                    readerCount: $readerCount
+                    readerCount: $readerCount,
+                    style: .chip
                 )
-                Spacer()
-                // The way out to the other app, named so it's plain where it
-                // goes, beside the in-app Bible's way in: the reading itself.
-                if let app = externalApp {
-                    Button {
-                        openExternally(reading, in: app)
-                    } label: {
-                        // The arrow says it opens another app; each card
-                        // repeating "Open in" said it louder than it needed.
-                        Label(app.name, systemImage: "arrow.up.forward.app")
-                            .font(.footnote.weight(.medium))
+                .fixedSize()
+
+                if let glyph = openerGlyph {
+                    // The same way in as the name, so the whole row's end
+                    // answers a tap; once is enough for VoiceOver.
+                    opener(for: reading) {
+                        Image(systemName: glyph)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 44)
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityLabel("Open \(reading.description) in \(app.name)")
+                    .accessibilityHidden(true)
                 }
             }
-            .frame(minHeight: 32)
-            .padding(.leading, 48)
+
+            // The way out to the other app, named so it's plain where it
+            // goes, beside the in-app Bible's way in: the reading itself.
+            if let app = externalApp {
+                Button {
+                    openExternally(reading, in: app)
+                } label: {
+                    // The arrow says it opens another app; each card
+                    // repeating "Open in" said it louder than it needed.
+                    Label(app.name, systemImage: "arrow.up.forward.app")
+                        .font(.footnote.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .buttonBorderShape(.capsule)
+                .padding(.leading, 54)
+                .accessibilityLabel("Open \(reading.description) in \(app.name)")
+            }
         }
-        .padding(EdgeInsets(top: 12, leading: 4, bottom: 12, trailing: 14))
-        .if(stackHorizontally) { view in
-            view.frame(width: 325)
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 15)
-                .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
-        )
+        .padding(EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 14))
     }
 
     private func details(_ reading: ReadingMetaData) -> String {
@@ -307,6 +464,67 @@ struct ReadingsView: View {
     }
 }
 
+// MARK: - Hero Pieces
+
+/// The day card's ground: a deep, warm red rising into amber at one corner.
+/// Fixed colours rather than the accent's, which lightens in dark mode and
+/// would take white text below a readable contrast.
+private struct HeroBackground: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.80, green: 0.18, blue: 0.27),
+                    Color(red: 0.52, green: 0.10, blue: 0.26),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            RadialGradient(
+                colors: [Color(red: 0.98, green: 0.62, blue: 0.33).opacity(0.62), .clear],
+                center: .topTrailing,
+                startRadius: 0,
+                endRadius: 260
+            )
+            // A faint grain of light along the top edge, as on glass.
+            LinearGradient(
+                colors: [.white.opacity(0.10), .clear],
+                startPoint: .top,
+                endPoint: .center
+            )
+        }
+    }
+}
+
+private struct HeroButtonLabel: View {
+    let title: String
+    let systemImage: String
+    /// Solid while there's reading left; once all is read it steps back,
+    /// leaving the readings to say they're done.
+    let prominent: Bool
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.headline)
+            .foregroundStyle(prominent ? Color(red: 0.70, green: 0.13, blue: 0.24) : .white)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(
+                prominent ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.white.opacity(0.2)),
+                in: Capsule()
+            )
+            .contentShape(Capsule())
+    }
+}
+
+private struct HeroButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
 // MARK: - Reader Split Control
 
 struct ReaderSplitControl: View {
@@ -315,6 +533,14 @@ struct ReaderSplitControl: View {
     /// are unknown rather than zero.
     var isResolved: Bool = true
     @Binding var readerCount: Int
+    /// `.chip` names what the number counts, for a reading's row on the
+    /// home screen; `.compact` is the reader toolbar's short form.
+    var style: Style = .compact
+
+    enum Style {
+        case compact
+        case chip
+    }
 
     private var totalVerses: Int { chapterVerseCounts.reduce(0, +) }
 
@@ -351,36 +577,43 @@ struct ReaderSplitControl: View {
 
     @State private var showingPopover = false
 
+    /// "27 verses", or "3 readers · 9 · 9 · 9 ea.": what the chip counts,
+    /// said in words rather than a bare "27v".
+    private var chipText: Text {
+        guard isResolved else { return Text("Verses unknown") }
+        guard readerCount > 1, !chapterVerseCounts.isEmpty else {
+            return Text("^[\(totalVerses) verse](inflect: true)")
+        }
+        return Text("\(readerCount) readers · ") + labelContent
+    }
+
     var body: some View {
         Button {
             showingPopover = true
         } label: {
-            HStack(spacing: 4) {
-                ZStack(alignment: .topLeading) {
+            switch style {
+            case .compact:
+                compactLabel
+            case .chip:
+                HStack(spacing: 5) {
                     Image(systemName: personIcon)
-                        .font(.caption)
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.tint)
-                    if readerCount > 3 {
-                        Text("\(readerCount)")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.tint)
-                            .padding(.horizontal, 3)
-                            .padding(.vertical, 1)
-                            .background(
-                                Capsule()
-                                    .fill(Color(.systemBackground))
-                            )
-                            .overlay(
-                                Capsule()
-                                    .stroke(Color.accentColor, lineWidth: 0.5)
-                            )
-                            .offset(x: -4, y: -4)
-                    }
+                    chipText
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.primary.opacity(0.8))
+                        .monospacedDigit()
                 }
-                labelContent
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(LampTheme.tileFill, in: Capsule())
+                .contentShape(Capsule())
             }
+        }
+        .if(style == .chip) { view in
+            view
+                .accessibilityLabel("Readers: \(readerCount)")
+                .accessibilityValue(chipText)
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showingPopover) {
@@ -417,6 +650,35 @@ struct ReaderSplitControl: View {
             }
             .padding()
             .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var compactLabel: some View {
+        HStack(spacing: 4) {
+            ZStack(alignment: .topLeading) {
+                Image(systemName: personIcon)
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+                if readerCount > 3 {
+                    Text("\(readerCount)")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tint)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule()
+                                .fill(Color(.systemBackground))
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.accentColor, lineWidth: 0.5)
+                        )
+                        .offset(x: -4, y: -4)
+                }
+            }
+            labelContent
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

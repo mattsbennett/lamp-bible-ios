@@ -153,9 +153,19 @@ struct SplitReaderView: View {
                 readerContent
             }
         }
+        // The page fades to its own colour under the bottom bar, so no text
+        // sits behind the bar's controls. The bar draws its items lightened
+        // over what is beneath it, and in dark appearance verses read through
+        // even an opaque search field.
+        .overlay(alignment: .bottom) {
+            if !(toolbarsHidden || toolbarsCollapsed) {
+                BottomBarScrim(color: notesPanelVisible && effectiveOrientation != "right"
+                               ? LampTheme.panelBackground : LampTheme.readerBackground)
+            }
+        }
         // Ensure content/background extends behind any bottom toolbar so we don't
         // see the underlying window's black background.
-        .background(Color(UIColor.systemBackground))
+        .background(LampTheme.readerBackground)
         .ignoresSafeArea(.container, edges: .bottom)
         .onAppear {
             // Enable scroll linking after initial load completes
@@ -241,33 +251,46 @@ struct SplitReaderView: View {
                         // Kept, at no height, so it is where it was when the
                         // keyboard goes down.
                         readerContent
-                            .frame(height: notesTakeTheSpace ? 0 : max(0, geometry.size.height - bottomPanelHeight - 12))
+                            .frame(height: notesTakeTheSpace ? 0 : max(0, geometry.size.height - bottomPanelHeight - 14))
                             .opacity(notesTakeTheSpace ? 0 : 1)
                             .clipped()
                             .allowsHitTesting(!notesTakeTheSpace)
 
-                        // Divider with integrated drag handle
-                        if !notesTakeTheSpace {
-                            BottomPanelDivider(
-                                panelHeight: $bottomPanelHeight,
-                                containerHeight: geometry.size.height,
-                                minPanelSize: minPanelSize,
-                                maxPanelRatio: maxPanelRatio,
-                                onDragEnd: {
-                                    storedBottomPanelHeight = Double(bottomPanelHeight)
-                                }
-                            )
-                        }
+                        // The panel is a surface of its own, rising over the
+                        // page with rounded shoulders: text and commentary sit
+                        // on different grounds rather than one black or white
+                        // field split by a hairline.
+                        VStack(spacing: 0) {
+                            // Divider with integrated drag handle
+                            if !notesTakeTheSpace {
+                                BottomPanelDivider(
+                                    panelHeight: $bottomPanelHeight,
+                                    containerHeight: geometry.size.height,
+                                    minPanelSize: minPanelSize,
+                                    maxPanelRatio: maxPanelRatio,
+                                    onDragEnd: {
+                                        storedBottomPanelHeight = Double(bottomPanelHeight)
+                                    }
+                                )
+                            }
 
-                        toolPanelContent
-                            // Off the top edge by a point: touching it, the
-                            // panel's list would run on up under the status bar
-                            // and start behind the panel's own header.
-                            .padding(.top, notesTakeTheSpace ? 1 : 0)
-                            .frame(height: notesTakeTheSpace
-                                   ? max(minPanelSize, geometry.size.height - keyboardHeight)
-                                   : bottomPanelHeight)
-                            .clipped()
+                            toolPanelContent
+                                // Off the top edge by a point: touching it, the
+                                // panel's list would run on up under the status bar
+                                // and start behind the panel's own header.
+                                .padding(.top, notesTakeTheSpace ? 1 : 0)
+                                .frame(height: notesTakeTheSpace
+                                       ? max(minPanelSize, geometry.size.height - keyboardHeight)
+                                       : bottomPanelHeight)
+                                .clipped()
+                        }
+                        .background(LampTheme.panelBackground)
+                        .clipShape(panelShape)
+                        .overlay {
+                            panelShape.strokeBorder(LampTheme.hairline, lineWidth: 1)
+                                .padding(.bottom, -2)
+                        }
+                        .shadow(color: .black.opacity(0.06), radius: 10, y: -2)
 
                         if notesTakeTheSpace {
                             Spacer(minLength: keyboardHeight)
@@ -306,7 +329,7 @@ struct SplitReaderView: View {
             }
             // Allow split content (including ToolPanelView) to extend behind the bottom toolbar
             // so there isn't a blank/black strip under it.
-            .background(Color(UIColor.systemBackground))
+            .background(LampTheme.readerBackground)
             .ignoresSafeArea(edges: .bottom)
             .onAppear {
                 if effectiveOrientation == "right" {
@@ -356,11 +379,11 @@ struct SplitReaderView: View {
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
-            .background(Color(UIColor.systemBackground).ignoresSafeArea(edges: .top))
+            .background(LampTheme.readerBackground.ignoresSafeArea(edges: .top))
 
             // Gradient fade below the text
             LinearGradient(
-                colors: [Color(UIColor.systemBackground), Color(UIColor.systemBackground).opacity(0)],
+                colors: [LampTheme.readerBackground, LampTheme.readerBackground.opacity(0)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -418,6 +441,16 @@ struct SplitReaderView: View {
     }
 
     @ViewBuilder
+    /// The panel's outline: rounded at the top only, when it shares the
+    /// screen; square when it takes it.
+    private var panelShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: panelRadius, topTrailingRadius: panelRadius, style: .continuous)
+    }
+
+    private var panelRadius: CGFloat {
+        notesTakeTheSpace ? 0 : LampTheme.Radius.panel
+    }
+
     private var toolPanelContent: some View {
         ToolPanelView(
             book: currentBook,
@@ -551,18 +584,11 @@ struct BottomPanelDivider: View {
     @State private var isDragging: Bool = false
 
     var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(Color(UIColor.separator))
-                .frame(height: 1)
-
-            // Drag handle pill
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color(UIColor.systemGray3))
-                .frame(width: 40, height: 4)
-        }
-        .padding(.vertical, 5.5)
-        .frame(height: 12)
+        // The panel's own shoulders mark the edge; the grabber says it moves.
+        Capsule()
+            .fill(Color(UIColor.systemGray3))
+            .frame(width: 36, height: 5)
+            .frame(height: 14)
         .frame(maxWidth: .infinity)
         .background(isDragging ? Color.accentColor.opacity(0.1) : Color.clear)
         .contentShape(Rectangle())
@@ -735,4 +761,26 @@ struct SplitDragOverlay: View {
     }
 
     return PreviewWrapper()
+}
+
+/// The page's own colour rising behind the bottom bar: solid where the bar's
+/// controls sit, fading out just above them.
+private struct BottomBarScrim: View {
+    let color: Color
+
+    /// The bar's capsule and the home indicator under it.
+    /// The bar's capsule, the home indicator, and a clear margin above the
+    /// capsule, so the page ends at a line of its own rather than a faded one.
+    private let solidHeight: CGFloat = 86
+    private let fadeHeight: CGFloat = 6
+
+    var body: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [color.opacity(0), color], startPoint: .top, endPoint: .bottom)
+                .frame(height: fadeHeight)
+            color.frame(height: solidHeight)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
 }

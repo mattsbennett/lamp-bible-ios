@@ -161,7 +161,9 @@ struct InlineSearchBar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            TextField(placeholder, text: $text)
+            TextField(text: $text, prompt: Text(placeholder).foregroundStyle(LampTheme.caption)) {
+                Text(placeholder)
+            }
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
@@ -680,19 +682,43 @@ struct ReaderBottomToolbarView: ToolbarContent {
     /// distributes it.
     @ToolbarContentBuilder
     private var freeNavigationContent: some ToolbarContent {
-        ToolbarItem(placement: .bottomBar) {
-            HStack(spacing: 8) {
-                ModeMenuButton(
-                    toolbarMode: $toolbarMode,
-                    translationAbbreviation: translationAbbreviation,
-                    hasPlanReadings: hasPlanReadings,
-                    date: date
-                )
-
-                modeSpecificContent
+        if #available(iOS 26.0, *) {
+            // The bar draws its own opaque capsule rather than sharing the
+            // toolbar's glass: glass refracts the verses scrolling beneath it,
+            // and the text showed through the field, mirrored and garbled.
+            ToolbarItem(placement: .bottomBar) {
+                barContent
+                    .padding(.horizontal, 6)
+                    .frame(height: 44)
+                    .background {
+                        Capsule()
+                            .fill(LampTheme.chromeFill)
+                            .shadow(color: .black.opacity(0.06), radius: 5, y: 2)
+                    }
+                    .overlay {
+                        Capsule().strokeBorder(LampTheme.hairline, lineWidth: 1)
+                    }
             }
-            .frame(width: barWidth)
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .bottomBar) {
+                barContent
+            }
         }
+    }
+
+    private var barContent: some View {
+        HStack(spacing: 8) {
+            ModeMenuButton(
+                toolbarMode: $toolbarMode,
+                translationAbbreviation: translationAbbreviation,
+                hasPlanReadings: hasPlanReadings,
+                date: date
+            )
+
+            modeSpecificContent
+        }
+        .frame(width: barWidth)
     }
 
     /// Width for the bar's contents. Deliberately conservative: overshooting does

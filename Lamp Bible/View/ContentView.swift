@@ -22,9 +22,12 @@ struct ContentView: View {
     @State private var stagedDevotionalURL: URL?
     @State private var devotionalModules: [Module] = []
     @State private var showingDevotionalImport = false
+    /// A finished import, said without an alert to dismiss.
+    @State private var importToast: LampToast?
 
     var body: some View {
         PlanView()
+            .lampToast($importToast)
             .onChange(of: deepLinkManager.pendingFileImportURL) { _, url in
                 guard let url else { return }
                 deepLinkManager.pendingFileImportURL = nil
@@ -51,11 +54,11 @@ struct ContentView: View {
                             }
                             do {
                                 try await ModuleSyncManager.shared.importModuleDocumentFromFile(url: url, moduleType: type)
-                                importAlertMessage = "Successfully imported \(type.rawValue) module."
+                                announceImport(name: duplicateModuleName, type: type, replaced: true)
                             } catch {
                                 importAlertMessage = "Import failed: \(error.localizedDescription)"
+                                showingImportAlert = true
                             }
-                            showingImportAlert = true
                             pendingImportURL = nil
                             pendingImportType = nil
                         }
@@ -112,8 +115,10 @@ struct ContentView: View {
                     url: url,
                     moduleType: moduleType
                 )
-                importAlertMessage = "Successfully imported \(moduleType.rawValue) module."
-                showingImportAlert = true
+                announceImport(
+                    name: try? ModuleSyncManager.shared.existingModuleName(forDocumentAt: url),
+                    type: moduleType
+                )
                 return
             }
 
@@ -133,8 +138,7 @@ struct ContentView: View {
                 }
 
                 try await ModuleSyncManager.shared.importModuleDocumentFromFile(url: url, moduleType: moduleType)
-                importAlertMessage = "Successfully imported \(moduleType.rawValue) module."
-                showingImportAlert = true
+                announceImport(name: ModuleSyncManager.shared.existingModuleName(for: url), type: moduleType)
                 return
             }
 
@@ -194,16 +198,24 @@ struct ContentView: View {
                     moduleId: targetModuleId
                 )
                 let subject = imported.count == 1
-                    ? "Devotional"
-                    : "\(imported.count) devotionals"
-                importAlertMessage = moduleName.map { "\(subject) imported into \($0)." }
-                    ?? "Successfully imported \(subject.lowercased())."
+                    ? "Writing"
+                    : "\(imported.count) writings"
+                importToast = LampToast(
+                    title: "\(subject) imported",
+                    message: moduleName.map { "Now in \($0)" }
+                )
             } catch {
                 importAlertMessage = "Import failed: \(error.localizedDescription)"
+                showingImportAlert = true
             }
             DevotionalSharingManager.shared.discardStagedImport(staged)
-            showingImportAlert = true
         }
+    }
+
+    private func announceImport(name: String?, type: ModuleType, replaced: Bool = false) {
+        let verb = replaced ? "Updated" : "Imported"
+        let title = name.flatMap { $0.isEmpty ? nil : "\(verb) “\($0)”" } ?? "\(type.displayName) \(verb)"
+        importToast = LampToast(title: title, message: "\(type.displayName) · ready to use")
     }
 
     private func cleanupStagedDevotional() {
@@ -218,4 +230,83 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+}
+
+// MARK: - Toast
+
+/// A short confirmation that something finished, shown without stopping the
+/// person with an alert they have to dismiss.
+struct LampToast: Equatable, Identifiable {
+    let id = UUID()
+    let title: String
+    var message: String? = nil
+    var systemImage: String = "checkmark.circle.fill"
+    var isError = false
+}
+
+private struct LampToastModifier: ViewModifier {
+    @Binding var toast: LampToast?
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .top) {
+            if let toast {
+                toastView(toast)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .task(id: toast.id) {
+                        let spoken = [toast.title, toast.message].compactMap { $0 }.joined(separator: ". ")
+                        UIAccessibility.post(notification: .announcement, argument: spoken)
+                        try? await Task.sleep(for: .seconds(3.5))
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            if self.toast?.id == toast.id { self.toast = nil }
+                        }
+                    }
+            }
+        }
+        .animation(.spring(duration: 0.35), value: toast)
+    }
+
+    @ViewBuilder
+    private func toastView(_ toast: LampToast) -> some View {
+        let label = HStack(spacing: 12) {
+            Image(systemName: toast.systemImage)
+                .font(.title2)
+                .foregroundStyle(toast.isError ? Color.orange : Color.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(toast.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                if let message = toast.message {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 480)
+        .contentShape(Rectangle())
+        .onTapGesture { self.toast = nil }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("ImportConfirmation")
+        .accessibilityAddTraits(.isStaticText)
+
+        if #available(iOS 26, *) {
+            label.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        } else {
+            label
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
+        }
+    }
+}
+
+extension View {
+    /// Shows `toast` over the top of the view for a few seconds.
+    func lampToast(_ toast: Binding<LampToast?>) -> some View {
+        modifier(LampToastModifier(toast: toast))
+    }
 }

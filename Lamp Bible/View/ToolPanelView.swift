@@ -217,7 +217,9 @@ class ScrollSyncCoordinator {
         let insets = scrollView.adjustedContentInset
         let minY = -insets.top
         let maxY = max(minY, scrollView.contentSize.height + insets.bottom - scrollView.bounds.height)
-        return min(max(minY, verseY + readerTextTop - insets.top), maxY)
+        // The chapter's start (the first verse's lead-in) is the content's top.
+        let target = verseY > 0 ? verseY + readerTextTop - insets.top : minY
+        return min(max(minY, target), maxY)
     }
 
     /// Called when drag ends to reset active scroller
@@ -768,7 +770,14 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
 
         collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        collectionView.backgroundColor = .clear
+        // The panel's own ground, opaque: the bars over the list judge light
+        // or dark from what is under them, and a clear list read as light.
+        collectionView.backgroundColor = .lampPanelBackground
+        // The split view's scrim backs the bottom bar; the system blur over it
+        // only smudged the last readable line of a note or comment.
+        if #available(iOS 26.0, *) {
+            collectionView.bottomEdgeEffect.isHidden = true
+        }
         collectionView.delegate = self
         collectionView.contentInsetAdjustmentBehavior = .automatic
         applyTopInset(to: collectionView)
@@ -905,6 +914,31 @@ struct CommentaryUnitData {
     let verse: Int
     let unit: CommentaryUnit
     let abbreviations: [CommentaryAbbreviation]?
+    /// The outline headings this unit sits under that come straight before
+    /// it with nothing of their own ("Opening discussion", "Text, Exposition,
+    /// and Notes"), drawn as one line above it rather than as their own rows.
+    var outlineTrail: [String] = []
+}
+
+/// The notes status button: glass like its neighbours when it reports sync,
+/// plain text when it only says sync is off.
+private struct StatusButtonStyle: ViewModifier {
+    let isPlain: Bool
+
+    func body(content: Content) -> some View {
+        if isPlain {
+            content.buttonStyle(.plain)
+        } else {
+            content.modifier(ConditionalGlassButtonStyle())
+        }
+    }
+}
+
+extension CommentaryUnit {
+    /// Only a heading: no introduction, translation or commentary under it.
+    var isTitleOnly: Bool {
+        introduction == nil && translation == nil && commentary == nil
+    }
 }
 
 /// Cell view for displaying a commentary unit
@@ -916,6 +950,26 @@ struct CommentaryUnitCell: View {
     let onFootnoteTap: ((String, CommentaryFootnote) -> Void)?
 
     var body: some View {
+        if data.outlineTrail.isEmpty {
+            unitView
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                // One small line for the outline, so the comment starts high
+                // in the panel instead of under a stack of headings.
+                Text(data.outlineTrail.joined(separator: "  ›  ").uppercased())
+                    .font(.system(size: max(11, CGFloat(fontSize) - 5), weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(LampTheme.caption)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(data.outlineTrail.joined(separator: ", "))
+                    .accessibilityAddTraits(.isHeader)
+                unitView
+            }
+        }
+    }
+
+    private var unitView: some View {
         CommentaryUnitView(
             unit: data.unit,
             abbreviations: data.abbreviations,
@@ -1565,11 +1619,17 @@ struct ToolPanelView: View {
                     .presentationCompactAdaptation(.popover)
                 }
                 }
+                // Compact controls: the panel is short, and its header was
+                // taking a good share of it.
+                .controlSize(.small)
                 .padding(.horizontal)
                 .padding(.top, 2)
                 .padding(.bottom, 6)
                 }
             }
+            // On the panel's own ground: the notes and commentary scroll under
+            // it without showing through.
+            .background(hideHeader ? Color.clear : LampTheme.panelBackground)
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.height
             } action: { height in
@@ -1756,6 +1816,16 @@ struct ToolPanelView: View {
             showingStatusPopover = true
         } label: {
             // Sync status icon
+            if isLocalOnly {
+                // Sync is off by choice: notes are safe on the device, which
+                // is no error, so it isn't drawn as one. Named in words, as
+                // Settings names it; a phone symbol alone was unclear.
+                Label("Local Only", systemImage: "iphone")
+                    .labelStyle(.titleAndIcon)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Notes saved on this iPhone, sync is off")
+            } else {
             switch syncStatus {
             case .synced:
                 Image(systemName: "checkmark.icloud.fill")
@@ -1770,8 +1840,11 @@ struct ToolPanelView: View {
                 Image(systemName: "xmark.icloud")
                     .foregroundStyle(.red)
             }
+            }
         }
-        .modifier(ConditionalGlassButtonStyle())
+        // Sync off is a status, not an action: plain text, not a glass button
+        // beside the real ones. A tap still explains it.
+        .modifier(StatusButtonStyle(isPlain: isLocalOnly))
         .popover(isPresented: $showingStatusPopover) {
             statusPopoverContent
         }
@@ -1809,10 +1882,20 @@ struct ToolPanelView: View {
         .modifier(ConditionalGlassButtonStyle())
     }
 
+    /// Sync is set to Local Only.
+    private var isLocalOnly: Bool {
+        SyncCoordinator.shared.settings.backend == .none
+    }
+
     @ViewBuilder
     private var statusPopoverContent: some View {
         HStack {
             let backendName = SyncCoordinator.shared.settings.backend.displayName
+            if isLocalOnly {
+                Image(systemName: "iphone")
+                    .foregroundStyle(.secondary)
+                Text("Saved on this iPhone. Sync is off.")
+            } else {
             switch syncStatus {
             case .synced:
                 Image(systemName: "checkmark.icloud.fill")
@@ -1830,6 +1913,7 @@ struct ToolPanelView: View {
                 Image(systemName: "xmark.icloud")
                     .foregroundStyle(.red)
                 Text("Sync unavailable")
+            }
             }
         }
         .padding()
@@ -1850,6 +1934,11 @@ struct ToolPanelView: View {
                                 showingMaximizedStatusPopover = true
                             } label: {
                                 // Sync status icon
+                                if isLocalOnly {
+                                    Image(systemName: "iphone")
+                                        .foregroundStyle(.secondary)
+                                        .accessibilityLabel("Saved on This iPhone")
+                                } else {
                                 switch syncStatus {
                                 case .synced:
                                     Image(systemName: "checkmark.icloud.fill")
@@ -1863,6 +1952,7 @@ struct ToolPanelView: View {
                                 case .notAvailable:
                                     Image(systemName: "xmark.icloud")
                                         .foregroundStyle(.red)
+                                }
                                 }
                             }
                             .popover(isPresented: $showingMaximizedStatusPopover) {
@@ -2052,17 +2142,37 @@ struct ToolPanelView: View {
         }
     }
 
-    @ViewBuilder
-    private func commentaryScrollView(units: [CommentaryUnit], commentaryBook: CommentaryBook?) -> some View {
-        // Build items for UIKit list
-        let items: [(verse: Int, data: CommentaryUnitData)] = units.enumerated().map { index, unit in
-            (verse: unit.sv, data: CommentaryUnitData(
+    /// The list's rows. A heading followed straight by another heading is the
+    /// outline the next one sits in: it folds into that row's trail rather
+    /// than taking a row of its own.
+    static func commentaryItems(
+        units: [CommentaryUnit],
+        abbreviations: [CommentaryAbbreviation]?
+    ) -> [(verse: Int, data: CommentaryUnitData)] {
+        var items: [(verse: Int, data: CommentaryUnitData)] = []
+        var trail: [String] = []
+        for (index, unit) in units.enumerated() {
+            let nextIsHeading = index + 1 < units.count && units[index + 1].isTitleOnly
+            if unit.isTitleOnly, nextIsHeading, let title = unit.title, !title.isEmpty {
+                trail.append(title)
+                continue
+            }
+            items.append((verse: unit.sv, data: CommentaryUnitData(
                 index: index,
                 verse: unit.verse,
                 unit: unit,
-                abbreviations: commentaryBook?.abbreviations
-            ))
+                abbreviations: abbreviations,
+                outlineTrail: trail
+            )))
+            trail = []
         }
+        return items
+    }
+
+    @ViewBuilder
+    private func commentaryScrollView(units: [CommentaryUnit], commentaryBook: CommentaryBook?) -> some View {
+        // Build items for UIKit list
+        let items = Self.commentaryItems(units: units, abbreviations: commentaryBook?.abbreviations)
 
         UIKitVerseList(
             items: items,
@@ -2098,8 +2208,11 @@ struct ToolPanelView: View {
                         commentaryFootnote = footnote
                     }
                 )
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 20)
+                // A heading with nothing under it sits close to the next, so
+                // a run of outline headings doesn't fill the panel.
+                .padding(.top, data.unit.isTitleOnly ? 6 : 10)
+                .padding(.bottom, data.unit.isTitleOnly ? 0 : 10)
             },
             listId: "commentary_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)_\(selectedCommentarySeries)_\(toolFontSize)",
             additionalTopOffset: hideHeader && isHeaderCollapsed ? 36 : 0,

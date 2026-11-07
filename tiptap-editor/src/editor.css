@@ -1,12 +1,16 @@
 :root {
   --present-bottom-padding: 0px;
   --font-size: 18px;
-  --text-color: #000;
+  /* Body text a touch off black, headings full strength: long writing
+     reads calmer without the hardest contrast on every line. */
+  --text-color: #1C1C1E;
+  --heading-color: #000;
+  --muted-color: rgba(60, 60, 67, 0.72);
   --bg-color: #fff;
-  --blockquote-bg: rgba(0, 0, 0, 0.04);
+  --blockquote-bg: rgba(0, 0, 0, 0.035);
   --blockquote-border: rgba(0, 0, 0, 0.15);
-  --hr-color: rgba(0, 0, 0, 0.15);
-  --placeholder-color: rgba(0, 0, 0, 0.3);
+  --hr-color: rgba(0, 0, 0, 0.12);
+  --placeholder-color: rgba(60, 60, 67, 0.45);
   --code-bg: rgba(0, 0, 0, 0.06);
   --image-caption-color: rgba(0, 0, 0, 0.5);
   --audio-bg: rgba(0, 0, 0, 0.06);
@@ -23,12 +27,15 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text-color: #fff;
-    --bg-color: #000;
-    --blockquote-bg: rgba(255, 255, 255, 0.06);
+    /* Not white on black: a soft white on the writing page's charcoal. */
+    --text-color: #E9E7E3;
+    --heading-color: #fff;
+    --muted-color: rgba(235, 235, 245, 0.66);
+    --bg-color: #161618;
+    --blockquote-bg: rgba(255, 255, 255, 0.05);
     --blockquote-border: rgba(255, 255, 255, 0.2);
-    --hr-color: rgba(255, 255, 255, 0.2);
-    --placeholder-color: rgba(255, 255, 255, 0.3);
+    --hr-color: rgba(255, 255, 255, 0.14);
+    --placeholder-color: rgba(235, 235, 245, 0.4);
     --code-bg: rgba(255, 255, 255, 0.08);
     --image-caption-color: rgba(255, 255, 255, 0.5);
     --audio-bg: rgba(255, 255, 255, 0.08);
@@ -43,12 +50,14 @@
 }
 
 body.dark {
-  --text-color: #fff;
-  --bg-color: #000;
-  --blockquote-bg: rgba(255, 255, 255, 0.06);
+  --text-color: #E9E7E3;
+  --heading-color: #fff;
+  --muted-color: rgba(235, 235, 245, 0.66);
+  --bg-color: #161618;
+  --blockquote-bg: rgba(255, 255, 255, 0.05);
   --blockquote-border: rgba(255, 255, 255, 0.2);
-  --hr-color: rgba(255, 255, 255, 0.2);
-  --placeholder-color: rgba(255, 255, 255, 0.3);
+  --hr-color: rgba(255, 255, 255, 0.14);
+  --placeholder-color: rgba(235, 235, 245, 0.4);
   --code-bg: rgba(255, 255, 255, 0.08);
   --image-caption-color: rgba(255, 255, 255, 0.5);
   --audio-bg: rgba(255, 255, 255, 0.08);
@@ -59,6 +68,14 @@ body.dark {
   --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.14);
   --search-match: rgba(255, 214, 10, 0.4);
   --search-match-current: rgb(255, 214, 10);
+}
+
+/* The host's appearance wins over the web view's own guess. */
+body.light {
+  --text-color: #1C1C1E;
+  --heading-color: #000;
+  --muted-color: rgba(60, 60, 67, 0.72);
+  --bg-color: #fff;
 }
 
 * {
@@ -79,58 +96,83 @@ body {
 /* TipTap editor container */
 #tiptap-editor {
   min-height: 100vh;
-  padding: 16px 16px 120px 16px;
+  padding: 16px 20px 120px 20px;
   /* Add safe area padding for scrolling behind nav bar */
   padding-top: calc(16px + env(safe-area-inset-top));
 }
 
+/* While writing, the host lays its title header over the top of the page */
+body.mode-edit #tiptap-editor {
+  padding-top: var(--edit-top-padding, calc(16px + env(safe-area-inset-top)));
+}
+
+/* The writing is set in the reading serif (New York), as scripture is in
+   the reader: one voice for long text across the app. A touch larger than
+   the sans it replaces, to match its colour on the page. */
 .tiptap {
   outline: none;
   min-height: calc(100vh - 136px);
   caret-color: var(--accent-color);
+  font-family: ui-serif, 'New York', 'Iowan Old Style', Georgia, serif;
+  font-size: 1.05em;
+  line-height: 1.6;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 .tiptap:focus {
   outline: none;
 }
 
-/* Typography */
+/* Typography: a steady paragraph rhythm, headings that open a section with
+   more space above than below, so each belongs to the text it introduces. */
 .tiptap p {
-  margin-bottom: 0.8em;
+  margin-bottom: 0.85em;
   line-height: 1.6;
 }
 
+.tiptap h1,
+.tiptap h2,
+.tiptap h3 {
+  color: var(--heading-color);
+  letter-spacing: -0.005em;
+}
+
 .tiptap h1 {
-  font-size: 1.8em;
+  font-size: 1.75em;
   font-weight: 700;
-  margin-top: 0.6em;
+  margin-top: 1.1em;
+  margin-bottom: 0.35em;
+  line-height: 1.22;
+}
+
+.tiptap h2 {
+  font-size: 1.3em;
+  font-weight: 650;
+  margin-top: 1.1em;
   margin-bottom: 0.4em;
   line-height: 1.3;
 }
 
-.tiptap h2 {
-  font-size: 1.4em;
-  font-weight: 600;
-  margin-top: 0.5em;
+.tiptap h3 {
+  font-size: 1.1em;
+  font-weight: 650;
+  margin-top: 1.2em;
   margin-bottom: 0.3em;
   line-height: 1.35;
 }
 
-.tiptap h3 {
-  font-size: 1.15em;
-  font-weight: 600;
-  margin-top: 0.4em;
-  margin-bottom: 0.3em;
-  line-height: 1.4;
+.tiptap > :first-child {
+  margin-top: 0;
 }
 
-/* Blockquote */
+/* Blockquote: a quiet accent rule, the way a margin note is set off */
 .tiptap blockquote {
-  border-left: 3px solid var(--blockquote-border);
+  border-left: 3px solid color-mix(in srgb, var(--accent-color) 55%, transparent);
   background-color: var(--blockquote-bg);
-  padding: 8px 12px;
-  margin: 8px 0;
-  border-radius: 0 6px 6px 0;
+  padding: 10px 14px;
+  margin: 12px 0 14px;
+  border-radius: 0 10px 10px 0;
 }
 
 .tiptap blockquote p {
@@ -139,7 +181,7 @@ body {
 
 /* Style italic text in blockquotes as citation (muted color) */
 .tiptap blockquote em {
-  color: var(--image-caption-color);
+  color: var(--muted-color);
 }
 
 .tiptap blockquote p:last-child {
@@ -393,7 +435,7 @@ body.mode-present .tiptap {
 
 /* Read mode - top space for native header */
 body.mode-read #tiptap-editor {
-  padding: var(--read-top-padding, 200px) 16px 60px 16px;
+  padding: var(--read-top-padding, 200px) 20px 60px 20px;
 }
 
 body.mode-read .tiptap {
@@ -410,7 +452,7 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
 #markdown-editor {
   width: 100%;
   min-height: 100vh;
-  padding: 16px;
+  padding: 16px 20px;
   padding-top: calc(16px + env(safe-area-inset-top));
   padding-bottom: 120px;
   font-family: 'SF Mono', Menlo, Consolas, monospace;

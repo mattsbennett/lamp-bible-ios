@@ -24,6 +24,8 @@ struct ChapterListView: View {
     @State private var heldChapter: Int?
     /// The chapter under a finger, dimmed as a pressed button would be.
     @State private var pressedChapter: Int?
+    /// Each chapter's first heading, where the translation has headings.
+    @State private var chapterHeadings: [Int: String] = [:]
 
     /// Get chapter count for the book from GRDB
     private var chapterCount: Int {
@@ -38,18 +40,26 @@ struct ChapterListView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 16) {
-                    LazyVGrid(columns: PassageNumberLabel.columns, spacing: 8) {
+                VStack(alignment: .leading, spacing: 14) {
+                    LazyVGrid(columns: PassageNumberLabel.columns, spacing: 10) {
                         ForEach(1...max(1, chapterCount), id: \.self) { chapter in
                             chapterTile(chapter)
                         }
                     }
-                    Text("Touch and hold a chapter to choose a verse.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                    Label("Touch and hold a chapter to choose a verse.", systemImage: "hand.tap")
+                        .font(.subheadline)
+                        .foregroundStyle(LampTheme.caption)
+                        .frame(maxWidth: .infinity)
+
+                    // What each chapter opens with, from the translation's own
+                    // headings: a way in by subject as well as by number.
+                    if !chapterHeadings.isEmpty {
+                        contents
+                            .padding(.top, 2)
+                    }
                 }
-                .padding()
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
             // Open on the chapter being read, rather than at Psalm 1 with
             // the reader somewhere past 100.
@@ -58,7 +68,8 @@ struct ChapterListView: View {
             }
         }
         .navigationTitle(book.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .lampNavigationSubtitle(chapterCount == 1 ? "1 chapter" : "\(chapterCount) chapters")
+        .navigationBarTitleDisplayMode(.large)
         .navigationDestination(item: $heldChapter) { chapter in
             VerseGridView(
                 book: book,
@@ -72,6 +83,77 @@ struct ChapterListView: View {
             }
         }
         .sensoryFeedback(.selection, trigger: heldChapter) { _, held in held != nil }
+        .task(id: translationId) {
+            loadHeadings()
+        }
+    }
+
+    /// The book's chapters by their first headings.
+    private var contents: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("CONTENTS")
+                .font(.footnote.weight(.semibold))
+                .tracking(0.6)
+                .foregroundStyle(LampTheme.caption)
+                .padding(.horizontal, 4)
+                .accessibilityAddTraits(.isHeader)
+
+            VStack(spacing: 0) {
+                ForEach(1...max(1, chapterCount), id: \.self) { chapter in
+                    if let heading = chapterHeadings[chapter] {
+                        let isCurrent = chapter == currentChapter
+                        Button {
+                            currentVerseId = book.id * 1000000 + chapter * 1000 + 1
+                            loadVersesClosure()
+                            showingBookPicker = false
+                        } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Text(chapter.formatted())
+                                    .font(.subheadline.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(isCurrent ? Color.accentColor : LampTheme.caption)
+                                    .frame(width: 28, alignment: .leading)
+                                Text(heading)
+                                    .font(.body.weight(isCurrent ? .semibold : .regular))
+                                    .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                // Marked by a sign as well as colour.
+                                if isCurrent {
+                                    Image(systemName: "bookmark.fill")
+                                        .font(.footnote)
+                                        .foregroundStyle(Color.accentColor)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                            .padding(.vertical, 11)
+                            .padding(.trailing, 14)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(book.name) \(chapter), \(heading)")
+                        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+
+                        if chapter < chapterCount {
+                            Divider().padding(.leading, 40)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadHeadings() {
+        var result: [Int: String] = [:]
+        for chapter in 1...max(1, chapterCount) {
+            let headings = (try? TranslationDatabase.shared.getHeadingsForChapter(
+                translationId: translationId, book: book.id, chapter: chapter
+            )) ?? []
+            if let first = headings.min(by: { $0.beforeVerse < $1.beforeVerse }) {
+                result[chapter] = first.text
+            }
+        }
+        chapterHeadings = result
     }
 
     /// A chapter to tap, or to hold for its verses. Gestures rather than a
@@ -151,17 +233,26 @@ private struct PassageNumberLabel: View {
     let isCurrent: Bool
 
     // Wider than the Mac's 38 by 30, so each is a comfortable tap.
-    static let columns = [GridItem(.adaptive(minimum: 52), spacing: 8)]
+    static let columns = [GridItem(.adaptive(minimum: 56), spacing: 10)]
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous)
+        // The current one is marked three ways, not by colour alone: a tinted
+        // fill, an outline and a heavier figure.
         Text(number.formatted())
+            .font(.system(size: 18, weight: isCurrent ? .semibold : .regular))
             .monospacedDigit()
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
+            .frame(maxWidth: .infinity, minHeight: 50)
             .background(
-                isCurrent ? AnyShapeStyle(.tint.opacity(0.25)) : AnyShapeStyle(.quaternary),
-                in: RoundedRectangle(cornerRadius: 8)
+                isCurrent ? AnyShapeStyle(Color.accentColor.opacity(0.14)) : AnyShapeStyle(LampTheme.tileFill),
+                in: shape
             )
+            .overlay {
+                if isCurrent {
+                    shape.strokeBorder(Color.accentColor, lineWidth: 1.5)
+                }
+            }
             .contentShape(Rectangle())
     }
 }

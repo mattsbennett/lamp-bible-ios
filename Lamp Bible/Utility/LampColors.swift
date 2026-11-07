@@ -31,6 +31,15 @@ extension UIColor {
     /// Strong's numbers, Greek and Hebrew words, lexicon references.
     static let lampOriginalLanguage = UIColor.systemPurple
 
+    /// The same role inside running text on a reading surface (a lexicon
+    /// entry's Strong's links): the system purple deepened in light and
+    /// softened in dark, so a link reads as purple without glowing.
+    static let lampOriginalLanguageInText = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0xC2 / 255, green: 0x93 / 255, blue: 0xEC / 255, alpha: 1)
+            : UIColor(red: 0x89 / 255, green: 0x44 / 255, blue: 0xAB / 255, alpha: 1)
+    }
+
     /// Red-letter text, and only that.
     static let lampWordsOfChrist = UIColor(LampColorRole.wordsOfChrist.color)
 
@@ -46,6 +55,9 @@ extension Color {
 
     /// Strong's numbers, Greek and Hebrew words, lexicon references.
     static let lampOriginalLanguage = Color(uiColor: .lampOriginalLanguage)
+
+    /// Original-language links inside running text on a reading surface.
+    static let lampOriginalLanguageInText = Color(uiColor: .lampOriginalLanguageInText)
 
     /// Red-letter text, and only that.
     static let lampWordsOfChrist = Color(uiColor: .lampWordsOfChrist)

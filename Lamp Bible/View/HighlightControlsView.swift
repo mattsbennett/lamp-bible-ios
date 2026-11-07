@@ -429,36 +429,53 @@ struct InlineHighlightPicker: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Style selector row
+            // Style selector row. Each style is named under its icon: the
+            // three underlines differ only in their dash, which an icon alone
+            // can't carry at this size.
             HStack(spacing: 4) {
                 ForEach(HighlightStyle.allCases, id: \.rawValue) { style in
+                    let isSelected = highlightManager.selectedStyle == style
                     Button {
                         highlightManager.selectStyle(style)
                         loadThemes()
                     } label: {
-                        style.icon
-                            .font(.body)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 36)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(highlightManager.selectedStyle == style ?
-                                          Color.secondary.opacity(0.2) : Color.clear)
-                            )
+                        VStack(spacing: 3) {
+                            style.icon
+                                .font(.system(size: 17, weight: .medium))
+                                .frame(height: 22)
+                            Text(style.displayName)
+                                .font(.caption2.weight(isSelected ? .semibold : .regular))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        // Selected in the text's own colour, a firm fill and
+                        // outline: no second accent beside the colour's ring.
+                        .background(
+                            RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous)
+                                .fill(isSelected ? Color.primary.opacity(0.10) : Color.clear)
+                        )
+                        .overlay {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous)
+                                    .strokeBorder(Color.primary.opacity(0.4), lineWidth: 1)
+                            }
+                        }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .foregroundColor(highlightManager.selectedStyle == style ? .primary : .secondary)
+                    .foregroundStyle(isSelected ? Color.primary : LampTheme.caption)
+                    .accessibilityLabel(style.displayName)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
-            Divider()
-                .padding(.horizontal, 8)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
 
             // Color selector row
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 // Show colors up to max
                 ForEach(colors.prefix(maxInlineColors)) { color in
                     inlineColorSwatch(color: color)
@@ -472,7 +489,7 @@ struct InlineHighlightPicker: View {
                         ZStack {
                             Circle()
                                 .fill(Color.secondary.opacity(0.2))
-                                .frame(width: 28, height: 28)
+                                .frame(width: 32, height: 32)
                             Text("+\(colors.count - maxInlineColors)")
                                 .font(.caption2.bold())
                                 .foregroundColor(.secondary)
@@ -488,11 +505,11 @@ struct InlineHighlightPicker: View {
                     highlightManager.selectColor(newColor)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 12)
         }
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .cornerRadius(14)
+        .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
         .popover(isPresented: $showingFullPicker) {
             ColorsOnlyPopover(onSelect: { color in
                 highlightManager.selectColor(color)
@@ -515,14 +532,22 @@ struct InlineHighlightPicker: View {
             Button {
                 highlightManager.selectColor(color)
             } label: {
+                // The chosen colour wears a ring set a little off it, so the
+                // swatch keeps its own colour and size. Each swatch is drawn
+                // as the page draws the highlight, a wash with the full colour
+                // round its edge, so what is picked is what appears.
                 Circle()
-                    .fill(color.color)
-                    .frame(width: 28, height: 28)
+                    .fill(Color(uiColor: .lampSwatchFill(color.uiColor)))
+                    .background(Circle().fill(LampTheme.readerBackground))
+                    .overlay(Circle().strokeBorder(color.color, lineWidth: 2.5))
+                    .frame(width: 26, height: 26)
+                    .padding(3)
                     .overlay(
                         Circle()
                             .strokeBorder(Color.primary, lineWidth: 2)
                             .opacity(highlightManager.selectedColor == color ? 1 : 0)
                     )
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
 
@@ -594,7 +619,7 @@ struct InlineAddColorButton: View {
     var body: some View {
         ColorPicker("", selection: $selectedColor, supportsOpacity: false)
             .labelsHidden()
-            .frame(width: 28, height: 28)
+            .frame(width: 32, height: 32)
             .background(
                 ZStack {
                     Circle()

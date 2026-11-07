@@ -22,6 +22,9 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     private var pendingFontSize: CGFloat?
     private var pendingPresentPadding: CGFloat?
     private var pendingReadPadding: CGFloat?
+    /// The header padding the page last took, so a host update that measures
+    /// the same header again costs no script.
+    private var appliedReadPadding: Int?
 
     /// Called when editor content changes (debounced from JS)
     var onContentChanged: ((String) -> Void)?
@@ -92,6 +95,8 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
 
         case "ready":
             isReady = true
+            // A page that has just loaded holds none of what was sent before.
+            appliedReadPadding = nil
             // Apply any pending state
             if let content = pendingContent {
                 pendingContent = nil
@@ -312,7 +317,11 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
             pendingReadPadding = top
             return
         }
-        evaluateJS("document.documentElement.style.setProperty(\"--read-top-padding\", \"\(Int(top))px\")")
+        guard appliedReadPadding != Int(top) else { return }
+        appliedReadPadding = Int(top)
+        // The same header tops the page while writing, over the editor's
+        // own top padding (editor.css, body.mode-edit).
+        evaluateJS("document.documentElement.style.setProperty(\"--read-top-padding\", \"\(Int(top))px\"); document.documentElement.style.setProperty(\"--edit-top-padding\", \"\(Int(top))px\")")
     }
 
     // MARK: - Mode Switching

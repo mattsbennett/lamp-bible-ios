@@ -16,6 +16,7 @@ struct BookLibraryView: View {
     @State private var duplicateBookName = ""
     @State private var pendingImportURL: URL?
     @State private var pendingImportHasSecurityScope = false
+    @State private var toast: LampToast?
 
     private var isSearching: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -57,23 +58,25 @@ struct BookLibraryView: View {
             } else if filteredBooks.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             } else {
-                List {
-                    if !isSearching && !recentBooks.isEmpty {
-                        Section("Continue Reading") {
-                            ForEach(recentBooks) { row(for: $0) }
+                // A shelf of covers, as a bookshop or Apple Books lays one out.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 30) {
+                        if !isSearching && !recentBooks.isEmpty {
+                            shelf("Continue Reading", recentBooks)
+                            shelf("All Books", books)
+                        } else {
+                            shelf(nil, filteredBooks)
                         }
-                        Section("All Books") {
-                            ForEach(books) { row(for: $0) }
-                        }
-                    } else {
-                        ForEach(filteredBooks) { row(for: $0) }
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 32)
                 }
-                .listStyle(.insetGrouped)
                 .refreshable { loadBooks() }
             }
         }
         .navigationTitle("Books")
+        .navigationBarTitleDisplayMode(.large)
         .searchable(text: $searchText, prompt: "Title, author, or tag")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -128,6 +131,7 @@ struct BookLibraryView: View {
         } message: {
             Text(alertMessage ?? "")
         }
+        .lampToast($toast)
         .task { loadBooks() }
         .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
             loadBooks()
@@ -137,13 +141,67 @@ struct BookLibraryView: View {
         }
     }
 
+    private func shelf(_ title: String?, _ items: [BookLibraryItem]) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let title {
+                Text(title)
+                    .font(.title3.weight(.bold))
+                    .accessibilityAddTraits(.isHeader)
+            }
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 150, maximum: 210), spacing: 20, alignment: .top)],
+                alignment: .leading,
+                spacing: 28
+            ) {
+                ForEach(items) { row(for: $0) }
+                // The shelf's last place is the way to add to it, named, as
+                // well as the toolbar's import button.
+                if title != "Continue Reading" && !isSearching {
+                    importTile
+                }
+            }
+        }
+    }
+
+    private var importTile: some View {
+        Button {
+            showingImporter = true
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(LampTheme.caption.opacity(0.6), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+                    .background(LampTheme.tileFill.opacity(0.5), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .aspectRatio(2 / 3, contentMode: .fit)
+                    .overlay {
+                        VStack(spacing: 10) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 28, weight: .medium))
+                            Text("Import a Book")
+                                .font(.subheadline.weight(.semibold))
+                            Text(".lamp or JSON")
+                                .font(.caption)
+                                .foregroundStyle(LampTheme.caption)
+                        }
+                        .foregroundStyle(Color.primary.opacity(0.75))
+                    }
+                Text(" ")
+                    .font(.subheadline)
+                    .lineLimit(2, reservesSpace: true)
+                    .accessibilityHidden(true)
+            }
+        }
+        .buttonStyle(BookCoverButtonStyle())
+        .disabled(isImporting)
+        .accessibilityLabel("Import a Book")
+    }
+
     private func row(for item: BookLibraryItem) -> some View {
         Button {
             selectedBook = item
         } label: {
             BookLibraryRow(item: item, position: positions[item.id], sectionTitle: sectionTitles[item.id])
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BookCoverButtonStyle())
     }
 
     private func loadBooks() {
@@ -198,10 +256,11 @@ struct BookLibraryView: View {
                     url: url,
                     moduleType: .book
                 )
+                let name = try? ModuleSyncManager.shared.existingModuleName(forDocumentAt: url)
                 if accessing { url.stopAccessingSecurityScopedResource() }
                 loadBooks()
                 isImporting = false
-                alertMessage = "Book imported successfully."
+                announceImport(name: name ?? nil, replaced: false)
             } catch {
                 if accessing { url.stopAccessingSecurityScopedResource() }
                 isImporting = false
@@ -226,14 +285,25 @@ struct BookLibraryView: View {
                     url: url,
                     moduleType: .book
                 )
+                let name = try? ModuleSyncManager.shared.existingModuleName(forDocumentAt: url)
                 loadBooks()
                 isImporting = false
-                alertMessage = "Book imported successfully."
+                announceImport(name: name ?? nil, replaced: true)
             } catch {
                 isImporting = false
                 alertMessage = "Import failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    /// Says the import finished, without an alert to dismiss.
+    private func announceImport(name: String?, replaced: Bool) {
+        let verb = replaced ? "Updated" : "Imported"
+        toast = LampToast(
+            title: name.map { "\(verb) “\($0)”" } ?? "Book \(verb)",
+            message: "Book · now on your shelf"
+        )
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     private func releasePendingImport() {
@@ -251,53 +321,58 @@ private struct BookLibraryItem: Identifiable {
     var id: String { book.id }
 }
 
+/// A book on the shelf: its cover, then its title, author, and where the
+/// reader left it.
 private struct BookLibraryRow: View {
     let item: BookLibraryItem
     let position: LampBookReadingPosition?
     let sectionTitle: String?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            BookCoverThumbnail(book: item.book)
+        VStack(alignment: .leading, spacing: 10) {
+            BookCover(book: item.book)
+                .aspectRatio(2 / 3, contentMode: .fit)
+                .frame(maxWidth: .infinity)
 
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 3) {
+                // Two lines kept for every title, so the lines beneath sit
+                // level across the shelf.
                 Text(item.book.title)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
-                if let subtitle = item.book.subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+                    .lineLimit(2, reservesSpace: true)
                 if let author = item.book.author, !author.isEmpty {
-                    Label(author, systemImage: "person")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(author)
+                        .font(.footnote)
+                        .foregroundStyle(LampTheme.caption)
+                        .lineLimit(1)
                 }
-                HStack(spacing: 8) {
+                // Where the reader stands in it, which the cover can't say.
+                Group {
                     if position != nil {
                         Label(sectionTitle ?? "Continue reading", systemImage: "bookmark.fill")
-                            .lineLimit(1)
-                    }
-                    if item.isBundled {
-                        Label("Included", systemImage: "checkmark.seal")
+                            .foregroundStyle(.tint)
+                    } else {
+                        Label(item.isBundled ? "Included · Not started" : "Not started", systemImage: "sparkle")
+                            .foregroundStyle(LampTheme.caption)
                     }
                 }
-                .font(.caption2)
-                .foregroundStyle(.tint)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .padding(.top, 2)
             }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 8)
+            .labelStyle(BookRowLabelStyle())
         }
-        .padding(.vertical, 6)
         .contentShape(Rectangle())
-        // In a list row a label's icon otherwise takes a row icon's width,
-        // leaving a gap wider than the icon before each detail.
-        .labelStyle(BookRowLabelStyle())
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct BookCoverButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 
@@ -310,8 +385,11 @@ private struct BookRowLabelStyle: LabelStyle {
     }
 }
 
-private struct BookCoverThumbnail: View {
+/// A book's cover: its own image, or one set from its title and author.
+private struct BookCover: View {
     let book: BookModule
+    /// A thumbnail: a hairline and the faintest shadow, not a shelf's.
+    var compact = false
     @State private var image: UIImage?
 
     var body: some View {
@@ -321,23 +399,23 @@ private struct BookCoverThumbnail: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                Image(systemName: "book.closed.fill")
-                    .font(.title)
-                    .foregroundStyle(.tint)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(.tint.opacity(0.11))
+                LampGeneratedCover(id: book.id, title: book.title, author: book.author)
             }
         }
-        .frame(width: 58, height: 80)
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-        .overlay { RoundedRectangle(cornerRadius: 7).stroke(.separator.opacity(0.5)) }
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .strokeBorder(LampTheme.hairline)
+        }
+        .shadow(color: .black.opacity(compact ? 0.08 : 0.14), radius: compact ? 1.5 : 6, x: 0, y: compact ? 1 : 4)
         .onAppear {
-            guard let cover = book.coverMediaReference else { return }
+            guard image == nil, let cover = book.coverMediaReference else { return }
             image = ModuleMediaStorage.shared.loadImage(for: cover, moduleId: book.id)
         }
         .accessibilityHidden(true)
     }
 }
+
 
 // MARK: - Text Style
 
@@ -384,7 +462,20 @@ private extension LampProseTypeface {
 // MARK: - Reader
 
 private enum BookReaderLayout {
-    static let margin: CGFloat = 20
+    /// The page and its text: the reader's own (`LampTheme.readerBackground`,
+    /// `LampTheme.readerText`), softer than pure black or white, which glare
+    /// over a long read.
+    static let paper = Color(uiColor: UIColor { traits in
+        // White in light, as the reader's page; in dark a near black, which
+        // pure black behind off-white text makes halo over a long read.
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.07, green: 0.07, blue: 0.075, alpha: 1)
+            : .systemBackground
+    })
+    static let ink = LampTheme.readerText
+    /// A book's margins, a little wider than the Bible reader's, as a
+    /// printed page's are.
+    static let margin: CGFloat = 26
     /// The widest the text runs, about 70 characters at the default size.
     static let measure: CGFloat = 680
 }
@@ -548,7 +639,7 @@ struct BookModuleView: View {
             ScrollView {
                 // Lazy: some books are a single section thousands of blocks long.
                 LazyVStack(alignment: .leading, spacing: style.paragraphSpacing) {
-                    BookSectionHeader(section: section, style: style)
+                    BookSectionHeader(section: section, bookTitle: book.title, style: style)
                         .id(-1)
 
                     if document.blocks.isEmpty {
@@ -581,13 +672,15 @@ struct BookModuleView: View {
                 }
                 .scrollTargetLayout()
                 .frame(maxWidth: BookReaderLayout.measure, alignment: .leading)
+                .foregroundStyle(BookReaderLayout.ink)
                 .padding(.horizontal, BookReaderLayout.margin)
-                .padding(.top, 20)
+                .padding(.top, 28)
                 .padding(.bottom, 32)
                 .frame(maxWidth: .infinity)
                 .textSelection(.enabled)
             }
             .id(section.id)
+            .background(BookReaderLayout.paper.ignoresSafeArea())
             .environment(\.layoutDirection, book.textDirection == "rtl" ? .rightToLeft : .leftToRight)
             .onScrollTargetVisibilityChange(idType: Int.self, threshold: 0.1) { visible in
                 guard !isLanding, let first = visible.min(), first != topBlock else { return }
@@ -641,6 +734,13 @@ struct BookModuleView: View {
 
     @ToolbarContentBuilder
     private var readerToolbar: some ToolbarContent {
+        // The book's name is the page's running head, so the bar carries
+        // only its buttons rather than a title squeezed between them.
+        ToolbarItem(placement: .principal) {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityHidden(true)
+        }
         ToolbarItem(placement: .cancellationAction) {
             // A glyph, as the verse preview's is: with three buttons beside
             // it, a worded one left the book's title cut short.
@@ -1050,27 +1150,43 @@ private struct BookTextStyler: Sendable {
 
 private struct BookSectionHeader: View {
     let section: BookSection
+    let bookTitle: String
     let style: BookTextStyle
 
+    /// A chapter opens as a printed one does: the book's name as a running
+    /// head, then the number large in the text's face, the title centred
+    /// beneath it, and a short rule before the text.
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: style.fontSize * 0.5) {
+            Text(bookTitle.uppercased())
+                .font(.footnote.weight(.semibold))
+                .tracking(1.4)
+                .foregroundStyle(Color.primary.opacity(0.6))
+                .multilineTextAlignment(.center)
+                .padding(.bottom, style.fontSize * 0.5)
             if let number = section.number, !number.isEmpty {
                 Text(number.uppercased())
-                    .font(.caption.weight(.semibold))
-                    .tracking(1.2)
-                    .foregroundStyle(.secondary)
+                    .font(style.font(1.7, weight: .regular))
+                    .foregroundStyle(.tint)
             }
             Text(section.title)
-                .font(style.font(1.6, weight: .bold))
+                .font(style.font(1.5, weight: .bold))
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
             if let subtitle = section.subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(style.font(1.1))
+                    .font(style.font(1.05).italic())
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
+            Capsule()
+                .fill(Color.accentColor)
+                .frame(width: 32, height: 2)
+                .padding(.top, style.fontSize * 0.3)
+                .accessibilityHidden(true)
             if !section.keyScriptures.isEmpty {
-                WrappingHStack(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                WrappingHStack(alignment: .center, horizontalSpacing: 8, verticalSpacing: 8) {
                     ForEach(section.keyScriptures, id: \.self) { reference in
                         if let url = Self.url(for: reference) {
                             Link(destination: url) {
@@ -1087,8 +1203,9 @@ private struct BookSectionHeader: View {
                 .padding(.top, 4)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.bottom, style.fontSize * 0.4)
+        .frame(maxWidth: .infinity)
+        .padding(.top, style.fontSize * 0.2)
+        .padding(.bottom, style.fontSize * 0.6)
     }
 
     private static func url(for range: BookScriptureRange) -> URL? {
@@ -1142,9 +1259,11 @@ private struct BookContentBlockView: View, Equatable {
                 .accessibilityAddTraits(.isHeader)
         case "blockquote":
             HStack(alignment: .top, spacing: 14) {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Color.secondary.opacity(0.3))
-                    .frame(width: 3)
+                // The accent itself, as the chapter number is, so the page
+                // has one red rather than a red and a pink.
+                RoundedRectangle(cornerRadius: 1.25)
+                    .fill(Color.accentColor)
+                    .frame(width: 2.5)
                 // Primary, not the secondary of a caption: in some of these
                 // books quotations, mostly of scripture, outnumber the
                 // author's own paragraphs.
@@ -1186,18 +1305,47 @@ private struct BookContentBlockView: View, Equatable {
                 )
             }
         default:
-            prose(block.content)
+            if index == 0 {
+                prose(block.content, leadIn: true)
+            } else {
+                prose(block.content)
+            }
         }
+    }
+
+    /// A first word printed in capitals ("IN this, a man…"), as old books
+    /// open a chapter, set in small capitals so it reads as the lead-in it
+    /// is rather than as shouting.
+    private func withSmallCapLeadIn(_ text: AttributedString) -> AttributedString {
+        var text = text
+        let characters = text.characters
+        var end = characters.startIndex
+        var letters = 0
+        while end < characters.endIndex, characters[end].isLetter {
+            guard characters[end].isUppercase else { return text }
+            letters += 1
+            end = characters.index(after: end)
+        }
+        guard letters >= 2, end < characters.endIndex, characters[end] == " " else { return text }
+        // Only a lead-in if the sentence goes on in lower case.
+        let rest = characters[end...].dropFirst().prefix(12)
+        guard rest.contains(where: { $0.isLowercase }) else { return text }
+        let range = text.startIndex..<end
+        text[range].font = style.font().uppercaseSmallCaps()
+        text[range].kern = 0.6
+        return text
     }
 
     private func prose(
         _ content: BookAnnotatedText?,
         scale: Double = 1,
-        weight: Font.Weight = .regular
+        weight: Font.Weight = .regular,
+        leadIn: Bool = false
     ) -> some View {
         // Each link run that names its own colour keeps it; the tint covers
         // any that doesn't, which would otherwise take the accent.
-        Text(document.text(for: content))
+        let text = document.text(for: content)
+        return Text(leadIn ? withSmallCapLeadIn(text) : text)
             .font(style.font(scale, weight: weight))
             .lineSpacing(style.lineSpacing * (scale > 1 ? 0.5 : 1))
             .tint(.lampLink)
@@ -1484,6 +1632,9 @@ private struct BookContentsView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
+    /// An unnumbered section's headings (front matter: edition notes,
+    /// copyright lines) start folded away, so the chapters lead the list.
+    @State private var showsUnnumberedHeadings = false
 
     private var query: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1500,6 +1651,8 @@ private struct BookContentsView: View {
     }
 
     private var minimumDepth: Int { sections.map(\.depth).min() ?? 0 }
+    /// Whether any section is numbered, so the number column is kept.
+    private var hasNumbers: Bool { sections.contains { !($0.number ?? "").isEmpty } }
     private var minimumLevel: Int { headings.map(\.level).min() ?? 1 }
 
     var body: some View {
@@ -1512,6 +1665,7 @@ private struct BookContentsView: View {
                         } label: {
                             BookContentsHeader(book: book)
                         }
+                        .listRowSeparator(.hidden, edges: .top)
                     }
                     if query.isEmpty {
                         if !bookmarkedSections.isEmpty {
@@ -1519,11 +1673,26 @@ private struct BookContentsView: View {
                                 ForEach(bookmarkedSections) { bookmarkRow($0) }
                             }
                         }
-                        Section("Contents") {
+                        // No "Contents" header: the sheet's title already says it.
+                        Section {
                             ForEach(sections) { section in
                                 sectionRow(section, snippet: nil)
-                                if section.id == currentSectionID {
-                                    ForEach(headings, id: \.blockIndex) { headingRow($0) }
+                                if section.id == currentSectionID, !headings.isEmpty {
+                                    if Self.isNumbered(section) {
+                                        ForEach(headings, id: \.blockIndex) { headingRow($0) }
+                                    } else {
+                                        DisclosureGroup(isExpanded: $showsUnnumberedHeadings) {
+                                            ForEach(headings, id: \.blockIndex) { headingRow($0) }
+                                        } label: {
+                                            Text(headings.count == 1 ? "Show its heading" : "Show its \(headings.count) headings")
+                                                .font(.footnote.weight(.medium))
+                                                .foregroundStyle(Color.primary.opacity(0.7))
+                                        }
+                                        .tint(Color.primary.opacity(0.7))
+                                        .listRowSeparator(.hidden, edges: .top)
+                                        .padding(.leading, 36)
+                                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
+                                    }
                                 }
                             }
                         }
@@ -1531,15 +1700,24 @@ private struct BookContentsView: View {
                         searchResults
                     }
                 }
+                .listStyle(.plain)
                 .onAppear {
-                    let target = currentHeading.map { "heading-\($0.blockIndex)" } ?? currentSectionID
+                    let headingsShown = sections.first { $0.id == currentSectionID }.map(Self.isNumbered) ?? false
+                    let target = (headingsShown ? currentHeading.map { "heading-\($0.blockIndex)" } : nil) ?? currentSectionID
                     guard let target else { return }
                     DispatchQueue.main.async { proxy.scrollTo(target, anchor: .center) }
                 }
             }
             .navigationTitle("Contents")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "Search this book")
+            // An opaque bar in the sheet's own colour, so rows scrolled under
+            // the title and search field are hidden rather than ghosting.
+            .toolbarBackground(LampTheme.sheetBackground, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            // At the top, under the title, so the field never floats over
+            // the last chapters of the list.
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search this book")
+            .environment(\.defaultMinListRowHeight, 30)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -1579,35 +1757,64 @@ private struct BookContentsView: View {
         return Button {
             onSelect(section.id, -1)
         } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                if let number = section.number, !number.isEmpty {
-                    Text(number)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+            // The number in a column of its own, so titles align and a row
+            // is one line tall rather than two.
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                if hasNumbers || isCurrent {
+                    // Where the reader is: a small marker in the number's
+                    // place, not a coloured band that reads as a selection.
+                    Group {
+                        if isCurrent {
+                            Image(systemName: "book.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tint)
+                                .accessibilityLabel("Reading")
+                        } else {
+                            Text(section.number ?? "")
+                                .font(.subheadline.weight(.medium))
+                                .monospacedDigit()
+                                .foregroundStyle(LampTheme.caption)
+                        }
+                    }
+                    .frame(minWidth: 24, alignment: .trailing)
                 }
-                Text(section.title)
-                    .font(.body.weight(isCurrent || section.sectionType == "part" ? .semibold : .regular))
-                    .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
-                if let subtitle = section.subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(section.title)
+                        .font(.body.weight(isCurrent || section.sectionType == "part" ? .semibold : .regular))
+                        .foregroundStyle(Color.primary)
+                    if let subtitle = section.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let snippet {
+                        Text(snippet)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
                 }
-                if let snippet {
-                    Text(snippet)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                Spacer(minLength: 0)
+                if bookmarkIDs.contains(section.id) {
+                    Image(systemName: "bookmark.fill")
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("Bookmarked")
                 }
             }
+            .padding(.vertical, 3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, CGFloat(max(section.depth - minimumDepth, 0)) * 16)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .id(section.id)
-        .listRowBackground(isCurrent ? Color.accentColor.opacity(0.12) : nil)
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    static func isNumbered(_ section: BookSection) -> Bool {
+        !(section.number ?? "").isEmpty
     }
 
     /// Without the row ID the contents scrolls to: the section's own row has
@@ -1629,18 +1836,30 @@ private struct BookContentsView: View {
 
     private func headingRow(_ heading: BookSectionHeading) -> some View {
         let isCurrent = heading.blockIndex == currentHeading?.blockIndex
+        // A heading within the open section: smaller, set in from a rule,
+        // so it reads as part of the section above and not as a chapter.
         return Button {
             if let currentSectionID { onSelect(currentSectionID, heading.blockIndex) }
         } label: {
-            Text(heading.title)
-                .font(.subheadline.weight(isCurrent ? .semibold : .regular))
-                .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 16 + CGFloat(max(heading.level - minimumLevel, 0)) * 14)
-                .contentShape(Rectangle())
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(isCurrent ? Color.accentColor : Color.secondary.opacity(0.35))
+                    .frame(width: 2)
+                Text(heading.title)
+                    .font(.footnote.weight(isCurrent ? .semibold : .regular))
+                    .foregroundStyle(isCurrent ? Color.accentColor : LampTheme.caption)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 30)
+            .padding(.leading, (hasNumbers ? 36 : 0) + CGFloat(max(heading.level - minimumLevel, 0)) * 14)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Tight and unruled, so a section's headings hang from it as one
+        // block rather than standing as chapters of their own.
+        .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: 2, trailing: 20))
+        .listRowSeparator(.hidden)
         .id("heading-\(heading.blockIndex)")
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
@@ -1671,19 +1890,25 @@ private struct BookContentsHeader: View {
     let book: BookModule
 
     var body: some View {
-        HStack(spacing: 14) {
-            BookCoverThumbnail(book: book)
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 12) {
+            BookCover(book: book, compact: true)
+                .frame(width: 36, height: 54)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(book.title)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                 if let author = book.author, !author.isEmpty {
                     Text(author)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(.footnote)
+                        .foregroundStyle(LampTheme.caption)
                 }
             }
+            .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+            Spacer(minLength: 0)
+            Text("Details")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(Color.primary.opacity(0.7))
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
     }
 }
 
@@ -1803,5 +2028,71 @@ private struct BookFootnoteSheet: View {
             translationId: translationID
         )
         preview = PreviewSheetState(currentItem: item, allItems: [item])
+    }
+}
+
+// MARK: - Generated Cover
+
+/// A cover for a book without a cover image, set as a printed cloth cover
+/// is: its colours, a spine shadow, the title in serif and the author below.
+/// At small sizes only the title's initial fits, so that is all it shows.
+struct LampGeneratedCover: View {
+    let id: String
+    let title: String
+    let author: String?
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let pair = LampArtPalette.pair(for: id)
+            let isSmall = width < 90
+            ZStack {
+                LinearGradient(colors: [pair.top, pair.bottom], startPoint: .top, endPoint: .bottom)
+                // The spine: a darker edge and a highlight beside it.
+                HStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [.black.opacity(0.28), .black.opacity(0.0)],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                    .frame(width: max(width * 0.07, 3))
+                    Rectangle().fill(.white.opacity(0.10)).frame(width: 1)
+                    Spacer(minLength: 0)
+                }
+                if isSmall {
+                    Text(String(title.prefix(1)))
+                        .font(.system(size: width * 0.46, weight: .semibold, design: .serif))
+                        .foregroundStyle(Color(red: 0.98, green: 0.95, blue: 0.88))
+                } else {
+                    VStack(spacing: width * 0.05) {
+                        Rectangle()
+                            .fill(Color(red: 0.98, green: 0.92, blue: 0.78).opacity(0.7))
+                            .frame(width: width * 0.22, height: 1)
+                        Text(title)
+                            .font(.system(size: width * 0.115, weight: .semibold, design: .serif))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(5)
+                            .minimumScaleFactor(0.7)
+                            .foregroundStyle(Color(red: 0.99, green: 0.96, blue: 0.89))
+                        Rectangle()
+                            .fill(Color(red: 0.98, green: 0.92, blue: 0.78).opacity(0.7))
+                            .frame(width: width * 0.22, height: 1)
+                        Spacer(minLength: 0)
+                        if let author, !author.isEmpty {
+                            Text(author.uppercased())
+                                .font(.system(size: width * 0.062, weight: .medium, design: .serif))
+                                .tracking(width * 0.008)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .foregroundStyle(Color(red: 0.98, green: 0.92, blue: 0.78).opacity(0.9))
+                        }
+                    }
+                    .padding(.top, width * 0.2)
+                    .padding(.bottom, width * 0.12)
+                    .padding(.leading, width * 0.13)
+                    .padding(.trailing, width * 0.09)
+                }
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

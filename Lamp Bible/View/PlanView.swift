@@ -92,7 +92,7 @@ struct PlanView: View {
                             Button {
                                 showingPresentationRemote = true
                             } label: {
-                                Image(systemName: "appletvremote.gen4")
+                                Image(systemName: "play.rectangle.on.rectangle")
                             }
                             .accessibilityLabel("Presentation Remote")
                         }
@@ -268,9 +268,11 @@ struct PlanView: View {
     ) -> some View {
         NavigationLink(destination: destination()) {
             VStack(spacing: 4) {
+                // Monochrome, as the bar's glass draws its items: these are
+                // destinations, none of them selected, so none takes the accent.
                 Image(systemName: systemImage)
-                    .font(.body)
-                    .foregroundColor(.accentColor)
+                    .font(.body.weight(.medium))
+                    .foregroundColor(iOS26OrLater ? .primary : .accentColor)
                     // These glyphs differ in intrinsic height - books.vertical.fill
                     // and gear are noticeably taller than pencil.line - so without a
                     // shared box each label sits at its own baseline and the row
@@ -310,17 +312,31 @@ struct PlanView: View {
 
     @ViewBuilder
     private var emptyStateView: some View {
-        VStack {
+        VStack(spacing: 18) {
             Spacer()
-            NavigationLink(destination: PlanPickerView()) {
-                HStack {
-                    Text(Image(systemName: "plus.circle.fill"))
-                    Text("Reading plan")
-                }.font(.title2)
+            LampPlanArtwork(planId: "empty", size: 84, isFollowed: true)
+            VStack(spacing: 8) {
+                Text("Read Through the Bible")
+                    .font(.title2.weight(.bold))
+                Text("Follow a daily plan, and each day's readings wait for you here.")
+                    .font(.body)
+                    .foregroundStyle(LampTheme.caption)
+                    .multilineTextAlignment(.center)
             }
+            NavigationLink(destination: PlanPickerView()) {
+                Label("Reading Plan", systemImage: "plus")
+                    .font(.headline)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 36)
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
             Spacer()
         }
-        .frame(maxHeight: .infinity, alignment: .center)
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .background(LampTheme.groupedBackground.ignoresSafeArea())
     }
 
     // MARK: - Plans Scroll View
@@ -329,15 +345,17 @@ struct PlanView: View {
     private func plansScrollView(geometry: GeometryProxy) -> some View {
         ScrollView {
             ScrollViewReader { proxy in
-                VStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 0) {
                     plansHeader
                     ForEach(plans) { plan in
                         planSection(plan: plan, geometry: geometry, proxy: proxy)
                     }
-                    Spacer()
+                    Spacer(minLength: 24)
                 }
+                .padding(.horizontal, 16)
             }
         }
+        .background(LampTheme.groupedBackground.ignoresSafeArea())
     }
 
     // MARK: - Plans Header
@@ -346,26 +364,26 @@ struct PlanView: View {
     /// bottom bar, where it held a permanent slot for something you set once.
     /// The empty state already offers the same destination.
     private var plansHeader: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Plans")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Color.secondary)
+        HStack(alignment: .firstTextBaseline) {
+            Text("Daily Reading")
+                .font(.title2.weight(.bold))
+                .accessibilityAddTraits(.isHeader)
 
-                Spacer()
+            Spacer()
 
-                // Following, making and deleting plans: more than adding one.
-                NavigationLink(destination: PlanPickerView()) {
-                    Label("Manage", systemImage: "list.bullet.circle.fill")
-                        .font(.subheadline)
-                }
-                .frame(minHeight: 44)
+            // Following, making and deleting plans: more than adding one.
+            NavigationLink(destination: PlanPickerView()) {
+                Label("Manage", systemImage: "slider.horizontal.3")
+                    .font(.subheadline.weight(.semibold))
             }
-            .padding(.horizontal, 20)
-
-            Divider()
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .controlSize(.regular)
+            .frame(minHeight: 44)
         }
+        .padding(.horizontal, 4)
+        .padding(.top, 8)
+        .padding(.bottom, 14)
     }
 
     // MARK: - Plan Section
@@ -378,41 +396,42 @@ struct PlanView: View {
            let planMetaData = plansMetaData.planMetaData.first(where: { $0.id == plan.id }) {
             let readings = planMetaData.readingMetaData
 
-            Spacer().id(plan.name)
+            Color.clear.frame(height: 0).id(plan.name)
 
-            planHeader(plan: plan, planMetaData: planMetaData, readings: readings)
-                .onChange(of: date) {
-                    proxy.scrollTo(plan.name)
+            Group {
+                if !readings.isEmpty {
+                    readingsContent(planMetaData: planMetaData, geometry: geometry)
+                } else {
+                    planHeader(plan: plan, planMetaData: planMetaData, readings: readings)
                 }
-                .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 20))
-
-            if !readings.isEmpty {
-                readingsContent(planMetaData: planMetaData, geometry: geometry)
-            } else {
-                Spacer().frame(height: 20)
             }
-
-            if plan.id != userSettings.planIds.last {
-                Divider()
+            .onChange(of: date) {
+                proxy.scrollTo(plan.name)
             }
+            .padding(.bottom, 28)
         }
     }
 
     // MARK: - Plan Header
 
+    /// A plan with nothing to read on this date: its name, and saying so.
     @ViewBuilder
     private func planHeader(plan: Plan, planMetaData: PlanMetaData, readings: [ReadingMetaData]) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(plan.name)
-                .font(.title2)
-                .fontWeight(.black)
-
-            if readings.isEmpty {
-                Text("No readings for today")
-                    .foregroundStyle(Color.secondary)
+        HStack(spacing: 14) {
+            LampPlanArtwork(planId: plan.id, size: 48, isFollowed: true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(plan.name)
+                    .font(.headline)
+                if readings.isEmpty {
+                    Text("No readings for today")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.secondary)
+                }
             }
+            Spacer(minLength: 0)
         }
-        .padding(.bottom, 10)
+        .padding(LampTheme.Space.l)
+        .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
     }
 
     // MARK: - Readings Content
@@ -426,14 +445,12 @@ struct PlanView: View {
                 stackHorizontally: false
             )
             .frame(maxWidth: .infinity)
-            .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
         } else {
             ReadingsView(
                 date: $date,
                 planMetaData: planMetaData,
                 stackHorizontally: true
             )
-            .padding(EdgeInsets(top: 0, leading: 15, bottom: 20, trailing: 15))
         }
     }
 

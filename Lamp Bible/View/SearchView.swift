@@ -940,9 +940,11 @@ struct SearchView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: moduleSearchMode.icon)
-                        .foregroundStyle(Color.accentColor)
+                    SearchModeMenuLabel(systemImage: moduleSearchMode.icon)
                 }
+                .accessibilityLabel("Search mode")
+                .accessibilityValue(moduleSearchMode.displayName)
+                .tint(Color.secondary)
             } else if translationHasStrongsAnnotations {
                 // Bible search mode selector (only if translation supports Strong's)
                 Menu {
@@ -954,9 +956,11 @@ struct SearchView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: searchMode.icon)
-                        .foregroundStyle(Color.accentColor)
+                    SearchModeMenuLabel(systemImage: searchMode.icon)
                 }
+                .accessibilityLabel("Search mode")
+                .accessibilityValue(searchMode.rawValue)
+                .tint(Color.secondary)
             } else {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
@@ -986,10 +990,9 @@ struct SearchView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(UIColor.secondarySystemBackground))
-        .cornerRadius(10)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color(UIColor.secondarySystemBackground), in: Capsule())
         .padding(.horizontal)
         .padding(.top, 8)
         .padding(.bottom, 8)
@@ -1982,9 +1985,11 @@ struct SearchResultRow: View {
                     .foregroundColor(.primary)
 
                 // Text snippet as subheadline
+                // Scripture in the reader's serif, the reference in the UI face.
                 listContextText
-                    .font(.system(size: 15 * scaleFactor))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 16 * scaleFactor, design: .serif))
+                    .foregroundStyle(LampTheme.readerText)
+                    .lineSpacing(2)
             }
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2058,7 +2063,7 @@ struct SearchResultRow: View {
             if lower < upper {
                 let characters = Array(segment.text)
                 let piece = String(characters[lower..<upper])
-                text = text + (segment.isMark ? Text.findMatch(piece).bold() : Text(piece))
+                text = text + (segment.isMark ? Text.searchMatch(piece) : Text(piece))
             }
             offset += segment.text.count
         }
@@ -2250,11 +2255,12 @@ struct ModuleSearchResultRow: View {
                             }
                         } else {
                             // Default search highlighting
-                            attrText.backgroundColor = .lampFindMatch
-                            attrText.font = .system(size: 15 * scaleFactor).bold()
+                            attrText.backgroundColor = SearchMatchStyle.background
+                            attrText.foregroundColor = SearchMatchStyle.ink
+                            attrText.font = .system(size: 15 * scaleFactor, weight: .semibold)
                         }
                     } else {
-                        attrText.foregroundColor = .secondary
+                        attrText.foregroundColor = LampTheme.readerText
                     }
                     attributedResult.append(attrText)
                 }
@@ -2812,7 +2818,8 @@ private struct HighlightedTextUIView: UIViewRepresentable {
 
             while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                 let nsRange = NSRange(range, in: fullString)
-                result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
+                result.addAttribute(.backgroundColor, value: SearchMatchStyle.uiBackground, range: nsRange)
+                result.addAttribute(.foregroundColor, value: SearchMatchStyle.uiInk, range: nsRange)
                 searchStartIndex = range.upperBound
             }
         }
@@ -3389,11 +3396,16 @@ private struct BibleResultsListView: View {
                     }
                 } header: {
                     HStack {
-                        if totalResultCount > resultLimit {
-                            Text("Showing \(searchResults.count) of \(totalResultCount) results")
-                        } else {
-                            Text("\(searchResults.count) results")
+                        Group {
+                            if totalResultCount > resultLimit {
+                                Text("Showing \(searchResults.count) of \(totalResultCount) results")
+                            } else {
+                                Text("\(searchResults.count) results")
+                            }
                         }
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(LampTheme.caption)
+                        .textCase(nil)
                         Spacer()
                         if let onAnalyze {
                             Button("Analyse", systemImage: "chart.bar.xaxis", action: onAnalyze)
@@ -3418,6 +3430,8 @@ private struct BibleResultsListView: View {
                 }
             }
             .listStyle(.plain)
+            // The count sits just under the search field, not a gap below it.
+            .contentMargins(.top, 0, for: .scrollContent)
             .onAppear {
                 // Restore scroll position on initial appear only (not during active search)
                 if !stateManager.isSearching,
@@ -3619,14 +3633,16 @@ struct TranslationSearchPreviewSheet: View {
                 if let markEnd = remaining.range(of: "</mark>") {
                     let marked = String(remaining[..<markEnd.lowerBound])
                     var attrText = AttributedString(marked)
-                    attrText.backgroundColor = .lampFindMatch
+                    attrText.backgroundColor = SearchMatchStyle.background
+                    attrText.foregroundColor = SearchMatchStyle.ink
                     attrText.font = .body.bold()
                     attributedResult.append(attrText)
                     remaining = String(remaining[markEnd.upperBound...])
                 } else {
                     // No closing tag, treat rest as marked
                     var attrText = AttributedString(remaining)
-                    attrText.backgroundColor = .lampFindMatch
+                    attrText.backgroundColor = SearchMatchStyle.background
+                    attrText.foregroundColor = SearchMatchStyle.ink
                     attrText.font = .body.bold()
                     attributedResult.append(attrText)
                     remaining = ""
@@ -3844,5 +3860,55 @@ private struct SearchOfferRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Search Match Style
+
+/// How a searched word is marked in results: a pale yellow wash in light, and
+/// in dark a soft amber with warm light ink. Translucent yellow over black
+/// reads as olive, and solid yellow glares; amber sits between them.
+enum SearchMatchStyle {
+    static let uiBackground = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.96, green: 0.70, blue: 0.24, alpha: 0.30)
+            : UIColor(red: 1.0, green: 0.84, blue: 0.22, alpha: 0.42)
+    }
+    /// A warm light ink on the dark amber, so the match reads brighter than
+    /// the words round it without a solid block of yellow glaring on black.
+    static let uiInk = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 1.0, green: 0.88, blue: 0.62, alpha: 1)
+            : .label
+    }
+    static let background = Color(uiColor: uiBackground)
+    static let ink = Color(uiColor: uiInk)
+}
+
+/// The search field's mode menu: the mode's glyph and a chevron, in the
+/// field's own grey, so it reads as a menu rather than a stray accent.
+private struct SearchModeMenuLabel: View {
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: systemImage)
+                .font(.body.weight(.medium))
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.bold))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+}
+
+extension Text {
+    /// A searched word in a result's snippet.
+    static func searchMatch<S: StringProtocol>(_ text: S) -> Text {
+        var marked = AttributedString(String(text))
+        marked.backgroundColor = SearchMatchStyle.background
+        marked.foregroundColor = SearchMatchStyle.ink
+        return Text(marked).fontWeight(.semibold)
     }
 }

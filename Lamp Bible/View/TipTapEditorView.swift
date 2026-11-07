@@ -14,7 +14,12 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
     private var headerContainerView: UIView?
     private var headerHeight: CGFloat = 0
     private var currentViewMode: DevotionalViewMode?
+    private var showsHeader = false
+    private var headerScrolledAway = false
     var onHeaderHeightChange: ((CGFloat) -> Void)?
+    /// Told when the header scrolls up out of sight and back, so the host
+    /// can put the title in its bar while the header is hidden.
+    var onHeaderScrolledAway: ((Bool) -> Void)?
 
     override init(frame: CGRect) {
         let config = WKWebViewConfiguration()
@@ -52,9 +57,13 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
     }
 
 
-    func setHeader<Content: View>(_ content: Content?, for viewMode: DevotionalViewMode) {
+    /// `shows` is whether the header is drawn at all: in reading, and while
+    /// writing in the visual editor, where the title tops the page as it will
+    /// read.
+    func setHeader<Content: View>(_ content: Content?, for viewMode: DevotionalViewMode, shows: Bool) {
         let modeChanged = currentViewMode != viewMode
         currentViewMode = viewMode
+        showsHeader = shows && content != nil
 
         // Create the hosting controller once and reuse it across mode switches.
         // Destroying and recreating it caused inconsistent sizeThatFits measurements
@@ -82,15 +91,16 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
             }
         }
 
-        if viewMode == .read {
+        if showsHeader {
             headerContainerView?.isHidden = false
-            if modeChanged {
+            if modeChanged && viewMode == .read {
                 webView.scrollView.contentOffset = .zero
             }
             setNeedsLayout()
         } else {
             headerContainerView?.isHidden = true
             headerHeight = 0
+            reportHeaderScrolledAway(false)
         }
     }
 
@@ -100,8 +110,14 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
         updateHeaderPosition()
     }
 
+    private func reportHeaderScrolledAway(_ away: Bool) {
+        guard away != headerScrolledAway else { return }
+        headerScrolledAway = away
+        onHeaderScrolledAway?(away)
+    }
+
     func updateHeaderFrame() {
-        guard currentViewMode == .read,
+        guard showsHeader,
               let headerView = headerHostingController?.view,
               bounds.width > 0 else { return }
 
@@ -110,7 +126,7 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
         headerView.setNeedsLayout()
         headerView.layoutIfNeeded()
 
-        let targetSize = CGSize(width: bounds.width - 32, height: .greatestFiniteMagnitude)
+        let targetSize = CGSize(width: bounds.width - 40, height: .greatestFiniteMagnitude)
         let headerSize: CGSize
         if #available(iOS 16.0, *) {
             headerSize = headerHostingController?.sizeThatFits(in: targetSize) ?? .zero
@@ -123,7 +139,7 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
         }
 
         headerHeight = headerSize.height + 24
-        headerView.frame = CGRect(x: 16, y: 8, width: bounds.width - 32, height: headerSize.height)
+        headerView.frame = CGRect(x: 20, y: 8, width: bounds.width - 40, height: headerSize.height)
         onHeaderHeightChange?(safeTop + headerHeight)
         updateHeaderPosition()
     }
@@ -135,6 +151,8 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
         let safeTop = safeAreaInsets.top
         // Header position tracks scroll - at scroll 0, header is below the safe area
         container.frame = CGRect(x: 0, y: safeTop - scrollY, width: bounds.width, height: headerHeight)
+        // Away once the title line itself has gone under the bar.
+        reportHeaderScrolledAway(scrollY > max(headerHeight - 40, 40))
     }
 }
 
@@ -148,6 +166,8 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
     var devotionalId: String?
     var moduleId: String?
     var header: Header?
+    var showsHeader: Bool = false
+    var onHeaderScrolledAway: ((Bool) -> Void)?
     var onCoordinatorReady: ((TipTapEditorCoordinator) -> Void)?
 
     init(
@@ -159,6 +179,8 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         devotionalId: String? = nil,
         moduleId: String? = nil,
         header: Header?,
+        showsHeader: Bool,
+        onHeaderScrolledAway: ((Bool) -> Void)? = nil,
         onCoordinatorReady: ((TipTapEditorCoordinator) -> Void)? = nil
     ) {
         self._markdownContent = markdownContent
@@ -169,6 +191,8 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         self.devotionalId = devotionalId
         self.moduleId = moduleId
         self.header = header
+        self.showsHeader = showsHeader
+        self.onHeaderScrolledAway = onHeaderScrolledAway
         self.onCoordinatorReady = onCoordinatorReady
     }
 
@@ -261,6 +285,7 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         container.onHeaderHeightChange = { [weak coordinator] padding in
             coordinator?.setReadPadding(top: padding)
         }
+        container.onHeaderScrolledAway = onHeaderScrolledAway
 
         // Update the content changed callback with fresh binding reference
         let contentBinding = $markdownContent
@@ -299,7 +324,7 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         coordinator.setMediaMap(buildMediaMap())
 
         // Update header
-        container.setHeader(header, for: viewMode)
+        container.setHeader(header, for: viewMode, shows: showsHeader)
     }
 
     static func dismantleUIView(_ container: TipTapWebViewContainer, coordinator: TipTapEditorCoordinator) {

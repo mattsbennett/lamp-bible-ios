@@ -19,7 +19,7 @@ struct DevotionalConflictView: View {
                 ContentUnavailableView(
                     "No Conflicts",
                     systemImage: "checkmark.circle",
-                    description: Text("All devotionals are in sync")
+                    description: Text("All your writing is in sync")
                 )
                 .navigationTitle("Sync Conflicts")
                 .navigationBarTitleDisplayMode(.inline)
@@ -31,7 +31,7 @@ struct DevotionalConflictView: View {
             } else {
                 List {
                     Section {
-                        Text("The same devotionals were edited on multiple devices. Choose which version to keep for each conflict.")
+                        Text("The same writing was edited on more than one device. Choose which version to keep for each conflict.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -218,7 +218,7 @@ struct DevotionalConflictDetailView: View {
                         }
                         .buttonStyle(.borderedProminent)
 
-                        Text("The cloud version will be added as a separate devotional marked \"[From other device]\"")
+                        Text("The cloud version will be added as a separate piece of writing marked \"[From other device]\"")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)

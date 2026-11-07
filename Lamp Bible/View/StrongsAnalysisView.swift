@@ -97,6 +97,7 @@ struct StrongsAnalysisView: View {
     @State private var shownVerseCount = 50
     @State private var previewReference: VersePreviewReference?
     @AppStorage("strongs.analysis.bookChartAsRing") private var showsRing = false
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = false
 
     var body: some View {
@@ -114,7 +115,8 @@ struct StrongsAnalysisView: View {
                 )
             }
         }
-        .navigationTitle(key)
+        // The key is in the headword's pill; the bar says what the page is.
+        .navigationTitle("Word Analysis")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: key) { await load() }
         .sheet(item: $previewReference) { preview in
@@ -155,7 +157,13 @@ struct StrongsAnalysisView: View {
 
     private func content(_ analysis: LampStrongsAnalysis) -> some View {
         List {
-            Section { summary(analysis) }
+            Section {
+                summary(analysis)
+            } footer: {
+                // The rate, outside the card: the card keeps to the figures
+                // and the chart.
+                Text("About \(analysis.ratePerThousandWords.formatted(.number.precision(.fractionLength(0...1)))) in every 1,000 tagged \(languageName) words of the \(analysis.translationAbbreviation ?? analysis.translationName).")
+            }
             if !analysis.renderings.isEmpty {
                 Section {
                     Picker("Chart", selection: $showsRenderingRing) {
@@ -170,7 +178,7 @@ struct StrongsAnalysisView: View {
                         renderings(analysis)
                     }
                 } header: {
-                    Text("Rendered As")
+                    sectionHeader("Rendered As")
                 } footer: {
                     Text(showsRenderingRing
                         ? "How its \(analysis.occurrenceCount) occurrences are rendered, the commonest first. Tap one to filter the verse list below."
@@ -184,23 +192,24 @@ struct StrongsAnalysisView: View {
                 }
                 .pickerStyle(.segmented)
                 .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
                 if showsRing {
                     bookShare(analysis)
                 } else {
                     books(analysis)
                 }
             } header: {
-                Text("By Book")
+                sectionHeader("By Book")
             } footer: {
                 Text(showsRing
                     ? "Where its \(analysis.occurrenceCount) occurrences fall, the books holding most first. Tap a book to filter the verse list below."
-                    : "↑ more often, ↓ less often than a book of its length would hold, by a margin chance would rarely give. Tap a book to filter the verse list below.")
+                    : "Expected is the share a book of its length would hold. ↑ More and ↓ fewer mark a gap too wide to be chance. Tap a book to filter the verse list below.")
             }
             if !analysis.companions.isEmpty {
                 Section {
                     companions(analysis)
                 } header: {
-                    Text("Found With")
+                    sectionHeader("Found With")
                 } footer: {
                     Text("Most certain first: a word that shares many verses with this one leads one that shares a few, however rare it is.")
                 }
@@ -208,6 +217,29 @@ struct StrongsAnalysisView: View {
             verses(analysis)
         }
         .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+        .contentMargins(.top, 4, for: .scrollContent)
+        .environment(\.defaultMinListRowHeight, 36)
+        // An opaque bar over the list: rows pass cleanly under its edge rather
+        // than ghosting through a blur or being sliced by an invisible one.
+        .toolbarBackground(LampTheme.groupedBackground, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .overlay(alignment: .top) {
+            // The bar's lower edge, drawn: rows go under a line, not into air.
+            Rectangle()
+                .fill(LampTheme.hairline)
+                .frame(height: 1)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// A section's title, set as a heading rather than a grey caption.
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.title3.weight(.bold))
+            .foregroundStyle(Color(uiColor: .label))
+            .textCase(nil)
+            .padding(.top, 6)
     }
 
     // MARK: Summary
@@ -217,117 +249,269 @@ struct StrongsAnalysisView: View {
     }
 
     private func summary(_ analysis: LampStrongsAnalysis) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(headword.lemma ?? analysis.key)
-                    .font(.title.weight(.semibold))
-                Text(analysis.key)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.15), in: Capsule())
+        let booksWithIt = analysis.books.filter { $0.occurrenceCount > 0 }.count
+        return VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(headword.lemma ?? analysis.key)
+                        .font(.system(size: 44, weight: .semibold, design: .serif))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    Text(analysis.key)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.primary.opacity(0.75))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
+                        .background(LampTheme.tileFill, in: Capsule())
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let transliteration = headword.transliteration, !transliteration.isEmpty {
+                        Text(transliteration)
+                            .font(.system(.title3, design: .serif))
+                            .italic()
+                            .foregroundStyle(LampTheme.readerText.opacity(0.8))
+                    }
+                    if let gloss = headword.gloss, !gloss.isEmpty {
+                        Text(gloss)
+                            .font(.title3.weight(.medium))
+                    }
+                }
             }
-            if let transliteration = headword.transliteration, !transliteration.isEmpty {
-                Text(transliteration)
-                    .italic()
-                    .foregroundStyle(.secondary)
+
+            // The figures that answer "how common is it": a label over a large
+            // number, its unit small beside it, to take in at a glance.
+            HStack(alignment: .top, spacing: 0) {
+                statTile(label: "Occurrences", value: "\(analysis.occurrenceCount)", unit: "")
+                statTile(label: "Verses", value: "\(analysis.verseCount)", unit: "")
+                statTile(label: "Books", value: "\(booksWithIt)", unit: "of \(analysis.books.count)")
             }
-            if let gloss = headword.gloss, !gloss.isEmpty {
-                Text(gloss)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(analysis.occurrenceCount) times in \(analysis.verseCount) verses, in \(booksWithIt) of \(analysis.books.count) books")
+
+            if analysis.books.count > 1 {
+                StrongsCanonStrip(books: analysis.books, color: barColor)
             }
-            Text("\(analysis.occurrenceCount) times in \(analysis.verseCount) verses of the \(analysis.translationAbbreviation ?? analysis.translationName)")
-                .font(.subheadline.weight(.medium))
-                .padding(.top, 4)
-            Text("\(analysis.ratePerThousandWords, format: .number.precision(.fractionLength(0...2))) per 1,000 tagged \(languageName) words")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 12)
+        .listRowBackground(heroBackground)
+    }
+
+    /// The headword card's ground: a step lighter than the sheet in dark, so
+    /// it stands off it, and warmed at its top corner by a soft glow of the
+    /// accent, the one place the analysis is lit rather than laid out.
+    private var heroBackground: some View {
+        LampTheme.heroCard
+            .overlay {
+                RadialGradient(
+                    colors: [Color.accentColor.opacity(colorScheme == .dark ? 0.13 : 0.16), Color.accentColor.opacity(0)],
+                    center: .topTrailing,
+                    startRadius: 0,
+                    endRadius: 300
+                )
+            }
+    }
+
+    private func statTile(label: String, value: String, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(LampTheme.caption)
+                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value)
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                if !unit.isEmpty {
+                    Text(unit)
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Renderings
 
+    @ViewBuilder
     private func renderings(_ analysis: LampStrongsAnalysis) -> some View {
-        ForEach(analysis.renderings.prefix(strongsAnalysisListed)) { rendering in
-            let isSelected = renderingFilter == rendering.id
-            Button {
-                renderingFilter = isSelected ? nil : rendering.id
-                shownVerseCount = 50
-            } label: {
-                HStack(spacing: 10) {
+        let listed = Array(analysis.renderings.prefix(strongsAnalysisListed))
+        let most = max(listed.map(\.count).max() ?? 1, 1)
+        // Renderings used more than once get a row and a bar; those used once
+        // share one row of chips, where a bar each told nothing.
+        let repeated = listed.filter { $0.count > 1 || listed.count <= 3 }
+        let once = listed.filter { !($0.count > 1 || listed.count <= 3) }
+        ForEach(repeated) { rendering in
+            renderingRow(rendering, most: most)
+        }
+        if !once.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Once each")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(LampTheme.caption)
+                FlowLayout(spacing: 6, lineSpacing: 6) {
+                    ForEach(once) { rendering in
+                        renderingChip(rendering)
+                    }
+                }
+            }
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 12, trailing: 16))
+        }
+    }
+
+    private func renderingRow(_ rendering: LampStrongsAnalysis.Rendering, most: Int) -> some View {
+        let isSelected = renderingFilter == rendering.id
+        return Button {
+            renderingFilter = isSelected ? nil : rendering.id
+            shownVerseCount = 50
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(rendering.text.isEmpty ? "(no English word)" : rendering.text)
-                            .foregroundStyle(.primary)
+                            .fontWeight(isSelected ? .semibold : .regular)
+                            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                         let variants = rendering.variants
                             .filter { $0.text != rendering.text }
                             .prefix(3)
                             .map(\.text)
                         if !variants.isEmpty {
                             Text(variants.joined(separator: ", "))
-                                .font(.caption)
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
                     }
                     Spacer(minLength: 8)
+                    if isSelected {
+                        Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                            .foregroundStyle(.tint)
+                            .accessibilityHidden(true)
+                    }
                     Text("\(rendering.count)")
+                        .font(.body.weight(.semibold))
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(.tint)
-                        .opacity(isSelected ? 1 : 0)
                 }
-                .contentShape(Rectangle())
+                StrongsBarTrack(
+                    fraction: CGFloat(rendering.count) / CGFloat(most),
+                    // A neutral share: colour in this view means more or
+                    // fewer than expected, and the accent means chosen.
+                    color: isSelected ? Color.accentColor : StrongsBarTrack.neutral,
+                    height: 6
+                )
             }
-            .buttonStyle(.plain)
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 9, leading: 16, bottom: 9, trailing: 16))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// A rendering used once: a chip that filters the verses to it.
+    private func renderingChip(_ rendering: LampStrongsAnalysis.Rendering) -> some View {
+        let isSelected = renderingFilter == rendering.id
+        return Button {
+            renderingFilter = isSelected ? nil : rendering.id
+            shownVerseCount = 50
+        } label: {
+            Text(rendering.text.isEmpty ? "(no English word)" : rendering.text)
+                .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule().fill(isSelected ? Color.accentColor.opacity(0.14) : LampTheme.tileFill)
+                )
+                .overlay {
+                    if isSelected { Capsule().strokeBorder(Color.accentColor, lineWidth: 1) }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(rendering.text.isEmpty ? "no English word" : rendering.text), once")
+        .accessibilityHint("Filters the verse list")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: Books
 
+    /// The books in runs of one canon division (Gospels, Paul's Letters…),
+    /// in order, so a long list has landmarks.
+    private func bookGroups(_ books: [LampStrongsAnalysis.Division]) -> [(name: String, books: [LampStrongsAnalysis.Division])] {
+        var groups: [(name: String, books: [LampStrongsAnalysis.Division])] = []
+        for book in books {
+            let name = LampStrongsAnalysis.canonSections.first { $0.books.contains(book.id) }?.name ?? ""
+            if let last = groups.last, last.name == name {
+                groups[groups.count - 1].books.append(book)
+            } else {
+                groups.append((name, [book]))
+            }
+        }
+        return groups
+    }
+
+    @ViewBuilder
     private func books(_ analysis: LampStrongsAnalysis) -> some View {
         let most = max(analysis.books.map(\.occurrenceCount).max() ?? 1, 1)
-        return ForEach(analysis.books) { book in
-            let isSelected = bookFilter == book.id
-            Button {
-                bookFilter = isSelected ? nil : book.id
-                shownVerseCount = 50
-            } label: {
-                HStack(spacing: 8) {
-                    Text(book.name)
-                        .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-                        .lineLimit(1)
-                        .frame(width: 112, alignment: .leading)
-                    Capsule()
-                        .fill(barColor(book.expectation))
-                        .frame(
-                            width: book.occurrenceCount > 0
-                                ? max(3, 140 * CGFloat(book.occurrenceCount) / CGFloat(most))
-                                : 0,
-                            height: 10
-                        )
-                    Spacer(minLength: 0)
-                    Text("\(book.occurrenceCount)")
-                        .font(.subheadline)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    Image(systemName: book.expectation == .fewer ? "arrow.down" : "arrow.up")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(barColor(book.expectation))
-                        .opacity(book.expectation == .asExpected ? 0 : 1)
-                        .frame(width: 14)
-                }
-                .contentShape(Rectangle())
+        ForEach(Array(bookGroups(analysis.books).enumerated()), id: \.offset) { _, group in
+            if !group.name.isEmpty {
+                Text(group.name.uppercased())
+                    .font(.caption.weight(.semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(LampTheme.caption)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 2, trailing: 16))
+                    .accessibilityAddTraits(.isHeader)
             }
-            .buttonStyle(.plain)
-            .disabled(book.occurrenceCount == 0)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(book.name), \(book.occurrenceCount) times\(expectationPhrase(book.expectation))")
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            ForEach(group.books) { book in
+                bookRow(book, most: most)
+            }
         }
+    }
+
+    private func bookRow(_ book: LampStrongsAnalysis.Division, most: Int) -> some View {
+        let isSelected = bookFilter == book.id
+        let isEmpty = book.occurrenceCount == 0
+        return Button {
+            // A book without the word has no verses to filter to.
+            guard !isEmpty else { return }
+            bookFilter = isSelected ? nil : book.id
+            shownVerseCount = 50
+        } label: {
+            HStack(spacing: 10) {
+                Text(book.name)
+                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? Color.accentColor : isEmpty ? Color.secondary : Color.primary)
+                    .lineLimit(1)
+                    .frame(width: 112, alignment: .leading)
+                StrongsBarTrack(
+                    fraction: CGFloat(book.occurrenceCount) / CGFloat(most),
+                    color: barColor(book.expectation),
+                    height: 10
+                )
+                Text(isEmpty ? "–" : "\(book.occurrenceCount)")
+                    .font(.subheadline.weight(isEmpty ? .regular : .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(isEmpty ? Color.secondary : Color.primary)
+                    .frame(minWidth: 24, alignment: .trailing)
+                Image(systemName: book.expectation == .fewer ? "arrow.down" : "arrow.up")
+                    .font(.caption.weight(.heavy))
+                    .foregroundStyle(barColor(book.expectation))
+                    .opacity(book.expectation == .asExpected ? 0 : 1)
+                    .frame(width: 14)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Not disabled, which would fade the row past reading: a zero is
+        // a finding too.
+        .allowsHitTesting(!isEmpty)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(book.name), \(book.occurrenceCount) times\(expectationPhrase(book.expectation))")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: Share
@@ -438,7 +622,7 @@ struct StrongsAnalysisView: View {
         switch expectation {
         case .more: .blue
         case .fewer: .orange
-        case .asExpected: .secondary.opacity(0.5)
+        case .asExpected: StrongsBarTrack.neutral
         }
     }
 
@@ -699,5 +883,205 @@ private struct StrongsShareRing: View {
             if angle < end { return index }
         }
         return slices.indices.last
+    }
+}
+
+/// A bar of a whole: a faint track the full width, filled to the share.
+/// Even a count of one reads as a bar on its track rather than a dot.
+private struct StrongsBarTrack: View {
+    let fraction: CGFloat
+    let color: Color
+    let height: CGFloat
+
+    /// "As expected": a mid grey, clear of its track and quieter than the text.
+    static let neutral = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0x8E / 255, green: 0x8E / 255, blue: 0x95 / 255, alpha: 1)
+            : UIColor(red: 0x76 / 255, green: 0x76 / 255, blue: 0x7C / 255, alpha: 1)
+    })
+
+    /// The empty track: plain enough to read as "none", firm enough to see.
+    static let track = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0x3A / 255, green: 0x3A / 255, blue: 0x3E / 255, alpha: 1)
+            : UIColor(red: 0xE8 / 255, green: 0xE8 / 255, blue: 0xED / 255, alpha: 1)
+    })
+
+    var body: some View {
+        Capsule()
+            .fill(Self.track)
+            .frame(height: height)
+            .overlay(alignment: .leading) {
+                GeometryReader { proxy in
+                    if fraction > 0 {
+                        // At least a short bar, never a dot: one occurrence is
+                        // still plainly more than none.
+                        Capsule()
+                            .fill(color)
+                            .frame(width: max(height * 2, proxy.size.width * min(fraction, 1)))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The key's whole spread through the canon at a glance: a column for each
+/// book in canonical order, coloured as the book list colours it, over the
+/// canon's divisions, with the tallest column's count as the scale and the
+/// book that stands out most named over its column.
+private struct StrongsCanonStrip: View {
+    let books: [LampStrongsAnalysis.Division]
+    let color: (LampStrongsAnalysis.Expectation) -> Color
+
+    private static let chartHeight: CGFloat = 84
+    private static let labelBand: CGFloat = 18
+
+    private var spacing: CGFloat { books.count > 40 ? 1.5 : 3 }
+
+    /// Runs of neighbouring books in one canon division, in order.
+    private var runs: [(name: String, count: Int)] {
+        var runs: [(name: String, count: Int)] = []
+        for book in books {
+            let name = LampStrongsAnalysis.canonSections.first { $0.books.contains(book.id) }?.name ?? ""
+            if let last = runs.last, last.name == name {
+                runs[runs.count - 1].count += 1
+            } else {
+                runs.append((name, 1))
+            }
+        }
+        return runs
+    }
+
+    /// The book read most above expectation, named on the chart.
+    private var standout: (index: Int, book: LampStrongsAnalysis.Division)? {
+        books.enumerated()
+            .filter { $0.element.expectation == .more }
+            .max { $0.element.keyness < $1.element.keyness }
+            .map { ($0.offset, $0.element) }
+    }
+
+    private func columnWidth(in width: CGFloat) -> CGFloat {
+        (width - spacing * CGFloat(books.count - 1)) / CGFloat(books.count)
+    }
+
+    var body: some View {
+        let most = max(books.map(\.occurrenceCount).max() ?? 1, 1)
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { proxy in
+                let column = columnWidth(in: proxy.size.width)
+                ZStack(alignment: .topLeading) {
+                    // The scale: a dotted line at the tallest column, with its count.
+                    Path { path in
+                        path.move(to: CGPoint(x: 0, y: Self.labelBand))
+                        path.addLine(to: CGPoint(x: proxy.size.width, y: Self.labelBand))
+                    }
+                    .stroke(LampTheme.rule, style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
+                    Text("\(most) times")
+                        .font(.caption2.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(LampTheme.caption)
+                    // The baseline the columns stand on.
+                    Rectangle()
+                        .fill(LampTheme.caption.opacity(0.5))
+                        .frame(height: 1)
+                        .offset(y: Self.labelBand + Self.chartHeight)
+
+                    HStack(alignment: .bottom, spacing: spacing) {
+                        ForEach(books) { book in
+                            let isEmpty = book.occurrenceCount == 0
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(isEmpty ? LampTheme.rule : color(book.expectation))
+                                .frame(height: isEmpty ? 2 : max(6, Self.chartHeight * CGFloat(book.occurrenceCount) / CGFloat(most)))
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .frame(height: Self.chartHeight + Self.labelBand, alignment: .bottom)
+
+                    // A mark under each book read more or less than expected,
+                    // so a short column's colour is never lost: one or two
+                    // occurrences make a column too low to see its hue.
+                    HStack(spacing: spacing) {
+                        ForEach(books) { book in
+                            Group {
+                                if book.expectation == .asExpected {
+                                    Color.clear
+                                } else {
+                                    Image(systemName: book.expectation == .more ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill")
+                                        .font(.system(size: min(7, max(5, column - 1)), weight: .bold))
+                                        .foregroundStyle(color(book.expectation))
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .frame(height: 9)
+                    .offset(y: Self.labelBand + Self.chartHeight + 4)
+
+                    if let standout {
+                        let centre = (column + spacing) * CGFloat(standout.index) + column / 2
+                        let barTop = Self.labelBand + Self.chartHeight
+                            - max(4, Self.chartHeight * CGFloat(standout.book.occurrenceCount) / CGFloat(most))
+                        Text(standout.book.name)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(color(.more))
+                            .fixedSize()
+                            .position(
+                                x: min(max(centre, 36), proxy.size.width - 36),
+                                y: max(barTop - 9, 7)
+                            )
+                    }
+                }
+            }
+            .frame(height: Self.chartHeight + Self.labelBand + 13)
+
+            // The canon's divisions under their columns.
+            GeometryReader { proxy in
+                let column = columnWidth(in: proxy.size.width)
+                HStack(alignment: .top, spacing: spacing) {
+                    ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
+                        VStack(spacing: 4) {
+                            Capsule()
+                                .fill(LampTheme.rule)
+                                .frame(height: 2)
+                            Text(run.count >= 3 ? run.name : "")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(LampTheme.caption)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                        }
+                        .frame(width: column * CGFloat(run.count) + spacing * CGFloat(run.count - 1))
+                    }
+                }
+            }
+            .frame(height: 22)
+
+            StrongsExpectationLegend()
+                .padding(.top, 2)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Occurrences by book, \(books.first?.name ?? "") to \(books.last?.name ?? ""); the most in one book, \(most)")
+    }
+}
+
+/// What the colours of the bars mean, beside the bars themselves.
+private struct StrongsExpectationLegend: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            item("More than expected", .blue)
+            item("Fewer", .orange)
+            item("As expected", StrongsBarTrack.neutral)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func item(_ title: String, _ color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(title).lineLimit(1)
+        }
     }
 }

@@ -90,7 +90,7 @@ struct LexiconTextRenderer {
         /// Verse references.
         var linkColor: UIColor = .lampLink
         /// Strong's and BDB references, which open the lexicon.
-        var originalLanguageColor: UIColor = .lampOriginalLanguage
+        var originalLanguageColor: UIColor = .lampOriginalLanguageInText
         var textColor: UIColor = .label
         var lineSpacing: CGFloat = 6
         var paragraphSpacing: CGFloat = 8
@@ -1346,7 +1346,7 @@ private struct LexiconSheetItemContent: View {
 
     /// Base font size at 90% of user's reader font size
     private var baseFontSize: CGFloat {
-        CGFloat(userSettings.readerFontSize) * 0.85
+        CGFloat(userSettings.readerFontSize) * 0.92
     }
 
     // Scaled fonts (matching LexiconEntryView +5% scaling)
@@ -1770,7 +1770,7 @@ private struct LinkedTextView: UIViewRepresentable {
             case .strongs(let ref):
                 result.append(NSAttributedString(string: ref, attributes: [
                     .font: uiFont,
-                    .foregroundColor: UIColor.lampOriginalLanguage,
+                    .foregroundColor: UIColor.lampOriginalLanguageInText,
                     .paragraphStyle: paragraphStyle,
                     TappableIndexAttributeKey: popoverIndex
                 ]))
@@ -1790,7 +1790,7 @@ private struct LinkedTextView: UIViewRepresentable {
             case .bdbRef(let bdbId):
                 result.append(NSAttributedString(string: bdbId, attributes: [
                     .font: uiFont,
-                    .foregroundColor: UIColor.lampOriginalLanguage,
+                    .foregroundColor: UIColor.lampOriginalLanguageInText,
                     .paragraphStyle: paragraphStyle,
                     TappableIndexAttributeKey: popoverIndex
                 ]))
@@ -2011,7 +2011,8 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         let style = CommentaryRenderer.Style(
             uiBodyFont: UIFont.systemFont(ofSize: fontSize),
             scriptureColor: .lampLink,
-            strongsColor: .lampOriginalLanguage,
+            strongsColor: .lampOriginalLanguageInText,
+            boldStrongs: false,
             footnoteColor: Color.secondary,
             abbreviationColor: Color.secondary
         )
@@ -2177,6 +2178,8 @@ struct LexiconEntryView: View {
     var hitCount: Int? = nil  // Number of occurrences in the translation
     var isCurrentPage: Bool = true
     var searchTerms: [String] = []  // Search terms to highlight
+    /// Off when the sheet's lexicon switcher already names the lexicon.
+    var showsLexiconName: Bool = true
 
     // Shared state for cross-segment navigation
     var baseOffset: Int = 0
@@ -2231,41 +2234,63 @@ struct LexiconEntryView: View {
         return otherSensesHavePos ? nil : firstPos
     }
 
+    /// A header word set in the reader's serif, which draws Greek and Hebrew
+    /// with the same care as the English.
+    private var lemmaFont: Font { .system(size: baseFontSize * 1.6, weight: .regular, design: .serif) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Header: Lemma (with optional homograph Roman numeral) and ID
-            HStack(alignment: .center, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            // Which lexicon this is, as an overline above the word, unless the
+            // switcher above the entry already says.
+            if showsLexiconName {
+                LexiconSectionLabel(entry.lexiconName, size: baseFontSize * 0.76)
+            }
+
+            // Header: the lemma (with a homograph's Roman numeral), and on
+            // its baseline how it is said and what part of speech it is.
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 HStack(alignment: .lastTextBaseline, spacing: 4) {
                     Text(entry.lemma)
-                        .font(titleFont)
-                    // Show homograph Roman numeral for BDB entries
+                        .font(lemmaFont)
+                        .foregroundStyle(LampTheme.readerText)
+                        .textSelection(.enabled)
                     if let homographNum = LexiconLookup.homographLabel(entry.homograph) {
                         Text(homographNum)
                             .font(subheadlineFont)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LampTheme.caption)
                     }
                 }
+                .layoutPriority(1)
 
-                // Strong's ID badge (no search button)
-                if !entry.strongsId.isEmpty {
-                    Text(entry.strongsId)
+                let pos = entry.pos ?? liftedPartOfSpeech
+                let xlit = entry.xlit
+                if (xlit?.isEmpty == false) || (pos?.isEmpty == false) {
+                    let said = Text(xlit ?? "").italic().foregroundStyle(LampTheme.caption)
+                    let dot = Text((xlit?.isEmpty == false && pos?.isEmpty == false) ? "  ·  " : "")
+                        .foregroundStyle(LampTheme.caption)
+                    let part = Text(pos ?? "").italic().foregroundStyle(LampTheme.caption)
+                    Text("\(said)\(dot)\(part)")
                         .font(subheadlineFont)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.15))
-                        .clipShape(Capsule())
+                        .lineLimit(2)
+                }
+            }
+
+            // The entry's numbers and what can be done with them, as one row
+            // of quiet chips: its IDs, then its uses in the translation and
+            // their analysis.
+            HStack(spacing: 8) {
+                if !entry.strongsId.isEmpty {
+                    LexiconChip {
+                        Text(entry.strongsId)
+                            .monospacedDigit()
+                    }
                 }
 
                 // BDB ID badge (when available)
                 if let bdbId = entry.bdbId {
-                    Text(bdbId)
-                        .font(subheadlineFont)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.purple.opacity(0.15))
-                        .clipShape(Capsule())
+                    LexiconChip {
+                        Text(bdbId)
+                    }
                 }
 
                 // Separate search button with occurrence count
@@ -2273,16 +2298,19 @@ struct LexiconEntryView: View {
                     Button {
                         onSearch(entry.strongsId)
                     } label: {
-                        HStack(spacing: 1) {
-                            Image(systemName: "magnifyingglass")
-                                .font(captionFont)
-                            // Show "(Strong's)" suffix when BDB ID is also shown to clarify what's being searched
-                            Text(entry.bdbId != nil ? "\(count)x (Strong's)" : "\(count)x")
+                        LexiconChip {
+                            HStack(spacing: 4) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: baseFontSize * 0.72, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                // Show "(Strong's)" suffix when BDB ID is also shown to clarify what's being searched
+                                Text(entry.bdbId != nil ? "\(count)× (Strong's)" : "\(count)×")
+                                    .monospacedDigit()
+                            }
                         }
-                        .font(subheadlineFont)
-                        .foregroundStyle(.accent)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Search \(count) uses of \(entry.strongsId)")
                 }
 
                 // Where those occurrences fall, and what renders them
@@ -2290,44 +2318,21 @@ struct LexiconEntryView: View {
                     Button {
                         onAnalyze(entry.strongsId)
                     } label: {
-                        Image(systemName: "chart.bar.xaxis")
-                            .font(subheadlineFont)
-                            .foregroundStyle(.accent)
+                        LexiconChip {
+                            HStack(spacing: 4) {
+                                Image(systemName: "chart.bar.xaxis")
+                                    .font(.system(size: baseFontSize * 0.72, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                Text("Analyse")
+                            }
+                        }
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Analyse \(entry.strongsId)")
                 }
             }
-
-            // Lexicon source
-            Text(entry.lexiconName)
-                .font(caption2Font)
-                .foregroundStyle(.tertiary)
-
-            // Transliteration + part of speech
-            if let xlit = entry.xlit, !xlit.isEmpty {
-                HStack(spacing: 6) {
-                    Text(xlit)
-                        .font(subheadlineFont)
-                        .italic()
-                        .foregroundStyle(.secondary)
-                    if let pos = entry.pos ?? liftedPartOfSpeech, !pos.isEmpty {
-                        Text("·")
-                            .font(subheadlineFont)
-                            .foregroundStyle(.tertiary)
-                        Text(pos)
-                            .font(subheadlineFont)
-                            .foregroundStyle(.secondary)
-                            .italic()
-                    }
-                }
-            } else if let pos = entry.pos ?? liftedPartOfSpeech, !pos.isEmpty {
-                // Show POS even without transliteration
-                Text(pos)
-                    .font(subheadlineFont)
-                    .foregroundStyle(.secondary)
-                    .italic()
-            }
+            .font(.system(size: baseFontSize * 0.86, weight: .medium))
+            .padding(.top, 2)
 
             if let pron = entry.pron, !pron.isEmpty, pron != entry.xlit {
                 Text(pron)
@@ -2386,14 +2391,10 @@ struct LexiconEntryView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Senses")
-                        .font(captionFont)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
+                VStack(alignment: .leading, spacing: 10) {
+                    LexiconSectionLabel(senses.count == 1 ? "Sense" : "Senses", size: baseFontSize * 0.76)
 
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 16) {
                         ForEach(Array(senses.enumerated()), id: \.offset) { index, sense in
                             UserDictionarySenseView(
                                 sense: sense,
@@ -2420,33 +2421,30 @@ struct LexiconEntryView: View {
                         }
                     }
                 }
-                .padding(.top, 8)
+                .padding(.top, 12)
             }
 
             // KJV Usage - only show for single-sense entries
             if let kjv = entry.kjv, !kjv.isEmpty, !hasSenses {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("KJV Usage")
-                        .font(captionFont)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    LexiconSectionLabel("KJV Usage", size: baseFontSize * 0.76)
                     Text(kjv)
-                        .font(captionFont)
+                        .font(subheadlineFont)
                         .foregroundStyle(.primary)
+                        .lineSpacing(3)
                 }
-                .padding(.top, 4)
+                .padding(.top, 10)
                 .id("\(entry.id)-entry-kjv")
             }
 
             // Derivation - only show for single-sense entries
             if let deriv = entry.deriv, !deriv.isEmpty, !hasSenses {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Derivation")
-                        .font(captionFont)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    LexiconSectionLabel("Derivation", size: baseFontSize * 0.76)
                     LinkedDefinitionText(
                         text: deriv,
-                        font: captionFont,
-                        fontSize: baseFontSize * 0.798,
+                        font: subheadlineFont,
+                        fontSize: baseFontSize * 0.924,
                         translationId: translationId,
                         onSearchStrongs: onSearchStrongs,
                         onNavigateToVerse: onNavigateToVerse,
@@ -2456,9 +2454,79 @@ struct LexiconEntryView: View {
                         scrollCoordinateSpace: scrollCoordinateSpace
                     )
                 }
+                .padding(.top, 10)
                 .id("\(entry.id)-entry-deriv")
             }
         }
+    }
+}
+
+// MARK: - Entry parts
+
+/// A small overline naming a part of an entry: its lexicon, its senses, a
+/// derivation. Darker than tertiary grey, which vanished at this size.
+struct LexiconSectionLabel: View {
+    let title: String
+    var size: CGFloat = 13
+
+    init(_ title: String, size: CGFloat = 13) {
+        self.title = title
+        self.size = size
+    }
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.system(size: max(11, size), weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(LampTheme.caption)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// A quiet capsule for an entry's numbers and the actions on them.
+struct LexiconChip<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(LampTheme.tileFill, in: Capsule())
+    }
+}
+
+/// One way a translation renders the word, with how often, as a chip.
+struct TranslationUsageChip: View {
+    let word: String
+    let count: Int?
+    let fontSize: CGFloat
+
+    /// Strong's marks a KJV rendering made with other words "+" and one made
+    /// by idiom "×", which the data spells "X".
+    static func hasStrongsMark(_ word: String) -> Bool {
+        word.hasPrefix("X ") || word.hasPrefix("+ ")
+    }
+
+    /// The word as Strong's prints it, with × for the data's "X".
+    private var displayWord: String {
+        word.hasPrefix("X ") ? "×" + word.dropFirst(1) : word
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(displayWord)
+                .foregroundStyle(.primary)
+            if let count {
+                Text(count.formatted())
+                    .font(.system(size: fontSize * 0.82))
+                    .monospacedDigit()
+                    .foregroundStyle(LampTheme.caption)
+            }
+        }
+        .font(.system(size: fontSize))
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -2503,21 +2571,21 @@ struct UserDictionarySenseView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 // Sense number
-                Text("\(senseNumber).")
-                    .font(bodyFont)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, alignment: .trailing)
+                Text("\(senseNumber)")
+                    .font(.system(size: baseFontSize * 0.86, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(LampTheme.caption)
+                    .frame(width: 18, alignment: .trailing)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 12) {
                     // Part of speech (if present and not lifted to top level)
                     if !hidePartOfSpeech, let pos = sense.partOfSpeech, !pos.isEmpty {
                         Text(pos)
                             .font(calloutFont)
                             .italic()
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(LampTheme.caption)
                     }
 
                     // Gloss only (short definitions are subsets of full definition)
@@ -2560,27 +2628,23 @@ struct UserDictionarySenseView: View {
 
                     // Usage - plain text, no scroll-to-match needed (short field)
                     if let usage = sense.usage, !usage.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Usage")
-                                .font(caption2Font)
-                                .foregroundStyle(.tertiary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            LexiconSectionLabel("Usage", size: baseFontSize * 0.76)
                             Text(usage)
-                                .font(captionFont)
-                                .foregroundStyle(.secondary)
+                                .font(subheadlineFont)
+                                .foregroundStyle(.primary)
                         }
                         .id("\(entryId)-sense-\(senseIndex)-usage")
                     }
 
                     // Derivation - may also contain Strong's refs
                     if sense.derivation != nil {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Derivation")
-                                .font(caption2Font)
-                                .foregroundStyle(.tertiary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            LexiconSectionLabel("Derivation", size: baseFontSize * 0.76)
                             DictionaryDefinitionView(
                                 field: sense.derivation,
-                                font: captionFont,
-                                fontSize: baseFontSize * 0.798,
+                                font: subheadlineFont,
+                                fontSize: baseFontSize * 0.924,
                                 translationId: translationId,
                                 onSearchStrongs: onSearchStrongs,
                                 onNavigateToVerse: onNavigateToVerse,
@@ -2599,23 +2663,49 @@ struct UserDictionarySenseView: View {
                     // Translation usages from Bible versions
                     if let usages = sense.translationUsages, !usages.isEmpty {
                         ForEach(usages, id: \.version) { usage in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\(usage.version) Usages")
-                                    .font(caption2Font)
-                                    .foregroundStyle(.tertiary)
-                                LinkedDefinitionText(
-                                    text: formatTranslationUsage(usage),
-                                    font: captionFont,
-                                    fontSize: baseFontSize * 0.798,
-                                    translationId: translationId,
-                                    onSearchStrongs: onSearchStrongs,
-                                    onNavigateToVerse: onNavigateToVerse,
-                                    isCurrentPage: isCurrentPage,
-                                    searchTerms: searchTerms,
-                                    shouldReportMatchOffset: reportMatchForField == "translationUsage-\(usage.version)",
-                                    scrollCoordinateSpace: scrollCoordinateSpace
-                                )
-                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 8) {
+                                LexiconSectionLabel("\(usage.version) Usages", size: baseFontSize * 0.76)
+                                if searchTerms.isEmpty {
+                                    // The key to Strong's marks first, where it is
+                                    // read before the words it explains.
+                                    if usage.translations.contains(where: { TranslationUsageChip.hasStrongsMark($0.word) }) {
+                                        Text("+ with other words    × by idiom")
+                                            .font(.system(size: max(11, baseFontSize * 0.74)))
+                                            .foregroundStyle(LampTheme.caption)
+                                    }
+                                    // Two columns read down, in alphabetical order, as
+                                    // an index is: plain words, so nothing in the list
+                                    // looks like a button.
+                                    let words = usage.translations
+                                    let half = (words.count + 1) / 2
+                                    HStack(alignment: .top, spacing: 16) {
+                                        ForEach([0, 1], id: \.self) { column in
+                                            VStack(alignment: .leading, spacing: 7) {
+                                                ForEach(Array(words.enumerated()).filter { column == 0 ? $0.offset < half : $0.offset >= half }, id: \.offset) { _, translation in
+                                                    TranslationUsageChip(
+                                                        word: translation.word,
+                                                        count: translation.count,
+                                                        fontSize: baseFontSize * 0.9
+                                                    )
+                                                }
+                                            }
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }
+                                } else {
+                                    LinkedDefinitionText(
+                                        text: formatTranslationUsage(usage),
+                                        font: subheadlineFont,
+                                        fontSize: baseFontSize * 0.924,
+                                        translationId: translationId,
+                                        onSearchStrongs: onSearchStrongs,
+                                        onNavigateToVerse: onNavigateToVerse,
+                                        isCurrentPage: isCurrentPage,
+                                        searchTerms: searchTerms,
+                                        shouldReportMatchOffset: reportMatchForField == "translationUsage-\(usage.version)",
+                                        scrollCoordinateSpace: scrollCoordinateSpace
+                                    )
+                                }
                             }
                             .id("\(entryId)-sense-\(senseIndex)-translationUsage-\(usage.version)")
                         }
@@ -2874,6 +2964,8 @@ struct LexiconPageView: View {
     var onSearchStrongs: ((String) -> Void)? = nil
     var onAnalyzeStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
+    /// Off when the sheet's lexicon switcher already names the lexicon.
+    var showsLexiconName: Bool = true
 
     // Shared state for cross-segment navigation
     @State private var sheetState: LexiconSheetState? = nil
@@ -3020,7 +3112,9 @@ struct LexiconPageView: View {
     private var simpleScrollView: some View {
         ScrollView {
             lexiconContent
-                .padding()
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                .padding(.bottom, 24)
         }
         .sheet(item: $sheetState) { state in
             sheetContent(state: state)
@@ -3118,6 +3212,7 @@ struct LexiconPageView: View {
                     hitCount: strongsHitCounts[data.entry.strongsId],
                     isCurrentPage: true,  // Always true here since we only render when settled
                     searchTerms: searchTerms,
+                    showsLexiconName: showsLexiconName,
                     baseOffset: data.offset,
                     sharedSheetState: $sheetState,
                     sharedAllItems: $allItems,
@@ -3549,7 +3644,7 @@ struct LexiconSheetView: View {
 
     /// Base font size at 90% of user's reader font size
     private var scaledBaseFontSize: CGFloat {
-        CGFloat(userSettings.readerFontSize) * 0.85
+        CGFloat(userSettings.readerFontSize) * 0.92
     }
 
     /// Extract search terms from the query string for highlighting
@@ -3606,6 +3701,19 @@ struct LexiconSheetView: View {
                         Spacer()
                     }
                 } else if loader.cachedLexicons.count > 1 {
+                    // The lexicons to page between, named, as a segmented
+                    // control under the title: the entry then runs to the foot
+                    // of the sheet instead of ending at a band of tabs.
+                    Picker("Lexicon", selection: $currentPage.animation(.easeInOut(duration: 0.2))) {
+                        ForEach(Array(loader.cachedLexicons.enumerated()), id: \.offset) { index, key in
+                            Text(lexiconDisplayName(key)).tag(index)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 2)
+                    .padding(.bottom, 6)
+
                     // Swipeable pages for multiple lexicons
                     TabView(selection: $currentPage) {
                         ForEach(Array(loader.cachedLexicons.enumerated()), id: \.offset) { index, lexiconKey in
@@ -3621,7 +3729,8 @@ struct LexiconSheetView: View {
                                 // Disable search when restricted to a specific lexicon (e.g., from module search)
                                 onSearchStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openSearch : nil,
                                 onAnalyzeStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openAnalysis : nil,
-                                onNavigateToVerse: restrictToLexicon == nil ? handleNavigateToVerse : nil
+                                onNavigateToVerse: restrictToLexicon == nil ? handleNavigateToVerse : nil,
+                                showsLexiconName: false
                             )
                             .tag(index)
                         }
@@ -3639,21 +3748,6 @@ struct LexiconSheetView: View {
                         }
                     }
 
-                    // Pill page indicator
-                    HStack(spacing: 8) {
-                        ForEach(Array(loader.cachedLexicons.enumerated()), id: \.offset) { index, _ in
-                            Capsule()
-                                .fill(currentPage == index ? Color.primary : Color.secondary)
-                                .frame(width: currentPage == index ? 20 : 8, height: 8)
-                                .animation(.easeInOut(duration: 0.2), value: currentPage)
-                                .onTapGesture {
-                                    withAnimation {
-                                        currentPage = index
-                                    }
-                                }
-                        }
-                    }
-                    .padding(.vertical, 12)
                 } else {
                     // Single lexicon - no pagination needed
                     if let lexiconKey = loader.cachedLexicons.first {
@@ -3732,7 +3826,7 @@ struct LexiconPopoverContent: View {
 
     /// Base font size at 90% of user's reader font size
     private var scaledBaseFontSize: CGFloat {
-        CGFloat(userSettings.readerFontSize) * 0.85
+        CGFloat(userSettings.readerFontSize) * 0.92
     }
 
     // Scaled fonts

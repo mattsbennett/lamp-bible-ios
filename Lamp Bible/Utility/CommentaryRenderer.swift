@@ -80,6 +80,9 @@ struct CommentaryRenderer {
         var hebrewFont: Font = .body
         var scriptureColor: Color = .lampLink
         var strongsColor: Color = .lampOriginalLanguage
+        /// Strong's references set bold, as commentary marks them. A lexicon
+        /// entry, where they are the only links, sets them in the text's weight.
+        var boldStrongs: Bool = true
         var footnoteColor: Color = .secondary
         var abbreviationColor: Color = .orange
         var searchTerms: [String] = []  // Search terms to highlight
@@ -153,7 +156,7 @@ struct CommentaryRenderer {
 
             case .strongs:
                 result[range].foregroundColor = style.strongsColor
-                result[range].font = style.bodyFont.bold()
+                if style.boldStrongs { result[range].font = style.bodyFont.bold() }
                 if let strongsKey = annotation.data?.strongs ?? annotation.id {
                     let key = strongsKey.trimmingCharacters(in: .whitespacesAndNewlines)
                     result[range].link = URL(string: "lampbible://strongs/\(key)")
@@ -283,7 +286,7 @@ struct CommentaryRenderer {
 
                 case .strongs:
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor), range: range)
-                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
+                    if style.boldStrongs, let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
                     }
                     if let key = annotation.data?.strongs ?? annotation.id {
@@ -470,7 +473,7 @@ struct CommentaryRenderer {
 
                 case .strongs:
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor), range: range)
-                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
+                    if style.boldStrongs, let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
                     }
                     if let key = annotation.data?.strongs ?? annotation.id {
@@ -1122,6 +1125,21 @@ private struct AnnotatedUITextViewWithItemsRepresentable: UIViewRepresentable {
 
 // MARK: - Commentary Unit View
 
+/// A commentary unit's heading, marked as a heading for VoiceOver.
+struct CommentaryUnitTitle: View {
+    let unit: CommentaryUnit
+    let title: String
+    let font: Font
+    let baseSize: CGFloat
+
+    var body: some View {
+        Text(title)
+            .font(font)
+            .fontWeight(.semibold)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
 struct CommentaryUnitView: View {
     let unit: CommentaryUnit
     let abbreviations: [CommentaryAbbreviation]?
@@ -1163,9 +1181,8 @@ struct CommentaryUnitView: View {
         VStack(alignment: .leading, spacing: 12) {
             // Title (for sections/pericopae) or verse reference (for verses)
             if let title = unit.title, !title.isEmpty {
-                Text(title)
-                    .font(titleFont)
-                    .fontWeight(.semibold)
+                CommentaryUnitTitle(unit: unit, title: title, font: titleFont,
+                                    baseSize: style.uiBodyFont?.pointSize ?? 17)
             } else if unit.type == .verse, !hideVerseReference {
                 Text(verseReference)
                     .font(titleFont)
@@ -1188,10 +1205,11 @@ struct CommentaryUnitView: View {
 
             // Translation
             if let translation = unit.translation {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Translation")
-                        .font(.system(size: (style.uiBodyFont?.pointSize ?? 17) - 4))
-                        .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("TRANSLATION")
+                        .font(.system(size: max(11, (style.uiBodyFont?.pointSize ?? 17) - 5), weight: .semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(LampTheme.caption)
 
                     AnnotatedTextView(
                         translation,
@@ -1200,7 +1218,14 @@ struct CommentaryUnitView: View {
                         onStrongsTap: onStrongsTap,
                         onFootnoteTap: { id in handleFootnoteTap(id) }
                     )
-                    .italic()
+                    // Set off as a quotation: the commentator's own rendering,
+                    // apart from his discussion of it.
+                    .padding(.leading, 12)
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(LampTheme.rule)
+                            .frame(width: 3)
+                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -1223,11 +1248,13 @@ struct CommentaryUnitView: View {
 
     private var titleFont: Font {
         let baseSize = style.uiBodyFont?.pointSize ?? 17
+        // A close scale, so a pericope's title and the sections around it
+        // read as one outline rather than jumping between sizes.
         switch unit.type {
         case .section:
-            return unit.level == 1 ? .system(size: baseSize + 5, weight: .bold) : .system(size: baseSize + 3, weight: .bold)
+            return unit.level == 1 ? .system(size: baseSize + 3, weight: .bold) : .system(size: baseSize + 1.5, weight: .semibold)
         case .pericope:
-            return .system(size: baseSize, weight: .bold)
+            return .system(size: baseSize + 0.5, weight: .semibold)
         case .verse:
             return .system(size: baseSize - 2, weight: .semibold)
         }
@@ -1247,14 +1274,14 @@ struct CommentaryUnitView: View {
         return "v. \(startVerse)\(suffix)"
     }
 
+    /// The commentator's translation, set as scripture is in the reader:
+    /// upright serif in the text colour. Light italic sans was hard going for
+    /// more than a line or two.
     private var translationStyle: CommentaryRenderer.Style {
         var s = style
-        s.bodyFont = style.bodyFont.italic()
-        if let uiFont = s.uiBodyFont {
-             if let descriptor = uiFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
-                 s.uiBodyFont = UIFont(descriptor: descriptor, size: 0)
-             }
-        }
+        let size = style.uiBodyFont?.pointSize ?? 17
+        s.bodyFont = .system(size: size, design: .serif)
+        s.uiBodyFont = LampTheme.serif(size: size)
         return s
     }
 
@@ -1331,9 +1358,8 @@ struct CommentaryUnitViewWithItems: View {
         VStack(alignment: .leading, spacing: 12) {
             // Title (for sections/pericopae) or verse reference (for verses)
             if let title = unit.title, !title.isEmpty {
-                Text(title)
-                    .font(titleFont)
-                    .fontWeight(.semibold)
+                CommentaryUnitTitle(unit: unit, title: title, font: titleFont,
+                                    baseSize: style.uiBodyFont?.pointSize ?? 17)
             } else if unit.type == .verse, !hideVerseReference {
                 Text(verseReference)
                     .font(titleFont)
@@ -1359,10 +1385,11 @@ struct CommentaryUnitViewWithItems: View {
 
             // Translation
             if let translation = unit.translation {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Translation")
-                        .font(.system(size: (style.uiBodyFont?.pointSize ?? 17) - 4))
-                        .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("TRANSLATION")
+                        .font(.system(size: max(11, (style.uiBodyFont?.pointSize ?? 17) - 5), weight: .semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(LampTheme.caption)
 
                     AnnotatedTextViewWithItems(
                         translation,
@@ -1374,7 +1401,14 @@ struct CommentaryUnitViewWithItems: View {
                             reportAllItems()
                         }
                     )
-                    .italic()
+                    // Set off as a quotation: the commentator's own rendering,
+                    // apart from his discussion of it.
+                    .padding(.leading, 12)
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(LampTheme.rule)
+                            .frame(width: 3)
+                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -1399,11 +1433,13 @@ struct CommentaryUnitViewWithItems: View {
 
     private var titleFont: Font {
         let baseSize = style.uiBodyFont?.pointSize ?? 17
+        // A close scale, so a pericope's title and the sections around it
+        // read as one outline rather than jumping between sizes.
         switch unit.type {
         case .section:
-            return unit.level == 1 ? .system(size: baseSize + 5, weight: .bold) : .system(size: baseSize + 3, weight: .bold)
+            return unit.level == 1 ? .system(size: baseSize + 3, weight: .bold) : .system(size: baseSize + 1.5, weight: .semibold)
         case .pericope:
-            return .system(size: baseSize, weight: .bold)
+            return .system(size: baseSize + 0.5, weight: .semibold)
         case .verse:
             return .system(size: baseSize - 2, weight: .semibold)
         }
@@ -1422,14 +1458,14 @@ struct CommentaryUnitViewWithItems: View {
         return "v. \(startVerse)\(suffix)"
     }
 
+    /// The commentator's translation, set as scripture is in the reader:
+    /// upright serif in the text colour. Light italic sans was hard going for
+    /// more than a line or two.
     private var translationStyle: CommentaryRenderer.Style {
         var s = style
-        s.bodyFont = style.bodyFont.italic()
-        if let uiFont = s.uiBodyFont {
-            if let descriptor = uiFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
-                s.uiBodyFont = UIFont(descriptor: descriptor, size: 0)
-            }
-        }
+        let size = style.uiBodyFont?.pointSize ?? 17
+        s.bodyFont = .system(size: size, design: .serif)
+        s.uiBodyFont = LampTheme.serif(size: size)
         return s
     }
 
