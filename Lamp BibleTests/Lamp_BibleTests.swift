@@ -2199,19 +2199,32 @@ final class ToolbarCollapseTrackerTests: XCTestCase {
         XCTAssertEqual(scroll(to: 700), true)
     }
 
-    func testScrollingBackUpNeverRevealsTheToolbars() {
+    func testScrollingWellBackUpRevealsTheToolbars() {
         scroll(to: 700)
-        XCTAssertNil(scroll(to: 650))
-        XCTAssertNil(scroll(to: 300))
-        XCTAssertNil(scroll(to: 50))
+        XCTAssertNil(scroll(to: 650), "a small correction keeps them hidden")
+        XCTAssertEqual(scroll(to: 580), false, "a few lines up brings them back")
+        XCTAssertNil(scroll(to: 300), "already showing")
     }
 
-    func testReachingTheTopDoesNotRevealTheToolbars() {
+    func testANudgeDownWhileHiddenKeepsTheDistanceScrolledUp() {
         scroll(to: 700)
-        XCTAssertNil(scroll(to: 0))
+        XCTAssertNil(scroll(to: 640))  // 60 up
+        XCTAssertNil(scroll(to: 660))  // 20 back down, net 40
+        XCTAssertEqual(scroll(to: 590), false)  // 70 more up, net 110
     }
 
-    func testOnlyARevealFromOutsideBringsThemBack() {
+    func testReachingTheTopRevealsTheToolbars() {
+        scroll(to: 700)
+        XCTAssertEqual(scroll(to: 0), false)
+    }
+
+    func testProgrammaticScrollingUpNeverReveals() {
+        scroll(to: 700)
+        scrollView.isUnderHand = false
+        XCTAssertNil(scroll(to: 100))
+    }
+
+    func testARevealFromOutsideIsAdopted() {
         scroll(to: 700)
         // A tap on the collapsed header reports back through sync.
         tracker.sync(false)

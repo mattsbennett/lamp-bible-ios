@@ -277,12 +277,13 @@ extension View {
 
 // MARK: - Toolbar Collapse Tracking
 
-/// Collapses the headers when the reader scrolls down.
+/// Collapses the headers when the reader scrolls down, and brings them back
+/// when the reader scrolls a deliberate distance up or reaches the top; a tap
+/// on the collapsed header brings them back too.
 ///
-/// Scrolling only ever collapses. Bringing the toolbars back is a tap on the
-/// collapsed header and nothing else: revealing on any upward drag meant the
-/// small corrections a reader makes to find their place kept throwing the
-/// controls back over the text.
+/// Revealing takes a few lines' travel up, not the slightest drag: revealing
+/// on any upward drag meant the small corrections a reader makes to find
+/// their place kept throwing the controls back over the text.
 ///
 /// Shared by the reader and the tool panel so both panes collapse on the same
 /// gesture and by the same threshold — in split view they show one combined
@@ -290,9 +291,11 @@ extension View {
 final class ToolbarCollapseTracker {
     private var lastOffset: CGFloat = 0
     private var downwardTravel: CGFloat = 0
+    private var upwardTravel: CGFloat = 0
     private var isCollapsed = false
 
     private let collapseThreshold: CGFloat = 140
+    private let revealThreshold: CGFloat = 100
 
     /// Adopt a state decided elsewhere — the other pane, a tap on the collapsed
     /// header, leaving immersive mode — so the next scroll is measured against
@@ -301,13 +304,13 @@ final class ToolbarCollapseTracker {
         guard isCollapsed != collapsed else { return }
         isCollapsed = collapsed
         downwardTravel = 0
+        upwardTravel = 0
     }
 
-    /// `true` when the headers should collapse now, otherwise `nil`. Never
-    /// `false`: revealing is the collapsed header's job, not the scroll's.
+    /// The new collapse state when it should change, otherwise `nil`.
     ///
-    /// Travel is net downward distance since the headers last showed, so a
-    /// small nudge back up while reading only gives back what it moved rather
+    /// Travel is net distance in the direction that would change the bars,
+    /// so a small nudge the other way only gives back what it moved rather
     /// than wiping out everything scrolled so far.
     func update(scrollView: UIScrollView) -> Bool? {
         let offset = scrollView.contentOffset.y
@@ -317,31 +320,41 @@ final class ToolbarCollapseTracker {
         let delta = offset - lastOffset
         lastOffset = offset
 
-        // Once collapsed there is nothing more for scrolling to do.
-        guard !isCollapsed else { return nil }
-
-        // Nothing worth hiding for when the content already fits on screen.
-        guard scrollView.contentSize.height > viewport + collapseThreshold else { return nil }
-
-        // Overscroll at either end belongs to pull-to-navigate, not to the
-        // toolbars.
-        guard offset > -topInset + 1,
-              offset + viewport < scrollView.contentSize.height + bottomInset
-        else { return nil }
+        func change(to collapsed: Bool) -> Bool? {
+            guard isCollapsed != collapsed else { return nil }
+            isCollapsed = collapsed
+            downwardTravel = 0
+            upwardTravel = 0
+            return collapsed
+        }
 
         // Only the reader's own hand moves the bars. Programmatic scrolling — the
         // read-aloud follow, chapter jumps, cross-pane scroll sync — sets none of
         // these flags, and must not disturb them.
         guard scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else {
             downwardTravel = 0
+            upwardTravel = 0
             return nil
         }
 
+        // The top of the chapter always shows its controls.
+        if offset <= -topInset + 1 {
+            return change(to: false)
+        }
+
+        // Nothing worth hiding for when the content already fits on screen.
+        guard scrollView.contentSize.height > viewport + collapseThreshold else { return nil }
+
+        // Overscroll at the end belongs to pull-to-navigate, not to the
+        // toolbars.
+        guard offset + viewport < scrollView.contentSize.height + bottomInset else { return nil }
+
+        if isCollapsed {
+            upwardTravel = max(0, upwardTravel - delta)
+            return upwardTravel > revealThreshold ? change(to: false) : nil
+        }
         downwardTravel = max(0, downwardTravel + delta)
-        guard downwardTravel > collapseThreshold else { return nil }
-        isCollapsed = true
-        downwardTravel = 0
-        return true
+        return downwardTravel > collapseThreshold ? change(to: true) : nil
     }
 }
 
@@ -773,11 +786,6 @@ class UIKitVerseListController<ItemData, CellContent: View>: UIViewController, U
         // The panel's own ground, opaque: the bars over the list judge light
         // or dark from what is under them, and a clear list read as light.
         collectionView.backgroundColor = .lampPanelBackground
-        // The split view's scrim backs the bottom bar; the system blur over it
-        // only smudged the last readable line of a note or comment.
-        if #available(iOS 26.0, *) {
-            collectionView.bottomEdgeEffect.isHidden = true
-        }
         collectionView.delegate = self
         collectionView.contentInsetAdjustmentBehavior = .automatic
         applyTopInset(to: collectionView)
