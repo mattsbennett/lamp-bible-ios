@@ -2178,9 +2178,6 @@ struct LexiconEntryView: View {
     var hitCount: Int? = nil  // Number of occurrences in the translation
     var isCurrentPage: Bool = true
     var searchTerms: [String] = []  // Search terms to highlight
-    /// Off when the sheet's lexicon switcher already names the lexicon.
-    var showsLexiconName: Bool = true
-
     // Shared state for cross-segment navigation
     var baseOffset: Int = 0
     var sharedSheetState: Binding<LexiconSheetState?>? = nil
@@ -2240,11 +2237,8 @@ struct LexiconEntryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Which lexicon this is, as an overline above the word, unless the
-            // switcher above the entry already says.
-            if showsLexiconName {
-                LexiconSectionLabel(entry.lexiconName, size: baseFontSize * 0.76)
-            }
+            // Which lexicon this is, as an overline above the word.
+            LexiconSectionLabel(entry.lexiconName, size: baseFontSize * 0.76)
 
             // Header: the lemma (with a homograph's Roman numeral), and on
             // its baseline how it is said and what part of speech it is.
@@ -2964,9 +2958,6 @@ struct LexiconPageView: View {
     var onSearchStrongs: ((String) -> Void)? = nil
     var onAnalyzeStrongs: ((String) -> Void)? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
-    /// Off when the sheet's lexicon switcher already names the lexicon.
-    var showsLexiconName: Bool = true
-
     // Shared state for cross-segment navigation
     @State private var sheetState: LexiconSheetState? = nil
     @State private var allItems: [LexiconTappableItem] = []
@@ -3212,7 +3203,6 @@ struct LexiconPageView: View {
                     hitCount: strongsHitCounts[data.entry.strongsId],
                     isCurrentPage: true,  // Always true here since we only render when settled
                     searchTerms: searchTerms,
-                    showsLexiconName: showsLexiconName,
                     baseOffset: data.offset,
                     sharedSheetState: $sheetState,
                     sharedAllItems: $allItems,
@@ -3659,12 +3649,8 @@ struct LexiconSheetView: View {
             .filter { !$0.isEmpty && $0.count >= 2 }
     }
 
-    /// Display name for a lexicon key: its entries' own, which for an
-    /// installed dictionary is the module's name, not its "user-…" key.
+    /// Display name for a lexicon key
     private func lexiconDisplayName(_ key: String) -> String {
-        if let name = loader.cachedParsedData[key]?.first?.entry.lexiconName, !name.isEmpty {
-            return name
-        }
         switch key {
         case "strongs":
             let isHebrew = strongs.first?.hasPrefix("H") ?? false
@@ -3672,47 +3658,6 @@ struct LexiconSheetView: View {
         case "bdb": return "Brown-Driver-Briggs"
         case "dodson": return "Dodson"
         default: return key
-        }
-    }
-
-    private var lexiconSwitcher: some View {
-        let lexicons = loader.cachedLexicons
-        let current = lexicons.indices.contains(currentPage) ? lexicons[currentPage] : lexicons.first ?? ""
-        return HStack(spacing: 12) {
-            Menu {
-                Picker("Lexicon", selection: $currentPage.animation(.easeInOut(duration: 0.2))) {
-                    ForEach(Array(lexicons.enumerated()), id: \.offset) { index, key in
-                        Text(lexiconDisplayName(key)).tag(index)
-                    }
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    // "Complete Word Study Dictionary: Old Testament" fits
-                    // a phone's width a little smaller.
-                    Text(lexiconDisplayName(current))
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(LampTheme.tileFill, in: Capsule())
-                .contentShape(Capsule())
-            }
-            .accessibilityLabel("Lexicon")
-            .accessibilityValue(lexiconDisplayName(current))
-
-            Spacer(minLength: 0)
-
-            Text("\(currentPage + 1) of \(lexicons.count)")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .accessibilityHidden(true)
         }
     }
 
@@ -3746,15 +3691,8 @@ struct LexiconSheetView: View {
                         Spacer()
                     }
                 } else if loader.cachedLexicons.count > 1 {
-                    // The lexicon shown, named in full, and a menu of the
-                    // others under the title; swiping pages between them too.
-                    // A segmented bar of every name cut each one short.
-                    lexiconSwitcher
-                        .padding(.horizontal, 20)
-                        .padding(.top, 2)
-                        .padding(.bottom, 6)
-
-                    // Swipeable pages for multiple lexicons
+                    // Swipeable pages for multiple lexicons, each named at its
+                    // top, with a pill for each below
                     TabView(selection: $currentPage) {
                         ForEach(Array(loader.cachedLexicons.enumerated()), id: \.offset) { index, lexiconKey in
                             LexiconPageView(
@@ -3769,8 +3707,7 @@ struct LexiconSheetView: View {
                                 // Disable search when restricted to a specific lexicon (e.g., from module search)
                                 onSearchStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openSearch : nil,
                                 onAnalyzeStrongs: (!translationId.isEmpty && restrictToLexicon == nil) ? openAnalysis : nil,
-                                onNavigateToVerse: restrictToLexicon == nil ? handleNavigateToVerse : nil,
-                                showsLexiconName: false
+                                onNavigateToVerse: restrictToLexicon == nil ? handleNavigateToVerse : nil
                             )
                             .tag(index)
                         }
@@ -3788,6 +3725,21 @@ struct LexiconSheetView: View {
                         }
                     }
 
+                    // Pill page indicator
+                    HStack(spacing: 8) {
+                        ForEach(Array(loader.cachedLexicons.enumerated()), id: \.offset) { index, _ in
+                            Capsule()
+                                .fill(currentPage == index ? Color.primary : Color.secondary)
+                                .frame(width: currentPage == index ? 20 : 8, height: 8)
+                                .animation(.easeInOut(duration: 0.2), value: currentPage)
+                                .onTapGesture {
+                                    withAnimation {
+                                        currentPage = index
+                                    }
+                                }
+                        }
+                    }
+                    .padding(.vertical, 12)
                 } else {
                     // Single lexicon - no pagination needed
                     if let lexiconKey = loader.cachedLexicons.first {
