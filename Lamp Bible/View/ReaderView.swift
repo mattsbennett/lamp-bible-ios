@@ -217,30 +217,17 @@ struct ChapterNavigationButton: View {
         }
     }
 
-    /// At rest the button says where it goes: a chevron and the chapter's
-    /// name, rather than a pale arrow that read as decoration.
-    private var isAtRest: Bool { progress <= 0 }
-
+    /// The arrow alone at rest, as the pull draws it, and the destination
+    /// named once the pull reaches it. A resting "⌃ 2 Chronicles 35" gave
+    /// way to the arrow as the pull began and came back at its end, which
+    /// read as the control changing its mind.
     var body: some View {
         Button(action: action) {
-            if isAtRest, let label {
-                HStack(spacing: 6) {
-                    Image(systemName: direction == .previous ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text(label)
-                        .font(.footnote.weight(.medium))
-                }
-                .foregroundStyle(LampTheme.caption)
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .contentShape(Capsule())
-            } else {
-                pullIndicator
-            }
+            pullIndicator
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
-        .frame(height: 36)
+        .frame(height: 44)
         .accessibilityLabel(label.map { direction == .previous ? "Previous: \($0)" : "Next: \($0)" } ?? (direction == .previous ? "Previous" : "Next"))
     }
 
