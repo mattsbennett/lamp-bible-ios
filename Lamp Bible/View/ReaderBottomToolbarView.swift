@@ -682,28 +682,10 @@ struct ReaderBottomToolbarView: ToolbarContent {
     /// distributes it.
     @ToolbarContentBuilder
     private var freeNavigationContent: some ToolbarContent {
-        if #available(iOS 26.0, *) {
-            // The bar draws its own opaque capsule rather than sharing the
-            // toolbar's glass: glass refracts the verses scrolling beneath it,
-            // and the text showed through the field, mirrored and garbled.
-            ToolbarItem(placement: .bottomBar) {
-                barContent
-                    .padding(.horizontal, 6)
-                    .frame(height: 44)
-                    .background {
-                        Capsule()
-                            .fill(LampTheme.chromeFill)
-                            .shadow(color: .black.opacity(0.06), radius: 5, y: 2)
-                    }
-                    .overlay {
-                        Capsule().strokeBorder(LampTheme.hairline, lineWidth: 1)
-                    }
-            }
-            .sharedBackgroundVisibility(.hidden)
-        } else {
-            ToolbarItem(placement: .bottomBar) {
-                barContent
-            }
+        // The toolbar's own glass, over the verses: an opaque capsule of the
+        // bar's own read as a slab across the page.
+        ToolbarItem(placement: .bottomBar) {
+            barContent
         }
     }
 
