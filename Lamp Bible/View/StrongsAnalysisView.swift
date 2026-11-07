@@ -971,8 +971,11 @@ private struct StrongsCanonStrip: View {
         VStack(alignment: .leading, spacing: 6) {
             GeometryReader { proxy in
                 let column = columnWidth(in: proxy.size.width)
+                let standoutCentre = standout.map { (column + spacing) * CGFloat($0.index) + column / 2 }
                 ZStack(alignment: .topLeading) {
-                    // The scale: a dotted line at the tallest column, with its count.
+                    // The scale: a dotted line at the tallest column, with its
+                    // count at the end away from the standout book's name, which
+                    // shares its height when that book's column is the tallest.
                     Path { path in
                         path.move(to: CGPoint(x: 0, y: Self.labelBand))
                         path.addLine(to: CGPoint(x: proxy.size.width, y: Self.labelBand))
@@ -982,6 +985,10 @@ private struct StrongsCanonStrip: View {
                         .font(.caption2.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(LampTheme.caption)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: (standoutCentre ?? .infinity) < proxy.size.width / 2 ? .trailing : .leading
+                        )
                     // The baseline the columns stand on.
                     Rectangle()
                         .fill(LampTheme.caption.opacity(0.5))
@@ -1019,8 +1026,7 @@ private struct StrongsCanonStrip: View {
                     .frame(height: 9)
                     .offset(y: Self.labelBand + Self.chartHeight + 4)
 
-                    if let standout {
-                        let centre = (column + spacing) * CGFloat(standout.index) + column / 2
+                    if let standout, let centre = standoutCentre {
                         let barTop = Self.labelBand + Self.chartHeight
                             - max(4, Self.chartHeight * CGFloat(standout.book.occurrenceCount) / CGFloat(most))
                         Text(standout.book.name)
