@@ -2820,9 +2820,6 @@ struct ReaderView: View {
                     // A firm edge under the header: with the soft one, the
                     // chapter's title showed ghosted through the controls.
                     .lampHardTopEdge()
-                    // The page's own scrim sits under the bottom bar; the system's
-                    // blur on top of it only smudged the last readable line.
-                    .lampHiddenBottomEdgeEffect()
                     .task(id: scrollContainerId) {
                         isProgrammaticScroll = true
                         scrollDebouncer.cancel()

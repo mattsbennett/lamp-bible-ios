@@ -170,19 +170,6 @@ extension View {
     }
 }
 
-extension View {
-    /// No system blur at the bottom edge, where the page draws its own scrim
-    /// behind the bottom bar.
-    @ViewBuilder
-    func lampHiddenBottomEdgeEffect() -> some View {
-        if #available(iOS 26.0, *) {
-            scrollEdgeEffectHidden(true, for: .bottom)
-        } else {
-            self
-        }
-    }
-}
-
 // MARK: - UIKit colours
 
 extension UIColor {

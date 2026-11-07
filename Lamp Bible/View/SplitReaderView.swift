@@ -153,16 +153,6 @@ struct SplitReaderView: View {
                 readerContent
             }
         }
-        // The page fades to its own colour under the bottom bar, so no text
-        // sits behind the bar's controls. The bar draws its items lightened
-        // over what is beneath it, and in dark appearance verses read through
-        // even an opaque search field.
-        .overlay(alignment: .bottom) {
-            if !(toolbarsHidden || toolbarsCollapsed) {
-                BottomBarScrim(color: notesPanelVisible && effectiveOrientation != "right"
-                               ? LampTheme.panelBackground : LampTheme.readerBackground)
-            }
-        }
         // Ensure content/background extends behind any bottom toolbar so we don't
         // see the underlying window's black background.
         .background(LampTheme.readerBackground)
@@ -761,26 +751,4 @@ struct SplitDragOverlay: View {
     }
 
     return PreviewWrapper()
-}
-
-/// The page's own colour rising behind the bottom bar: solid where the bar's
-/// controls sit, fading out just above them.
-private struct BottomBarScrim: View {
-    let color: Color
-
-    /// The bar's capsule and the home indicator under it.
-    /// The bar's capsule, the home indicator, and a clear margin above the
-    /// capsule, so the page ends at a line of its own rather than a faded one.
-    private let solidHeight: CGFloat = 86
-    private let fadeHeight: CGFloat = 6
-
-    var body: some View {
-        VStack(spacing: 0) {
-            LinearGradient(colors: [color.opacity(0), color], startPoint: .top, endPoint: .bottom)
-                .frame(height: fadeHeight)
-            color.frame(height: solidHeight)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
 }
