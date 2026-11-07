@@ -714,8 +714,22 @@ struct ModuleManagerView: View {
         filteredModules.filter { $0.type == .translation }
     }
 
+    /// My Writing and My Notes, the reader's own, ahead of everything
+    /// installed, as the Mac's library shelves them.
+    private var filteredPersonalModules: [DisplayModule] {
+        filteredModules.filter(\.isDefaultCollection)
+            .sorted { ($0.type == .devotional ? 0 : 1) < ($1.type == .devotional ? 0 : 1) }
+    }
+
+    /// The installed modules of one kind, the reader's own aside.
+    private func filteredModules(ofType type: ModuleType) -> [DisplayModule] {
+        filteredModules.filter { $0.type == type && !$0.isDefaultCollection }
+    }
+
+    /// Anything no section above takes.
     private var filteredOtherModules: [DisplayModule] {
-        filteredModules.filter { $0.type != .dictionary && $0.type != .translation && $0.type != .highlights }
+        let shelved: Set<ModuleType> = [.translation, .dictionary, .highlights, .book, .devotional, .notes]
+        return filteredModules.filter { !shelved.contains($0.type) && !$0.isDefaultCollection }
     }
 
     private var filteredHighlights: [HighlightSetDisplay] {
@@ -734,6 +748,11 @@ struct ModuleManagerView: View {
     }
 
     private var filteredPlans: [(plan: Plan, isBundled: Bool)] {
+        // Only show when type is nil (all) or plan
+        guard selectedType == nil || selectedType == .plan else {
+            return []
+        }
+
         switch selectedSource {
         case .bundled:
             return bundledPlans.map { ($0, true) }
@@ -762,16 +781,33 @@ struct ModuleManagerView: View {
 
     @ViewBuilder
     private var modulesList: some View {
+        // In the Mac library's order: the reader's own first, then each kind
+        // installed in a section of its own.
         List {
-            // Translations section
-            if !filteredTranslations.isEmpty {
-                Section(header: Text("Translations").lampSectionHeader()) {
-                    ForEach(Array(filteredTranslations.enumerated()), id: \.element.id) { index, displayModule in
+            // Personal: My Writing, My Notes and the highlights made here
+            if !filteredPersonalModules.isEmpty || !filteredHighlights.isEmpty {
+                Section(header: Text("Personal").lampSectionHeader()) {
+                    ForEach(Array(filteredPersonalModules.enumerated()), id: \.element.id) { index, displayModule in
+                        let isLast = filteredHighlights.isEmpty && index == filteredPersonalModules.count - 1
                         moduleRow(for: displayModule)
-                            .listRowSeparator(index == filteredTranslations.count - 1 ? .hidden : .visible, edges: .bottom)
+                            .listRowSeparator(isLast ? .hidden : .visible, edges: .bottom)
+                    }
+                    ForEach(Array(filteredHighlights.enumerated()), id: \.element.id) { index, highlightSet in
+                        HighlightSetModuleRow(
+                            highlightSet: highlightSet,
+                            onEdit: {
+                                moduleToEdit = highlightSet.module
+                            },
+                            onDelete: {
+                                Task { await deleteHighlightSet(highlightSet) }
+                            }
+                        )
+                        .listRowSeparator(index == filteredHighlights.count - 1 ? .hidden : .visible, edges: .bottom)
                     }
                 }
             }
+
+            moduleSection("Translations", filteredTranslations)
 
             // Dictionaries section: series groups + individual dictionaries
             let hasDictionaries = !filteredDictionarySeries.isEmpty || !filteredDictionaries.isEmpty
@@ -810,36 +846,10 @@ struct ModuleManagerView: View {
                 }
             }
 
-            // Highlights section
-            if !filteredHighlights.isEmpty {
-                Section(header: Text("Highlights").lampSectionHeader()) {
-                    ForEach(Array(filteredHighlights.enumerated()), id: \.element.id) { index, highlightSet in
-                        HighlightSetModuleRow(
-                            highlightSet: highlightSet,
-                            onEdit: {
-                                moduleToEdit = highlightSet.module
-                            },
-                            onDelete: {
-                                Task { await deleteHighlightSet(highlightSet) }
-                            }
-                        )
-                        .listRowSeparator(index == filteredHighlights.count - 1 ? .hidden : .visible, edges: .bottom)
-                    }
-                }
-            }
-
-            // Other modules (notes, devotionals, etc.)
-            if !filteredOtherModules.isEmpty {
-                Section(header: Text("Other").lampSectionHeader()) {
-                    ForEach(Array(filteredOtherModules.enumerated()), id: \.element.id) { index, displayModule in
-                        moduleRow(for: displayModule)
-                            .listRowSeparator(index == filteredOtherModules.count - 1 ? .hidden : .visible, edges: .bottom)
-                    }
-                }
-            }
+            moduleSection("Books", filteredModules(ofType: .book))
 
             // Reading Plans section
-            if !filteredPlans.isEmpty && selectedType == nil {
+            if !filteredPlans.isEmpty {
                 Section(header: Text("Reading Plans").lampSectionHeader()) {
                     ForEach(Array(filteredPlans.enumerated()), id: \.element.plan.id) { index, item in
                         PlanRow(plan: item.plan, isBundled: item.isBundled, onDelete: item.isBundled ? nil : {
@@ -849,6 +859,8 @@ struct ModuleManagerView: View {
                     }
                 }
             }
+
+            moduleSection("Writing", filteredModules(ofType: .devotional))
 
             // Quizzes section
             if !filteredQuizzes.isEmpty {
@@ -863,6 +875,9 @@ struct ModuleManagerView: View {
                     }
                 }
             }
+
+            moduleSection("Notes", filteredModules(ofType: .notes))
+            moduleSection("Other", filteredOtherModules)
         }
         .listStyle(.plain)
         .contentMargins(.top, 0, for: .scrollContent)
@@ -888,6 +903,18 @@ struct ModuleManagerView: View {
         .sheet(item: $moduleToEdit) { module in
             ModuleEditSheet(module: module) { updatedModule in
                 Task { await saveModuleMetadata(updatedModule) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func moduleSection(_ title: String, _ modules: [DisplayModule]) -> some View {
+        if !modules.isEmpty {
+            Section(header: Text(title).lampSectionHeader()) {
+                ForEach(Array(modules.enumerated()), id: \.element.id) { index, displayModule in
+                    moduleRow(for: displayModule)
+                        .listRowSeparator(index == modules.count - 1 ? .hidden : .visible, edges: .bottom)
+                }
             }
         }
     }
