@@ -339,13 +339,40 @@ struct ReaderNavigationToolbarView: View {
             menuCaption("Highlights")
             highlightsSectionContent
 
+            // Showing the tools and hiding the toolbars on the first page,
+            // one tap away: behind View Options they were hard to find.
             VStack(spacing: 0) {
+                if onHideToolbars != nil || !isHorizontalSplit {
+                    chromeTiles
+                        .padding(8)
+                    Divider().padding(.horizontal, 14)
+                }
                 menuRow("View Options", systemImage: "textformat.size", showsChevron: true) {
                     showingViewOptions = true
                 }
             }
             .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
             .padding(.top, 6)
+        }
+    }
+
+    private var chromeTiles: some View {
+        HStack(spacing: 8) {
+            if let hideToolbars = onHideToolbars {
+                menuTile("Hide Toolbars", systemImage: "eye.slash") {
+                    showingOptionsMenu = false
+                    hideToolbars()
+                }
+            }
+            if !isHorizontalSplit {
+                // Show/Hide Tools only when not in horizontal split (tool panel has its own controls then)
+                menuTile(
+                    notesPanelVisible ? "Hide Tools" : "Show Tools",
+                    systemImage: notesPanelVisible ? "rectangle.portrait" : "inset.filled.bottomhalf.rectangle.portrait"
+                ) {
+                    notesPanelVisible.toggle()
+                }
+            }
         }
     }
 
@@ -366,30 +393,9 @@ struct ReaderNavigationToolbarView: View {
             }
             .buttonStyle(.plain)
 
-            // The reader itself: its chrome and how scripture is set.
+            // How scripture is set.
             menuCaption("View")
             VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    if let hideToolbars = onHideToolbars {
-                        menuTile("Hide Toolbars", systemImage: "eye.slash") {
-                            showingOptionsMenu = false
-                            hideToolbars()
-                        }
-                    }
-                    if !isHorizontalSplit {
-                        // Show/Hide Tools only when not in horizontal split (tool panel has its own controls then)
-                        menuTile(
-                            notesPanelVisible ? "Hide Tools" : "Show Tools",
-                            systemImage: notesPanelVisible ? "rectangle.portrait" : "inset.filled.bottomhalf.rectangle.portrait"
-                        ) {
-                            notesPanelVisible.toggle()
-                        }
-                    }
-                }
-                .padding(8)
-
-                Divider().padding(.horizontal, 14)
-
                 HStack(spacing: 10) {
                     Picker("Typeface", selection: $readerTypeface) {
                         Text("Serif").tag(LampProseTypeface.serif.rawValue)
