@@ -293,7 +293,7 @@ struct PlanPickerView: View {
             let year = Calendar.iso8601.component(.year, from: date)
             let total = ((try? ReadingPlanLibrary.planDay(planId: plan.id, day: dayNum)) ?? nil)?.readings.count ?? 0
             let read = (0..<total).filter { completedReadingIds.contains("\(plan.id)_\(dayNum)_\($0)_\(year)") }.count
-            return PlanWeekStrip.Day(date: date, read: read, total: total, isToday: date == today)
+            return PlanWeekStrip.Day(date: date, read: read, total: total, isToday: date == today, isAhead: date > today)
         }
     }
 
@@ -338,14 +338,17 @@ struct PlanPickerView: View {
 
 // MARK: - Week Strip
 
-/// This week's days for a followed plan: each a tile with its date, ticked
-/// when every reading is read, part-filled when some are, today outlined.
+/// This week's days for a followed plan: each a circle under its weekday,
+/// ticked when every reading is read, part-ringed when some are, today
+/// outlined, the days still to come faint. No date in the circle: beside a
+/// row of ticks, a lone "8" read as a count rather than the 8th.
 struct PlanWeekStrip: View {
     struct Day: Identifiable {
         let date: Date
         let read: Int
         let total: Int
         let isToday: Bool
+        let isAhead: Bool
         var id: Date { date }
         var isComplete: Bool { total > 0 && read >= total }
     }
@@ -375,14 +378,10 @@ struct PlanWeekStrip: View {
                             Image(systemName: "checkmark")
                                 .font(.caption.weight(.bold))
                                 .foregroundStyle(.white)
-                        } else {
-                            Text(day.date.formatted(.dateTime.day()))
-                                .font(.footnote.weight(day.isToday || day.read > 0 ? .bold : .medium))
-                                .monospacedDigit()
-                                .foregroundStyle(day.read > 0 ? Color.accentColor : day.isToday ? Color.primary : Color.primary.opacity(0.8))
                         }
                     }
                     .frame(width: 34, height: 34)
+                    .opacity(day.isAhead ? 0.45 : 1)
                     .overlay {
                         if day.isToday && !day.isComplete {
                             Circle().strokeBorder(Color.primary.opacity(0.55), lineWidth: 1.5)
