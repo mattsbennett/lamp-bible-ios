@@ -202,9 +202,12 @@ struct PlanPickerView: View {
                 .tint(.secondary)
                 .foregroundStyle(.primary)
         } else {
+            // White said outright: in a list the icon takes the tint, and
+            // drew the plus red on red.
             button
                 .buttonStyle(.borderedProminent)
                 .tint(.accentColor)
+                .foregroundStyle(.white)
         }
     }
 

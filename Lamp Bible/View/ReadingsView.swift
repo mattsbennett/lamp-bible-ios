@@ -345,15 +345,6 @@ struct ReadingsView: View {
                     .contentShape(Rectangle())
                 }
 
-                // What the count is, and the readers it's shared among.
-                ReaderSplitControl(
-                    chapterVerseCounts: reading.chapterVerseCounts,
-                    isResolved: reading.isResolved,
-                    readerCount: $readerCount,
-                    style: .chip
-                )
-                .fixedSize()
-
                 if let glyph = openerGlyph {
                     // The same way in as the name, so the whole row's end
                     // answers a tap; once is enough for VoiceOver.
@@ -368,25 +359,50 @@ struct ReadingsView: View {
                 }
             }
 
-            // The way out to the other app, named so it's plain where it
-            // goes, beside the in-app Bible's way in: the reading itself.
-            if let app = externalApp {
-                Button {
-                    openExternally(reading, in: app)
-                } label: {
-                    // The arrow says it opens another app; each card
-                    // repeating "Open in" said it louder than it needed.
-                    Label(app.name, systemImage: "arrow.up.forward.app")
-                        .font(.footnote.weight(.medium))
+            // Below the name rather than beside it, which left "2 Chronicles
+            // 36" too narrow a column to keep to one line; side by side
+            // where they fit, else one above the other.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    readingActions(reading)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .buttonBorderShape(.capsule)
-                .padding(.leading, 54)
-                .accessibilityLabel("Open \(reading.description) in \(app.name)")
+                VStack(alignment: .leading, spacing: 8) {
+                    readingActions(reading)
+                }
             }
+            .padding(.leading, 54)
         }
         .padding(EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 14))
+    }
+
+    @ViewBuilder
+    private func readingActions(_ reading: ReadingMetaData) -> some View {
+        // What the count is, and the readers it's shared among.
+        ReaderSplitControl(
+            chapterVerseCounts: reading.chapterVerseCounts,
+            isResolved: reading.isResolved,
+            readerCount: $readerCount,
+            style: .chip
+        )
+        .fixedSize()
+
+        // The way out to the other app, named so it's plain where it
+        // goes, beside the in-app Bible's way in: the reading itself.
+        if let app = externalApp {
+            Button {
+                openExternally(reading, in: app)
+            } label: {
+                // The arrow says it opens another app; each card
+                // repeating "Open in" said it louder than it needed.
+                Label(app.name, systemImage: "arrow.up.forward.app")
+                    .font(.footnote.weight(.medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .buttonBorderShape(.capsule)
+            .fixedSize()
+            .accessibilityLabel("Open \(reading.description) in \(app.name)")
+        }
     }
 
     private func details(_ reading: ReadingMetaData) -> String {

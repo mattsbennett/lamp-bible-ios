@@ -988,9 +988,8 @@ struct DevotionalView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        // One row of controls at the top and nothing over the text: the
-        // writing's own actions, a menu of the rest, and the way into or out
-        // of editing.
+        // The writing's own actions at the top; the way between reading,
+        // presenting and editing at the bottom, on its own.
         ToolbarItemGroup(placement: .topBarTrailing) {
             // Font size (read mode only)
             if mode == .read {
@@ -1048,54 +1047,60 @@ struct DevotionalView: View {
                 Image(systemName: "square.and.arrow.up")
             }
             .accessibilityLabel("Share")
-
-            // The other views and editors
-            Menu {
-                Button(action: { withAnimation { mode = .present } }) {
-                    Label("Present", systemImage: "rectangle.expand.vertical")
-                }
-                Button(action: { withAnimation { mode = .read } }) {
-                    Label("Read", systemImage: "book")
-                }
-                Divider()
-                Button(action: { switchToMarkdownEdit() }) {
-                    Label("Markdown Edit", systemImage: "chevron.left.forwardslash.chevron.right")
-                }
-                Button(action: { switchToVisualEdit() }) {
-                    Label("Visual Edit", systemImage: "pencil")
-                }
-                Divider()
-                Button(action: { showingMetadataEditor = true }) {
-                    Label("Edit Metadata", systemImage: "info")
-                }
-                if mode == .edit && syncIsOff {
-                    Divider()
-                    Section("Sync is off. This writing is saved on this device.") {}
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .accessibilityLabel("More")
         }
 
-        // Into editing from reading; out of it when done.
-        ToolbarItem(placement: .topBarTrailing) {
-            switch mode {
-            case .read:
-                Button(action: switchToVisualEdit) {
-                    Image(systemName: "pencil")
-                }
-                .accessibilityLabel("Edit")
-            case .edit:
-                // Worded: a bare check left what it finished unsaid.
-                Button(action: { withAnimation { mode = .read } }) {
-                    Text("Done")
-                        .fontWeight(.semibold)
-                }
-                .modifier(ProminentToolbarButton())
-            case .present:
-                EmptyView()
+        // Bottom toolbar with single mode button (hidden in present mode)
+        if mode != .present {
+            ToolbarItem(placement: .bottomBar) {
+                Spacer()
             }
+            ToolbarItem(placement: .bottomBar) {
+                Menu {
+                    Button(action: { withAnimation { mode = .present } }) {
+                        Label("Present", systemImage: "rectangle.expand.vertical")
+                    }
+                    Button(action: { withAnimation { mode = .read } }) {
+                        Label("Read", systemImage: "book")
+                    }
+                    Divider()
+                    Button(action: { switchToMarkdownEdit() }) {
+                        Label("Markdown Edit", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    Button(action: { switchToVisualEdit() }) {
+                        Label("Visual Edit", systemImage: "pencil")
+                    }
+                    Divider()
+                    Button(action: { showingMetadataEditor = true }) {
+                        Label("Edit Metadata", systemImage: "info")
+                    }
+                    if mode == .edit && syncIsOff {
+                        Divider()
+                        Section("Sync is off. This writing is saved on this device.") {}
+                    }
+                } label: {
+                    Image(systemName: modeIcon)
+                        .font(.body.weight(.semibold))
+                }
+                .accessibilityLabel("Mode: \(modeLabel)")
+            }
+        }
+    }
+
+    /// The current mode's own icon, as its item in the mode menu shows it.
+    private var modeIcon: String {
+        switch mode {
+        case .present: return "rectangle.expand.vertical"
+        case .read: return "book"
+        case .edit:
+            return editMode == .visual ? "pencil" : "chevron.left.forwardslash.chevron.right"
+        }
+    }
+
+    private var modeLabel: String {
+        switch mode {
+        case .present: return "Present"
+        case .read: return "Read"
+        case .edit: return editMode == .visual ? "Visual Edit" : "Markdown Edit"
         }
     }
 
@@ -2542,18 +2547,6 @@ private extension View {
             glassEffect(.regular, in: Capsule())
         } else {
             background(Color(.secondarySystemBackground), in: Capsule())
-        }
-    }
-}
-
-/// The toolbar's confirming action in the accent, where the OS draws one
-/// (iOS 26's prominent glass); a plain tinted button before.
-private struct ProminentToolbarButton: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.buttonStyle(.glassProminent)
-        } else {
-            content.tint(.accentColor)
         }
     }
 }
