@@ -3659,8 +3659,12 @@ struct LexiconSheetView: View {
             .filter { !$0.isEmpty && $0.count >= 2 }
     }
 
-    /// Display name for a lexicon key
+    /// Display name for a lexicon key: its entries' own, which for an
+    /// installed dictionary is the module's name, not its "user-…" key.
     private func lexiconDisplayName(_ key: String) -> String {
+        if let name = loader.cachedParsedData[key]?.first?.entry.lexiconName, !name.isEmpty {
+            return name
+        }
         switch key {
         case "strongs":
             let isHebrew = strongs.first?.hasPrefix("H") ?? false
@@ -3668,6 +3672,47 @@ struct LexiconSheetView: View {
         case "bdb": return "Brown-Driver-Briggs"
         case "dodson": return "Dodson"
         default: return key
+        }
+    }
+
+    private var lexiconSwitcher: some View {
+        let lexicons = loader.cachedLexicons
+        let current = lexicons.indices.contains(currentPage) ? lexicons[currentPage] : lexicons.first ?? ""
+        return HStack(spacing: 12) {
+            Menu {
+                Picker("Lexicon", selection: $currentPage.animation(.easeInOut(duration: 0.2))) {
+                    ForEach(Array(lexicons.enumerated()), id: \.offset) { index, key in
+                        Text(lexiconDisplayName(key)).tag(index)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    // "Complete Word Study Dictionary: Old Testament" fits
+                    // a phone's width a little smaller.
+                    Text(lexiconDisplayName(current))
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(LampTheme.tileFill, in: Capsule())
+                .contentShape(Capsule())
+            }
+            .accessibilityLabel("Lexicon")
+            .accessibilityValue(lexiconDisplayName(current))
+
+            Spacer(minLength: 0)
+
+            Text("\(currentPage + 1) of \(lexicons.count)")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .accessibilityHidden(true)
         }
     }
 
@@ -3701,18 +3746,13 @@ struct LexiconSheetView: View {
                         Spacer()
                     }
                 } else if loader.cachedLexicons.count > 1 {
-                    // The lexicons to page between, named, as a segmented
-                    // control under the title: the entry then runs to the foot
-                    // of the sheet instead of ending at a band of tabs.
-                    Picker("Lexicon", selection: $currentPage.animation(.easeInOut(duration: 0.2))) {
-                        ForEach(Array(loader.cachedLexicons.enumerated()), id: \.offset) { index, key in
-                            Text(lexiconDisplayName(key)).tag(index)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 2)
-                    .padding(.bottom, 6)
+                    // The lexicon shown, named in full, and a menu of the
+                    // others under the title; swiping pages between them too.
+                    // A segmented bar of every name cut each one short.
+                    lexiconSwitcher
+                        .padding(.horizontal, 20)
+                        .padding(.top, 2)
+                        .padding(.bottom, 6)
 
                     // Swipeable pages for multiple lexicons
                     TabView(selection: $currentPage) {
