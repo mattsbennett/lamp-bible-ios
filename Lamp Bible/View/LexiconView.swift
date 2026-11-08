@@ -1667,7 +1667,8 @@ private struct LinkedTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> TappableTextView {
         let textView = TappableTextView()
         textView.isEditable = false
-        textView.isSelectable = false
+        // Selectable, so a word can be looked up, copied or shared.
+        textView.isSelectable = true
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
@@ -1851,9 +1852,23 @@ private struct LinkedTextView: UIViewRepresentable {
     }
 }
 
+/// Lets a tap on a link through beside the text view's own selection
+/// gestures, but only once a long press has failed: pressing to select a word
+/// doesn't also open the link under it.
+private final class LinkTapGestureDelegate: NSObject, UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        !(otherGestureRecognizer is UILongPressGestureRecognizer)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        otherGestureRecognizer is UILongPressGestureRecognizer
+    }
+}
+
 /// Custom UITextView subclass using TextKit 1 with tap handling
 private class TappableTextView: UITextView {
     var onTappableIndexTap: ((Int) -> Void)?
+    private let linkTapDelegate = LinkTapGestureDelegate()
 
     // Use TextKit 1
     private let textKit1LayoutManager = NSLayoutManager()
@@ -1870,6 +1885,7 @@ private class TappableTextView: UITextView {
         super.init(frame: frame, textContainer: textKit1TextContainer)
 
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tapGesture.delegate = linkTapDelegate
         addGestureRecognizer(tapGesture)
     }
 
@@ -1929,7 +1945,8 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> TappableTextView {
         let textView = TappableTextView()
         textView.isEditable = false
-        textView.isSelectable = false
+        // Selectable, so a word can be looked up, copied or shared.
+        textView.isSelectable = true
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
@@ -2272,6 +2289,7 @@ struct LexiconEntryView: View {
                     Text("\(said)\(dot)\(part)")
                         .font(subheadlineFont)
                         .lineLimit(2)
+                        .textSelection(.enabled)
                 }
             }
 
@@ -2339,6 +2357,7 @@ struct LexiconEntryView: View {
                 Text(pron)
                     .font(captionFont)
                     .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
             }
 
             // Gloss (short meaning) - show if no senses and no top-level definition
