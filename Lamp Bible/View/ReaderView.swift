@@ -4134,9 +4134,10 @@ struct QuizSheetView: View {
     @AppStorage("quizContextAmount") private var contextAmount: SearchContextAmount = .oneVerse
     @AppStorage("quizAlwaysShowAnswers") private var alwaysShowAnswers: Bool = false
     @State private var detent: PresentationDetent = .large
-    /// The verse the question cites, set out under it so it can be weighed
-    /// before the answer is shown.
-    @State private var passage: QuizPassage?
+    /// The passages the question cites, set out under it so they can be
+    /// weighed before the answer is shown; several turn as pages.
+    @State private var passages: [QuizPassage] = []
+    @State private var passagePage = 0
     /// More of the page lies below the fold: the cue to scroll shows. Taken
     /// as so until the page's end is reported on screen, which is reported
     /// only when it changes.
@@ -4263,8 +4264,9 @@ struct QuizSheetView: View {
                                 answerCard(for: question)
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                             } else {
-                                if let passage, passage.questionID == question.id {
-                                    passageCard(passage, question: question)
+                                let cited = passages.filter { $0.questionID == question.id }
+                                if !cited.isEmpty {
+                                    passagePages(cited, question: question)
                                         .transition(.opacity)
                                 }
                             }
@@ -4287,7 +4289,7 @@ struct QuizSheetView: View {
                         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isAnswerVisible)
                     }
                     .quizHardBottomEdge()
-                    .task(id: question.id) { await loadPassage(for: question) }
+                    .task(id: question.id) { await loadPassages(for: question) }
                     // Anchored to the scroll area, which ends where the question
                     // navigation begins — so the button clears it without the
                     // measured offset the reader needs for its floating toolbar.
@@ -4486,6 +4488,63 @@ struct QuizSheetView: View {
         .quizCard(cornerRadius: LampTheme.Radius.panel)
     }
 
+    /// The cited passages: one card, or several to swipe between with a
+    /// pill for each below, as the dictionary's lexicons turn.
+    @ViewBuilder
+    private func passagePages(_ cited: [QuizPassage], question: QuizQuestion) -> some View {
+        if cited.count == 1, let passage = cited.first {
+            passageCard(passage, question: question)
+        } else {
+            VStack(spacing: 12) {
+                // Every card the height of the tallest, laid out unseen, so
+                // the page doesn't jump as they turn.
+                ZStack {
+                    ForEach(cited.indices, id: \.self) { index in
+                        passageCard(cited[index], question: question)
+                            .hidden()
+                    }
+                }
+                .overlay {
+                    TabView(selection: $passagePage) {
+                        ForEach(cited.indices, id: \.self) { index in
+                            passageCard(cited[index], question: question)
+                                // Apart as they slide, edge to edge of the sheet.
+                                .padding(.horizontal, 20)
+                                .tag(index)
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .padding(.horizontal, -20)
+                }
+
+                // Pill page indicator
+                HStack(spacing: 8) {
+                    ForEach(cited.indices, id: \.self) { index in
+                        Capsule()
+                            .fill(passagePage == index ? Color.primary : Color.secondary)
+                            .frame(width: passagePage == index ? 20 : 8, height: 8)
+                            .animation(.easeInOut(duration: 0.2), value: passagePage)
+                            .onTapGesture {
+                                withAnimation {
+                                    passagePage = index
+                                }
+                            }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Passage \(passagePage + 1) of \(cited.count)")
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: passagePage = min(passagePage + 1, cited.count - 1)
+                    case .decrement: passagePage = max(passagePage - 1, 0)
+                    @unknown default: break
+                    }
+                }
+            }
+        }
+    }
+
     /// The cited verse, in the reading serif, to weigh before answering. A
     /// tap opens it in its context, as the reference in the question does.
     private func passageCard(_ passage: QuizPassage, question: QuizQuestion) -> some View {
@@ -4516,7 +4575,8 @@ struct QuizSheetView: View {
             .padding(.leading, 16)
             .padding(.trailing, 18)
             .padding(.vertical, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // As tall as a page, when it is one; its own height otherwise.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .quizCard(cornerRadius: LampTheme.Radius.card)
             .overlay(alignment: .leading) {
                 // A quotation's bar, as the reader sets off quoted scripture.
@@ -4641,44 +4701,54 @@ struct QuizSheetView: View {
         reloadQuestions()
     }
 
-    /// The question's first verse reference, read from the reader's
-    /// translation: its first verse.
-    private func loadPassage(for question: QuizQuestion) async {
+    /// The passages the question cites, in the order it cites them, each
+    /// read from the reader's translation.
+    private func loadPassages(for question: QuizQuestion) async {
+        passagePage = 0
         let parsed = QuizTextParser.parse(question.questionJson)
         let text = parsed.text
-        guard let annotation = parsed.annotations?.first(where: {
-            ($0.type == .scripture || $0.type == .crossref) && $0.data?.sv != nil
-        }), let sv = annotation.data?.sv else {
-            passage = nil
-            return
-        }
-        let ev = max(annotation.data?.ev ?? sv, sv)
-        var label = ""
-        if annotation.start >= 0, annotation.end <= text.count, annotation.start < annotation.end {
-            let start = text.index(text.startIndex, offsetBy: annotation.start)
-            let end = text.index(text.startIndex, offsetBy: annotation.end)
-            label = String(text[start..<end])
-        }
+        var seen = Set<[Int]>()
+        let citations: [(sv: Int, ev: Int, label: String)] = (parsed.annotations ?? [])
+            .filter { ($0.type == .scripture || $0.type == .crossref) && $0.data?.sv != nil }
+            .sorted { $0.start < $1.start }
+            .compactMap { annotation in
+                guard let sv = annotation.data?.sv else { return nil }
+                let ev = max(annotation.data?.ev ?? sv, sv)
+                // A passage cited twice is set out once.
+                guard seen.insert([sv, ev]).inserted else { return nil }
+                var label = ""
+                if annotation.start >= 0, annotation.end <= text.count, annotation.start < annotation.end {
+                    let start = text.index(text.startIndex, offsetBy: annotation.start)
+                    let end = text.index(text.startIndex, offsetBy: annotation.end)
+                    label = String(text[start..<end])
+                }
+                return (sv, ev, label)
+            }
+        let questionID = question.id
         let translationId = UserDatabase.shared.getSettings().readerTranslationId
-        // Up to two cited verses, and the one after them as context, set
-        // apart in a lighter tone. Verse ids count up within a chapter, and a
-        // verse past the chapter's end simply isn't found.
-        let lastCited = min(ev, sv + 1)
-        let verses = await Task.detached(priority: .userInitiated) {
-            (sv...(lastCited + 1)).compactMap { ref -> QuizPassage.Verse? in
-                guard let text = (try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref))?.text
-                    .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
-                return QuizPassage.Verse(number: ref % 1_000, text: text, isCited: ref <= lastCited)
+        let loaded = await Task.detached(priority: .userInitiated) {
+            citations.compactMap { citation -> QuizPassage? in
+                // Up to two cited verses, and the one after them as context,
+                // set apart in a lighter tone. Verse ids count up within a
+                // chapter, and a verse past the chapter's end simply isn't found.
+                let lastCited = min(citation.ev, citation.sv + 1)
+                let verses = (citation.sv...(lastCited + 1)).compactMap { ref -> QuizPassage.Verse? in
+                    guard let text = (try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref))?.text
+                        .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+                    return QuizPassage.Verse(number: ref % 1_000, text: text, isCited: ref <= lastCited)
+                }
+                guard verses.contains(where: \.isCited) else { return nil }
+                return QuizPassage(
+                    questionID: questionID,
+                    label: citation.label.isEmpty ? "The Verse" : citation.label,
+                    sv: citation.sv,
+                    ev: citation.ev,
+                    verses: verses
+                )
             }
         }.value
         guard !Task.isCancelled else { return }
-        passage = verses.contains(where: \.isCited) ? QuizPassage(
-            questionID: question.id,
-            label: label.isEmpty ? "The Verse" : label,
-            sv: sv,
-            ev: ev,
-            verses: verses
-        ) : nil
+        passages = loaded
     }
 
     /// A symbol for each kind of question, drawn in the text's own grey: the
