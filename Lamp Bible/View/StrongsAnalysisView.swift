@@ -218,7 +218,9 @@ struct StrongsAnalysisView: View {
         }
         .listStyle(.insetGrouped)
         .listSectionSpacing(.compact)
-        .contentMargins(.top, 4, for: .scrollContent)
+        // The card at the top sits as far below the bar as it does from the
+        // sheet's sides.
+        .contentMargins(.top, 16, for: .scrollContent)
         .environment(\.defaultMinListRowHeight, 36)
         // An opaque bar over the list: rows pass cleanly under its edge rather
         // than ghosting through a blur or being sliced by an invisible one.
