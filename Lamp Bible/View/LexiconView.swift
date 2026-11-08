@@ -2243,7 +2243,6 @@ struct LexiconEntryView: View {
             // Testament" shouted.
             Text(entry.lexiconName.uppercased())
                 .font(caption2Font)
-                .tracking(0.4)
                 .foregroundStyle(.tertiary)
 
             // Header: the lemma (with a homograph's Roman numeral), and on
@@ -2275,10 +2274,11 @@ struct LexiconEntryView: View {
                 }
             }
 
-            // The entry's numbers and what can be done with them, as one row
-            // of quiet chips: its IDs, then its uses in the translation and
-            // their analysis.
-            HStack(spacing: 8) {
+            // The entry's numbers and what can be done with them, as quiet
+            // chips: its IDs, then its uses in the translation and their
+            // analysis. A chip that doesn't fit moves to the next line whole,
+            // rather than its words breaking inside it.
+            WrappingHStack(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
                 if !entry.strongsId.isEmpty {
                     LexiconChip {
                         Text(entry.strongsId)
@@ -2489,6 +2489,8 @@ struct LexiconChip<Content: View>: View {
 
     var body: some View {
         content
+            .lineLimit(1)
+            .fixedSize()
             .foregroundStyle(.primary)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
