@@ -1635,9 +1635,6 @@ struct ToolPanelView: View {
                 .padding(.bottom, 6)
                 }
             }
-            // On the panel's own ground: the notes and commentary scroll under
-            // it without showing through.
-            .background(hideHeader ? Color.clear : LampTheme.panelBackground)
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.height
             } action: { height in
