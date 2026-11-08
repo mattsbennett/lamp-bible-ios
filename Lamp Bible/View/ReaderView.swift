@@ -587,8 +587,9 @@ struct ChapterTextView: UIViewRepresentable {
     /// The chapter's opening: the book's name as a small-capital overline over
     /// a large chapter numeral, or, at a book's first chapter, the book's name
     /// as the title over a "Chapter 1" overline. One large element either way,
-    /// so the opening is quiet and the text starts high on the screen.
-    private func chapterOpening() -> NSAttributedString {
+    /// so the opening is quiet and the text starts high on the screen. Each
+    /// chapter of a reading opens so, with `spaceBefore` above it.
+    private func chapterOpening(bookName: String, chapter: Int, showsBookTitle: Bool, spaceBefore: CGFloat = 0) -> NSAttributedString {
         let result = NSMutableAttributedString()
 
         let overlineStyle = NSMutableParagraphStyle()
@@ -608,7 +609,7 @@ struct ChapterTextView: UIViewRepresentable {
             .paragraphStyle: overlineStyle
         ]
 
-        if showBookTitle && chapter == 1 {
+        if showsBookTitle {
             // Book title, then a quiet "Chapter 1" under it.
             let titleAttributes: [NSAttributedString.Key: Any] = [
                 .font: bodyFont(fontSize * 1.75, weight: .semibold),
@@ -616,7 +617,7 @@ struct ChapterTextView: UIViewRepresentable {
                 .paragraphStyle: {
                     let style = titleStyle.mutableCopy() as! NSMutableParagraphStyle
                     style.paragraphSpacing = 2
-                    style.paragraphSpacingBefore = 8
+                    style.paragraphSpacingBefore = 8 + spaceBefore
                     return style
                 }()
             ]
@@ -628,7 +629,11 @@ struct ChapterTextView: UIViewRepresentable {
             chapterAttributes[.paragraphStyle] = chapterStyle
             result.append(NSAttributedString(string: "Chapter \(chapter)\n", attributes: chapterAttributes))
         } else {
-            result.append(NSAttributedString(string: "\(bookName)\n", attributes: overlineAttributes))
+            var bookAttributes = overlineAttributes
+            let bookStyle = overlineStyle.mutableCopy() as! NSMutableParagraphStyle
+            bookStyle.paragraphSpacingBefore = spaceBefore
+            bookAttributes[.paragraphStyle] = bookStyle
+            result.append(NSAttributedString(string: "\(bookName)\n", attributes: bookAttributes))
             let numeralAttributes: [NSAttributedString.Key: Any] = [
                 .font: bodyFont(fontSize * 2.2, weight: .regular),
                 .foregroundColor: UIColor.lampReaderText,
@@ -661,7 +666,7 @@ struct ChapterTextView: UIViewRepresentable {
             .foregroundColor: UIColor.lampCaption
         ]
 
-        result.append(chapterOpening())
+        result.append(chapterOpening(bookName: bookName, chapter: chapter, showsBookTitle: showBookTitle && chapter == 1))
 
         // Section headings: the body face, semibold and a touch larger, in the
         // text's own colour. Grey made them recede to the level of verse numbers.
@@ -683,7 +688,7 @@ struct ChapterTextView: UIViewRepresentable {
             headingsByRef[ref, default: []].append(heading)
         }
 
-        // Chapter title style for mid-content chapter headings (multi-chapter readings)
+        // A small title over a verse range that starts mid-chapter
         let midChapterTitleParagraphStyle = NSMutableParagraphStyle()
         midChapterTitleParagraphStyle.paragraphSpacingBefore = fontSize * 2
         midChapterTitleParagraphStyle.paragraphSpacing = fontSize * 0.4
@@ -708,12 +713,21 @@ struct ChapterTextView: UIViewRepresentable {
             let leadInStart = index == 0 ? 0 : result.length
 
             // Detect chapter change and insert chapter heading
+            var opensChapter = false
             if verse.chapter != currentChapter {
-                // Only show chapter heading if not the first verse (first chapter title is shown separately)
-                // or if this is a verse range that starts mid-chapter
-                if currentChapter != nil || (index == 0 && verse.verse > 1) {
-                    // Get book name for this chapter
-                    let chapterBookName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name ?? bookName
+                // Get book name for this chapter
+                let chapterBookName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name ?? bookName
+                if currentChapter != nil {
+                    // A later chapter of the reading opens as the first did.
+                    result.append(chapterOpening(
+                        bookName: chapterBookName,
+                        chapter: verse.chapter,
+                        showsBookTitle: verse.chapter == 1,
+                        spaceBefore: fontSize * 2
+                    ))
+                    opensChapter = true
+                } else if index == 0 && verse.verse > 1 {
+                    // A verse range that starts mid-chapter
                     let midChapterTitle = NSAttributedString(string: "\(chapterBookName) \(verse.chapter)\n", attributes: midChapterTitleAttributes)
                     result.append(midChapterTitle)
                 }
@@ -736,7 +750,7 @@ struct ChapterTextView: UIViewRepresentable {
                 verseParagraphStyle.paragraphSpacingBefore = scripture.paragraphSpacing * 1.4
             } else if hadHeadingsBeforeVerse {
                 verseParagraphStyle.paragraphSpacingBefore = 0
-            } else if verse.paragraph && index > 0 {
+            } else if verse.paragraph && index > 0 && !opensChapter {
                 verseParagraphStyle.paragraphSpacingBefore = scripture.paragraphSpacing
             }
 
