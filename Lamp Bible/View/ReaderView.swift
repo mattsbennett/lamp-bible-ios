@@ -747,12 +747,11 @@ struct ChapterTextView: UIViewRepresentable {
             // Verse number: small sans figures raised above the line, firm
             // enough to find when scanning but quieter than the text.
             let verseNumberAttributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedDigitSystemFont(ofSize: scripture.verseNumberSize, weight: .semibold),
+                // Proportional figures: tabular ones pad a "1" to the width of
+                // an "8", and "11" stood apart.
+                .font: UIFont.systemFont(ofSize: scripture.verseNumberSize, weight: .semibold),
                 .foregroundColor: UIColor.lampVerseNumber,
                 .baselineOffset: scripture.verseNumberBaselineOffset,
-                // A little air between the number and its verse, so it stays
-                // clear of a highlight that starts with the text.
-                .kern: fontSize * 0.07,
                 .paragraphStyle: verseParagraphStyle,
                 .verseId: verse.ref
             ]
@@ -773,7 +772,11 @@ struct ChapterTextView: UIViewRepresentable {
             if !isSuperscription {
                 // A no-break space ties the number to the verse's first word, so a
                 // number is never left alone at the end of a line.
-                let verseNumber = NSAttributedString(string: "\(verse.verse)\u{00A0}", attributes: verseNumberAttributes)
+                let verseNumber = NSMutableAttributedString(string: "\(verse.verse)\u{00A0}", attributes: verseNumberAttributes)
+                // A little air between the number and its verse, so it stays
+                // clear of a highlight that starts with the text: after the
+                // space only, not between the number's own figures.
+                verseNumber.addAttribute(.kern, value: fontSize * 0.07, range: NSRange(location: verseNumber.length - 1, length: 1))
                 result.append(verseNumber)
                 coordinator.verseNumberRanges[verse.ref] = NSRange(location: verseNumberStart, length: verseNumber.length)
             }
