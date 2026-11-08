@@ -1760,12 +1760,12 @@ struct ToolPanelView: View {
                 showingConflictSheet = true
             }
         }
-        .onChange(of: requestAddNoteForVerse) { _, newValue in
-            // Add Note on a verse in the passage: straight into its note.
-            if let verse = newValue {
+        .onChange(of: requestAddNoteForVerse, initial: true) { _, newValue in
+            // Add Note on a verse in the passage: straight into its note. The
+            // panel may only now be opening, with the request already made.
+            if newValue != nil {
                 panelMode = .notes
-                openNote(forVerse: verse)
-                requestAddNoteForVerse = nil  // Reset the trigger
+                openRequestedNote()
             }
         }
         .toolbar {
@@ -2673,6 +2673,7 @@ struct ToolPanelView: View {
         }
         loadedNotes = NotesScope(moduleId: notesModuleId, book: book, chapter: chapter)
         isLoading = false
+        openRequestedNote()
 
         // Check sync status
         await checkSyncStatus()
@@ -2901,6 +2902,15 @@ struct ToolPanelView: View {
             displayText: passageReference(for: sections[index]) ?? ""
         )
         passagePreview = PreviewSheetState(currentItem: item, allItems: [item])
+    }
+
+    /// Opens the note Add Note asked for, once this chapter's notes are in:
+    /// opened before, it would be cleared by the load.
+    private func openRequestedNote() {
+        guard let verse = requestAddNoteForVerse, !isLoading,
+              loadedNotes == NotesScope(moduleId: notesModuleId, book: book, chapter: chapter) else { return }
+        requestAddNoteForVerse = nil
+        openNote(forVerse: verse)
     }
 
     /// Opens the note on a verse in the editor, the keyboard up and the caret

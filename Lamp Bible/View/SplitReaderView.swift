@@ -241,15 +241,13 @@ struct SplitReaderView: View {
                         // Kept, at no height, so it is where it was when the
                         // keyboard goes down.
                         readerContent
-                            .frame(height: notesTakeTheSpace ? 0 : max(0, geometry.size.height - bottomPanelHeight - 14))
+                            .frame(height: notesTakeTheSpace ? 0 : max(0, geometry.size.height - bottomPanelHeight - 12))
                             .opacity(notesTakeTheSpace ? 0 : 1)
                             .clipped()
                             .allowsHitTesting(!notesTakeTheSpace)
 
-                        // The panel is a surface of its own, rising over the
-                        // page with rounded shoulders: text and commentary sit
-                        // on different grounds rather than one black or white
-                        // field split by a hairline.
+                        // The panel on a ground of its own, under a hairline
+                        // and the handle that resizes it.
                         VStack(spacing: 0) {
                             // Divider with integrated drag handle
                             if !notesTakeTheSpace {
@@ -275,12 +273,6 @@ struct SplitReaderView: View {
                                 .clipped()
                         }
                         .background(LampTheme.panelBackground)
-                        .clipShape(panelShape)
-                        .overlay {
-                            panelShape.strokeBorder(LampTheme.hairline, lineWidth: 1)
-                                .padding(.bottom, -2)
-                        }
-                        .shadow(color: .black.opacity(0.06), radius: 10, y: -2)
 
                         if notesTakeTheSpace {
                             Spacer(minLength: keyboardHeight)
@@ -431,16 +423,6 @@ struct SplitReaderView: View {
     }
 
     @ViewBuilder
-    /// The panel's outline: rounded at the top only, when it shares the
-    /// screen; square when it takes it.
-    private var panelShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(topLeadingRadius: panelRadius, topTrailingRadius: panelRadius, style: .continuous)
-    }
-
-    private var panelRadius: CGFloat {
-        notesTakeTheSpace ? 0 : LampTheme.Radius.panel
-    }
-
     private var toolPanelContent: some View {
         ToolPanelView(
             book: currentBook,
@@ -574,11 +556,20 @@ struct BottomPanelDivider: View {
     @State private var isDragging: Bool = false
 
     var body: some View {
-        // The panel's own shoulders mark the edge; the grabber says it moves.
-        Capsule()
-            .fill(Color(UIColor.systemGray3))
-            .frame(width: 36, height: 5)
-            .frame(height: 14)
+        // The hairline where the page meets the panel's ground, and the pill
+        // that says it moves.
+        ZStack(alignment: .top) {
+            Rectangle()
+                .fill(Color(UIColor.separator))
+                .frame(height: 1)
+
+            // Drag handle pill
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color(UIColor.systemGray3))
+                .frame(width: 40, height: 4)
+                .frame(maxHeight: .infinity)
+        }
+        .frame(height: 12)
         .frame(maxWidth: .infinity)
         .background(isDragging ? Color.accentColor.opacity(0.1) : Color.clear)
         .contentShape(Rectangle())
