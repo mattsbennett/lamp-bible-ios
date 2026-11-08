@@ -324,6 +324,8 @@ struct ChapterTextView: UIViewRepresentable {
     let fontSize: CGFloat
     /// Serif (the default, as the Mac reader's) or sans.
     var typeface: LampProseTypeface = .serif
+    /// The space between lines the reader has chosen, in points.
+    var lineSpacingChoice: CGFloat? = nil
     let bookName: String
     let chapter: Int
     let showBookTitle: Bool
@@ -354,7 +356,9 @@ struct ChapterTextView: UIViewRepresentable {
 
     /// How the chapter is set at this size: leading, spacing, the verse
     /// numbers' size. Shared with anything else that sets scripture.
-    private var scripture: LampTheme.Scripture { LampTheme.Scripture(bodySize: fontSize) }
+    private var scripture: LampTheme.Scripture {
+        LampTheme.Scripture(bodySize: fontSize, chosenLineSpacing: lineSpacingChoice)
+    }
 
     /// Extra space under each body line.
     private var lineSpacing: CGFloat { scripture.lineSpacing }
@@ -1252,7 +1256,7 @@ struct ChapterTextView: UIViewRepresentable {
             // Create a key that uniquely identifies the content (including highlights)
             let verseIds = parent.verses.map { $0.ref }.description
             let highlightCount = parent.highlightsByVerse.values.reduce(0) { $0 + $1.count }
-            return "\(verseIds)-\(parent.fontSize)-\(parent.typeface.rawValue)-\(parent.chapter)-\(parent.showStrongsHints)-\(highlightCount)"
+            return "\(verseIds)-\(parent.fontSize)-\(parent.lineSpacingChoice ?? -1)-\(parent.typeface.rawValue)-\(parent.chapter)-\(parent.showStrongsHints)-\(highlightCount)"
         }
 
         func markVersePositionsDirty() {
@@ -1847,6 +1851,7 @@ private struct PlanSpeechInputs: Equatable {
 struct ReaderView: View {
     /// Serif or sans for scripture, under the key the Mac reader uses.
     @AppStorage("reader.typeface") private var readerTypeface = LampProseTypeface.serif.rawValue
+    @AppStorage(LampTextScale.readerLineSpacingKey) private var readerLineSpacing = LampTextScale.readerLineSpacing.defaultValue
     @Environment(\.dismiss) var dismiss
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
     @ObservedObject private var highlightManager = HighlightManager.shared
@@ -2760,6 +2765,7 @@ struct ReaderView: View {
                                 headings: headings,
                                 fontSize: CGFloat(userSettings.readerFontSize),
                                 typeface: LampProseTypeface(rawValue: readerTypeface) ?? .serif,
+                                lineSpacingChoice: CGFloat(LampTextScale.readerLineSpacing.clamped(readerLineSpacing)),
                                 bookName: bookName,
                                 chapter: chapterNumber,
                                 showBookTitle: showBookTitle,

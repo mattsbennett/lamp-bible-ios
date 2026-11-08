@@ -14,6 +14,7 @@
 import SwiftUI
 import UIKit
 import CoreText
+import LampModuleKit
 
 enum LampTheme {
 
@@ -116,6 +117,9 @@ enum LampTheme {
     /// measure, leading and the size of everything that hangs off the body.
     struct Scripture {
         let bodySize: CGFloat
+        /// The space the reader has chosen between lines, in points; without
+        /// one, a book's leading of 1.5.
+        var chosenLineSpacing: CGFloat? = nil
 
         /// Line pitch as a multiple of the body size: about 1.5, a book's
         /// leading, not the near double-spacing a screen tends to drift to.
@@ -127,6 +131,7 @@ enum LampTheme {
 
         /// Extra space under each line, on top of the font's own line height.
         var lineSpacing: CGFloat {
+            if let chosenLineSpacing { return chosenLineSpacing }
             let natural = LampTheme.serif(size: bodySize).lineHeight
             return max(0, bodySize * Self.leading - natural)
         }
@@ -141,6 +146,18 @@ enum LampTheme {
         var verseNumberBaselineOffset: CGFloat { bodySize * 0.33 }
         var headingSize: CGFloat { bodySize * 1.06 }
     }
+}
+
+extension LampTextScale {
+    /// The space between the reader's lines, in points: the Mac's scale under
+    /// the Mac's key, so a setting reads the same on both.
+    static let readerLineSpacing = LampTextScale(
+        minimum: 2,
+        maximum: 16,
+        step: 1,
+        defaultValue: 7
+    )
+    static let readerLineSpacingKey = "reader.lineSpacing"
 }
 
 // MARK: - View helpers

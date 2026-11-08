@@ -23,6 +23,7 @@ struct ReaderNavigationToolbarView: View {
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     /// Serif or sans for scripture, under the key the Mac reader uses.
     @AppStorage("reader.typeface") private var readerTypeface = LampProseTypeface.serif.rawValue
+    @AppStorage(LampTextScale.readerLineSpacingKey) private var readerLineSpacing = LampTextScale.readerLineSpacing.defaultValue
     let readerDismiss: DismissAction
     var onHideToolbars: (() -> Void)? = nil
 
@@ -425,6 +426,23 @@ struct ReaderNavigationToolbarView: View {
                 .padding(.leading, 12)
                 .padding(.trailing, 6)
                 .padding(.vertical, 4)
+
+                Divider()
+                    .padding(.leading, 12)
+
+                // The space between lines, in points, as the Mac sets it.
+                HStack(spacing: 10) {
+                    Text("Line Spacing")
+                    Spacer(minLength: 4)
+                    Text("\(Int(LampTextScale.readerLineSpacing.clamped(readerLineSpacing))) pt")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    lineSpacingStepper
+                        .frame(width: 112)
+                }
+                .padding(.leading, 12)
+                .padding(.trailing, 6)
+                .padding(.vertical, 4)
             }
             .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
 
@@ -563,6 +581,41 @@ struct ReaderNavigationToolbarView: View {
             .buttonStyle(.plain)
             .disabled(!canIncrease)
             .accessibilityLabel("Larger Text")
+        }
+    }
+
+    /// Tighter and looser lines, a step of a point each.
+    private var lineSpacingStepper: some View {
+        let scale = LampTextScale.readerLineSpacing
+        return HStack(spacing: 0) {
+            Button {
+                readerLineSpacing = scale.stepped(readerLineSpacing, by: -1)
+            } label: {
+                Image(systemName: "arrow.down.and.line.horizontal.and.arrow.up")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!scale.canDecrease(readerLineSpacing))
+            .accessibilityLabel("Tighter Lines")
+
+            Divider()
+                .frame(height: 22)
+
+            Button {
+                readerLineSpacing = scale.stepped(readerLineSpacing, by: 1)
+            } label: {
+                Image(systemName: "arrow.up.and.down.text.horizontal")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!scale.canIncrease(readerLineSpacing))
+            .accessibilityLabel("Looser Lines")
         }
     }
 
