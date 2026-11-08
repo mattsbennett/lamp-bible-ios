@@ -5946,6 +5946,21 @@ final class CommentaryEncodedSpanTests: XCTestCase {
         }
     }
 
+    /// A kind of annotation a later module brings ("emphasis") cost the whole
+    /// sense, and the dictionary entry showed none.
+    func testAnUnknownAnnotationIsPassedOverNotTheSense() throws {
+        let json = #"""
+            [{"definition":{"text":"gold, a talent","annotations":[{"type":"emphasis","start":0,"end":4,"data":{"style":"italic"}},{"type":"strongs","start":6,"end":14,"id":"H3603"}]}}]
+            """#
+        let senses = try JSONDecoder().decode([DictionarySense].self, from: Data(json.utf8))
+
+        XCTAssertEqual(senses.first?.definitionText, "gold, a talent")
+        guard case .annotated(let text)? = senses.first?.definition else {
+            return XCTFail("The definition should keep its annotations")
+        }
+        XCTAssertEqual(text.annotations?.map(\.type), [.strongs])
+    }
+
     func testAUnitsCommentaryAndFootnotesAreRead() throws {
         var unit = CommentaryUnit(moduleId: "NIC", book: 43, sv: 43_001_001, unitType: .pericope)
         unit.commentaryJson = #"""

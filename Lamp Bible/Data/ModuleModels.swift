@@ -1476,9 +1476,29 @@ struct AnnotatedText: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         text = try container.decode(String.self, forKey: .text)
-        annotations = try container.decodeIfPresent([CommentaryAnnotation].self, forKey: .annotations)
+        // An annotation of a kind this version doesn't know is passed over:
+        // failing, it took the whole text with it, and a dictionary entry
+        // lost every sense.
+        if var list = try? container.nestedUnkeyedContainer(forKey: .annotations) {
+            var decoded: [CommentaryAnnotation] = []
+            while !list.isAtEnd {
+                if let annotation = try? list.decode(CommentaryAnnotation.self) {
+                    decoded.append(annotation)
+                } else if (try? list.decode(SkippedElement.self)) == nil {
+                    break
+                }
+            }
+            annotations = decoded
+        } else {
+            annotations = nil
+        }
         footnoteRefs = try container.decodeIfPresent([FootnoteRef].self, forKey: .footnoteRefs)
         readEncodedSpans()
+    }
+
+    /// Reads past one element of a list without looking at it.
+    private struct SkippedElement: Decodable {
+        init(from decoder: Decoder) throws {}
     }
 
     /// A module keeps text set in a legacy font encoding as its source has it
