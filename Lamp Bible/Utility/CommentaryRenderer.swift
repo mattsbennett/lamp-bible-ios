@@ -86,6 +86,9 @@ struct CommentaryRenderer {
         var footnoteColor: Color = .secondary
         var abbreviationColor: Color = .orange
         var searchTerms: [String] = []  // Search terms to highlight
+        /// An annotation whose offsets miss its own `text` is placed where
+        /// that text is, as a dictionary's are read.
+        var findsAnnotationsByText: Bool = false
 
         var uiFootnoteFont: UIFont? {
             if let base = uiBodyFont {
@@ -216,6 +219,9 @@ struct CommentaryRenderer {
             case .italic:
                 result[range].font = style.bodyFont.italic()
 
+            case .emphasis:
+                result[range].font = annotation.isBoldEmphasis ? style.bodyFont.bold() : style.bodyFont.italic()
+
             case .media:
                 // Media annotations indicate inline media references
                 // Render as a placeholder icon - actual media display handled at view level
@@ -257,21 +263,9 @@ struct CommentaryRenderer {
         result.addAttribute(.font, value: baseFont, range: fullRange)
         result.addAttribute(.foregroundColor, value: UIColor.label, range: fullRange)
 
-        // Helper to convert indices
-        func getRange(_ start: Int, _ end: Int) -> NSRange? {
-            // Assume unicode scalar offsets (matching legacy logic)
-            let scalars = text.unicodeScalars
-            guard start >= 0, end > start, start < scalars.count, end <= scalars.count else { return nil }
-
-            let startIdx = scalars.index(scalars.startIndex, offsetBy: start)
-            let endIdx = scalars.index(scalars.startIndex, offsetBy: end)
-
-            return NSRange(startIdx..<endIdx, in: text)
-        }
-
         if let annotations = annotatedText.annotations {
             for annotation in annotations {
-                guard let range = getRange(annotation.start, annotation.end) else { continue }
+                guard let range = annotatedText.nsRange(of: annotation, byText: style.findsAnnotationsByText) else { continue }
 
                 switch annotation.type {
                 // Blue only where it opens something: a cross-reference that
@@ -343,6 +337,11 @@ struct CommentaryRenderer {
 
                 case .italic:
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+
+                case .emphasis:
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(annotation.isBoldEmphasis ? .traitBold : .traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
                     }
 
@@ -558,6 +557,11 @@ struct CommentaryRenderer {
 
                 case .italic:
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+                    }
+
+                case .emphasis:
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(annotation.isBoldEmphasis ? .traitBold : .traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
                     }
 

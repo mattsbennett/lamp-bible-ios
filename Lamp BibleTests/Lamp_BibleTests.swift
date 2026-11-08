@@ -5946,11 +5946,11 @@ final class CommentaryEncodedSpanTests: XCTestCase {
         }
     }
 
-    /// A kind of annotation a later module brings ("emphasis") cost the whole
-    /// sense, and the dictionary entry showed none.
+    /// A kind of annotation a later module brings cost the whole sense, and
+    /// the dictionary entry showed none.
     func testAnUnknownAnnotationIsPassedOverNotTheSense() throws {
         let json = #"""
-            [{"definition":{"text":"gold, a talent","annotations":[{"type":"emphasis","start":0,"end":4,"data":{"style":"italic"}},{"type":"strongs","start":6,"end":14,"id":"H3603"}]}}]
+            [{"definition":{"text":"gold, a talent","annotations":[{"type":"smallcaps","start":0,"end":4},{"type":"strongs","start":6,"end":14,"id":"H3603"}]}}]
             """#
         let senses = try JSONDecoder().decode([DictionarySense].self, from: Data(json.utf8))
 
@@ -5972,5 +5972,55 @@ final class CommentaryEncodedSpanTests: XCTestCase {
 
         XCTAssertEqual(unit.commentary?.text, "see θεού here")
         XCTAssertEqual(unit.footnotes?.first?.content.text, "ὁ λόγος")
+    }
+}
+
+/// Dictionary entries styled as core and the Mac draw them: emphasis set bold
+/// or italic, a field given as a list, and stretches placed by their text.
+final class DictionaryStylingTests: XCTestCase {
+
+    private func traits(_ drawn: NSAttributedString, at location: Int) -> UIFontDescriptor.SymbolicTraits {
+        (drawn.attribute(.font, at: location, effectiveRange: nil) as? UIFont)?.fontDescriptor.symbolicTraits ?? []
+    }
+
+    func testEmphasisIsBoldOrItalicAsItsStyleSays() throws {
+        let json = #"""
+            {"text":"one two three","annotations":[{"type":"emphasis","start":0,"end":3,"text":"one","data":{"style":"bold"}},{"type":"emphasis","start":4,"end":7,"text":"two","data":{"style":"italic"}},{"type":"emphasis","start":8,"end":13,"text":"three"}]}
+            """#
+        let drawn = CommentaryRenderer.renderUIKit(try JSONDecoder().decode(AnnotatedText.self, from: Data(json.utf8)))
+
+        XCTAssertTrue(traits(drawn, at: 0).contains(.traitBold))
+        XCTAssertTrue(traits(drawn, at: 4).contains(.traitItalic))
+        XCTAssertFalse(traits(drawn, at: 4).contains(.traitBold))
+        // An emphasis that names no style is italic.
+        XCTAssertTrue(traits(drawn, at: 8).contains(.traitItalic))
+    }
+
+    func testAFieldGivenAsAListIsSetAsOneWithABlankLineBetween() throws {
+        let json = #"""
+            [{"text":"a round loaf","annotations":[{"type":"emphasis","start":2,"end":7,"text":"round"}]},{"text":"land of כְּנַעַן, see Gen 13:10","annotations":[{"type":"scripture","start":22,"end":31,"text":"Gen 13:10","data":{"sv":1013010}}]}]
+            """#
+        let field = try JSONDecoder().decode(FlexibleTextField.self, from: Data(json.utf8))
+        guard case .annotated(let text) = field else {
+            return XCTFail("A list should read as one annotated text")
+        }
+
+        XCTAssertEqual(text.text, "a round loaf\n\nland of כְּנַעַן, see Gen 13:10")
+        let string = text.text as NSString
+        XCTAssertEqual((text.annotations ?? []).compactMap { text.nsRange(of: $0) }.map(string.substring(with:)), ["round", "Gen 13:10"])
+    }
+
+    /// Offsets counted in characters, where the pointed Hebrew is four and
+    /// not eight, still find the reference by its words.
+    func testAStretchThatMissesItsTextIsFoundByIt() throws {
+        let json = #"""
+            {"text":"land of כְּנַעַן, see Gen 13:10","annotations":[{"type":"scripture","start":18,"end":27,"text":"Gen 13:10","data":{"sv":1013010}}]}
+            """#
+        let text = try JSONDecoder().decode(AnnotatedText.self, from: Data(json.utf8))
+        let annotation = try XCTUnwrap(text.annotations?.first)
+        let string = text.text as NSString
+
+        XCTAssertNotEqual(text.nsRange(of: annotation).map(string.substring(with:)), "Gen 13:10")
+        XCTAssertEqual(text.nsRange(of: annotation, byText: true).map(string.substring(with:)), "Gen 13:10")
     }
 }

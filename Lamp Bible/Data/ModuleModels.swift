@@ -1410,6 +1410,7 @@ enum CommentaryAnnotationType: String, Codable {
     case lexiconRef = "lexicon-ref"  // Cross-reference to another lexicon entry
     case bold           // Bold text
     case italic         // Italic text
+    case emphasis       // Bold or italic, as its data's style says; italic when it says neither
     case media          // Embedded image or audio
 }
 
@@ -1437,6 +1438,7 @@ struct CommentaryAnnotationData: Codable {
     // Text kept in a legacy font encoding, as its source has it
     var unicode: String?            // What the span reads as
     var sourceEncoding: String?     // The encoding it is written in (e.g., "accordance-greek")
+    var style: String?              // An emphasis's "bold" or "italic"
 }
 
 /// Inline annotation within commentary text
@@ -1561,6 +1563,74 @@ struct AnnotatedText: Codable {
     }
 }
 
+extension AnnotatedText {
+    /// Texts a module gives as a list, set one after another with a blank
+    /// line between, their annotations and footnote markers moved along with
+    /// them.
+    static func joined(_ parts: [AnnotatedText], separator: String = "\n\n") -> AnnotatedText {
+        var text = ""
+        var annotations: [CommentaryAnnotation]?
+        var footnoteRefs: [FootnoteRef]?
+        for (index, part) in parts.enumerated() {
+            if index > 0 { text += separator }
+            // Offsets count scalars, which add up across a join as
+            // characters needn't.
+            let shift = text.unicodeScalars.count
+            text += part.text
+            if let partAnnotations = part.annotations {
+                annotations = (annotations ?? []) + partAnnotations.map { annotation in
+                    var moved = annotation
+                    moved.start += shift
+                    moved.end += shift
+                    return moved
+                }
+            }
+            if let partRefs = part.footnoteRefs {
+                footnoteRefs = (footnoteRefs ?? []) + partRefs.map { FootnoteRef(id: $0.id, offset: $0.offset + shift) }
+            }
+        }
+        return AnnotatedText(text: text, annotations: annotations, footnoteRefs: footnoteRefs)
+    }
+
+    /// Where an annotation falls in the text. Its offsets count Unicode
+    /// scalars. With `byText`, a stretch that doesn't read as the
+    /// annotation's own `text` gives way to the place nearest it where that
+    /// text does appear, as core reads a dictionary: offsets counted another
+    /// way drift across pointed Hebrew, and the words still find their place.
+    func nsRange(of annotation: CommentaryAnnotation, byText: Bool = false) -> NSRange? {
+        let scalars = text.unicodeScalars
+        var given: NSRange?
+        if annotation.start >= 0, annotation.start < annotation.end, annotation.end <= scalars.count {
+            let start = scalars.index(scalars.startIndex, offsetBy: annotation.start)
+            let end = scalars.index(scalars.startIndex, offsetBy: annotation.end)
+            given = NSRange(start..<end, in: text)
+        }
+        guard byText, let expected = annotation.text, !expected.isEmpty else { return given }
+        let string = text as NSString
+        if let given, string.substring(with: given) == expected { return given }
+
+        let anchor = given?.location ?? min(max(annotation.start, 0), string.length)
+        var nearest: NSRange?
+        var searchFrom = 0
+        while searchFrom < string.length {
+            let found = string.range(of: expected, options: .literal, range: NSRange(location: searchFrom, length: string.length - searchFrom))
+            guard found.location != NSNotFound else { break }
+            if nearest.map({ abs(found.location - anchor) < abs($0.location - anchor) }) ?? true {
+                nearest = found
+            }
+            searchFrom = found.location + 1
+        }
+        return nearest ?? given
+    }
+}
+
+extension CommentaryAnnotation {
+    /// An emphasis set bold; any other is italic.
+    var isBoldEmphasis: Bool {
+        data?.style == "bold"
+    }
+}
+
 // MARK: - Flexible Text Field (Dictionary v2.0)
 
 /// A text field that can be either a plain string or annotated text
@@ -1575,6 +1645,12 @@ enum FlexibleTextField: Codable {
         // Try decoding as AnnotatedText first (object with "text" key)
         if let annotated = try? container.decode(AnnotatedText.self) {
             self = .annotated(annotated)
+            return
+        }
+
+        // A list of them: set as one, a blank line between each
+        if let parts = try? container.decode([AnnotatedText].self), !parts.isEmpty {
+            self = .annotated(.joined(parts))
             return
         }
 

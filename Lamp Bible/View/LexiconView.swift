@@ -2008,7 +2008,7 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         var itemIndex = baseOffset
 
         // Use CommentaryRenderer style
-        let style = CommentaryRenderer.Style(
+        var style = CommentaryRenderer.Style(
             uiBodyFont: UIFont.systemFont(ofSize: fontSize),
             scriptureColor: .lampLink,
             strongsColor: .lampOriginalLanguageInText,
@@ -2016,6 +2016,7 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
             footnoteColor: Color.secondary,
             abbreviationColor: Color.secondary
         )
+        style.findsAnnotationsByText = true
 
         // Get the base attributed string from CommentaryRenderer
         let baseAttrString = CommentaryRenderer.renderUIKit(annotatedText, style: style)
@@ -2024,7 +2025,8 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         // Add tappable index attributes and collect items
         if let annotations = annotatedText.annotations {
             for annotation in annotations {
-                guard annotation.start >= 0, annotation.start < annotation.end else { continue }
+                // Where it is drawn: scalar offsets, checked against its text
+                guard let nsRange = annotatedText.nsRange(of: annotation, byText: true) else { continue }
 
                 // Create tappable item based on annotation type
                 let tappableType: TappableItem.TappableItemType?
@@ -2038,7 +2040,7 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
                     }
                 case .scripture:
                     if let sv = annotation.data?.sv {
-                        let display = annotation.text ?? String(annotatedText.text.dropFirst(annotation.start).prefix(annotation.end - annotation.start))
+                        let display = annotation.text ?? (annotatedText.text as NSString).substring(with: nsRange)
                         tappableType = .verseRef(display: display, verseId: sv, endVerseId: annotation.data?.ev, fullRef: nil)
                     } else {
                         tappableType = nil
@@ -2058,7 +2060,6 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
                     tappableItems.append(TappableItem(index: itemIndex, type: itemType))
 
                     // Add tappable index attribute to the range
-                    let nsRange = NSRange(location: annotation.start, length: annotation.end - annotation.start)
                     if nsRange.location + nsRange.length <= mutableAttrString.length {
                         mutableAttrString.addAttribute(TappableIndexAttributeKey, value: itemIndex, range: nsRange)
                     }
