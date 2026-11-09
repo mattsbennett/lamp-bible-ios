@@ -1408,17 +1408,28 @@ private struct ReadAloudSettingsSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Picker("Voice", selection: $selectedVoiceId) {
+                // "Automatic" names the voice it stands for, so a reader can
+                // tell what they'd be choosing over.
+                Picker("Voice", selection: Binding(
+                    get: { selectedVoiceId },
+                    set: { chosen in
+                        selectedVoiceId = chosen
+                        SpeechVoiceCatalog.setPreferredVoiceIdentifier(chosen.isEmpty ? nil : chosen, for: languageCode)
+                    }
+                )) {
+                    Text(automaticVoice.map { "Automatic (\($0.name))" } ?? "Automatic")
+                        .tag("")
                     ForEach(voices, id: \.identifier) { voice in
                         Text(SpeechVoiceCatalog.displayName(for: voice))
                             .tag(voice.identifier)
                     }
                 }
-                .onChange(of: selectedVoiceId) { oldValue, newValue in
-                    // Ignore the assignment `load()` makes on first appearance, so
-                    // merely opening Settings doesn't pin a preference.
-                    guard !oldValue.isEmpty, oldValue != newValue else { return }
-                    SpeechVoiceCatalog.setPreferredVoiceIdentifier(newValue, for: languageCode)
+                if let voiceInUse, SpeechVoiceCatalog.isBasic(voiceInUse) {
+                    // Siri's voices are the system's own; apps aren't given them,
+                    // so downloading one wouldn't change what Lamp reads with.
+                    Text("\(voiceInUse.name) is a basic voice, so words can sound slow and choppy. Enhanced and Premium voices are free in Settings › Accessibility › Spoken Content › Voices. Lamp can't use Siri's voices.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -1456,6 +1467,15 @@ private struct ReadAloudSettingsSection: View {
         }
     }
 
+    private var automaticVoice: AVSpeechSynthesisVoice? {
+        SpeechVoiceCatalog.automaticVoice(for: languageCode)
+    }
+
+    /// The voice reading aloud now: the one chosen, else the automatic one.
+    private var voiceInUse: AVSpeechSynthesisVoice? {
+        voices.first { $0.identifier == selectedVoiceId } ?? automaticVoice
+    }
+
     private var noVoiceText: String {
         let howToFix = "Add one in Settings › Accessibility › Spoken Content › Voices."
         guard let languageName else {
@@ -1469,7 +1489,9 @@ private struct ReadAloudSettingsSection: View {
         let language = (try? TranslationDatabase.shared.getTranslation(id: translationId))?.language
         languageCode = language
         voices = SpeechVoiceCatalog.voices(for: language)
-        selectedVoiceId = SpeechVoiceCatalog.preferredVoice(for: language)?.identifier ?? ""
+        // The voice chosen, where it is still installed; otherwise Automatic.
+        let chosen = SpeechVoiceCatalog.preferredVoiceIdentifier(for: language)
+        selectedVoiceId = voices.contains { $0.identifier == chosen } ? chosen ?? "" : ""
     }
 }
 

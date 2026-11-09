@@ -270,26 +270,50 @@ enum SpeechVoiceCatalog {
         !voices(for: languageCode).isEmpty
     }
 
-    /// The user's pick for this language, else the voice the system itself would
-    /// use, else the best remaining one. `nil` means nothing is installed — callers
-    /// must not fall through to the device-locale voice.
+    /// The user's pick for this language, else the automatic one. `nil` means
+    /// nothing is installed — callers must not fall through to the
+    /// device-locale voice.
     static func preferredVoice(for languageCode: String?) -> AVSpeechSynthesisVoice? {
-        let available = voices(for: languageCode)
         guard let base = normalized(languageCode) else { return nil }
+        return choose(base, stored: UserDefaults.standard.string(forKey: preferenceKeyPrefix + base))
+    }
 
-        if let identifier = UserDefaults.standard.string(forKey: preferenceKeyPrefix + base),
-           let chosen = available.first(where: { $0.identifier == identifier }) {
-            return chosen
-        }
+    /// The voice used when none is chosen, by core's rule, which the Mac
+    /// shares: the best installed rather than the system's own pick, which
+    /// for English is the basic Samantha, whose stretched sounds read slow
+    /// and choppy.
+    static func automaticVoice(for languageCode: String?) -> AVSpeechSynthesisVoice? {
+        normalized(languageCode).flatMap { choose($0, stored: nil) }
+    }
 
-        // Prefer whatever the system considers this language's voice — Samantha for
-        // English, not whichever name happens to sort first.
-        if let systemDefault = AVSpeechSynthesisVoice(language: base),
-           let match = available.first(where: { $0.identifier == systemDefault.identifier }) {
-            return match
-        }
+    private static func choose(_ language: String, stored: String?) -> AVSpeechSynthesisVoice? {
+        let installed = AVSpeechSynthesisVoice.speechVoices()
+        let preferred = AVSpeechSynthesisVoice.currentLanguageCode()
+        let chosen = LampSpeechVoice.choose(
+            language: language,
+            stored: stored,
+            among: installed.map(describe),
+            preferredLanguage: preferred,
+            systemDefaults: Set([language, preferred].compactMap { AVSpeechSynthesisVoice(language: $0)?.identifier })
+        )
+        return chosen.flatMap { chosen in installed.first { $0.identifier == chosen.identifier } }
+    }
 
-        return available.first
+    /// A voice as core weighs one.
+    static func describe(_ voice: AVSpeechSynthesisVoice) -> LampSpeechVoice {
+        LampSpeechVoice(
+            identifier: voice.identifier,
+            name: voice.name,
+            language: voice.language,
+            quality: voice.quality.rawValue,
+            isNovelty: voice.voiceTraits.contains(.isNoveltyVoice),
+            isPersonal: voice.voiceTraits.contains(.isPersonalVoice)
+        )
+    }
+
+    /// Whether `voice` is the basic kind, which can sound slow and choppy.
+    static func isBasic(_ voice: AVSpeechSynthesisVoice) -> Bool {
+        describe(voice).isBasic
     }
 
     /// Pass `nil` to go back to the best available voice.
@@ -308,10 +332,18 @@ enum SpeechVoiceCatalog {
         return UserDefaults.standard.string(forKey: preferenceKeyPrefix + base)
     }
 
-    /// "Language Name — Voice Name", e.g. "English (US) — Samantha".
+    /// "Voice Name — Language Name", e.g. "Samantha — English (United
+    /// States)", with "· Enhanced" or "· Premium" for a better voice, as the
+    /// Mac lists them.
     static func displayName(for voice: AVSpeechSynthesisVoice) -> String {
         let locale = Locale.current.localizedString(forIdentifier: voice.language) ?? voice.language
-        return "\(voice.name) — \(locale)"
+        let grade: String = switch voice.quality {
+        case .premium: " · Premium"
+        case .enhanced: " · Enhanced"
+        default: ""
+        }
+        let named = voice.name.contains("Premium") || voice.name.contains("Enhanced")
+        return "\(voice.name) — \(locale)\(named ? "" : grade)"
     }
 
     /// `nil` when the language is unknown, so callers can word themselves around
