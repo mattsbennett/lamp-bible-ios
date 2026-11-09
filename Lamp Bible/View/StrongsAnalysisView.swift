@@ -137,11 +137,11 @@ struct StrongsAnalysisView: View {
     /// opening it costs a search of the Hebrew text a word.
     @State private var isShowingSeptuagint = false
     @State private var septuagintPreview: SeptuagintPreview?
-    @AppStorage("strongs.analysis.chartStyle") private var chartStyle: LampStrongsChartStyle = .bars
-    @AppStorage("strongs.analysis.grouping") private var grouping: LampStrongsGrouping = .books
+    @AppStorage("strongs.analysis.spreadGrouping") private var spreadGrouping: LampStrongsSpreadGrouping = .books
     @AppStorage("strongs.analysis.measure") private var measure: LampStrongsSpreadMeasure = .occurrences
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = false
+    @AppStorage("strongs.analysis.formChartAsRing") private var showsFormRing = false
 
     private struct BookRangeChoice: Equatable {
         let range: ClosedRange<Int>?
@@ -598,22 +598,39 @@ struct StrongsAnalysisView: View {
 
     private func formsSection(_ analysis: LampStrongsAnalysis) -> some View {
         Section {
-            let listed = showsAllForms ? analysis.forms : Array(analysis.forms.prefix(strongsAnalysisListed))
-            countRows(
-                listed.map { form in
-                    CountedRow(id: form.id, title: form.text, detail: "", count: form.count, filter: .form(form.text))
-                },
-                isOriginalLanguage: true
-            )
-            if !showsAllForms && analysis.forms.count > strongsAnalysisListed {
-                Button("Show All \(analysis.forms.count) Forms") {
-                    showsAllForms = true
-                }
+            Picker("Chart", selection: $showsFormRing) {
+                Text("List").tag(false)
+                Text("Ring").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .listRowSeparator(.hidden)
+            if showsFormRing {
+                share(of: LampStrongsGrouping.forms.divisions(of: analysis), isOriginalLanguage: true)
+            } else {
+                forms(analysis)
             }
         } header: {
             sectionHeader("Forms")
         } footer: {
-            Text("Each spelling the word takes where it occurs. Tap one to filter the verse list below.")
+            Text(showsFormRing
+                ? "How its \(analysis.occurrenceCount) occurrences are spelled, the commonest first. Tap one to filter the verse list below."
+                : "Each spelling the word takes where it occurs. Tap one to filter the verse list below.")
+        }
+    }
+
+    @ViewBuilder
+    private func forms(_ analysis: LampStrongsAnalysis) -> some View {
+        let listed = showsAllForms ? analysis.forms : Array(analysis.forms.prefix(strongsAnalysisListed))
+        countRows(
+            listed.map { form in
+                CountedRow(id: form.id, title: form.text, detail: "", count: form.count, filter: .form(form.text))
+            },
+            isOriginalLanguage: true
+        )
+        if !showsAllForms && analysis.forms.count > strongsAnalysisListed {
+            Button("Show All \(analysis.forms.count) Forms") {
+                showsAllForms = true
+            }
         }
     }
 
@@ -770,44 +787,30 @@ struct StrongsAnalysisView: View {
 
     // MARK: Spread
 
-    /// Chapters belong to books, so the grid draws books whatever is chosen.
-    private var activeGrouping: LampStrongsGrouping {
-        chartStyle.needsBooks ? .books : grouping
-    }
-
-    /// Occurrences unless a rate is both drawable and meaningful here.
+    /// Occurrences unless a rate means something here: the grid shades
+    /// chapters and has none to give.
     private var activeMeasure: LampStrongsSpreadMeasure {
-        chartStyle.usesMeasure && activeGrouping.usesMeasure ? measure : .occurrences
+        spreadGrouping.usesMeasure ? measure : .occurrences
     }
 
     private var spreadTitle: String {
-        if chartStyle == .grid { return "By Chapter" }
-        switch activeGrouping {
-        case .books: return "By Book"
-        case .sections: return "By Section"
-        case .renderings: return "By Rendering"
-        case .forms: return "By Form"
+        switch spreadGrouping {
+        case .books: "By Book"
+        case .sections: "By Section"
+        case .chapters: "By Chapter"
         }
     }
 
+    /// Where the word occurs, and nothing else: renderings and forms have
+    /// their own sections above. Books and sections are bars, chapters the
+    /// grid, so how it is drawn follows from what it is grouped by.
     private func spreadSection(_ analysis: LampStrongsAnalysis) -> some View {
         Section {
-            Picker("Chart", selection: $chartStyle) {
-                ForEach(LampStrongsChartStyle.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
             spreadMenus
-            switch chartStyle {
-            case .bars:
-                spreadBars(analysis)
-            case .columns:
-                spreadColumns(analysis)
-            case .grid:
+            if let grouping = spreadGrouping.bars {
+                spreadBars(analysis, grouping: grouping)
+            } else {
                 chapterGrid(analysis)
-            case .share:
-                share(of: activeGrouping.divisions(of: analysis))
             }
         } header: {
             sectionHeader(spreadTitle)
@@ -817,20 +820,19 @@ struct StrongsAnalysisView: View {
     }
 
     /// What to group by and what to count, as menus that state the choice in
-    /// a word: two more segmented bars would outweigh the chart.
+    /// a word: segmented bars would outweigh the chart.
     private var spreadMenus: some View {
         HStack(spacing: 20) {
             Menu {
-                Picker("Group By", selection: $grouping) {
-                    ForEach(LampStrongsGrouping.allCases) { Text($0.title).tag($0) }
+                Picker("Group By", selection: $spreadGrouping) {
+                    ForEach(LampStrongsSpreadGrouping.allCases) { Text($0.title).tag($0) }
                 }
             } label: {
-                menuLabel("By \(activeGrouping.title)")
+                menuLabel("By \(spreadGrouping.title)")
             }
             .menuStyle(.button)
             .buttonStyle(.borderless)
-            .disabled(chartStyle.needsBooks)
-            if chartStyle.usesMeasure && activeGrouping.usesMeasure {
+            if spreadGrouping.usesMeasure {
                 Menu {
                     Picker("Measure", selection: $measure) {
                         ForEach(LampStrongsSpreadMeasure.allCases) { Text($0.title).tag($0) }
@@ -844,7 +846,7 @@ struct StrongsAnalysisView: View {
             Spacer(minLength: 0)
         }
         .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 8, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 8, trailing: 16))
     }
 
     private func menuLabel(_ title: String) -> some View {
@@ -857,16 +859,11 @@ struct StrongsAnalysisView: View {
     }
 
     private var spreadFootnote: String {
-        switch chartStyle {
-        case .share:
-            return "Each part’s share of the occurrences, the largest first. Tap one to filter the verse list below."
-        case .grid:
+        guard spreadGrouping.usesMeasure else {
             return "A square for each chapter, darker where the word is commoner. Tap one to filter the verse list below."
-        case .bars, .columns:
-            return activeGrouping.usesMeasure
-                ? "Expected is the share a part of its length would hold. ↑ More and ↓ fewer mark a gap too wide to be chance. Tap one to filter the verse list below."
-                : "Tap one to filter the verse list below."
         }
+        let share = activeMeasure == .occurrences ? " Beside each count, its share of them all." : ""
+        return "Expected is the share a part of its length would hold. ↑ More and ↓ fewer mark a gap too wide to be chance.\(share) Tap one to filter the verse list below."
     }
 
     /// The figure a bar is drawn to: a count, or a rate to two places.
@@ -879,10 +876,10 @@ struct StrongsAnalysisView: View {
     }
 
     @ViewBuilder
-    private func spreadBars(_ analysis: LampStrongsAnalysis) -> some View {
-        let entries = activeGrouping.divisions(of: analysis)
+    private func spreadBars(_ analysis: LampStrongsAnalysis, grouping: LampStrongsGrouping) -> some View {
+        let entries = grouping.divisions(of: analysis)
         let bars = LampStrongsSpread.bars(entries.map(\.division), measure: activeMeasure)
-        if activeGrouping == .books {
+        if grouping == .books {
             let barsByBook = Dictionary(bars.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             ForEach(Array(bookGroups(analysis.books).enumerated()), id: \.offset) { _, group in
                 if !group.name.isEmpty {
@@ -905,7 +902,7 @@ struct StrongsAnalysisView: View {
             }
         } else {
             ForEach(Array(zip(entries, bars)), id: \.0.id) { entry, bar in
-                barRow(bar, filter: entry.filter, nameWidth: activeGrouping == .sections ? 132 : 120)
+                barRow(bar, filter: entry.filter, nameWidth: 132)
             }
         }
     }
@@ -948,6 +945,15 @@ struct StrongsAnalysisView: View {
                     .monospacedDigit()
                     .foregroundStyle(isEmpty ? Color.secondary : Color.primary)
                     .frame(minWidth: 24, alignment: .trailing)
+                // Its share of every occurrence, which was all a ring of the
+                // same figures said; a part without the word leaves it blank.
+                if activeMeasure == .occurrences {
+                    Text(isEmpty ? "" : LampStrongsSpread.percent(bar.fractionOfOccurrences))
+                        .font(.footnote)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, alignment: .trailing)
+                }
                 Image(systemName: bar.expectation == .fewer ? "arrow.down" : "arrow.up")
                     .font(.caption.weight(.heavy))
                     .foregroundStyle(barColor(bar.expectation))
@@ -962,7 +968,7 @@ struct StrongsAnalysisView: View {
         .allowsHitTesting(!isEmpty && barFilter != nil)
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(bar.name), \(bar.occurrenceCount) times\(expectationPhrase(bar.expectation))")
+        .accessibilityLabel("\(bar.name), \(bar.occurrenceCount) times\(isEmpty ? "" : ", \(LampStrongsSpread.percent(bar.fractionOfOccurrences))")\(expectationPhrase(bar.expectation))")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
@@ -1003,21 +1009,6 @@ struct StrongsAnalysisView: View {
         }
         .listRowSeparator(.hidden, edges: .top)
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16))
-    }
-
-    private func spreadColumns(_ analysis: LampStrongsAnalysis) -> some View {
-        let entries = activeGrouping.divisions(of: analysis)
-        let bars = LampStrongsSpread.bars(entries.map(\.division), measure: activeMeasure)
-        return StrongsColumns(
-            bars: bars,
-            filters: entries.map(\.filter),
-            chosen: filter,
-            color: barColor,
-            label: measureLabel
-        ) { chosen in
-            choose(chosen)
-        }
-        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
     }
 
     /// Every chapter of each book holding the word, shaded against the
@@ -1069,7 +1060,7 @@ struct StrongsAnalysisView: View {
     /// Each part's share as core slices it, the largest six and the rest as
     /// "Other", each named slice a way to filter the verses.
     @ViewBuilder
-    private func share(of entries: [LampStrongsChartDivision]) -> some View {
+    private func share(of entries: [LampStrongsChartDivision], isOriginalLanguage: Bool = false) -> some View {
         let slices = LampStrongsShare.slices(from: entries.map(\.division))
         let filters = Dictionary(
             entries.map { (String($0.division.id), $0.filter) },
@@ -1092,15 +1083,19 @@ struct StrongsAnalysisView: View {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(shareColor(index, of: slices))
                         .frame(width: 10, height: 10)
+                    // A form in the serif its list sets it in; "Other"
+                    // is English, whatever the slices name.
                     Text(slice.name)
-                        .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                        .font(isOriginalLanguage && !slice.isOther
+                            ? .system(.body, design: .serif).weight(isSelected ? .semibold : .regular)
+                            : .subheadline.weight(isSelected ? .semibold : .regular))
                         .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     Text("\(slice.value)")
                         .font(.subheadline)
                         .monospacedDigit()
-                    Text(StrongsShareRing.share(slice.fraction))
+                    Text(LampStrongsSpread.percent(slice.fraction))
                         .font(.subheadline)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
@@ -1631,7 +1626,7 @@ private struct StrongsShareRing: View {
                 Text("\(slice.value)")
                     .font(.title3.weight(.semibold))
                     .monospacedDigit()
-                Text(Self.share(slice.fraction))
+                Text(LampStrongsSpread.percent(slice.fraction))
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -1645,99 +1640,6 @@ private struct StrongsShareRing: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-        }
-    }
-
-    /// A fraction of the whole as a percentage, a sliver as "<1%".
-    static func share(_ fraction: Double) -> String {
-        let percent = 100 * fraction
-        return percent > 0 && percent < 1 ? "<1%" : "\(Int(percent.rounded()))%"
-    }
-}
-
-/// The spread as columns side by side, a histogram that shows its shape:
-/// where the word gathers and where it thins. A column tapped is named above
-/// the chart and narrows the verse list, where its part names one.
-private struct StrongsColumns: View {
-    let bars: [LampStrongsSpreadBar]
-    let filters: [LampStrongsFilter?]
-    let chosen: LampStrongsFilter?
-    let color: (LampStrongsAnalysis.Expectation) -> Color
-    let label: (LampStrongsSpreadBar) -> String
-    let choose: (LampStrongsFilter?) -> Void
-
-    @State private var selected: Int?
-
-    private static let height: CGFloat = 120
-
-    private var spacing: CGFloat { bars.count > 40 ? 1.5 : 3 }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            readout
-            GeometryReader { proxy in
-                let width = max(2, (proxy.size.width - spacing * CGFloat(max(bars.count - 1, 0))) / CGFloat(max(bars.count, 1)))
-                HStack(alignment: .bottom, spacing: spacing) {
-                    ForEach(Array(bars.enumerated()), id: \.element.id) { index, bar in
-                        let isChosen = selected == index || (filters.indices.contains(index) && filters[index] != nil && filters[index] == chosen)
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(bar.occurrenceCount == 0 ? StrongsBarTrack.track : isChosen ? Color.accentColor : color(bar.expectation))
-                            .frame(width: width, height: bar.occurrenceCount == 0 ? 2 : max(4, Self.height * CGFloat(bar.share)))
-                            .frame(maxHeight: .infinity, alignment: .bottom)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                guard bar.occurrenceCount > 0 else { return }
-                                selected = selected == index ? nil : index
-                                if filters.indices.contains(index) { choose(filters[index]) }
-                            }
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("\(bar.name), \(label(bar))")
-                            .accessibilityAddTraits(.isButton)
-                    }
-                }
-            }
-            .frame(height: Self.height)
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(LampTheme.caption.opacity(0.5))
-                    .frame(height: 1)
-                    .offset(y: 1)
-            }
-            HStack {
-                Text(bars.first?.name ?? "")
-                Spacer(minLength: 8)
-                Text(bars.last?.name ?? "")
-            }
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(LampTheme.caption)
-            .lineLimit(1)
-        }
-        .onChange(of: bars.map(\.id)) { selected = nil }
-    }
-
-    /// The column tapped, named with its figure; until then, how to read it.
-    @ViewBuilder
-    private var readout: some View {
-        if let selected, bars.indices.contains(selected) {
-            let bar = bars[selected]
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(bar.name)
-                    .font(.subheadline.weight(.semibold))
-                Text(label(bar))
-                    .font(.subheadline.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                if bar.expectation != .asExpected {
-                    Text(bar.expectation == .more ? "↑ more than expected" : "↓ fewer than expected")
-                        .font(.footnote)
-                        .foregroundStyle(color(bar.expectation))
-                }
-            }
-            .lineLimit(1)
-        } else {
-            Text("Tap a column to name it.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
     }
 }
