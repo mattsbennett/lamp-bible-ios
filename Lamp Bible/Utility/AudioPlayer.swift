@@ -316,6 +316,10 @@ enum SpeechVoiceCatalog {
         describe(voice).isBasic
     }
 
+    /// Where voices are downloaded. iOS 27 renamed the pane from Spoken
+    /// Content to Read & Speak, so both names are given.
+    static let voicesSettingsPath = "Settings › Accessibility › Read & Speak › Voices (Spoken Content on earlier iOS)"
+
     /// Pass `nil` to go back to the best available voice.
     static func setPreferredVoiceIdentifier(_ identifier: String?, for languageCode: String?) {
         guard let base = normalized(languageCode) else { return }

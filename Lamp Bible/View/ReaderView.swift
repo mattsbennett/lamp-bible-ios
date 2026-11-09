@@ -2616,7 +2616,7 @@ struct ReaderView: View {
     }
 
     static func noVoiceMessage(for languageCode: String?) -> String {
-        let howToFix = "Add one in Settings › Accessibility › Spoken Content › Voices."
+        let howToFix = "Add one in \(SpeechVoiceCatalog.voicesSettingsPath)."
         guard let language = SpeechVoiceCatalog.languageName(for: languageCode) else {
             return "No speech voice is installed for this text. \(howToFix)"
         }

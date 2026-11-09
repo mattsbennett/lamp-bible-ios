@@ -1459,7 +1459,7 @@ private struct ReadAloudSettingsSection: View {
             }
             .disabled(!hasGreekVoice)
             if !hasGreekVoice {
-                Text("Modern Greek needs a Greek voice. Add one in Settings › Accessibility › Spoken Content › Voices.")
+                Text("Modern Greek needs a Greek voice. Add one in \(SpeechVoiceCatalog.voicesSettingsPath).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1495,7 +1495,7 @@ private struct ReadAloudSettingsSection: View {
     }
 
     private var noVoiceText: String {
-        let howToFix = "Add one in Settings › Accessibility › Spoken Content › Voices."
+        let howToFix = "Add one in \(SpeechVoiceCatalog.voicesSettingsPath)."
         guard let languageName else {
             return "No speech voice is installed for this translation. \(howToFix)"
         }
@@ -1514,7 +1514,7 @@ private struct ReadAloudSettingsSection: View {
 }
 
 /// How to get a voice better than the basic one, as steps: iOS gives apps
-/// no supported way to open Spoken Content's voices, so this says where
+/// no supported way to open Read & Speak's voices, so this says where
 /// they are rather than pretending to take the reader there.
 private struct BetterVoicesSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -1523,7 +1523,7 @@ private struct BetterVoicesSheet: View {
         NavigationStack {
             List {
                 Section {
-                    step(1, "In the Settings app, go to Accessibility › Spoken Content › Voices › English.")
+                    step(1, "In the Settings app, go to Accessibility › Read & Speak › Voices, and choose English. On earlier iOS, Read & Speak is called Spoken Content.")
                     step(2, "Choose a voice and download its Premium or Enhanced version. Ava (Premium) is a good one.")
                     step(3, "Come back to Lamp. With Voice set to Automatic, it switches to the new voice by itself.")
                 } footer: {
