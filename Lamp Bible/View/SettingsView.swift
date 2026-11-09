@@ -1410,7 +1410,9 @@ private struct ReadAloudSettingsSection: View {
                     .foregroundStyle(.secondary)
             } else {
                 // "Automatic" names the voice it stands for, so a reader can
-                // tell what they'd be choosing over.
+                // tell what they'd be choosing over. A colon, as on the Mac,
+                // since Apple's names carry brackets of their own: "Ava
+                // (Premium)".
                 Picker("Voice", selection: Binding(
                     get: { selectedVoiceId },
                     set: { chosen in
@@ -1418,7 +1420,7 @@ private struct ReadAloudSettingsSection: View {
                         SpeechVoiceCatalog.setPreferredVoiceIdentifier(chosen.isEmpty ? nil : chosen, for: languageCode)
                     }
                 )) {
-                    Text(automaticVoice.map { "Automatic (\($0.name))" } ?? "Automatic")
+                    Text(automaticVoice.map { "Automatic: \($0.name)" } ?? "Automatic")
                         .tag("")
                     ForEach(voices, id: \.identifier) { voice in
                         Text(SpeechVoiceCatalog.displayName(for: voice))
