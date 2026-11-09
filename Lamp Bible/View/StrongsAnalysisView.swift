@@ -140,8 +140,8 @@ struct StrongsAnalysisView: View {
     @AppStorage("strongs.analysis.spreadGrouping") private var spreadGrouping: LampStrongsSpreadGrouping = .books
     @AppStorage("strongs.analysis.measure") private var measure: LampStrongsSpreadMeasure = .occurrences
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = false
-    @AppStorage("strongs.analysis.formChartAsRing") private var showsFormRing = false
+    @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = true
+    @AppStorage("strongs.analysis.formChartAsRing") private var showsFormRing = true
 
     private struct BookRangeChoice: Equatable {
         let range: ClosedRange<Int>?
@@ -563,7 +563,7 @@ struct StrongsAnalysisView: View {
             sectionHeader("Rendered As")
         } footer: {
             Text(showsRenderingRing
-                ? "How its \(analysis.occurrenceCount) occurrences are rendered, the commonest first. Tap one to filter the verse list below."
+                ? "How it is rendered, the commonest first. Tap one to filter the verse list below."
                 : "What translators reached for, not what the word means. Tap one to filter the verse list below.")
         }
     }
@@ -615,7 +615,7 @@ struct StrongsAnalysisView: View {
             sectionHeader("Forms")
         } footer: {
             Text(showsFormRing
-                ? "How its \(analysis.occurrenceCount) occurrences are spelled, the commonest first. Tap one to filter the verse list below."
+                ? "How it is spelled, the commonest first. A few occurrences record no spelling, so the ring can count fewer than the card. Tap one to filter the verse list below."
                 : "Each spelling the word takes where it occurs. Tap one to filter the verse list below.")
         }
     }
@@ -1097,11 +1097,14 @@ struct StrongsAnalysisView: View {
                     Text("\(slice.value)")
                         .font(.subheadline)
                         .monospacedDigit()
+                    // Wide enough for "100%", a word with one spelling.
                     Text(LampStrongsSpread.percent(slice.fraction))
                         .font(.subheadline)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .frame(minWidth: 40, alignment: .trailing)
                 }
                 .contentShape(Rectangle())
             }
@@ -1618,8 +1621,11 @@ private struct StrongsShareRing: View {
                     let isFaded = selected != nil && selected != index
                     context.fill(path, with: .color(color(index).opacity(isFaded ? 0.25 : 1)))
                     // A hairline in the row's own colour, so neighbouring
-                    // slices of one hue stay apart.
-                    context.stroke(path, with: .color(Color(uiColor: .secondarySystemGroupedBackground)), lineWidth: 1.5)
+                    // slices of one hue stay apart; a whole ring has none to
+                    // part, and would show a seam at the top.
+                    if slices.count > 1 {
+                        context.stroke(path, with: .color(Color(uiColor: .secondarySystemGroupedBackground)), lineWidth: 1.5)
+                    }
                     start += sweep
                 }
             }
