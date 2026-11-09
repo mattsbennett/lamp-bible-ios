@@ -126,22 +126,27 @@ final class StrongsIndex: @unchecked Sendable {
         }
     }
 
-    /// The analysis of `key` from the index, reading only the verses that
-    /// hold it, or nil while the translation has no index as it now stands.
+    /// The analysis of `key` in range from the index, reading only the verses
+    /// that hold it, by core's reader as the Mac's library reads it, or nil
+    /// while the translation has no index as it now stands, which is then
+    /// started.
     func analysis(
         key: String,
         translation: TranslationModule,
+        bookRange: ClosedRange<Int>? = nil,
         includingVerseText: Bool,
         source: TranslationVerseSource
     ) throws -> LampStrongsAnalysis? {
-        guard let dbQueue,
-              let indexed = current(translation.id, source: source, { db in
-                  (
-                      try LampStrongsIndex.corpus(for: key, translationID: translation.id, in: db),
-                      try LampStrongsIndex.references(of: key, translationID: translation.id, in: db)
+        guard let dbQueue else { return nil }
+        guard let digest = try? fingerprint(of: translation.id, source: source),
+              let indexed = try? dbQueue.read({
+                  try LampStrongsAnalysisReader.indexed(
+                      key: key, translationID: translation.id, fingerprint: digest, bookRange: bookRange, in: $0
                   )
-              }) else { return nil }
-        let (corpus, references) = indexed
+              }) else {
+            build(translation.id, from: source)
+            return nil
+        }
         var analyzer = LampStrongsAnalyzer(
             key: key,
             translationID: translation.id,
@@ -149,23 +154,24 @@ final class StrongsIndex: @unchecked Sendable {
             translationAbbreviation: translation.abbreviation,
             language: translation.language,
             includingVerseText: includingVerseText,
-            corpus: corpus
+            corpus: indexed.corpus
         )
         try source.read { db in
-            for start in stride(from: 0, to: references.count, by: 500) {
-                let batch = Array(references[start..<min(start + 500, references.count)])
-                for row in try Row.fetchAll(db, sql: """
-                    SELECT ref, text, annotations_json FROM translation_verses
-                    WHERE translation_id = ? AND ref IN (\(batch.map { _ in "?" }.joined(separator: ", ")))
-                    """, arguments: StatementArguments([translation.id] + batch)) {
-                    let text: String? = row["text"]
-                    analyzer.add(reference: row["ref"], text: text ?? "", annotationsJSON: row["annotations_json"])
-                }
-            }
+            try LampStrongsAnalysisReader.addVerses(
+                indexed.references, to: &analyzer, from: Self.verses(of: translation.id), in: db
+            )
         }
         return try analyzer.analysis { keys in
-            try dbQueue.read { try LampStrongsIndex.verseCounts(of: keys, translationID: translation.id, in: $0) }
+            try dbQueue.read {
+                try LampStrongsIndex.verseCounts(of: keys, translationID: translation.id, bookRange: bookRange, in: $0)
+            }
         }
+    }
+
+    /// Where a translation's verses are in the phone's databases: its rows of
+    /// the `translation_verses` table both share.
+    static func verses(of translationId: String) -> LampStrongsAnalysisReader.VerseSource {
+        LampStrongsAnalysisReader.VerseSource(table: "translation_verses", translationID: translationId)
     }
 
     /// `body`'s answer from the index when it holds the translation as it

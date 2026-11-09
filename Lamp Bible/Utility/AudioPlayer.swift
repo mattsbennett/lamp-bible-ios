@@ -10,6 +10,7 @@ import AVFoundation
 import Combine
 import MediaPlayer
 import Observation
+import LampCore
 
 /// Observable audio player for devotional audio blocks
 class AudioPlayer: NSObject, ObservableObject {
@@ -324,6 +325,27 @@ enum SpeechVoiceCatalog {
         guard let languageCode, !languageCode.isEmpty else { return nil }
         let lowered = languageCode.lowercased()
         return lowered.split(separator: "-").first.map(String.init) ?? lowered
+    }
+}
+
+/// Says one Greek or Hebrew word aloud from its IPA, as the Mac's dictionary
+/// does: one voice for every word, so a second tap stops the first word
+/// rather than talking over it. The voice is the reader's English Read Aloud
+/// voice, since core keeps the IPA to sounds an English voice has; a Greek or
+/// Hebrew voice would read the modern languages instead.
+@MainActor
+final class WordSpeaker {
+    static let shared = WordSpeaker()
+    private let synthesizer = AVSpeechSynthesizer()
+
+    func say(_ word: String, ipa: String) {
+        synthesizer.stopSpeaking(at: .immediate)
+        // Heard with the ringer off, as a word asked for should be.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        let utterance = AVSpeechUtterance(attributedString: LampPronunciation.spoken(word, ipa: ipa))
+        utterance.voice = SpeechVoiceCatalog.preferredVoice(for: "en") ?? AVSpeechSynthesisVoice(language: "en-US")
+        synthesizer.speak(utterance)
     }
 }
 

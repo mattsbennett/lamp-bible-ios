@@ -1733,18 +1733,32 @@ class TranslationDatabase {
     /// From the Strong's index, reading only the verses holding the key, or,
     /// while the translation has none, by a pass over the whole translation:
     /// call it off the main thread.
-    func analyzeStrongs(key: String, translationId: String) throws -> LampStrongsAnalysis? {
+    func analyzeStrongs(
+        key: String,
+        translationId: String,
+        bookRange: ClosedRange<Int>? = nil,
+        includingVerseText: Bool = true
+    ) throws -> LampStrongsAnalysis? {
         guard let translation = try getTranslation(id: translationId) else { return nil }
         if let analysis = try StrongsIndex.shared.analysis(
-            key: key, translation: translation, includingVerseText: true, source: try verseSource(for: translationId)
+            key: key, translation: translation, bookRange: bookRange,
+            includingVerseText: includingVerseText, source: try verseSource(for: translationId)
         ) {
             return analysis
         }
-        return try analyzeStrongsByReadingEveryVerse(key: key, translationId: translationId)
+        return try analyzeStrongsByReadingEveryVerse(
+            key: key, translationId: translationId, bookRange: bookRange, includingVerseText: includingVerseText
+        )
     }
 
-    /// The analysis by a pass over every tagged verse of the translation.
-    func analyzeStrongsByReadingEveryVerse(key: String, translationId: String) throws -> LampStrongsAnalysis? {
+    /// The analysis by a pass over every tagged verse of the translation in
+    /// range, by core's reader.
+    func analyzeStrongsByReadingEveryVerse(
+        key: String,
+        translationId: String,
+        bookRange: ClosedRange<Int>? = nil,
+        includingVerseText: Bool = true
+    ) throws -> LampStrongsAnalysis? {
         guard let translation = try getTranslation(id: translationId) else { return nil }
         var analyzer = LampStrongsAnalyzer(
             key: key,
@@ -1752,22 +1766,12 @@ class TranslationDatabase {
             translationName: translation.name,
             translationAbbreviation: translation.abbreviation,
             language: translation.language,
-            includingVerseText: true
+            includingVerseText: includingVerseText
         )
-        func feed(_ db: Database) throws {
-            let rows = try Row.fetchCursor(db, sql: """
-                SELECT ref, text, annotations_json FROM translation_verses
-                WHERE translation_id = ? AND annotations_json IS NOT NULL
-                """, arguments: [translationId])
-            while let row = try rows.next() {
-                // The text is read only for a verse holding the key.
-                analyzer.add(reference: row["ref"], text: row["text"] ?? "", annotationsJSON: row["annotations_json"])
-            }
-        }
-        if try bundledDb.isTranslationBundled(id: translationId) {
-            try bundledDb.read(feed)
-        } else {
-            try userDb.read(feed)
+        try verseSource(for: translationId).read { db in
+            try LampStrongsAnalysisReader.addEveryVerse(
+                to: &analyzer, bookRange: bookRange, from: StrongsIndex.verses(of: translationId), in: db
+            )
         }
         return analyzer.analysis()
     }
@@ -1847,23 +1851,12 @@ class TranslationDatabase {
         return try searchVersesByStrongs(translationId: translationId, strongsNum: key, limit: 100_000).map(\.ref)
     }
 
-    /// How the translation numbers its verses: the scheme it names, with the
-    /// departures from it its row lists, as core reads a module's.
+    /// How the translation numbers its verses: the scheme it declares, with
+    /// the departures from it its row lists, read as core reads a module's.
     func versification(of translation: TranslationModule) -> LampVersification {
-        let numbering = LampVersification.standard(
-            LampVersification.Scheme(moduleValue: translation.versification) ?? .english
-        )
-        // A table older than the column has no departures to read.
-        let departures = try? verseSource(for: translation.id).read { db in
-            try String.fetchOne(
-                db, sql: "SELECT versification_mappings FROM translations WHERE id = ?",
-                arguments: [translation.id]
-            )
-        }
-        guard let data = departures?.data(using: .utf8),
-              let lines = try? JSONDecoder().decode([String].self, from: data), !lines.isEmpty
-        else { return numbering }
-        return numbering.departing(by: lines)
+        (try? verseSource(for: translation.id).read {
+            try LampVersification.declared(in: $0, translationID: translation.id)
+        }) ?? .standard(.english)
     }
 
     /// Get the last verse ref in a chapter

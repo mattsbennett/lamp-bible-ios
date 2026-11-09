@@ -1225,37 +1225,11 @@ enum StrongsSeptuagint {
         let entrySenses = database.lexicons()
             .filter { $0.language == "greek" && $0.isKeyedByStrongs }
             .flatMap { lexicon in
-                Self.senses(fromJSON: keys.lazy
+                LampDictionarySense.senses(fromJSON: keys.lazy
                     .compactMap { try? database.getDictionaryEntry(moduleId: lexicon.moduleId, key: $0) }
                     .first?.sensesJson)
             }
         return LampSeptuagintSection.words(in: entrySenses)
-    }
-
-    /// An entry's senses with their Septuagint notes, read as core reads them:
-    /// either spelling of the field, a word with nothing to print skipped, a
-    /// padded number ("H07941") normalized. Core's own reader is private to
-    /// its library; until it is shared, only the note is read here, since the
-    /// phone reads the rest of a sense itself.
-    static func senses(fromJSON json: String?) -> [LampDictionarySense] {
-        guard let data = json?.data(using: .utf8),
-              let senses = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
-        else { return [] }
-        return senses.map { sense in
-            let notes = (sense["septuagintHebrew"] ?? sense["septuagint_hebrew"]) as? [[String: Any]] ?? []
-            return LampDictionarySense(septuagintHebrew: notes.compactMap { note in
-                func field(_ name: String) -> String? {
-                    let value = (note[name] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return value?.isEmpty == false ? value : nil
-                }
-                guard let text = field("text") else { return nil }
-                return LampSeptuagintHebrew(
-                    text: text,
-                    stem: field("stem"),
-                    strongs: field("strongs").flatMap(LampStrongsKey.typedKey)
-                )
-            })
-        }
     }
 
     /// The Hebrew Old Testament, by its language, with tags to count by.

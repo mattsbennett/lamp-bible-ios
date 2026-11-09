@@ -5621,12 +5621,19 @@ final class StrongsIndexTests: XCTestCase {
             XCTAssertEqual(index.count(translationId: "KJVs", key: key, source: source), scanned, key)
         }
 
-        // An analysis from the index is the analysis of every verse.
+        // An analysis from the index is the analysis of every verse, over the
+        // whole and over a range.
         let kjv = try XCTUnwrap(TranslationDatabase.shared.getTranslation(id: "KJVs"))
         for key in ["G26", "H430"] {
-            let indexed = try index.analysis(key: key, translation: kjv, includingVerseText: true, source: source)
-            let read = try TranslationDatabase.shared.analyzeStrongsByReadingEveryVerse(key: key, translationId: "KJVs")
-            XCTAssertEqual(indexed, read, key)
+            for range in [nil, 1...5, 43...43] as [ClosedRange<Int>?] {
+                let indexed = try index.analysis(
+                    key: key, translation: kjv, bookRange: range, includingVerseText: true, source: source
+                )
+                let read = try TranslationDatabase.shared.analyzeStrongsByReadingEveryVerse(
+                    key: key, translationId: "KJVs", bookRange: range
+                )
+                XCTAssertEqual(indexed, read, "\(key) \(String(describing: range))")
+            }
         }
     }
 }
@@ -6084,6 +6091,14 @@ final class BundledLexiconTests: XCTestCase {
         )
     }
 
+    /// Greek from a headword and Hebrew from Strong's respelling, as the Mac
+    /// says them; a key no dictionary has says nothing, so shows no button.
+    func testAWordCanBeSaidFromItsEntries() {
+        XCTAssertNotNil(PronounceButton.ipa(forKey: "G26"))
+        XCTAssertNotNil(PronounceButton.ipa(forKey: "H3722"))
+        XCTAssertNil(PronounceButton.ipa(forKey: "G99999"))
+    }
+
     func testTBESGIsSearchedOnItsOwnAndListedForTheFilter() throws {
         var filter = ModuleSearchFilter()
         filter.types = [.dictionary]
@@ -6103,29 +6118,6 @@ final class BundledLexiconTests: XCTestCase {
 /// The Hebrew a Greek word renders in the Septuagint, read from a lexicon's
 /// notes, and the Hebrew word's verses with the Septuagint's Greek beside them.
 final class StrongsSeptuagintTests: XCTestCase {
-
-    /// As core reads a sense's notes: either spelling of the field, a word with
-    /// nothing to print skipped, a padded number normalized, a stem kept; and
-    /// core lists a word named twice once.
-    func testTheHebrewIsReadFromASensesNotes() {
-        let json = """
-        [{"gloss": "rejoice", "septuagintHebrew": [
-            {"text": "רנן", "stem": "pi."},
-            {"text": " ", "strongs": "H1"},
-            {"text": "שׂמח", "strongs": "H07796"}
-        ]}, {"septuagint_hebrew": [{"text": "גיל", "strongs": "H1523"}, {"text": "רנן", "stem": "pi."}]},
-        {"gloss": "none"}]
-        """
-        let senses = StrongsSeptuagint.senses(fromJSON: json)
-        XCTAssertEqual(senses.count, 3)
-        XCTAssertEqual(LampSeptuagintSection.words(in: senses), [
-            LampSeptuagintHebrew(text: "רנן", stem: "pi."),
-            LampSeptuagintHebrew(text: "שׂמח", strongs: "H7796"),
-            LampSeptuagintHebrew(text: "גיל", strongs: "H1523"),
-        ])
-        XCTAssertEqual(StrongsSeptuagint.senses(fromJSON: "not json"), [])
-        XCTAssertEqual(StrongsSeptuagint.senses(fromJSON: nil), [])
-    }
 
     /// From the bundle: love's Hebrew, where that Hebrew stands in TAHOT, and
     /// the Septuagint's Greek for a psalm the two number differently.

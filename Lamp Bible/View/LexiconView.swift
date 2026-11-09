@@ -2221,6 +2221,10 @@ struct LexiconEntryView: View {
                 }
                 .layoutPriority(1)
 
+                if !entry.strongsId.isEmpty {
+                    PronounceButton(key: entry.strongsId, word: entry.lemma, size: baseFontSize)
+                }
+
                 let pos = entry.pos ?? liftedPartOfSpeech
                 let xlit = entry.xlit
                 if (xlit?.isEmpty == false) || (pos?.isEmpty == false) {
@@ -2424,6 +2428,63 @@ struct LexiconEntryView: View {
 }
 
 // MARK: - Entry parts
+
+/// Says a Strong's word aloud, as the Mac's dictionary does.
+///
+/// Not from its spelling: an English voice reads "agápē" as the English
+/// "agape", and the Greek and Hebrew voices read the modern languages. Core
+/// gives the word in IPA, Greek from any lexicon's headword and Hebrew from
+/// Strong's respelling, which a voice says as written. Shown only once there
+/// is something to say.
+struct PronounceButton: View {
+    let key: String
+    /// The word as the entry prints it, which the voice is given with the IPA.
+    let word: String
+    var size: CGFloat = 17
+
+    @State private var ipa: String?
+
+    var body: some View {
+        Group {
+            if let ipa {
+                Button {
+                    WordSpeaker.shared.say(word, ipa: ipa)
+                } label: {
+                    Image(systemName: "speaker.wave.2")
+                        .font(.system(size: size * 0.85, weight: .medium))
+                        .foregroundStyle(LampTheme.caption)
+                        .padding(6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Say \(word) aloud")
+            }
+        }
+        .task(id: key) {
+            ipa = nil
+            let key = key
+            ipa = await Task.detached(priority: .userInitiated) { Self.ipa(forKey: key) }.value
+        }
+    }
+
+    /// The key's word in IPA from every dictionary entry the phone has for it,
+    /// or nil when none can say it.
+    nonisolated static func ipa(forKey key: String) -> String? {
+        let entries = LexiconLookup.allEntries(for: key).map { entry in
+            LampDictionaryResult(
+                entryID: entry.id,
+                moduleID: entry.lexiconKey,
+                moduleName: entry.lexiconName,
+                key: entry.strongsId,
+                lemma: entry.lemma,
+                transliteration: entry.xlit,
+                pronunciation: entry.pron,
+                senses: []
+            )
+        }
+        return LampPronunciation.ipa(forKey: key, entries: entries)
+    }
+}
 
 /// A small overline naming a part of an entry: its lexicon, its senses, a
 /// derivation. Darker than tertiary grey, which vanished at this size.
