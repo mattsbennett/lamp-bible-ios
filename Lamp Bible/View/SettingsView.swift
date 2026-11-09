@@ -9,6 +9,7 @@ import SwiftUI
 import Combine
 import GRDB
 import AVFoundation
+import LampCore
 
 struct SettingsView: View {
     /// "1.2.0 (1)": the marketing version and the build.
@@ -1381,6 +1382,8 @@ private struct ReadAloudSettingsSection: View {
     let translationId: String
 
     @AppStorage("readAloudFollowsText") private var followsText: Bool = true
+    @AppStorage(LampPronunciation.GreekReading.preferenceKey) private var greekReading = ""
+    @State private var hasGreekVoice = WordSpeaker.hasGreekVoice
     @State private var languageCode: String?
     @State private var voices: [AVSpeechSynthesisVoice] = []
     @State private var selectedVoiceId: String = ""
@@ -1418,14 +1421,32 @@ private struct ReadAloudSettingsSection: View {
                     SpeechVoiceCatalog.setPreferredVoiceIdentifier(newValue, for: languageCode)
                 }
             }
+
+            // How the speaker beside a Greek word says it. Shown as it will
+            // be said: without a Greek voice, the classroom way, whatever was
+            // chosen before.
+            Picker("Greek Words", selection: Binding(
+                get: { LampPronunciation.GreekReading.resolved(greekReading, hasGreekVoice: hasGreekVoice) },
+                set: { greekReading = $0.rawValue }
+            )) {
+                ForEach(LampPronunciation.GreekReading.allCases, id: \.self) { reading in
+                    Text(reading.title).tag(reading)
+                }
+            }
+            .disabled(!hasGreekVoice)
+            if !hasGreekVoice {
+                Text("Modern Greek needs a Greek voice. Add one in Settings › Accessibility › Spoken Content › Voices.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         } header: {
             Text("Read Aloud").lampSectionHeader()
         } footer: {
             Group {
             if let languageName, !voices.isEmpty {
-                Text("Follow Along highlights each verse as it's spoken and keeps it on screen. The voice applies to \(languageName) translations.")
+                Text("Follow Along highlights each verse as it's spoken and keeps it on screen. The voice applies to \(languageName) translations. Greek Words is how the speaker beside a Greek word says it.")
             } else {
-                Text("Follow Along highlights each verse as it's spoken and keeps it on screen.")
+                Text("Follow Along highlights each verse as it's spoken and keeps it on screen. Greek Words is how the speaker beside a Greek word says it.")
             }
             }
             .foregroundStyle(LampTheme.caption)
@@ -1444,6 +1465,7 @@ private struct ReadAloudSettingsSection: View {
     }
 
     private func load() {
+        hasGreekVoice = WordSpeaker.hasGreekVoice
         let language = (try? TranslationDatabase.shared.getTranslation(id: translationId))?.language
         languageCode = language
         voices = SpeechVoiceCatalog.voices(for: language)

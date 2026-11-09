@@ -328,23 +328,30 @@ enum SpeechVoiceCatalog {
     }
 }
 
-/// Says one Greek or Hebrew word aloud from its IPA, as the Mac's dictionary
-/// does: one voice for every word, so a second tap stops the first word
-/// rather than talking over it. The voice is the reader's English Read Aloud
-/// voice, since core keeps the IPA to sounds an English voice has; a Greek or
-/// Hebrew voice would read the modern languages instead.
+/// Says one Greek or Hebrew word aloud, as the Mac's dictionary does: one
+/// voice for every word, so a second tap stops the first word rather than
+/// talking over it. A word in IPA is said by the reader's English Read Aloud
+/// voice, since core keeps the IPA to sounds an English voice has; a word
+/// read the modern Greek way, by their Greek voice reading the word itself.
 @MainActor
 final class WordSpeaker {
     static let shared = WordSpeaker()
     private let synthesizer = AVSpeechSynthesizer()
 
-    func say(_ word: String, ipa: String) {
+    /// Whether Modern Greek can be offered: it needs a Greek voice.
+    nonisolated static var hasGreekVoice: Bool { SpeechVoiceCatalog.hasVoice(for: "el") }
+
+    func say(_ word: LampPronunciation.Utterance) {
         synthesizer.stopSpeaking(at: .immediate)
         // Heard with the ringer off, as a word asked for should be.
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         try? AVAudioSession.sharedInstance().setActive(true)
-        let utterance = AVSpeechUtterance(attributedString: LampPronunciation.spoken(word, ipa: ipa))
-        utterance.voice = SpeechVoiceCatalog.preferredVoice(for: "en") ?? AVSpeechSynthesisVoice(language: "en-US")
+        let utterance = AVSpeechUtterance(attributedString: word.text)
+        utterance.voice = word.ipa != nil
+            ? SpeechVoiceCatalog.preferredVoice(for: "en")
+                ?? AVSpeechSynthesisVoice(language: LampPronunciation.englishVoiceLanguage)
+            : SpeechVoiceCatalog.preferredVoice(for: "el")
+                ?? AVSpeechSynthesisVoice(language: word.voiceLanguage)
         synthesizer.speak(utterance)
     }
 }

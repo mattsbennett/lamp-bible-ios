@@ -449,7 +449,7 @@ struct StrongsAnalysisView: View {
                         .padding(.vertical, 3)
                         .background(LampTheme.tileFill, in: Capsule())
                     // As the Mac's card has it, and the dictionary's entries.
-                    PronounceButton(key: analysis.key, word: headword.lemma ?? analysis.key, size: 20)
+                    PronounceButton(key: analysis.key, size: 20)
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     if let transliteration = headword.transliteration, !transliteration.isEmpty {

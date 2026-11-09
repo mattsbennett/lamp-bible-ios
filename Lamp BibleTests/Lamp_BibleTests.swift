@@ -6109,6 +6109,25 @@ final class BundledLexiconTests: XCTestCase {
         XCTAssertNil(PronounceButton.ipa(forKey: "G99999"))
     }
 
+    /// Modern Greek hands the Greek voice the word itself, the bare word
+    /// rather than a lexicon's headword with its endings; Hebrew has the one
+    /// reading whatever is chosen.
+    func testAGreekWordCanBeSaidTheModernWay() {
+        let modern = LampPronunciation.utterance(
+            forKey: "G26", entries: PronounceButton.entries(forKey: "G26"), greekReading: .modern
+        )
+        XCTAssertEqual(modern?.word, "ἀγάπη")
+        XCTAssertNil(modern?.ipa)
+        XCTAssertEqual(modern?.voiceLanguage, LampPronunciation.greekVoiceLanguage)
+        XCTAssertEqual(modern?.greekReading, .modern)
+
+        let hebrew = LampPronunciation.utterance(
+            forKey: "H160", entries: PronounceButton.entries(forKey: "H160"), greekReading: .modern
+        )
+        XCTAssertNotNil(hebrew?.ipa)
+        XCTAssertNil(hebrew?.greekReading)
+    }
+
     func testTBESGIsSearchedOnItsOwnAndListedForTheFilter() throws {
         var filter = ModuleSearchFilter()
         filter.types = [.dictionary]

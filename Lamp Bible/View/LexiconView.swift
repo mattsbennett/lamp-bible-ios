@@ -2227,7 +2227,7 @@ struct LexiconEntryView: View {
                 .layoutPriority(1)
 
                 if !entry.strongsId.isEmpty {
-                    PronounceButton(key: entry.strongsId, word: entry.lemma, size: baseFontSize)
+                    PronounceButton(key: entry.strongsId, size: baseFontSize)
                 }
 
                 let pos = entry.pos ?? liftedPartOfSpeech
@@ -2437,26 +2437,30 @@ struct LexiconEntryView: View {
 /// Says a Strong's word aloud, as the Mac's dictionary does.
 ///
 /// Not from its spelling: an English voice reads "agápē" as the English
-/// "agape", and the Greek and Hebrew voices read the modern languages. Core
-/// gives the word in IPA, Greek from any lexicon's headword and Hebrew from
-/// Strong's respelling, which a voice says as written. Shown only once there
-/// is something to say.
+/// "agape". Core gives the word in IPA for an English voice, Greek from any
+/// lexicon's headword and Hebrew from Strong's respelling; or, where the
+/// reader chose Modern Greek in Settings and has a Greek voice, the Greek
+/// word itself for that voice. Held down, a Greek word can be heard the
+/// other way without changing the setting. Shown only once there is
+/// something to say.
 struct PronounceButton: View {
     let key: String
-    /// The word as the entry prints it, which the voice is given with the IPA.
-    let word: String
     var size: CGFloat = 17
 
-    @State private var ipa: String?
+    @AppStorage(LampPronunciation.GreekReading.preferenceKey) private var storedReading = ""
+    @State private var entries: [LampDictionaryResult]?
 
     var body: some View {
         // A ZStack, not a Group: a Group's modifiers go to its children, and
         // with no button yet there are none, so the task that finds the
-        // word's IPA would never run and the button never appear.
+        // word's entries would never run and the button never appear.
         ZStack {
-            if let ipa {
+            let reading = LampPronunciation.GreekReading.resolved(
+                storedReading, hasGreekVoice: WordSpeaker.hasGreekVoice
+            )
+            if let spoken = utterance(reading) {
                 Button {
-                    WordSpeaker.shared.say(word, ipa: ipa)
+                    WordSpeaker.shared.say(spoken)
                 } label: {
                     Image(systemName: "speaker.wave.2")
                         .font(.system(size: size * 0.85, weight: .medium))
@@ -2465,20 +2469,42 @@ struct PronounceButton: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Say \(word) aloud")
+                .contextMenu {
+                    // Modern Greek only with a voice to read it.
+                    if spoken.greekReading != nil, WordSpeaker.hasGreekVoice {
+                        ForEach(LampPronunciation.GreekReading.allCases, id: \.self) { other in
+                            if let otherWay = utterance(other) {
+                                Button("Say in \(other.title)", systemImage: "speaker.wave.2") {
+                                    WordSpeaker.shared.say(otherWay)
+                                }
+                            }
+                        }
+                    }
+                }
+                .accessibilityLabel("Say \(spoken.word) aloud\(spoken.greekReading.map { ", \($0.title)" } ?? "")")
             }
         }
         .task(id: key) {
-            ipa = nil
+            entries = nil
             let key = key
-            ipa = await Task.detached(priority: .userInitiated) { Self.ipa(forKey: key) }.value
+            entries = await Task.detached(priority: .userInitiated) { Self.entries(forKey: key) }.value
         }
+    }
+
+    private func utterance(_ reading: LampPronunciation.GreekReading) -> LampPronunciation.Utterance? {
+        entries.flatMap { LampPronunciation.utterance(forKey: key, entries: $0, greekReading: reading) }
     }
 
     /// The key's word in IPA from every dictionary entry the phone has for it,
     /// or nil when none can say it.
     nonisolated static func ipa(forKey key: String) -> String? {
-        let entries = LexiconLookup.allEntries(for: key).map { entry in
+        LampPronunciation.ipa(forKey: key, entries: entries(forKey: key))
+    }
+
+    /// Every dictionary entry the phone has for the key, as core reads them
+    /// to say a word.
+    nonisolated static func entries(forKey key: String) -> [LampDictionaryResult] {
+        LexiconLookup.allEntries(for: key).map { entry in
             LampDictionaryResult(
                 entryID: entry.id,
                 moduleID: entry.lexiconKey,
@@ -2490,7 +2516,6 @@ struct PronounceButton: View {
                 senses: []
             )
         }
-        return LampPronunciation.ipa(forKey: key, entries: entries)
     }
 }
 
