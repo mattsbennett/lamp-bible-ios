@@ -139,8 +139,10 @@ enum LampTheme {
         var paragraphSpacing: CGFloat { bodySize * 0.55 }
         /// Space above a section heading.
         var headingSpacingBefore: CGFloat { bodySize * 1.35 }
-        /// Space between a section heading and its first verse.
-        var headingSpacingAfter: CGFloat { bodySize * 0.3 }
+        /// Space between a section heading and its first verse: more than the
+        /// gap between the text's own lines, at any line spacing, so the
+        /// heading reads as over the passage, but well under the space above.
+        var headingSpacingAfter: CGFloat { lineSpacing + bodySize * 0.3 }
 
         var verseNumberSize: CGFloat { max(11, bodySize * 0.68) }
         var verseNumberBaselineOffset: CGFloat { bodySize * 0.33 }

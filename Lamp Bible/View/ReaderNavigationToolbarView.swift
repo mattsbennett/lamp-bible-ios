@@ -379,20 +379,19 @@ struct ReaderNavigationToolbarView: View {
 
     private var viewOptionsPage: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Back to the first page, unnamed: that page holds the tools as
+            // well as highlighting, so "Highlights" misnamed it.
             Button {
                 showingViewOptions = false
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("Highlights")
-                }
-                .foregroundStyle(Color.accentColor)
-                .padding(.horizontal, 4)
-                .frame(height: 32)
-                .contentShape(Rectangle())
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Back")
 
             // How scripture is set.
             menuCaption("View")

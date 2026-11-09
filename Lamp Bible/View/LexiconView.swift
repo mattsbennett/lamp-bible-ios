@@ -959,7 +959,9 @@ struct DictionaryDefinitionView: View {
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse
                 )
-                .padding()
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                .padding(.bottom, 24)
             }
             .navigationTitle(sheetTitle(for: item))
             .navigationBarTitleDisplayMode(.inline)
@@ -1225,7 +1227,9 @@ struct LinkedDefinitionText: View {
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse
                 )
-                .padding()
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                .padding(.bottom, 24)
             }
             .navigationTitle(sheetTitle(for: item))
             .navigationBarTitleDisplayMode(.inline)
@@ -1403,7 +1407,9 @@ private struct LexiconSheetItemContent: View {
     }
 }
 
-/// Strong's reference content for sheet display
+/// Strong's reference content for sheet display: the entry set as the
+/// dictionary sheet sets it, so a number followed from an entry opens on the
+/// same lexicon name, serif word and chips as the entry it came from.
 private struct StrongsRefContent: View {
     let strongsNum: String
     var translationId: String? = nil
@@ -1412,12 +1418,6 @@ private struct StrongsRefContent: View {
     var baseFontSize: CGFloat = 17
 
     @State private var hitCount: Int? = nil
-
-    // Scaled fonts
-    private var titleFont: Font { .system(size: baseFontSize * 1.47) }
-    private var subheadlineFont: Font { .system(size: baseFontSize * 0.924) }
-    private var bodyFont: Font { .system(size: baseFontSize * 1.024) }
-    private var caption2Font: Font { .system(size: baseFontSize * 0.735) }
 
     /// Off the main thread: a count reads every verse that may tag the key.
     private func loadHitCount() async {
@@ -1429,74 +1429,16 @@ private struct StrongsRefContent: View {
     }
 
     var body: some View {
-        let entries = LexiconLookup.allEntries(for: strongsNum)
-
-        if let entry = entries.first {
-            VStack(alignment: .leading, spacing: 8) {
-                // Header
-                HStack(alignment: .center, spacing: 8) {
-                    HStack(alignment: .lastTextBaseline, spacing: 4) {
-                        Text(entry.lemma)
-                            .font(titleFont)
-                        if let homographNum = LexiconLookup.homographLabel(entry.homograph) {
-                            Text(homographNum)
-                                .font(subheadlineFont)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Text(entry.strongsId)
-                        .font(subheadlineFont)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.15))
-                        .clipShape(Capsule())
-
-                    if let bdbId = entry.bdbId {
-                        Text(bdbId)
-                            .font(subheadlineFont)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Color.purple.opacity(0.15))
-                            .clipShape(Capsule())
-                    }
-
-                    if let onSearch = onSearchStrongs, let count = hitCount, count > 0 {
-                        Button {
-                            onSearch(entry.strongsId)
-                        } label: {
-                            HStack(spacing: 1) {
-                                Image(systemName: "magnifyingglass")
-                                    .font(caption2Font)
-                                Text(entry.bdbId != nil ? "\(count)x (Strong's)" : "\(count)x")
-                            }
-                            .font(subheadlineFont)
-                            .foregroundStyle(.accent)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                if let xlit = entry.xlit, !xlit.isEmpty {
-                    Text(xlit)
-                        .font(subheadlineFont)
-                        .italic()
-                        .foregroundStyle(.secondary)
-                }
-
-                if let def = entry.def, !def.isEmpty {
-                    LinkedDefinitionText(
-                        text: def,
-                        font: bodyFont,
-                        fontSize: baseFontSize * 1.024,
-                        translationId: translationId,
-                        onSearchStrongs: onSearchStrongs,
-                        onNavigateToVerse: onNavigateToVerse
-                    )
-                }
-            }
+        if let entry = LexiconLookup.allEntries(for: strongsNum).first {
+            LexiconEntryView(
+                entry: entry,
+                senses: parseSensesForEntry(entry),
+                translationId: translationId,
+                onSearchStrongs: onSearchStrongs,
+                onNavigateToVerse: onNavigateToVerse,
+                baseFontSize: baseFontSize,
+                hitCount: hitCount
+            )
             .task { await loadHitCount() }
         } else {
             Text("Entry not found: \(strongsNum)")
@@ -3249,7 +3191,9 @@ struct LexiconPageView: View {
                     onSearchStrongs: onSearchStrongs,
                     onNavigateToVerse: onNavigateToVerse
                 )
-                .padding()
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+                .padding(.bottom, 24)
             }
             .navigationTitle(sheetTitle(for: item))
             .navigationBarTitleDisplayMode(.inline)

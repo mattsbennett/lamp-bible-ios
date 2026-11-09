@@ -673,7 +673,9 @@ struct ChapterTextView: UIViewRepresentable {
         result.append(chapterOpening(bookName: bookName, chapter: chapter, showsBookTitle: showBookTitle && chapter == 1))
 
         // Section headings: the body face, semibold and a touch larger, in the
-        // text's own colour. Grey made them recede to the level of verse numbers.
+        // grey of the book's name over each chapter, so they mark the text
+        // without competing with it; their weight and size keep them clear of
+        // the verse numbers.
         let sectionHeadingParagraphStyle = NSMutableParagraphStyle()
         sectionHeadingParagraphStyle.paragraphSpacingBefore = scripture.headingSpacingBefore
         sectionHeadingParagraphStyle.paragraphSpacing = scripture.headingSpacingAfter
@@ -682,7 +684,7 @@ struct ChapterTextView: UIViewRepresentable {
         let sectionHeadingAttributes: [NSAttributedString.Key: Any] = [
             .font: bodyFont(scripture.headingSize, weight: .semibold),
             .paragraphStyle: sectionHeadingParagraphStyle,
-            .foregroundColor: UIColor.lampReaderText
+            .foregroundColor: UIColor.lampCaption
         ]
 
         // Build heading lookup by full verse reference (book*1000000 + chapter*1000 + verse)

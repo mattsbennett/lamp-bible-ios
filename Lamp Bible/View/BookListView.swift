@@ -48,6 +48,9 @@ struct BookListView: View {
     @State private var visibleBooks: Set<Int> = []
     /// Genre names, for the section headers.
     @State private var genreNames: [Int: String] = [:]
+    /// Whether the list has been brought to the book being read, which it
+    /// does once, so coming back from a book leaves it where it was.
+    @State private var hasShownCurrentBook = false
 
     /// The book being read. verseId is BBCCCVVV.
     private var currentBook: Int { currentVerseId / 1000000 }
@@ -105,6 +108,17 @@ struct BookListView: View {
             // it covers no rows, showing which testament the list is in.
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 testamentJump(proxy)
+            }
+            // Open on the book being read, in its testament, rather than at
+            // Genesis with the reader in Matthew. A turn of the run loop
+            // later, once the list has laid out its rows.
+            .onAppear {
+                guard !hasShownCurrentBook else { return }
+                hasShownCurrentBook = true
+                let book = currentBook
+                DispatchQueue.main.async {
+                    proxy.scrollTo(book, anchor: .center)
+                }
             }
             }
             .task(id: translationId) {
