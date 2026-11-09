@@ -145,6 +145,9 @@ class BundledModuleDatabase {
     private var reverseLexiconMappingsCache: [String: [String]]?
     private let reverseLexiconMappingsLock = NSLock()
 
+    private var lexiconsCache: [Lexicon]?
+    private let lexiconsLock = NSLock()
+
     // MARK: - Database Access
 
     /// Nothing inside `block` may read this database again, `getBook` and
@@ -1058,6 +1061,49 @@ class BundledModuleDatabase {
         }
     }
 
+    // MARK: - Bundled Lexicons
+
+    /// A dictionary the bundle carries, as the bundle's own lexicons table
+    /// lists it, so one added to the bundle is offered with no change here.
+    struct Lexicon: Hashable, Sendable {
+        /// Its module ID in this database, which its entries are filed under.
+        let moduleId: String
+        let name: String
+        let description: String?
+        /// What its entries are keyed by: "strongs-greek", "strongs-hebrew",
+        /// or a numbering of its own, as BDB's is.
+        let keyType: String
+        /// "greek" or "hebrew".
+        let language: String
+    }
+
+    /// Every dictionary the bundle carries: the ones the app first shipped,
+    /// in the order it always listed them, then any other by name. Read
+    /// once, as the database is read-only and a lookup asks for them per word.
+    func lexicons() -> [Lexicon] {
+        guard isAvailable else { return [] }
+        lexiconsLock.lock()
+        defer { lexiconsLock.unlock() }
+        if let cached = lexiconsCache { return cached }
+        let rows = (try? read { db in
+            try Row.fetchAll(db, sql: "SELECT id, name, description, key_type, language FROM lexicons ORDER BY name")
+        }) ?? []
+        let lexicons = rows.map { row in
+            Lexicon(
+                moduleId: row["id"], name: row["name"], description: row["description"],
+                keyType: row["key_type"], language: (row["language"] as String).lowercased()
+            )
+        }
+        let firstShipped = Lexicon.firstShipped.map(\.moduleId)
+        let ordered = lexicons.enumerated().sorted { a, b in
+            let rankA = firstShipped.firstIndex(of: a.element.moduleId) ?? firstShipped.count
+            let rankB = firstShipped.firstIndex(of: b.element.moduleId) ?? firstShipped.count
+            return rankA == rankB ? a.offset < b.offset : rankA < rankB
+        }.map(\.element)
+        lexiconsCache = ordered
+        return ordered
+    }
+
     // MARK: - Plan Queries
 
     /// Get all available plans
@@ -1906,5 +1952,45 @@ enum StrongsVerseQuery {
             rank: 1.0,
             rawText: annotationsJson
         )
+    }
+}
+
+extension BundledModuleDatabase.Lexicon {
+    /// The lexicons the app first shipped, by the keys saved lexicon orders,
+    /// hidden lists and search filters still name them by, and the short
+    /// names it has always shown. Any other goes by its module ID and the
+    /// name the bundle gives it.
+    static let firstShipped: [(moduleId: String, key: String, searchId: String, name: String)] = [
+        ("strongs_greek", "strongs", "strongs-greek", "Strong's Greek"),
+        ("strongs_hebrew", "strongs", "strongs-hebrew", "Strong's Hebrew"),
+        ("dodson_greek", "dodson", "dodson", "Dodson"),
+        ("bdb", "bdb", "bdb", "Brown-Driver-Briggs"),
+    ]
+
+    private var shipped: (moduleId: String, key: String, searchId: String, name: String)? {
+        Self.firstShipped.first { $0.moduleId == moduleId }
+    }
+
+    /// The key an entry, a lexicon order and a hidden list name it by.
+    var lexiconKey: String { Self.lexiconKey(forModuleId: moduleId) }
+
+    /// The key a lexicon order names the bundled lexicon `moduleId` by.
+    static func lexiconKey(forModuleId moduleId: String) -> String {
+        firstShipped.first { $0.moduleId == moduleId }?.key ?? moduleId
+    }
+
+    /// The ID a search filter and its results name it by.
+    var searchId: String { shipped?.searchId ?? moduleId }
+
+    /// What a page of the sheet and the settings call it.
+    var shortName: String { shipped?.name ?? name }
+
+    /// Whether its entries are keyed by Strong's numbers in its language;
+    /// one that isn't, as BDB, is reached through the bundle's mappings.
+    var isKeyedByStrongs: Bool { keyType == "strongs-\(language)" }
+
+    /// The language a Strong's number is in: "greek" for G, "hebrew" for H.
+    static func language(ofStrongs key: String) -> String? {
+        key.hasPrefix("G") ? "greek" : key.hasPrefix("H") ? "hebrew" : nil
     }
 }

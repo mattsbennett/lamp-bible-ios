@@ -994,37 +994,32 @@ struct ModuleManagerView: View {
             }
         }
 
-        // Load bundled lexicon modules from GRDB BundledModuleDatabase
-        // Strong's Greek and Hebrew are grouped as "Strong's Concordance" series
-        // Dodson and BDB are individual modules (not part of a series)
-
+        // The bundle's lexicons, as its own table lists them: Strong's Greek
+        // and Hebrew grouped as the "Strong's Concordance" series, any other
+        // a module of its own.
         let bundledDb = BundledModuleDatabase.shared
         var strongsModules: [DisplayModule] = []
-
-        // Strong's Greek - part of Strong's series
-        let greekCount = (try? bundledDb.getDictionaryEntryCount(moduleId: "strongs_greek")) ?? 0
-        if greekCount > 0 {
-            strongsModules.append(DisplayModule(
-                id: "strongs-greek",
-                name: "Strong's Greek",
-                type: .dictionary,
-                description: "Strong's Concordance Greek definitions",
-                entryCount: greekCount,
-                series: "Strong's Concordance"
-            ))
-        }
-
-        // Strong's Hebrew - part of Strong's series
-        let hebrewCount = (try? bundledDb.getDictionaryEntryCount(moduleId: "strongs_hebrew")) ?? 0
-        if hebrewCount > 0 {
-            strongsModules.append(DisplayModule(
-                id: "strongs-hebrew",
-                name: "Strong's Hebrew",
-                type: .dictionary,
-                description: "Strong's Concordance Hebrew definitions",
-                entryCount: hebrewCount,
-                series: "Strong's Concordance"
-            ))
+        for lexicon in bundledDb.lexicons() {
+            let count = (try? bundledDb.getDictionaryEntryCount(moduleId: lexicon.moduleId)) ?? 0
+            guard count > 0 else { continue }
+            if lexicon.lexiconKey == "strongs" {
+                strongsModules.append(DisplayModule(
+                    id: lexicon.searchId,
+                    name: lexicon.shortName,
+                    type: .dictionary,
+                    description: "Strong's Concordance \(lexicon.language.capitalized) definitions",
+                    entryCount: count,
+                    series: "Strong's Concordance"
+                ))
+            } else {
+                allModules.append(DisplayModule(
+                    id: lexicon.moduleId,
+                    name: lexicon.name,
+                    type: .dictionary,
+                    description: lexicon.description,
+                    entryCount: count
+                ))
+            }
         }
 
         // Create Strong's series group if we have modules
@@ -1034,30 +1029,6 @@ struct ModuleManagerView: View {
             ]
         } else {
             dictionarySeriesGroups = []
-        }
-
-        // Dodson Greek - individual module (not part of a series)
-        let dodsonCount = (try? bundledDb.getDictionaryEntryCount(moduleId: "dodson_greek")) ?? 0
-        if dodsonCount > 0 {
-            allModules.append(DisplayModule(
-                id: "dodson_greek",
-                name: "Dodson Greek Lexicon",
-                type: .dictionary,
-                description: "Dodson's Greek New Testament Lexicon",
-                entryCount: dodsonCount
-            ))
-        }
-
-        // BDB Hebrew - individual module (not part of a series)
-        let bdbCount = (try? bundledDb.getDictionaryEntryCount(moduleId: "bdb")) ?? 0
-        if bdbCount > 0 {
-            allModules.append(DisplayModule(
-                id: "bdb",
-                name: "Brown-Driver-Briggs",
-                type: .dictionary,
-                description: "Brown-Driver-Briggs Hebrew Lexicon",
-                entryCount: bdbCount
-            ))
         }
 
         // Long-form books are optional in the bundled database.

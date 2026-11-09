@@ -6024,3 +6024,76 @@ final class DictionaryStylingTests: XCTestCase {
         XCTAssertEqual(text.nsRange(of: annotation, byText: true).map(string.substring(with:)), "Gen 13:10")
     }
 }
+
+/// The bundle's dictionaries, found from its own lexicons table rather than a
+/// list in the app, so one newly bundled (TBESG) is offered everywhere.
+final class BundledLexiconTests: XCTestCase {
+
+    override func setUpWithError() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+    }
+
+    func testTheBundleListsItsLexiconsByTheKeysSavedOrdersUse() throws {
+        let lexicons = BundledModuleDatabase.shared.lexicons()
+        XCTAssertEqual(
+            Array(lexicons.prefix(4).map(\.lexiconKey)), ["strongs", "strongs", "dodson", "bdb"],
+            "The four the app first shipped keep their keys and their order"
+        )
+        let tbesg = try XCTUnwrap(lexicons.first { $0.moduleId == "tbesg" })
+        XCTAssertEqual(tbesg.lexiconKey, "tbesg")
+        XCTAssertEqual(tbesg.language, "greek")
+        XCTAssertTrue(tbesg.isKeyedByStrongs)
+        XCTAssertFalse(try XCTUnwrap(lexicons.first { $0.moduleId == "bdb" }).isKeyedByStrongs)
+    }
+
+    func testAWordHasAnEntryFromEveryBundledLexiconInItsLanguage() {
+        let greek = LexiconLookup.allEntries(for: "G26")
+        XCTAssertEqual(Set(greek.map(\.lexiconKey)), ["strongs", "dodson", "tbesg"])
+        XCTAssertEqual(greek.first { $0.lexiconKey == "tbesg" }?.gloss, "love")
+
+        let hebrew = LexiconLookup.allEntries(for: "H3")
+        XCTAssertEqual(hebrew.filter { $0.lexiconKey == "bdb" }.compactMap(\.bdbId), ["BDB3", "BDB9264"],
+                       "BDB is still reached through the bundle's mappings")
+        XCTAssertFalse(hebrew.contains { $0.lexiconKey == "tbesg" })
+    }
+
+    func testAnExtendedNumberOnlyTBESGHasIsLookedUpAndAnalysed() {
+        XCTAssertEqual(LexiconLookup.allEntries(for: "G20001").map(\.lexiconKey), ["tbesg"])
+        XCTAssertEqual(StrongsHeadword.lookUp("G20001").gloss, "be made desert")
+    }
+
+    func testAUserWhoNeverChoseGetsStrongsThenTBESG() {
+        // "strongs,dodson" is what every install held before TBESG.
+        for order in ["strongs,dodson", LexiconLookup.defaultGreekOrder] {
+            XCTAssertEqual(
+                LexiconLookup.sortedEntries(for: "G26", orderString: order).map(\.lexiconKey),
+                ["strongs", "tbesg", "dodson"]
+            )
+        }
+        XCTAssertEqual(UserSettings().greekLexiconOrder, "strongs,tbesg")
+    }
+
+    func testAChosenOrderStillWins() {
+        XCTAssertEqual(
+            LexiconLookup.sortedEntries(for: "G26", orderString: "dodson,strongs").map(\.lexiconKey),
+            ["dodson", "strongs", "tbesg"]
+        )
+        XCTAssertEqual(
+            LexiconLookup.sortedEntries(for: "G26", orderString: "tbesg,dodson,strongs").map(\.lexiconKey),
+            ["tbesg", "dodson", "strongs"]
+        )
+    }
+
+    func testTBESGIsSearchedOnItsOwnAndListedForTheFilter() throws {
+        var filter = ModuleSearchFilter()
+        filter.types = [.dictionary]
+        filter.moduleIds = ["tbesg"]
+        let results = try ModuleSearch.shared.search(query: "love", filter: filter, limit: 50)
+        XCTAssertFalse(results.isEmpty)
+        XCTAssertTrue(results.allSatisfy { $0.moduleId == "tbesg" }, "No user dictionary or other lexicon answers")
+        XCTAssertTrue(results.contains { $0.strongsKey == "G26" })
+        XCTAssertTrue(ModuleSearch.shared.getSearchableModules().contains {
+            $0.id == "tbesg" && $0.type == .dictionary && $0.seriesAbbrev == "Greek"
+        })
+    }
+}

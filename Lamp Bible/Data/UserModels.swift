@@ -29,7 +29,7 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
     var devotionalPresentFontMultiplier: Float = 3.0
     var devotionalLineSpacingBonus: Float = 1.0
     var hiddenTranslations: String = ""
-    var greekLexiconOrder: String = "strongs,dodson"
+    var greekLexiconOrder: String = LexiconLookup.defaultGreekOrder
     var hebrewLexiconOrder: String = "strongs,bdb"
     var hiddenGreekLexicons: String = ""
     var hiddenHebrewLexicons: String = ""

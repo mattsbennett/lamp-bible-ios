@@ -108,11 +108,7 @@ struct ModuleSettingsView: View {
                 LexiconOrderListWithHiding(
                     orderString: greekLexiconOrder,
                     hiddenString: hiddenGreekLexicons,
-                    builtInLexicons: [
-                        ("strongs", "Strong's Greek"),
-                        ("dodson", "Dodson")
-                    ],
-                    keyType: "strongs-greek"
+                    language: "greek"
                 )
             } header: {
                 Text("Greek Lexicons")
@@ -124,11 +120,7 @@ struct ModuleSettingsView: View {
                 LexiconOrderListWithHiding(
                     orderString: hebrewLexiconOrder,
                     hiddenString: hiddenHebrewLexicons,
-                    builtInLexicons: [
-                        ("strongs", "Strong's Hebrew"),
-                        ("bdb", "Brown-Driver-Briggs")
-                    ],
-                    keyType: "strongs-hebrew"
+                    language: "hebrew"
                 )
             } header: {
                 Text("Hebrew Lexicons")
@@ -260,20 +252,23 @@ struct TranslationRow: View {
 struct LexiconOrderListWithHiding: View {
     @Binding var orderString: String
     @Binding var hiddenString: String
-    let builtInLexicons: [(key: String, name: String)]
-    let keyType: String
+    /// "greek" or "hebrew": the bundle's lexicons in it are listed, and the
+    /// user's dictionaries keyed by its Strong's numbers.
+    let language: String
 
     private var hiddenKeys: Set<String> {
         Set(LampModuleSelection.identifiers(in: hiddenString))
     }
 
     private var allLexicons: [(key: String, name: String)] {
-        var available = builtInLexicons
+        var available = BundledModuleDatabase.shared.lexicons()
+            .filter { $0.language == language }
+            .map { (key: $0.lexiconKey, name: $0.shortName) }
 
         // Discover user dictionary modules with matching keyType
         if let modules = try? ModuleDatabase.shared.getAllModules(type: .dictionary) {
             for module in modules {
-                if module.keyType == keyType {
+                if module.keyType == "strongs-\(language)" {
                     available.append((key: "user-\(module.id)", name: module.name))
                 }
             }
@@ -284,7 +279,7 @@ struct LexiconOrderListWithHiding: View {
 
     private var orderedLexicons: [(key: String, name: String)] {
         LampModuleSelection.ordered(
-            allLexicons, preferredIDs: LampModuleSelection.identifiers(in: orderString), id: { $0.key }
+            allLexicons, preferredIDs: LexiconLookup.preferredKeys(in: orderString), id: { $0.key }
         )
     }
 

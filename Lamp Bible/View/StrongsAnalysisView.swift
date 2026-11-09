@@ -10,9 +10,11 @@ struct StrongsAnalysisItem: Identifiable, Hashable {
 /// How many renderings and companions the analysis lists.
 private let strongsAnalysisListed = 8
 
-/// A key's headword and short meaning, from the bundled lexicons: for Greek
-/// Dodson's short definition, which is a gloss; for Hebrew Strong's own
-/// definition, the shortest the bundle has.
+/// A key's headword and short meaning, from the bundled lexicons keyed by
+/// Strong's: the lemma Strong's gives, else another's; for a meaning a
+/// lexicon's own gloss (TBESG's, for Greek, which has the Septuagint's extended
+/// numbers too), else Dodson's short definition, which is a gloss, else
+/// Strong's own definition, the shortest the bundle has for Hebrew.
 struct StrongsHeadword: Sendable {
     let lemma: String?
     let transliteration: String?
@@ -20,21 +22,22 @@ struct StrongsHeadword: Sendable {
 
     static func lookUp(_ key: String) -> StrongsHeadword {
         let database = BundledModuleDatabase.shared
-        if key.hasPrefix("G") {
-            let strongs = try? database.getDictionaryEntry(moduleId: "strongs_greek", key: key)
-            let dodson = try? database.getDictionaryEntry(moduleId: "dodson_greek", key: key)
-            return StrongsHeadword(
-                lemma: strongs?.lemma ?? dodson?.lemma,
-                transliteration: strongs?.transliteration,
-                gloss: dodson?.senses.first?.shortDefinition?.plainText
-                    ?? strongs?.senses.first?.definition?.plainText
-            )
-        }
-        let strongs = try? database.getDictionaryEntry(moduleId: "strongs_hebrew", key: key)
+        let language = BundledModuleDatabase.Lexicon.language(ofStrongs: key)
+        let entries = database.lexicons()
+            .filter { $0.language == language && $0.isKeyedByStrongs }
+            .compactMap { lexicon in
+                (try? database.getDictionaryEntry(moduleId: lexicon.moduleId, key: key))
+                    .map { (lexicon: lexicon.lexiconKey, entry: $0) }
+            }
+        let strongs = entries.first { $0.lexicon == "strongs" }?.entry
+        let dodson = entries.first { $0.lexicon == "dodson" }?.entry
         return StrongsHeadword(
-            lemma: strongs?.lemma,
-            transliteration: strongs?.transliteration,
-            gloss: strongs?.senses.first?.definition?.plainText
+            lemma: strongs?.lemma ?? entries.first?.entry.lemma,
+            transliteration: strongs?.transliteration
+                ?? entries.lazy.compactMap(\.entry.transliteration).first,
+            gloss: entries.lazy.compactMap { $0.entry.senses.first?.gloss }.first
+                ?? dodson?.senses.first?.shortDefinition?.plainText
+                ?? strongs?.senses.first?.definition?.plainText
         )
     }
 }

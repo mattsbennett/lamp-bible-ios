@@ -106,11 +106,13 @@ class ModuleSearch {
     func getSearchableModules() -> [SearchableModule] {
         var modules: [SearchableModule] = []
 
-        // Bundled dictionaries - grouped by language
-        modules.append(SearchableModule(id: "strongs-greek", name: "Strong's Greek", type: .dictionary, isBundled: true, seriesAbbrev: "Greek"))
-        modules.append(SearchableModule(id: "strongs-hebrew", name: "Strong's Hebrew", type: .dictionary, isBundled: true, seriesAbbrev: "Hebrew"))
-        modules.append(SearchableModule(id: "dodson", name: "Dodson Greek", type: .dictionary, isBundled: true, seriesAbbrev: "Greek"))
-        modules.append(SearchableModule(id: "bdb", name: "Brown-Driver-Briggs", type: .dictionary, isBundled: true, seriesAbbrev: "Hebrew"))
+        // Bundled dictionaries, as the bundle lists them - grouped by language
+        for lexicon in BundledModuleDatabase.shared.lexicons() {
+            modules.append(SearchableModule(
+                id: lexicon.searchId, name: lexicon.shortName, type: .dictionary,
+                isBundled: true, seriesAbbrev: lexicon.language.capitalized
+            ))
+        }
 
         // GRDB translations (bundled + user)
         do {
@@ -500,7 +502,8 @@ class ModuleSearch {
     /// The chosen modules that aren't a bundled dictionary, which the filter
     /// lists under their own IDs.
     private static func userDictionaryIDs(in moduleIds: Set<String>) -> [String] {
-        moduleIds.filter { !$0.hasPrefix("strongs-") && $0 != "dodson" && $0 != "bdb" }.sorted()
+        let bundled = Set(BundledModuleDatabase.shared.lexicons().map(\.searchId))
+        return moduleIds.filter { !bundled.contains($0) }.sorted()
     }
 
     /// Search user dictionaries by key only (no FTS)
@@ -571,96 +574,78 @@ class ModuleSearch {
             parsedQuery.markedSnippet(Self.snippetSource(text, for: parsedQuery), limit: 200)
         }
         let searchAll = filter.moduleIds == nil
-        let searchBDB = searchAll || filter.moduleIds?.contains("bdb") == true
 
-        // Use LRM (Left-to-Right Mark) to prevent RTL reordering of a Hebrew key.
-        let lexicons: [(id: String, bundledId: String, name: String, keyMark: String)] = [
-            ("strongs-greek", "strongs_greek", "Strong's Greek", ""),
-            ("strongs-hebrew", "strongs_hebrew", "Strong's Hebrew", "\u{200E}"),
-            ("dodson", "dodson_greek", "Dodson Greek", ""),
-        ]
-        for lexicon in lexicons where searchAll || filter.moduleIds?.contains(lexicon.id) == true {
+        for lexicon in bundledDb.lexicons() where searchAll || filter.moduleIds?.contains(lexicon.searchId) == true {
+            // Use LRM (Left-to-Right Mark) to prevent RTL reordering of a Hebrew key.
+            let keyMark = lexicon.language == "hebrew" ? "\u{200E}" : ""
             do {
-                let hits: [BundledModuleDatabase.DictionaryHit]
-                if let key = filter.strongsKey {
-                    // Key-only search
-                    hits = try bundledDb.getDictionaryEntry(moduleId: lexicon.bundledId, key: key).map { entry in
-                        [BundledModuleDatabase.DictionaryHit(
-                            key: entry.key,
-                            lemma: entry.lemma,
-                            transliteration: entry.transliteration,
-                            text: DictionarySearchText.text(fromSensesJSON: entry.sensesJson)
-                        )]
-                    } ?? []
-                } else {
-                    hits = try bundledDb.searchDictionaryEntries(query: query, moduleId: lexicon.bundledId, limit: limit)
-                }
-
-                for hit in hits.prefix(limit) {
-                    results.append(ModuleSearchResult(
-                        id: "\(lexicon.id)-\(hit.key)",
-                        moduleId: lexicon.id,
-                        moduleName: lexicon.name,
-                        moduleType: .dictionary,
-                        title: "\(hit.lemma) \(lexicon.keyMark)(\(hit.key))",
-                        snippet: snippet(hit.text),
-                        verseId: nil,
-                        rank: parsedQuery.textRank(in: [hit.key, hit.lemma, hit.text, hit.transliteration ?? ""]),
-                        strongsKey: hit.key,
-                        holdsPhrase: parsedQuery.holdsPhrase(hit.text)
-                    ))
-                }
-            } catch {
-                print("Error searching \(lexicon.name): \(error)")
-            }
-        }
-
-        // BDB (Brown-Driver-Briggs) - supports both Strong's key lookup and direct BDB ID lookup
-        if searchBDB {
-            do {
-                if let key = filter.strongsKey {
-                    // Check if this is a direct BDB ID (e.g., "BDB58", "BDB871")
-                    if key.uppercased().hasPrefix("BDB") {
-                        // Direct BDB ID lookup
-                        if let bdbEntry = try bundledDb.getDictionaryEntry(moduleId: "bdb", key: key.uppercased()) {
-                            let lrm = "\u{200E}"
-                            // Find Strong's number for this BDB entry via reverse lookup
-                            let strongsIds = try bundledDb.getReverseLexiconMappings(targetKey: bdbEntry.key)
-                            let strongsNum = strongsIds.first ?? ""
-                            let displayKey = strongsNum.isEmpty ? key.uppercased() : strongsNum
-                            let senseDef = bdbEntry.senses.first?.definitionText ?? bdbEntry.senses.first?.gloss ?? ""
-                            results.append(ModuleSearchResult(
-                                id: "bdb-\(bdbEntry.key)",
-                                moduleId: "bdb",
-                                moduleName: "Brown-Driver-Briggs",
-                                moduleType: .dictionary,
-                                title: "\(bdbEntry.lemma) \(lrm)(\(displayKey))",
-                                snippet: String(senseDef.prefix(200)),
-                                verseId: nil,
-                                rank: 10.0,
-                                strongsKey: strongsNum.isEmpty ? bdbEntry.key : strongsNum
-                            ))
-                        }
+                if lexicon.isKeyedByStrongs {
+                    let hits: [BundledModuleDatabase.DictionaryHit]
+                    if let key = filter.strongsKey {
+                        // Key-only search
+                        hits = try bundledDb.getDictionaryEntry(moduleId: lexicon.moduleId, key: key).map { entry in
+                            [BundledModuleDatabase.DictionaryHit(
+                                key: entry.key,
+                                lemma: entry.lemma,
+                                transliteration: entry.transliteration,
+                                text: DictionarySearchText.text(fromSensesJSON: entry.sensesJson)
+                            )]
+                        } ?? []
                     } else {
-                        // Strong's key search: look up via lexicon mapping
-                        let bdbIds = try bundledDb.getLexiconMappings(sourceKey: key)
-                        var bdbEntries: [DictionaryEntry] = []
-                        for bdbId in bdbIds {
-                            if let entry = try bundledDb.getDictionaryEntry(moduleId: "bdb", key: bdbId) {
-                                bdbEntries.append(entry)
+                        hits = try bundledDb.searchDictionaryEntries(query: query, moduleId: lexicon.moduleId, limit: limit)
+                    }
+
+                    for hit in hits.prefix(limit) {
+                        results.append(ModuleSearchResult(
+                            id: "\(lexicon.searchId)-\(hit.key)",
+                            moduleId: lexicon.searchId,
+                            moduleName: lexicon.shortName,
+                            moduleType: .dictionary,
+                            title: "\(hit.lemma) \(keyMark)(\(hit.key))",
+                            snippet: snippet(hit.text),
+                            verseId: nil,
+                            rank: parsedQuery.textRank(in: [hit.key, hit.lemma, hit.text, hit.transliteration ?? ""]),
+                            strongsKey: hit.key,
+                            holdsPhrase: parsedQuery.holdsPhrase(hit.text)
+                        ))
+                    }
+                } else if let key = filter.strongsKey {
+                    // A lexicon keyed by its own numbers, as BDB, is found by
+                    // one of them (BDB58), or by a Strong's number through the
+                    // bundle's mappings.
+                    if let entry = try bundledDb.getDictionaryEntry(moduleId: lexicon.moduleId, key: key.uppercased()) {
+                        // Find Strong's number for this entry via reverse lookup
+                        let strongsIds = try bundledDb.getReverseLexiconMappings(targetKey: entry.key)
+                        let strongsNum = strongsIds.first ?? ""
+                        let displayKey = strongsNum.isEmpty ? key.uppercased() : strongsNum
+                        let senseDef = entry.senses.first?.definitionText ?? entry.senses.first?.gloss ?? ""
+                        results.append(ModuleSearchResult(
+                            id: "\(lexicon.searchId)-\(entry.key)",
+                            moduleId: lexicon.searchId,
+                            moduleName: lexicon.shortName,
+                            moduleType: .dictionary,
+                            title: "\(entry.lemma) \(keyMark)(\(displayKey))",
+                            snippet: String(senseDef.prefix(200)),
+                            verseId: nil,
+                            rank: 10.0,
+                            strongsKey: strongsNum.isEmpty ? entry.key : strongsNum
+                        ))
+                    } else {
+                        var entries: [DictionaryEntry] = []
+                        for mappedKey in try bundledDb.getLexiconMappings(sourceKey: key) {
+                            if let entry = try bundledDb.getDictionaryEntry(moduleId: lexicon.moduleId, key: mappedKey) {
+                                entries.append(entry)
                             }
                         }
-                        if let firstEntry = bdbEntries.first {
-                            let lrm = "\u{200E}"
-                            let entryCount = bdbEntries.count
-                            let title = entryCount > 1
-                                ? "\(firstEntry.lemma) \(lrm)(\(key)) +\(entryCount - 1) more"
-                                : "\(firstEntry.lemma) \(lrm)(\(key))"
+                        if let firstEntry = entries.first {
+                            let title = entries.count > 1
+                                ? "\(firstEntry.lemma) \(keyMark)(\(key)) +\(entries.count - 1) more"
+                                : "\(firstEntry.lemma) \(keyMark)(\(key))"
                             let senseDef = firstEntry.senses.first?.definitionText ?? firstEntry.senses.first?.gloss ?? ""
                             results.append(ModuleSearchResult(
-                                id: "bdb-\(key)",
-                                moduleId: "bdb",
-                                moduleName: "Brown-Driver-Briggs",
+                                id: "\(lexicon.searchId)-\(key)",
+                                moduleId: lexicon.searchId,
+                                moduleName: lexicon.shortName,
                                 moduleType: .dictionary,
                                 title: title,
                                 snippet: String(senseDef.prefix(200)),
@@ -672,17 +657,17 @@ class ModuleSearch {
                     }
                 } else {
                     // Text search
-                    let bdbHits = try bundledDb.searchDictionaryEntries(query: query, moduleId: "bdb", limit: limit)
-                    var seenBdbIds = Set<String>()
-                    for hit in bdbHits where seenBdbIds.insert(hit.key).inserted {
-                        // Find Strong's number for this BDB entry via reverse lookup
+                    let hits = try bundledDb.searchDictionaryEntries(query: query, moduleId: lexicon.moduleId, limit: limit)
+                    var seenKeys = Set<String>()
+                    for hit in hits where seenKeys.insert(hit.key).inserted {
+                        // Find Strong's number for this entry via reverse lookup
                         let strongsIds = try bundledDb.getReverseLexiconMappings(targetKey: hit.key)
                         let strongsNum = strongsIds.first ?? ""
 
                         results.append(ModuleSearchResult(
-                            id: "bdb-\(hit.key)",
-                            moduleId: "bdb",
-                            moduleName: "Brown-Driver-Briggs",
+                            id: "\(lexicon.searchId)-\(hit.key)",
+                            moduleId: lexicon.searchId,
+                            moduleName: lexicon.shortName,
                             moduleType: .dictionary,
                             title: hit.lemma,
                             snippet: snippet(hit.text),
@@ -694,7 +679,7 @@ class ModuleSearch {
                     }
                 }
             } catch {
-                print("Error searching BDB: \(error)")
+                print("Error searching \(lexicon.shortName): \(error)")
             }
         }
 

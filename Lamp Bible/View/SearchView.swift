@@ -1444,19 +1444,11 @@ struct SearchView: View {
         }
     }
 
-    /// Convert module ID to lexicon key for LexiconSheetView
+    /// Convert module ID to lexicon key for LexiconSheetView: a bundled
+    /// lexicon's own, else a user dictionary module's.
     private func lexiconKeyForModuleId(_ moduleId: String) -> String {
-        switch moduleId {
-        case "strongs-greek", "strongs-hebrew":
-            return "strongs"
-        case "dodson":
-            return "dodson"
-        case "bdb":
-            return "bdb"
-        default:
-            // User dictionary modules
-            return "user-\(moduleId)"
-        }
+        BundledModuleDatabase.shared.lexicons().first { $0.searchId == moduleId }?.lexiconKey
+            ?? "user-\(moduleId)"
     }
 
     private var loadingState: some View {

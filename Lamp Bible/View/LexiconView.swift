@@ -2132,7 +2132,7 @@ struct LexiconEntry: Identifiable {
     let def: String?
     let kjv: String?
     let deriv: String?
-    let lexiconKey: String  // "strongs", "bdb", "dodson"
+    let lexiconKey: String  // "strongs", "bdb", "dodson", "tbesg", "user-<module>"
     let lexiconName: String  // Display name
 
     // Extended fields (used by BDB and user dictionaries)
@@ -2752,83 +2752,30 @@ struct UserDictionarySenseView: View {
 // MARK: - Lexicon Lookup Helper
 
 struct LexiconLookup {
-    /// Returns all available lexicon entries for a Strong's number
+    /// Returns all available lexicon entries for a Strong's number: those of
+    /// every lexicon the bundle carries in its language, then the user's.
     static func allEntries(for num: String) -> [LexiconEntry] {
         var entries: [LexiconEntry] = []
         let bundledDb = BundledModuleDatabase.shared
+        let language = BundledModuleDatabase.Lexicon.language(ofStrongs: num)
 
-        if num.hasPrefix("H") {
-            // Hebrew - Strong's Hebrew from bundled database
-            if let entry = try? bundledDb.getDictionaryEntry(moduleId: "strongs_hebrew", key: num) {
-                let senses = entry.senses
-                let firstSense = senses.first
-                entries.append(LexiconEntry(
-                    id: "\(num)-strongs",
-                    strongsId: num,
-                    lemma: entry.lemma,
-                    xlit: entry.transliteration,
-                    pron: entry.pronunciation,
-                    def: firstSense?.definition?.plainText,
-                    kjv: firstSense?.usage,
-                    deriv: firstSense?.derivation?.plainText,
-                    lexiconKey: "strongs",
-                    lexiconName: "Strong's Hebrew",
-                    sensesJson: entry.sensesJson
-                ))
-            }
-            // Look up BDB via lexicon mapping
-            if let bdbIds = try? bundledDb.getLexiconMappings(sourceKey: num), !bdbIds.isEmpty {
-                for bdbId in bdbIds {
-                    if let bdbEntry = try? bundledDb.getDictionaryEntry(moduleId: "bdb", key: bdbId) {
-                        let senses = bdbEntry.senses
-                        let firstSense = senses.first
-                        entries.append(LexiconEntry(
-                            id: "\(bdbId)-bdb",
-                            strongsId: num,
-                            lemma: bdbEntry.lemma,
-                            def: firstSense?.definition?.plainText,
-                            lexiconKey: "bdb",
-                            lexiconName: "Brown-Driver-Briggs",
-                            pos: firstSense?.partOfSpeech,
-                            gloss: firstSense?.gloss,
-                            sensesJson: bdbEntry.sensesJson,
-                            bdbId: bdbId
-                        ))
-                    }
+        // A lexicon keyed by Strong's has the number's own entry; one keyed
+        // otherwise, as BDB, the entries the bundle's mappings lead to.
+        var mappedKeys: [String]?
+        for lexicon in bundledDb.lexicons() where lexicon.language == language {
+            if lexicon.isKeyedByStrongs {
+                if let entry = try? bundledDb.getDictionaryEntry(moduleId: lexicon.moduleId, key: num) {
+                    entries.append(bundledEntry(entry, in: lexicon, strongsId: num))
                 }
+                continue
             }
-        } else if num.hasPrefix("G") {
-            // Greek - Strong's Greek from bundled database
-            if let entry = try? bundledDb.getDictionaryEntry(moduleId: "strongs_greek", key: num) {
-                let senses = entry.senses
-                let firstSense = senses.first
-                entries.append(LexiconEntry(
-                    id: "\(num)-strongs",
-                    strongsId: num,
-                    lemma: entry.lemma,
-                    xlit: entry.transliteration,
-                    def: firstSense?.definition?.plainText,
-                    kjv: firstSense?.usage,
-                    deriv: firstSense?.derivation?.plainText,
-                    lexiconKey: "strongs",
-                    lexiconName: "Strong's Greek",
-                    sensesJson: entry.sensesJson
-                ))
+            if mappedKeys == nil {
+                mappedKeys = (try? bundledDb.getLexiconMappings(sourceKey: num)) ?? []
             }
-            // Dodson Greek from bundled database
-            if let entry = try? bundledDb.getDictionaryEntry(moduleId: "dodson_greek", key: num) {
-                let senses = entry.senses
-                let firstSense = senses.first
-                let definition = firstSense?.definition?.plainText ?? firstSense?.shortDefinition?.plainText
-                entries.append(LexiconEntry(
-                    id: "\(num)-dodson",
-                    strongsId: num,
-                    lemma: entry.lemma,
-                    def: definition,
-                    lexiconKey: "dodson",
-                    lexiconName: "Dodson",
-                    sensesJson: entry.sensesJson
-                ))
+            for key in mappedKeys ?? [] {
+                if let entry = try? bundledDb.getDictionaryEntry(moduleId: lexicon.moduleId, key: key) {
+                    entries.append(bundledEntry(entry, in: lexicon, strongsId: num, mappedKey: key))
+                }
             }
         }
 
@@ -2836,6 +2783,53 @@ struct LexiconLookup {
         entries.append(contentsOf: userDictionaryEntries(for: num))
 
         return entries
+    }
+
+    /// A bundled lexicon's entry: its senses for the sheet, and its first
+    /// sense's fields lifted for the views that show a line of it. One reached
+    /// through a mapping carries the key it was reached by, as BDB's number.
+    private static func bundledEntry(
+        _ entry: DictionaryEntry,
+        in lexicon: BundledModuleDatabase.Lexicon,
+        strongsId: String,
+        mappedKey: String? = nil
+    ) -> LexiconEntry {
+        let firstSense = entry.senses.first
+        return LexiconEntry(
+            id: "\(mappedKey ?? strongsId)-\(lexicon.lexiconKey)",
+            strongsId: strongsId,
+            lemma: entry.lemma,
+            xlit: entry.transliteration,
+            pron: entry.pronunciation,
+            def: firstSense?.definition?.plainText ?? firstSense?.shortDefinition?.plainText,
+            kjv: firstSense?.usage,
+            deriv: firstSense?.derivation?.plainText,
+            lexiconKey: lexicon.lexiconKey,
+            lexiconName: lexicon.shortName,
+            pos: firstSense?.partOfSpeech,
+            gloss: firstSense?.gloss,
+            sensesJson: entry.sensesJson,
+            bdbId: mappedKey
+        )
+    }
+
+    /// The Greek order every install was given before TBESG was bundled. It is
+    /// all a user who never reordered still has, so it is a default and not a
+    /// choice, and it reads as today's.
+    static let earlierDefaultGreekOrder = "strongs,dodson"
+
+    /// The Greek lexicons a user who has chosen none is given, as core names
+    /// them for both apps: Strong's, which reads without Greek, then TBESG.
+    /// Dodson and the rest follow.
+    static let defaultGreekOrder = LampModuleSelection.preferredGreekDictionaryIDs
+        .map(BundledModuleDatabase.Lexicon.lexiconKey(forModuleId:))
+        .joined(separator: ",")
+
+    /// The lexicon keys `orderString` puts first.
+    static func preferredKeys(in orderString: String) -> [String] {
+        LampModuleSelection.identifiers(
+            in: orderString == earlierDefaultGreekOrder ? defaultGreekOrder : orderString
+        )
     }
 
     /// Look up entries in user dictionary modules
@@ -2878,36 +2872,21 @@ struct LexiconLookup {
     static func sortedEntries(for num: String, orderString: String) -> [LexiconEntry] {
         LampModuleSelection.ordered(
             allEntries(for: num).sorted { $0.lexiconKey < $1.lexiconKey },
-            preferredIDs: LampModuleSelection.identifiers(in: orderString), id: \.lexiconKey
+            preferredIDs: preferredKeys(in: orderString), id: \.lexiconKey
         )
     }
 
     /// Look up a BDB entry directly by its BDB ID (for cross-references like ⦃BDB871⦄)
     static func lookupBDB(_ bdbId: String) -> LexiconEntry? {
         let bundledDb = BundledModuleDatabase.shared
-        guard let bdbEntry = try? bundledDb.getDictionaryEntry(moduleId: "bdb", key: bdbId) else {
+        guard let bdb = bundledDb.lexicons().first(where: { $0.lexiconKey == "bdb" }),
+              let bdbEntry = try? bundledDb.getDictionaryEntry(moduleId: bdb.moduleId, key: bdbId) else {
             return nil
         }
 
         // Find the Strong's number(s) that map to this BDB entry via reverse lookup
         let strongsIds = (try? bundledDb.getReverseLexiconMappings(targetKey: bdbId)) ?? []
-        let strongsId = strongsIds.first ?? ""
-
-        let senses = bdbEntry.senses
-        let firstSense = senses.first
-
-        return LexiconEntry(
-            id: "\(bdbId)-bdb",
-            strongsId: strongsId,
-            lemma: bdbEntry.lemma,
-            def: firstSense?.definition?.plainText,
-            lexiconKey: "bdb",
-            lexiconName: "Brown-Driver-Briggs",
-            pos: firstSense?.partOfSpeech,
-            gloss: firstSense?.gloss,
-            sensesJson: bdbEntry.sensesJson,
-            bdbId: bdbId
-        )
+        return bundledEntry(bdbEntry, in: bdb, strongsId: strongsIds.first ?? "", mappedKey: bdbId)
     }
 
     /// Look up a user dictionary entry by its lexicon ID (e.g., "CWSD_G1234" or entry ID)
@@ -3602,7 +3581,7 @@ class LexiconLoader: ObservableObject {
 
         let orderString = isHebrew ? hebrewLexiconOrder : greekLexiconOrder
         return LampModuleSelection.ordered(
-            lexicons.sorted(), preferredIDs: LampModuleSelection.identifiers(in: orderString),
+            lexicons.sorted(), preferredIDs: LexiconLookup.preferredKeys(in: orderString),
             id: { $0 }
         )
     }
@@ -3610,21 +3589,12 @@ class LexiconLoader: ObservableObject {
     private func computeEntries(for lexiconKey: String, strongs: [String]) -> [LexiconEntry] {
         var result: [LexiconEntry] = []
         var seenIds = Set<String>()
+        // A lexicon reached through a mapping, as BDB, may have several
+        // entries for one number; the rest have one.
         for num in strongs {
-            let allEntries = LexiconLookup.allEntries(for: num)
-            if lexiconKey == "bdb" {
-                for entry in allEntries where entry.lexiconKey == lexiconKey {
-                    if !seenIds.contains(entry.id) {
-                        seenIds.insert(entry.id)
-                        result.append(entry)
-                    }
-                }
-            } else {
-                if let entry = allEntries.first(where: { $0.lexiconKey == lexiconKey }) {
-                    if !seenIds.contains(entry.id) {
-                        seenIds.insert(entry.id)
-                        result.append(entry)
-                    }
+            for entry in LexiconLookup.allEntries(for: num) where entry.lexiconKey == lexiconKey {
+                if seenIds.insert(entry.id).inserted {
+                    result.append(entry)
                 }
             }
         }
@@ -3675,18 +3645,6 @@ struct LexiconSheetView: View {
             .trimmingCharacters(in: .whitespaces)
         return cleanQuery.components(separatedBy: .whitespaces)
             .filter { !$0.isEmpty && $0.count >= 2 }
-    }
-
-    /// Display name for a lexicon key
-    private func lexiconDisplayName(_ key: String) -> String {
-        switch key {
-        case "strongs":
-            let isHebrew = strongs.first?.hasPrefix("H") ?? false
-            return isHebrew ? "Strong's Hebrew" : "Strong's Greek"
-        case "bdb": return "Brown-Driver-Briggs"
-        case "dodson": return "Dodson"
-        default: return key
-        }
     }
 
     /// Opens search sheet for the given Strong's number
