@@ -638,12 +638,10 @@ struct StrongsAnalysisView: View {
     }
 
     /// What the form readings are read from: the word, the translation and
-    /// its books, how many occurrences, and, where its tags lack parsings,
-    /// how many other translations have been counted to lend theirs.
+    /// its books, how many occurrences, and how many other translations have
+    /// been counted to lend their parsings and English.
     private func formsSource(of analysis: LampStrongsAnalysis) -> String {
-        let borrows = analysis.occurrences.contains { $0.form != nil && $0.morphology == nil }
-        return "\(analysis.key)|\(analysis.translationID)|\(String(describing: bookRange))|\(analysis.occurrenceCount)"
-            + (borrows ? "|\(compared.count)" : "")
+        "\(analysis.key)|\(analysis.translationID)|\(String(describing: bookRange))|\(analysis.occurrenceCount)|\(compared.count)"
     }
 
     /// Reads each form, off the main thread: it reads every occurrence,
@@ -652,7 +650,8 @@ struct StrongsAnalysisView: View {
         let source = formsSource(of: analysis)
         guard formReadings?.source != source else { return }
         // A translation whose tags give only the spelling, as the BSB's do,
-        // borrows the parsings the others give the same spelling.
+        // borrows the parsings the others give the same spelling; a Greek
+        // or Hebrew text, which has no English, borrows theirs.
         let others = compared
         let readings = await Task.detached(priority: .userInitiated) {
             LampStrongsFormReading.readings(of: analysis, parsingsFrom: others)
@@ -667,12 +666,14 @@ struct StrongsAnalysisView: View {
     }
 
     /// A form's line under its spelling: what it does, and the English it
-    /// became, as "“of …” · here “of love”".
+    /// became, as "“of …” · here “of love”", or "in BSB “of love”" where
+    /// the English is another translation's.
     private func formLine(_ reading: LampStrongsFormReading?) -> String? {
         guard let reading else { return nil }
         let english = reading.renderedAs.isEmpty
             ? nil
-            : "here " + reading.renderedAs.map { "“\($0)”" }.joined(separator: ", ")
+            : (reading.renderedIn.map { "in \($0) " } ?? "here ")
+                + reading.renderedAs.map { "“\($0)”" }.joined(separator: ", ")
         let parts = [reading.role, english].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
