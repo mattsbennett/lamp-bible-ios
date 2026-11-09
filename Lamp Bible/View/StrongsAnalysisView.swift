@@ -2102,19 +2102,20 @@ final class SeptuagintLoader {
             }
             // The English first, from the translation being read. A verse it
             // doesn't tag the word in keeps its number and no text, never a
-            // guess at the word.
+            // guess at the word; so does every verse where it tags none of
+            // it, so the list is in the numbers a tap opens at.
             var english: [Int: LampSeptuagintSection.English] = [:]
-            if let strongs, translationId != hebrew.id,
+            if translationId != hebrew.id,
                let reading = translations.first(where: { $0.id == translationId }) {
                 do {
-                    if let analysis = try database.analyzeStrongs(key: strongs, translationId: translationId) {
-                        english = LampSeptuagintSection.english(
-                            for: shown,
-                            hebrewNumbering: database.versification(of: hebrew),
-                            englishNumbering: database.versification(of: reading),
-                            analysis: analysis
-                        )
-                    }
+                    english = LampSeptuagintSection.english(
+                        for: shown,
+                        hebrewNumbering: database.versification(of: hebrew),
+                        englishNumbering: database.versification(of: reading),
+                        analysis: try strongs.flatMap {
+                            try database.analyzeStrongs(key: $0, translationId: translationId)
+                        }
+                    )
                 } catch {
                     return Task.isCancelled ? .cutShort : .unreadable(reading.name)
                 }

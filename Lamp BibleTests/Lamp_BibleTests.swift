@@ -6197,4 +6197,25 @@ final class StrongsSeptuagintTests: XCTestCase {
         XCTAssertTrue(genesis.english?.snippet?.word.lowercased().contains("love") == true, genesis.english?.snippet?.word ?? "untagged")
         XCTAssertNotNil(genesis.greek)
     }
+
+    /// Read in a text that tags none of the Hebrew, as the Septuagint itself
+    /// doesn't, the verses still go by that text's numbers, which a tap
+    /// opens at: Psalm 109:4 is its 108:4. Nothing is marked.
+    @MainActor
+    func testAVerseIsNumberedAsTheTextBeingReadNumbersItWithNothingToMark() async throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let loader = SeptuagintLoader()
+        await loader.loadWords(key: "G26")
+        await loader.loadCounts(key: "G26", translationId: "LXX")
+        let love = try XCTUnwrap(loader.words.first { $0.hebrew.strongs == "H160" })
+        XCTAssertTrue(love.references?.prefix(StrongsSeptuagint.shownVerses).contains(19_109_004) == true)
+
+        await loader.loadVerses(for: love, translationId: "LXX")
+        guard case .rows(let rows) = loader.verses[love.id] else {
+            return XCTFail("No verses: \(String(describing: loader.verses[love.id]))")
+        }
+        let psalm = try XCTUnwrap(rows.first { $0.reference == 19_109_004 })
+        XCTAssertEqual(psalm.english?.reference, 19_108_004)
+        XCTAssertNil(psalm.english?.snippet)
+    }
 }
