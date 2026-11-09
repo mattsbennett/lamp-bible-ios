@@ -1387,6 +1387,7 @@ private struct ReadAloudSettingsSection: View {
     @State private var languageCode: String?
     @State private var voices: [AVSpeechSynthesisVoice] = []
     @State private var selectedVoiceId: String = ""
+    @State private var isShowingBetterVoices = false
 
     private var languageName: String? {
         SpeechVoiceCatalog.languageName(for: languageCode)
@@ -1425,11 +1426,21 @@ private struct ReadAloudSettingsSection: View {
                     }
                 }
                 if let voiceInUse, SpeechVoiceCatalog.isBasic(voiceInUse) {
-                    // Siri's voices are the system's own; apps aren't given them,
-                    // so downloading one wouldn't change what Lamp reads with.
-                    Text("\(voiceInUse.name) is a basic voice, so words can sound slow and choppy. Enhanced and Premium voices are free in Settings › Accessibility › Spoken Content › Voices. Lamp can't use Siri's voices.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("\(voiceInUse.name) is a basic voice, so words can sound slow and choppy.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("How to get a better voice…") {
+                            isShowingBetterVoices = true
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.borderless)
+                    }
+                    // On the note, not the section: a section's modifiers go
+                    // to each of its rows.
+                    .sheet(isPresented: $isShowingBetterVoices) {
+                        BetterVoicesSheet()
+                    }
                 }
             }
 
@@ -1465,6 +1476,11 @@ private struct ReadAloudSettingsSection: View {
         .task(id: translationId) {
             load()
         }
+        // A voice downloaded in Settings while Lamp waits is listed, and
+        // chosen automatically, as soon as it arrives.
+        .onReceive(NotificationCenter.default.publisher(for: AVSpeechSynthesizer.availableVoicesDidChangeNotification)) { _ in
+            load()
+        }
     }
 
     private var automaticVoice: AVSpeechSynthesisVoice? {
@@ -1492,6 +1508,46 @@ private struct ReadAloudSettingsSection: View {
         // The voice chosen, where it is still installed; otherwise Automatic.
         let chosen = SpeechVoiceCatalog.preferredVoiceIdentifier(for: language)
         selectedVoiceId = voices.contains { $0.identifier == chosen } ? chosen ?? "" : ""
+    }
+}
+
+/// How to get a voice better than the basic one, as steps: iOS gives apps
+/// no supported way to open Spoken Content's voices, so this says where
+/// they are rather than pretending to take the reader there.
+private struct BetterVoicesSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    step(1, "In the Settings app, go to Accessibility › Spoken Content › Voices › English.")
+                    step(2, "Choose a voice and download its Premium or Enhanced version. Ava (Premium) is a good one.")
+                    step(3, "Come back to Lamp. With Voice set to Automatic, it switches to the new voice by itself.")
+                } footer: {
+                    Text("The voices are free and stay on your iPhone. Siri's voices are only for Siri and the system: Apple doesn't let other apps use them, so downloading one won't change how Lamp sounds.")
+                }
+            }
+            .navigationTitle("Better Voices")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func step(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("\(number)")
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Text(text)
+        }
+        .padding(.vertical, 2)
     }
 }
 
