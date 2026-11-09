@@ -614,10 +614,21 @@ struct StrongsAnalysisView: View {
         } header: {
             sectionHeader("Forms")
         } footer: {
-            Text(showsFormRing
-                ? "How it is spelled, the commonest first. A few occurrences record no spelling, so the ring can count fewer than the card. Tap one to filter the verse list below."
-                : "Each spelling the word takes where it occurs. Tap one to filter the verse list below.")
+            Text((showsFormRing
+                ? "How it is spelled, the commonest first."
+                : "Each spelling the word takes where it occurs.")
+                + unspelledNote(analysis)
+                + " Tap one to filter the verse list below.")
         }
+    }
+
+    /// Said only for a word some of whose occurrences the translation's tags
+    /// give no spelling for, so the forms count fewer than the card.
+    private func unspelledNote(_ analysis: LampStrongsAnalysis) -> String {
+        let spelled = analysis.forms.reduce(0) { $0 + $1.count }
+        let unspelled = analysis.occurrenceCount - spelled
+        guard unspelled > 0 else { return "" }
+        return " \(unspelled) of its \(analysis.occurrenceCount) occurrences \(unspelled == 1 ? "has" : "have") no spelling in the tags of the \(analysis.translationAbbreviation ?? analysis.translationName), so these count \(spelled)."
     }
 
     @ViewBuilder
