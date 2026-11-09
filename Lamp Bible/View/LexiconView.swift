@@ -2450,7 +2450,10 @@ struct PronounceButton: View {
     @State private var ipa: String?
 
     var body: some View {
-        Group {
+        // A ZStack, not a Group: a Group's modifiers go to its children, and
+        // with no button yet there are none, so the task that finds the
+        // word's IPA would never run and the button never appear.
+        ZStack {
             if let ipa {
                 Button {
                     WordSpeaker.shared.say(word, ipa: ipa)
