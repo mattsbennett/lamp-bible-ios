@@ -6147,7 +6147,7 @@ final class StrongsSeptuagintTests: XCTestCase {
 
         // Psalm 51:1 in TAHOT's English numbering is the Septuagint's 50:3,
         // its title taking two verses there.
-        let greek = await StrongsSeptuagint.greek(for: [19_051_001], hebrew: hebrew, septuagint: septuagint)
+        let greek = try await StrongsSeptuagint.greek(for: [19_051_001], hebrew: hebrew, septuagint: septuagint)
         XCTAssertTrue(greek[19_051_001]?.hasPrefix("Ἐλέησον") == true, greek[19_051_001] ?? "no verse")
     }
 }

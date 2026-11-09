@@ -274,7 +274,7 @@ struct StrongsAnalysisView: View {
     }
 
     private func summary(_ analysis: LampStrongsAnalysis) -> some View {
-        let booksWithIt = analysis.books.filter { $0.occurrenceCount > 0 }.count
+        let booksWithIt = analysis.booksWithOccurrences
         return VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -1275,14 +1275,16 @@ enum StrongsSeptuagint {
     }
 
     /// The Septuagint's Greek for each of `references`, numbered as the Hebrew
-    /// text numbers them, where the Septuagint has the verse.
+    /// text numbers them, where the Septuagint has the verse. Throws if
+    /// cancelled part way, since a verse not read would look like one the
+    /// text lacks.
     static func greek(
         for references: [Int],
         hebrew: TranslationModule,
         septuagint: TranslationModule
-    ) async -> [Int: String] {
+    ) async throws -> [Int: String] {
         let database = TranslationDatabase.shared
-        return await LampSeptuagintSection.greek(
+        return try await LampSeptuagintSection.greek(
             for: references,
             hebrewNumbering: database.versification(of: hebrew),
             septuagintNumbering: database.versification(of: septuagint)
@@ -1375,13 +1377,20 @@ final class SeptuagintLoader {
         reading.insert(word.id)
         defer { reading.remove(word.id) }
         let shown = Array(references.prefix(StrongsSeptuagint.shownVerses))
-        let read = await Task.detached(priority: .userInitiated) { () -> (name: String?, greek: [Int: String]) in
+        let reader = Task.detached(priority: .userInitiated) { () throws -> (name: String?, greek: [Int: String]) in
             let translations = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
             guard let hebrew = StrongsSeptuagint.hebrewText(in: translations),
                   let septuagint = StrongsSeptuagint.septuagintText(in: translations)
             else { return (nil, [:]) }
-            return (septuagint.name, await StrongsSeptuagint.greek(for: shown, hebrew: hebrew, septuagint: septuagint))
-        }.value
+            return (septuagint.name, try await StrongsSeptuagint.greek(for: shown, hebrew: hebrew, septuagint: septuagint))
+        }
+        // Stopped part way, when the word or the sheet is closed, the verses
+        // are dropped rather than kept: one not reached would read as missing
+        // from the Greek. Opening the word again reads them afresh.
+        guard let read = try? await withTaskCancellationHandler(
+            operation: { try await reader.value },
+            onCancel: { reader.cancel() }
+        ) else { return }
         septuagintName = read.name
         verses[word.id] = shown.map { Verse(reference: $0, greek: read.greek[$0]) }
     }
