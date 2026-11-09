@@ -144,8 +144,10 @@ enum LampTheme {
         /// heading reads as over the passage, but well under the space above.
         var headingSpacingAfter: CGFloat { lineSpacing + bodySize * 0.3 }
 
-        var verseNumberSize: CGFloat { max(11, bodySize * 0.68) }
-        var verseNumberBaselineOffset: CGFloat { bodySize * 0.33 }
+        /// Three quarters of the text, as before the redesign: at two thirds
+        /// the numbers were too small to find when scanning for a verse.
+        var verseNumberSize: CGFloat { max(11, bodySize * 0.75) }
+        var verseNumberBaselineOffset: CGFloat { bodySize * 0.3 }
         var headingSize: CGFloat { bodySize * 1.06 }
     }
 }
