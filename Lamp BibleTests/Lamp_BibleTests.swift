@@ -6152,4 +6152,30 @@ final class StrongsSeptuagintTests: XCTestCase {
         let greek = try await StrongsSeptuagint.greek(for: [19_051_001], hebrew: hebrew, septuagint: septuagint)
         XCTAssertTrue(greek[19_051_001]?.hasPrefix("Ἐλέησον") == true, greek[19_051_001] ?? "no verse")
     }
+
+    /// For a reader with no Hebrew: love's Hebrew by its transliteration and
+    /// the BSB's rendering, and Jacob's love for Rachel in the BSB's English,
+    /// "love" marked where the BSB tags it, with the Greek under it.
+    @MainActor
+    func testLovesHebrewIsReadInTheEnglishBeingRead() async throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let loader = SeptuagintLoader()
+        await loader.loadWords(key: "G26")
+        let love = try XCTUnwrap(loader.words.first { $0.hebrew.strongs == "H160" })
+        XCTAssertEqual(love.transliteration, "ʼahăbâh")
+
+        await loader.loadCounts(key: "G26", translationId: "BSBs")
+        XCTAssertEqual(loader.renderings[love.id], "love")
+        let counted = try XCTUnwrap(loader.words.first { $0.id == love.id })
+        XCTAssertEqual(counted.references?.first, 1_029_020, "Genesis 29:20 comes first")
+
+        await loader.loadVerses(for: counted, translationId: "BSBs")
+        guard case .rows(let rows) = loader.verses[love.id] else {
+            return XCTFail("No verses: \(String(describing: loader.verses[love.id]))")
+        }
+        let genesis = try XCTUnwrap(rows.first { $0.reference == 1_029_020 })
+        XCTAssertEqual(genesis.english?.reference, 1_029_020)
+        XCTAssertTrue(genesis.english?.snippet?.word.lowercased().contains("love") == true, genesis.english?.snippet?.word ?? "untagged")
+        XCTAssertNotNil(genesis.greek)
+    }
 }
