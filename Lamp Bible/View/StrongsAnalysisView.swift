@@ -131,6 +131,10 @@ struct StrongsAnalysisView: View {
     @State private var isComparing = false
     @State private var showsAllRenderings = false
     @State private var showsAllForms = false
+    /// Each form read for someone without the language, by form ID, with
+    /// what it was read from, so another word or range never shows the
+    /// last one's.
+    @State private var formReadings: (source: String, byID: [String: LampStrongsFormReading])?
     @State private var showsAllCompanions = false
     @State private var septuagint = SeptuagintLoader()
     /// Collapsed to begin with: the Septuagint is a second subject, and
@@ -333,6 +337,7 @@ struct StrongsAnalysisView: View {
                 .frame(height: 1)
                 .allowsHitTesting(false)
         }
+        .task(id: formsSource(of: analysis)) { await readForms(analysis) }
     }
 
     /// A section's title, set as a heading rather than a grey caption.
@@ -607,19 +612,69 @@ struct StrongsAnalysisView: View {
             .pickerStyle(.segmented)
             .listRowSeparator(.hidden)
             if showsFormRing {
-                share(of: LampStrongsGrouping.forms.divisions(of: analysis), isOriginalLanguage: true)
+                let readings = formReadings(of: analysis)
+                share(
+                    of: LampStrongsGrouping.forms.divisions(of: analysis),
+                    isOriginalLanguage: true,
+                    details: Dictionary(uniqueKeysWithValues: analysis.forms.enumerated().map { index, form in
+                        (String(index), ShareDetail(
+                            aside: readings[form.id]?.transliteration,
+                            line: formLine(readings[form.id])
+                        ))
+                    })
+                )
             } else {
                 forms(analysis)
             }
         } header: {
             sectionHeader("Forms")
         } footer: {
-            Text((showsFormRing
-                ? "How it is spelled, the commonest first."
-                : "Each spelling the word takes where it occurs.")
+            // Why one word has several spellings, for a reader new to the
+            // language, before what the rows hold.
+            Text(LampStrongsFormReading.note(forKey: analysis.key)
                 + unspelledNote(analysis)
                 + " Tap one to filter the verse list below.")
         }
+    }
+
+    /// What the form readings are read from: the word, the translation and
+    /// its books, how many occurrences, and, where its tags lack parsings,
+    /// how many other translations have been counted to lend theirs.
+    private func formsSource(of analysis: LampStrongsAnalysis) -> String {
+        let borrows = analysis.occurrences.contains { $0.form != nil && $0.morphology == nil }
+        return "\(analysis.key)|\(analysis.translationID)|\(String(describing: bookRange))|\(analysis.occurrenceCount)"
+            + (borrows ? "|\(compared.count)" : "")
+    }
+
+    /// Reads each form, off the main thread: it reads every occurrence,
+    /// which for an article or a common verb runs to thousands.
+    private func readForms(_ analysis: LampStrongsAnalysis) async {
+        let source = formsSource(of: analysis)
+        guard formReadings?.source != source else { return }
+        // A translation whose tags give only the spelling, as the BSB's do,
+        // borrows the parsings the others give the same spelling.
+        let others = compared
+        let readings = await Task.detached(priority: .userInitiated) {
+            LampStrongsFormReading.readings(of: analysis, parsingsFrom: others)
+        }.value
+        guard !Task.isCancelled else { return }
+        formReadings = (source, Dictionary(readings.map { ($0.form.id, $0) }) { first, _ in first })
+    }
+
+    private func formReadings(of analysis: LampStrongsAnalysis) -> [String: LampStrongsFormReading] {
+        guard let formReadings, formReadings.source == formsSource(of: analysis) else { return [:] }
+        return formReadings.byID
+    }
+
+    /// A form's line under its spelling: what it does, and the English it
+    /// became, as "“of …” · here “of love”".
+    private func formLine(_ reading: LampStrongsFormReading?) -> String? {
+        guard let reading else { return nil }
+        let english = reading.renderedAs.isEmpty
+            ? nil
+            : "here " + reading.renderedAs.map { "“\($0)”" }.joined(separator: ", ")
+        let parts = [reading.role, english].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Said only for a word some of whose occurrences the translation's tags
@@ -634,9 +689,18 @@ struct StrongsAnalysisView: View {
     @ViewBuilder
     private func forms(_ analysis: LampStrongsAnalysis) -> some View {
         let listed = showsAllForms ? analysis.forms : Array(analysis.forms.prefix(strongsAnalysisListed))
+        let readings = formReadings(of: analysis)
         countRows(
             listed.map { form in
-                CountedRow(id: form.id, title: form.text, detail: "", count: form.count, filter: .form(form.text))
+                CountedRow(
+                    id: form.id,
+                    title: form.text,
+                    detail: formLine(readings[form.id]) ?? "",
+                    count: form.count,
+                    filter: .form(form.text),
+                    aside: readings[form.id]?.transliteration,
+                    detailIsReading: true
+                )
             },
             isOriginalLanguage: true
         )
@@ -686,15 +750,24 @@ struct StrongsAnalysisView: View {
         let detail: String
         let count: Int
         let filter: LampStrongsFilter
+        /// A form's Latin letters, beside its spelling.
+        var aside: String? = nil
+        /// Whether the detail is a line to read, wrapped, rather than a
+        /// glance at variants.
+        var detailIsReading = false
+
+        /// A row whether used once or not: a chip would drop its reading.
+        var isRead: Bool { detailIsReading && !detail.isEmpty }
     }
 
     /// Those used more than once get a row and a bar; those used once share
-    /// one row of chips, where a bar each told nothing.
+    /// one row of chips, where a bar each told nothing, unless there is a
+    /// reading of them to give.
     @ViewBuilder
     private func countRows(_ rows: [CountedRow], isOriginalLanguage: Bool) -> some View {
         let most = max(rows.map(\.count).max() ?? 1, 1)
-        let repeated = rows.filter { $0.count > 1 || rows.count <= 3 }
-        let once = rows.filter { !($0.count > 1 || rows.count <= 3) }
+        let repeated = rows.filter { $0.count > 1 || rows.count <= 3 || $0.isRead }
+        let once = rows.filter { !($0.count > 1 || rows.count <= 3 || $0.isRead) }
         ForEach(repeated) { row in
             countRow(row, most: most, isOriginalLanguage: isOriginalLanguage)
         }
@@ -721,15 +794,23 @@ struct StrongsAnalysisView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(row.title)
-                            .font(isOriginalLanguage ? .system(.title3, design: .serif) : .body)
-                            .fontWeight(isSelected ? .semibold : .regular)
-                            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(row.title)
+                                .font(isOriginalLanguage ? .system(.title3, design: .serif) : .body)
+                                .fontWeight(isSelected ? .semibold : .regular)
+                                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                            if let aside = row.aside {
+                                Text(aside)
+                                    .font(.system(.subheadline, design: .serif).italic())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
                         if !row.detail.isEmpty {
                             Text(row.detail)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                                .lineLimit(row.detailIsReading ? nil : 1)
                         }
                     }
                     Spacer(minLength: 8)
@@ -1070,10 +1151,21 @@ struct StrongsAnalysisView: View {
 
     // MARK: Share
 
+    /// More about a slice than its name, for a figure that needs reading: a
+    /// form's Latin letters beside it, and what it does under it.
+    private struct ShareDetail {
+        var aside: String?
+        var line: String?
+    }
+
     /// Each part's share as core slices it, the largest six and the rest as
     /// "Other", each named slice a way to filter the verses.
     @ViewBuilder
-    private func share(of entries: [LampStrongsChartDivision], isOriginalLanguage: Bool = false) -> some View {
+    private func share(
+        of entries: [LampStrongsChartDivision],
+        isOriginalLanguage: Bool = false,
+        details: [String: ShareDetail] = [:]
+    ) -> some View {
         let slices = LampStrongsShare.slices(from: entries.map(\.division))
         let filters = Dictionary(
             entries.map { (String($0.division.id), $0.filter) },
@@ -1089,33 +1181,49 @@ struct StrongsAnalysisView: View {
         ForEach(Array(slices.enumerated()), id: \.element.id) { index, slice in
             let sliceFilter = slice.isOther ? nil : filters[slice.id] ?? nil
             let isSelected = sliceFilter != nil && filter == sliceFilter
+            let detail = slice.isOther ? nil : details[slice.id]
             Button {
                 choose(sliceFilter)
             } label: {
-                HStack(spacing: 8) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(shareColor(index, of: slices))
-                        .frame(width: 10, height: 10)
-                    // A form in the serif its list sets it in; "Other"
-                    // is English, whatever the slices name.
-                    Text(slice.name)
-                        .font(isOriginalLanguage && !slice.isOther
-                            ? .system(.body, design: .serif).weight(isSelected ? .semibold : .regular)
-                            : .subheadline.weight(isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    Text("\(slice.value)")
-                        .font(.subheadline)
-                        .monospacedDigit()
-                    // Wide enough for "100%", a word with one spelling.
-                    Text(LampStrongsSpread.percent(slice.fraction))
-                        .font(.subheadline)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .frame(minWidth: 40, alignment: .trailing)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(shareColor(index, of: slices))
+                            .frame(width: 10, height: 10)
+                        // A form in the serif its list sets it in; "Other"
+                        // is English, whatever the slices name.
+                        Text(slice.name)
+                            .font(isOriginalLanguage && !slice.isOther
+                                ? .system(.body, design: .serif).weight(isSelected ? .semibold : .regular)
+                                : .subheadline.weight(isSelected ? .semibold : .regular))
+                            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                            .lineLimit(1)
+                        if let aside = detail?.aside {
+                            Text(aside)
+                                .font(.system(.subheadline, design: .serif).italic())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        Text("\(slice.value)")
+                            .font(.subheadline)
+                            .monospacedDigit()
+                        // Wide enough for "100%", a word with one spelling.
+                        Text(LampStrongsSpread.percent(slice.fraction))
+                            .font(.subheadline)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .frame(minWidth: 40, alignment: .trailing)
+                    }
+                    if let line = detail?.line {
+                        Text(line)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            // Under the name, past the swatch.
+                            .padding(.leading, 18)
+                    }
                 }
                 .contentShape(Rectangle())
             }
