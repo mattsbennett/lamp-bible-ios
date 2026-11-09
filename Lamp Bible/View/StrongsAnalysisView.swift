@@ -48,6 +48,8 @@ struct StrongsHeadword: Sendable {
 struct StrongsAnalysisSheet: View {
     let key: String
     let translationId: String
+    /// The books a search was narrowed to, which its analysis opens on.
+    var bookRange: ClosedRange<Int>? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
@@ -71,6 +73,7 @@ struct StrongsAnalysisSheet: View {
         StrongsAnalysisView(
             key: key,
             translationId: translationId,
+            initialBookRange: bookRange,
             onNavigateToVerse: onNavigateToVerse.map { navigate in
                 { verse in
                     dismiss()
@@ -81,53 +84,101 @@ struct StrongsAnalysisSheet: View {
     }
 }
 
-/// What the current translation's tags say about one Strong's key
+/// What the translation's tags say about one Strong's key
 /// (`LampStrongsAnalysis`): how often it occurs, the English that renders it,
-/// where in the canon it gathers, and the keys found with it. The phone's
-/// share of the Mac's analysis, without its comparison of translations, its
-/// grammar or its chapters.
+/// its forms and grammar, where in the canon it gathers, the keys found with
+/// it, and how the other translations tag it. The Mac's analysis in the
+/// phone's own design: one page under the headword card, each part a section
+/// of it, and every figure a way to narrow the verse list at its foot.
 struct StrongsAnalysisView: View {
     let key: String
     let translationId: String
+    /// The books the analysis opens on, a search's own; the toolbar's menu
+    /// chooses others.
+    var initialBookRange: ClosedRange<Int>? = nil
     var onNavigateToVerse: ((Int) -> Void)? = nil
 
     @State private var analysis: LampStrongsAnalysis?
     @State private var isLoading = true
+    @State private var loadError: String?
     @State private var headword = StrongsHeadword(lemma: nil, transliteration: nil, gloss: nil)
     @State private var companionHeadwords: [String: StrongsHeadword] = [:]
     @State private var occurrencesByVerse: [Int: [LampStrongsAnalysis.Occurrence]] = [:]
-    @State private var renderingFilter: String?
-    @State private var bookFilter: Int?
+    /// What the verse list is narrowed to: a rendering, form, parsing, book
+    /// or chapter, chosen from the figure that counts it.
+    @State private var filter: LampStrongsFilter?
     @State private var shownVerseCount = 50
     @State private var previewReference: VersePreviewReference?
+    /// The books chosen from the toolbar, once chosen; until then, those the
+    /// analysis opened on.
+    @State private var chosenRange: BookRangeChoice?
+    /// The other translations that tag the key, as each is worked out.
+    @State private var compared: [LampStrongsAnalysis] = []
+    @State private var isComparing = false
+    @State private var showsAllRenderings = false
+    @State private var showsAllForms = false
+    @State private var showsAllCompanions = false
     @State private var septuagint = SeptuagintLoader()
     /// Collapsed to begin with: the Septuagint is a second subject, and
     /// opening it costs a search of the Hebrew text a word.
     @State private var isShowingSeptuagint = false
     @State private var septuagintPreview: SeptuagintPreview?
-    @AppStorage("strongs.analysis.bookChartAsRing") private var showsRing = false
+    @AppStorage("strongs.analysis.chartStyle") private var chartStyle: LampStrongsChartStyle = .bars
+    @AppStorage("strongs.analysis.grouping") private var grouping: LampStrongsGrouping = .books
+    @AppStorage("strongs.analysis.measure") private var measure: LampStrongsSpreadMeasure = .occurrences
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = false
+
+    private struct BookRangeChoice: Equatable {
+        let range: ClosedRange<Int>?
+    }
+
+    /// What one load answers: a change of either works it out again.
+    private struct LoadRequest: Equatable {
+        let key: String
+        let bookRange: ClosedRange<Int>?
+    }
+
+    private struct Loaded: Sendable {
+        let analysis: LampStrongsAnalysis?
+        let headword: StrongsHeadword
+        let companions: [String: StrongsHeadword]
+    }
+
+    private var bookRange: ClosedRange<Int>? { chosenRange.map(\.range) ?? initialBookRange }
 
     var body: some View {
         Group {
             if isLoading {
                 ProgressView("Counting \(key)…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let loadError {
+                ContentUnavailableView {
+                    Label("Couldn’t Analyse \(key)", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(loadError)
+                }
             } else if let analysis, analysis.occurrenceCount > 0 {
                 content(analysis)
             } else {
                 ContentUnavailableView(
                     "Not Tagged Here",
                     systemImage: "chart.bar.xaxis",
-                    description: Text("No word in this translation is tagged \(key).")
+                    description: Text(bookRange == nil
+                        ? "No word in this translation is tagged \(key)."
+                        : "No word in \(SearchBookRange.name(of: bookRange)) is tagged \(key) in this translation.")
                 )
             }
         }
         // The key is in the headword's pill; the bar says what the page is.
         .navigationTitle("Word Analysis")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: key) { await load() }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                bookRangeMenu
+            }
+        }
+        .task(id: LoadRequest(key: key, bookRange: bookRange)) { await load() }
         .sheet(item: $previewReference) { preview in
             VersePreviewSheet(
                 title: Self.referenceTitle(
@@ -156,23 +207,68 @@ struct StrongsAnalysisView: View {
     private func load() async {
         let key = key
         let translationId = translationId
-        // A pass over every tagged verse of the translation, and a few
-        // lexicon lookups: off the main thread.
-        let loaded = await Task.detached(priority: .userInitiated) {
-            let analysis = try? TranslationDatabase.shared.analyzeStrongs(key: key, translationId: translationId)
-            var companions: [String: StrongsHeadword] = [:]
-            for companion in analysis?.companions.prefix(strongsAnalysisListed) ?? [] {
-                companions[companion.key] = StrongsHeadword.lookUp(companion.key)
+        let range = bookRange
+        isLoading = true
+        loadError = nil
+        filter = nil
+        shownVerseCount = 50
+        compared = []
+        isComparing = false
+        // A pass over the translation's tagged verses, or its index, and a
+        // few lexicon lookups: off the main thread.
+        let loaded = await Task.detached(priority: .userInitiated) { () -> Result<Loaded, Error> in
+            Result {
+                let analysis = try TranslationDatabase.shared.analyzeStrongs(
+                    key: key, translationId: translationId, bookRange: range
+                )
+                var companions: [String: StrongsHeadword] = [:]
+                for companion in analysis?.companions ?? [] {
+                    companions[companion.key] = StrongsHeadword.lookUp(companion.key)
+                }
+                return Loaded(analysis: analysis, headword: StrongsHeadword.lookUp(key), companions: companions)
             }
-            return (analysis, StrongsHeadword.lookUp(key), companions)
         }.value
         guard !Task.isCancelled else { return }
-        analysis = loaded.0
-        headword = loaded.1
-        companionHeadwords = loaded.2
-        occurrencesByVerse = Dictionary(grouping: loaded.0?.occurrences ?? [], by: \.reference)
+        switch loaded {
+        case .success(let loaded):
+            analysis = loaded.analysis
+            headword = loaded.headword
+            companionHeadwords = loaded.companions
+            occurrencesByVerse = Dictionary(grouping: loaded.analysis?.occurrences ?? [], by: \.reference)
+        case .failure(let error):
+            analysis = nil
+            loadError = error.localizedDescription
+        }
         isLoading = false
+        guard loadError == nil else { return }
         await septuagint.loadWords(key: key)
+        await loadComparison(key: key, range: range)
+    }
+
+    /// The other translations that tag the key, each worked out in turn
+    /// behind the first and shown as it arrives: counts only, without the
+    /// verses' text, which nothing here reads.
+    private func loadComparison(key: String, range: ClosedRange<Int>?) async {
+        let current = translationId
+        let others = ((try? TranslationDatabase.shared.getAllTranslations()) ?? [])
+            .filter { $0.features?.strongs == true && $0.id != current }
+            .map(\.id)
+        guard !others.isEmpty else { return }
+        isComparing = true
+        for other in others {
+            let found = await Task.detached(priority: .utility) {
+                try? TranslationDatabase.shared.analyzeStrongs(
+                    key: key, translationId: other, bookRange: range, includingVerseText: false
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            // A translation that tags none of the key's language has
+            // nothing to compare.
+            if let found, found.wordCount > 0 {
+                compared.append(found)
+            }
+        }
+        isComparing = false
     }
 
     private func content(_ analysis: LampStrongsAnalysis) -> some View {
@@ -182,57 +278,24 @@ struct StrongsAnalysisView: View {
             } footer: {
                 // The rate, outside the card: the card keeps to the figures
                 // and the chart.
-                Text("About \(analysis.ratePerThousandWords.formatted(.number.precision(.fractionLength(0...1)))) in every 1,000 tagged \(languageName) words of the \(analysis.translationAbbreviation ?? analysis.translationName).")
+                Text(rateLine(analysis))
             }
+            definitionSection
             if !analysis.renderings.isEmpty {
-                Section {
-                    Picker("Chart", selection: $showsRenderingRing) {
-                        Text("List").tag(false)
-                        Text("Ring").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowSeparator(.hidden)
-                    if showsRenderingRing {
-                        renderingShare(analysis)
-                    } else {
-                        renderings(analysis)
-                    }
-                } header: {
-                    sectionHeader("Rendered As")
-                } footer: {
-                    Text(showsRenderingRing
-                        ? "How its \(analysis.occurrenceCount) occurrences are rendered, the commonest first. Tap one to filter the verse list below."
-                        : "Tap one to filter the verse list below.")
-                }
+                renderingsSection(analysis)
             }
-            Section {
-                Picker("Chart", selection: $showsRing) {
-                    Text("Bars").tag(false)
-                    Text("Ring").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
-                if showsRing {
-                    bookShare(analysis)
-                } else {
-                    books(analysis)
-                }
-            } header: {
-                sectionHeader("By Book")
-            } footer: {
-                Text(showsRing
-                    ? "Where its \(analysis.occurrenceCount) occurrences fall, the books holding most first. Tap a book to filter the verse list below."
-                    : "Expected is the share a book of its length would hold. ↑ More and ↓ fewer mark a gap too wide to be chance. Tap a book to filter the verse list below.")
+            if !analysis.forms.isEmpty {
+                formsSection(analysis)
             }
+            if !analysis.grammar.isEmpty {
+                grammarSection(analysis)
+            }
+            spreadSection(analysis)
             if !analysis.companions.isEmpty {
-                Section {
-                    companions(analysis)
-                } header: {
-                    sectionHeader("Found With")
-                } footer: {
-                    Text("Most certain first: a word that shares many verses with this one leads one that shares a few, however rare it is.")
-                }
+                companionsSection(analysis)
+            }
+            if !compared.isEmpty || isComparing {
+                compareSection(analysis)
             }
             if !septuagint.words.isEmpty {
                 septuagintSection
@@ -267,10 +330,93 @@ struct StrongsAnalysisView: View {
             .padding(.top, 6)
     }
 
+    /// A small heading over a run of rows inside a section.
+    private func rowCaption(_ title: String) -> some View {
+        Text(title)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(LampTheme.caption)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 2, trailing: 16))
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    /// Choosing the filter already in force widens it a step, a chapter to
+    /// its book, else clears it, so the same tap both narrows and widens.
+    private func choose(_ next: LampStrongsFilter?) {
+        guard let next else { return }
+        filter = filter == next ? next.widened : next
+        shownVerseCount = 50
+    }
+
+    // MARK: Books in range
+
+    /// The books analysed: every book, a testament, a part of the canon, or
+    /// one book, in the key's own testament, as a search narrows its books.
+    private var bookRangeMenu: some View {
+        let testament = key.hasPrefix("G") ? SearchBookRange.newTestament
+            : key.hasPrefix("H") ? SearchBookRange.oldTestament : 1...66
+        let parts = LampStrongsAnalysis.canonSections.filter { testament.contains($0.books.lowerBound) }
+        return Menu {
+            Picker("Books", selection: Binding(
+                get: { bookRange },
+                set: { chosenRange = BookRangeChoice(range: $0) }
+            )) {
+                Text(SearchBookRange.name(of: nil)).tag(ClosedRange<Int>?.none)
+                if testament != 1...66 {
+                    Text(SearchBookRange.name(of: testament)).tag(Optional(testament))
+                } else {
+                    Text(SearchBookRange.name(of: SearchBookRange.oldTestament)).tag(Optional(SearchBookRange.oldTestament))
+                    Text(SearchBookRange.name(of: SearchBookRange.newTestament)).tag(Optional(SearchBookRange.newTestament))
+                }
+                ForEach(parts, id: \.name) { part in
+                    Text(part.name).tag(Optional(part.books))
+                }
+            }
+            Menu("One Book") {
+                ForEach(Array(testament), id: \.self) { book in
+                    Button {
+                        chosenRange = BookRangeChoice(range: book...book)
+                    } label: {
+                        if bookRange == book...book {
+                            Label(BookOsisCache.shared.displayName(for: book), systemImage: "checkmark")
+                        } else {
+                            Text(BookOsisCache.shared.displayName(for: book))
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(
+                "Books: \(rangeName(bookRange))",
+                systemImage: bookRange == nil ? "books.vertical" : "books.vertical.fill"
+            )
+        }
+    }
+
+    /// A range by the name the menu gives it: a part of the canon by its own.
+    private func rangeName(_ range: ClosedRange<Int>?) -> String {
+        if let range, range.count > 1,
+           let part = LampStrongsAnalysis.canonSections.first(where: { $0.books == range }) {
+            return part.name
+        }
+        return SearchBookRange.name(of: range)
+    }
+
     // MARK: Summary
 
     private var languageName: String {
         key.hasPrefix("H") ? "Hebrew" : key.hasPrefix("G") ? "Greek" : "original-language"
+    }
+
+    private func rateLine(_ analysis: LampStrongsAnalysis) -> String {
+        let rate = analysis.ratePerThousandWords.formatted(.number.precision(.fractionLength(0...1)))
+        let books = bookRange.map { range -> String in
+            let name = rangeName(range)
+            let takesThe = ["Gospels", "General Letters", "Major Prophets", "Minor Prophets", "Law",
+                            "New Testament", "Old Testament"].contains(name)
+            return " in \(takesThe ? "the " : "")\(name)"
+        } ?? ""
+        return "About \(rate) in every 1,000 tagged \(languageName) words of the \(analysis.translationAbbreviation ?? analysis.translationName)\(books)."
     }
 
     private func summary(_ analysis: LampStrongsAnalysis) -> some View {
@@ -358,18 +504,155 @@ struct StrongsAnalysisView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // MARK: Definition
+
+    /// The whole entry, a page of its own: what someone looking a word up
+    /// came for, one tap from the figures without pushing them down.
+    private var definitionSection: some View {
+        Section {
+            NavigationLink {
+                StrongsDefinitionPage(key: key, translationId: translationId, onNavigateToVerse: onNavigateToVerse)
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Definition")
+                        Text("The whole entry, in each dictionary that has the word")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "character.book.closed")
+                        .foregroundStyle(.tint)
+                }
+            }
+        }
+    }
+
     // MARK: Renderings
+
+    private func renderingsSection(_ analysis: LampStrongsAnalysis) -> some View {
+        Section {
+            Picker("Chart", selection: $showsRenderingRing) {
+                Text("List").tag(false)
+                Text("Ring").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .listRowSeparator(.hidden)
+            if showsRenderingRing {
+                share(of: LampStrongsGrouping.renderings.divisions(of: analysis))
+            } else {
+                renderings(analysis)
+            }
+        } header: {
+            sectionHeader("Rendered As")
+        } footer: {
+            Text(showsRenderingRing
+                ? "How its \(analysis.occurrenceCount) occurrences are rendered, the commonest first. Tap one to filter the verse list below."
+                : "What translators reached for, not what the word means. Tap one to filter the verse list below.")
+        }
+    }
 
     @ViewBuilder
     private func renderings(_ analysis: LampStrongsAnalysis) -> some View {
-        let listed = Array(analysis.renderings.prefix(strongsAnalysisListed))
-        let most = max(listed.map(\.count).max() ?? 1, 1)
-        // Renderings used more than once get a row and a bar; those used once
-        // share one row of chips, where a bar each told nothing.
-        let repeated = listed.filter { $0.count > 1 || listed.count <= 3 }
-        let once = listed.filter { !($0.count > 1 || listed.count <= 3) }
-        ForEach(repeated) { rendering in
-            renderingRow(rendering, most: most)
+        let listed = showsAllRenderings
+            ? analysis.renderings
+            : Array(analysis.renderings.prefix(strongsAnalysisListed))
+        countRows(
+            listed.map { rendering in
+                CountedRow(
+                    id: rendering.id,
+                    title: rendering.text.isEmpty ? "(no English word)" : rendering.text,
+                    detail: rendering.variants
+                        .filter { $0.text != rendering.text }
+                        .prefix(3)
+                        .map(\.text)
+                        .joined(separator: ", "),
+                    count: rendering.count,
+                    filter: .rendering(id: rendering.id, text: rendering.text)
+                )
+            },
+            isOriginalLanguage: false
+        )
+        if !showsAllRenderings && analysis.renderings.count > strongsAnalysisListed {
+            Button("Show All \(analysis.renderings.count) Renderings") {
+                showsAllRenderings = true
+            }
+        }
+    }
+
+    // MARK: Forms and grammar
+
+    private func formsSection(_ analysis: LampStrongsAnalysis) -> some View {
+        Section {
+            let listed = showsAllForms ? analysis.forms : Array(analysis.forms.prefix(strongsAnalysisListed))
+            countRows(
+                listed.map { form in
+                    CountedRow(id: form.id, title: form.text, detail: "", count: form.count, filter: .form(form.text))
+                },
+                isOriginalLanguage: true
+            )
+            if !showsAllForms && analysis.forms.count > strongsAnalysisListed {
+                Button("Show All \(analysis.forms.count) Forms") {
+                    showsAllForms = true
+                }
+            }
+        } header: {
+            sectionHeader("Forms")
+        } footer: {
+            Text("Each spelling the word takes where it occurs. Tap one to filter the verse list below.")
+        }
+    }
+
+    /// Each feature's values as chips beside their counts, so a parsing reads
+    /// at a glance without a bar for every tense and case.
+    private func grammarSection(_ analysis: LampStrongsAnalysis) -> some View {
+        Section {
+            ForEach(LampGrammarFeature.allCases, id: \.self) { feature in
+                let values = analysis.grammar.filter { $0.feature == feature }
+                if !values.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(feature.title)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(LampTheme.caption)
+                            .accessibilityAddTraits(.isHeader)
+                        FlowLayout(spacing: 6, lineSpacing: 6) {
+                            ForEach(values, id: \.value) { value in
+                                filterChip(
+                                    value.value,
+                                    count: value.count,
+                                    filter: .grammar(feature: feature, value: value.value)
+                                )
+                            }
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 12, trailing: 16))
+                }
+            }
+        } header: {
+            sectionHeader("Grammar")
+        } footer: {
+            Text("How it is parsed where it occurs. Tap one to filter the verse list below.")
+        }
+    }
+
+    /// A figure the verse list can be narrowed to: a rendering or a form.
+    private struct CountedRow: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+        let count: Int
+        let filter: LampStrongsFilter
+    }
+
+    /// Those used more than once get a row and a bar; those used once share
+    /// one row of chips, where a bar each told nothing.
+    @ViewBuilder
+    private func countRows(_ rows: [CountedRow], isOriginalLanguage: Bool) -> some View {
+        let most = max(rows.map(\.count).max() ?? 1, 1)
+        let repeated = rows.filter { $0.count > 1 || rows.count <= 3 }
+        let once = rows.filter { !($0.count > 1 || rows.count <= 3) }
+        ForEach(repeated) { row in
+            countRow(row, most: most, isOriginalLanguage: isOriginalLanguage)
         }
         if !once.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
@@ -377,8 +660,8 @@ struct StrongsAnalysisView: View {
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(LampTheme.caption)
                 FlowLayout(spacing: 6, lineSpacing: 6) {
-                    ForEach(once) { rendering in
-                        renderingChip(rendering)
+                    ForEach(once) { row in
+                        filterChip(row.title, count: nil, filter: row.filter, isOriginalLanguage: isOriginalLanguage)
                     }
                 }
             }
@@ -386,24 +669,20 @@ struct StrongsAnalysisView: View {
         }
     }
 
-    private func renderingRow(_ rendering: LampStrongsAnalysis.Rendering, most: Int) -> some View {
-        let isSelected = renderingFilter == rendering.id
+    private func countRow(_ row: CountedRow, most: Int, isOriginalLanguage: Bool) -> some View {
+        let isSelected = filter == row.filter
         return Button {
-            renderingFilter = isSelected ? nil : rendering.id
-            shownVerseCount = 50
+            choose(row.filter)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(rendering.text.isEmpty ? "(no English word)" : rendering.text)
+                        Text(row.title)
+                            .font(isOriginalLanguage ? .system(.title3, design: .serif) : .body)
                             .fontWeight(isSelected ? .semibold : .regular)
                             .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-                        let variants = rendering.variants
-                            .filter { $0.text != rendering.text }
-                            .prefix(3)
-                            .map(\.text)
-                        if !variants.isEmpty {
-                            Text(variants.joined(separator: ", "))
+                        if !row.detail.isEmpty {
+                            Text(row.detail)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -415,12 +694,12 @@ struct StrongsAnalysisView: View {
                             .foregroundStyle(.tint)
                             .accessibilityHidden(true)
                     }
-                    Text("\(rendering.count)")
+                    Text("\(row.count)")
                         .font(.body.weight(.semibold))
                         .monospacedDigit()
                 }
                 StrongsBarTrack(
-                    fraction: CGFloat(rendering.count) / CGFloat(most),
+                    fraction: CGFloat(row.count) / CGFloat(most),
                     // A neutral share: colour in this view means more or
                     // fewer than expected, and the accent means chosen.
                     color: isSelected ? Color.accentColor : StrongsBarTrack.neutral,
@@ -434,97 +713,231 @@ struct StrongsAnalysisView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    /// A rendering used once: a chip that filters the verses to it.
-    private func renderingChip(_ rendering: LampStrongsAnalysis.Rendering) -> some View {
-        let isSelected = renderingFilter == rendering.id
+    /// A chip that narrows the verses to its figure, its count beside it
+    /// where there is one to give.
+    private func filterChip(
+        _ title: String,
+        count: Int?,
+        filter chipFilter: LampStrongsFilter,
+        isOriginalLanguage: Bool = false
+    ) -> some View {
+        let isSelected = filter == chipFilter
         return Button {
-            renderingFilter = isSelected ? nil : rendering.id
-            shownVerseCount = 50
+            choose(chipFilter)
         } label: {
-            Text(rendering.text.isEmpty ? "(no English word)" : rendering.text)
-                .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule().fill(isSelected ? Color.accentColor.opacity(0.14) : LampTheme.tileFill)
-                )
-                .overlay {
-                    if isSelected { Capsule().strokeBorder(Color.accentColor, lineWidth: 1) }
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(isOriginalLanguage
+                        ? .system(.subheadline, design: .serif).weight(isSelected ? .semibold : .regular)
+                        : .subheadline.weight(isSelected ? .semibold : .regular))
+                if let count {
+                    Text("\(count)")
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
                 }
-                .contentShape(Capsule())
+            }
+            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(
+                Capsule().fill(isSelected ? Color.accentColor.opacity(0.14) : LampTheme.tileFill)
+            )
+            .overlay {
+                if isSelected { Capsule().strokeBorder(Color.accentColor, lineWidth: 1) }
+            }
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(rendering.text.isEmpty ? "no English word" : rendering.text), once")
+        .accessibilityLabel(count.map { "\(title), \($0)" } ?? "\(title), once")
         .accessibilityHint("Filters the verse list")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    // MARK: Books
+    // MARK: Spread
 
-    /// The books in runs of one canon division (Gospels, Paul's Letters…),
-    /// in order, so a long list has landmarks.
-    private func bookGroups(_ books: [LampStrongsAnalysis.Division]) -> [(name: String, books: [LampStrongsAnalysis.Division])] {
-        var groups: [(name: String, books: [LampStrongsAnalysis.Division])] = []
-        for book in books {
-            let name = LampStrongsAnalysis.canonSections.first { $0.books.contains(book.id) }?.name ?? ""
-            if let last = groups.last, last.name == name {
-                groups[groups.count - 1].books.append(book)
-            } else {
-                groups.append((name, [book]))
-            }
+    /// Chapters belong to books, so the grid draws books whatever is chosen.
+    private var activeGrouping: LampStrongsGrouping {
+        chartStyle.needsBooks ? .books : grouping
+    }
+
+    /// Occurrences unless a rate is both drawable and meaningful here.
+    private var activeMeasure: LampStrongsSpreadMeasure {
+        chartStyle.usesMeasure && activeGrouping.usesMeasure ? measure : .occurrences
+    }
+
+    private var spreadTitle: String {
+        if chartStyle == .grid { return "By Chapter" }
+        switch activeGrouping {
+        case .books: return "By Book"
+        case .sections: return "By Section"
+        case .renderings: return "By Rendering"
+        case .forms: return "By Form"
         }
-        return groups
+    }
+
+    private func spreadSection(_ analysis: LampStrongsAnalysis) -> some View {
+        Section {
+            Picker("Chart", selection: $chartStyle) {
+                ForEach(LampStrongsChartStyle.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
+            spreadMenus
+            switch chartStyle {
+            case .bars:
+                spreadBars(analysis)
+            case .columns:
+                spreadColumns(analysis)
+            case .grid:
+                chapterGrid(analysis)
+            case .share:
+                share(of: activeGrouping.divisions(of: analysis))
+            }
+        } header: {
+            sectionHeader(spreadTitle)
+        } footer: {
+            Text(spreadFootnote)
+        }
+    }
+
+    /// What to group by and what to count, as menus that state the choice in
+    /// a word: two more segmented bars would outweigh the chart.
+    private var spreadMenus: some View {
+        HStack(spacing: 20) {
+            Menu {
+                Picker("Group By", selection: $grouping) {
+                    ForEach(LampStrongsGrouping.allCases) { Text($0.title).tag($0) }
+                }
+            } label: {
+                menuLabel("By \(activeGrouping.title)")
+            }
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
+            .disabled(chartStyle.needsBooks)
+            if chartStyle.usesMeasure && activeGrouping.usesMeasure {
+                Menu {
+                    Picker("Measure", selection: $measure) {
+                        ForEach(LampStrongsSpreadMeasure.allCases) { Text($0.title).tag($0) }
+                    }
+                } label: {
+                    menuLabel(measure.title)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.borderless)
+            }
+            Spacer(minLength: 0)
+        }
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 8, trailing: 16))
+    }
+
+    private func menuLabel(_ title: String) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+            Image(systemName: "chevron.up.chevron.down")
+                .imageScale(.small)
+        }
+        .font(.subheadline.weight(.medium))
+    }
+
+    private var spreadFootnote: String {
+        switch chartStyle {
+        case .share:
+            return "Each part’s share of the occurrences, the largest first. Tap one to filter the verse list below."
+        case .grid:
+            return "A square for each chapter, darker where the word is commoner. Tap one to filter the verse list below."
+        case .bars, .columns:
+            return activeGrouping.usesMeasure
+                ? "Expected is the share a part of its length would hold. ↑ More and ↓ fewer mark a gap too wide to be chance. Tap one to filter the verse list below."
+                : "Tap one to filter the verse list below."
+        }
+    }
+
+    /// The figure a bar is drawn to: a count, or a rate to two places.
+    private func measureLabel(_ bar: LampStrongsSpreadBar) -> String {
+        guard bar.occurrenceCount > 0 else { return "–" }
+        switch activeMeasure {
+        case .occurrences: return "\(bar.occurrenceCount)"
+        case .perThousandWords: return bar.value.formatted(.number.precision(.fractionLength(2)))
+        }
     }
 
     @ViewBuilder
-    private func books(_ analysis: LampStrongsAnalysis) -> some View {
-        let most = max(analysis.books.map(\.occurrenceCount).max() ?? 1, 1)
-        ForEach(Array(bookGroups(analysis.books).enumerated()), id: \.offset) { _, group in
-            if !group.name.isEmpty {
-                Text(group.name.uppercased())
-                    .font(.caption.weight(.semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(LampTheme.caption)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 2, trailing: 16))
-                    .accessibilityAddTraits(.isHeader)
+    private func spreadBars(_ analysis: LampStrongsAnalysis) -> some View {
+        let entries = activeGrouping.divisions(of: analysis)
+        let bars = LampStrongsSpread.bars(entries.map(\.division), measure: activeMeasure)
+        if activeGrouping == .books {
+            let barsByBook = Dictionary(bars.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            ForEach(Array(bookGroups(analysis.books).enumerated()), id: \.offset) { _, group in
+                if !group.name.isEmpty {
+                    Text(group.name.uppercased())
+                        .font(.caption.weight(.semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(LampTheme.caption)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 2, trailing: 16))
+                        .accessibilityAddTraits(.isHeader)
+                }
+                ForEach(group.books) { book in
+                    if let bar = barsByBook[book.id] {
+                        barRow(bar, filter: .book(number: book.id), nameWidth: 112)
+                        if openBook == book.id, !book.chapters.isEmpty {
+                            chapterStrip(book)
+                        }
+                    }
+                }
             }
-            ForEach(group.books) { book in
-                bookRow(book, most: most)
+        } else {
+            ForEach(Array(zip(entries, bars)), id: \.0.id) { entry, bar in
+                barRow(bar, filter: entry.filter, nameWidth: activeGrouping == .sections ? 132 : 120)
             }
         }
     }
 
-    private func bookRow(_ book: LampStrongsAnalysis.Division, most: Int) -> some View {
-        let isSelected = bookFilter == book.id
-        let isEmpty = book.occurrenceCount == 0
+    /// The book whose chapters show beneath it: the one the list is narrowed
+    /// to, or whose chapter it is narrowed to.
+    private var openBook: Int? {
+        switch filter {
+        case .book(let number): number
+        case .chapter(let book, _): book
+        default: nil
+        }
+    }
+
+    private func barRow(_ bar: LampStrongsSpreadBar, filter barFilter: LampStrongsFilter?, nameWidth: CGFloat) -> some View {
+        let isSelected = barFilter != nil && (filter == barFilter || {
+            if case .book(let book) = barFilter, case .chapter(book, _) = filter { return true }
+            return false
+        }())
+        let isEmpty = bar.occurrenceCount == 0
         return Button {
-            // A book without the word has no verses to filter to.
+            // A part without the word has no verses to filter to, and a
+            // section names several books, which no one filter says.
             guard !isEmpty else { return }
-            bookFilter = isSelected ? nil : book.id
-            shownVerseCount = 50
+            choose(barFilter)
         } label: {
             HStack(spacing: 10) {
-                Text(book.name)
+                Text(bar.name)
                     .font(.subheadline.weight(isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? Color.accentColor : isEmpty ? Color.secondary : Color.primary)
                     .lineLimit(1)
-                    .frame(width: 112, alignment: .leading)
+                    .frame(width: nameWidth, alignment: .leading)
                 StrongsBarTrack(
-                    fraction: CGFloat(book.occurrenceCount) / CGFloat(most),
-                    color: barColor(book.expectation),
+                    fraction: CGFloat(bar.share),
+                    color: barColor(bar.expectation),
                     height: 10
                 )
-                Text(isEmpty ? "–" : "\(book.occurrenceCount)")
+                Text(measureLabel(bar))
                     .font(.subheadline.weight(isEmpty ? .regular : .semibold))
                     .monospacedDigit()
                     .foregroundStyle(isEmpty ? Color.secondary : Color.primary)
                     .frame(minWidth: 24, alignment: .trailing)
-                Image(systemName: book.expectation == .fewer ? "arrow.down" : "arrow.up")
+                Image(systemName: bar.expectation == .fewer ? "arrow.down" : "arrow.up")
                     .font(.caption.weight(.heavy))
-                    .foregroundStyle(barColor(book.expectation))
-                    .opacity(book.expectation == .asExpected ? 0 : 1)
+                    .foregroundStyle(barColor(bar.expectation))
+                    .opacity(bar.expectation == .asExpected ? 0 : 1)
                     .frame(width: 14)
             }
             .contentShape(Rectangle())
@@ -532,58 +945,148 @@ struct StrongsAnalysisView: View {
         .buttonStyle(.plain)
         // Not disabled, which would fade the row past reading: a zero is
         // a finding too.
-        .allowsHitTesting(!isEmpty)
+        .allowsHitTesting(!isEmpty && barFilter != nil)
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(book.name), \(book.occurrenceCount) times\(expectationPhrase(book.expectation))")
+        .accessibilityLabel("\(bar.name), \(bar.occurrenceCount) times\(expectationPhrase(bar.expectation))")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// The chosen book's chapters as short columns, each a way to narrow the
+    /// verses to that chapter. Tapping the chosen one goes back to the book.
+    private func chapterStrip(_ book: LampStrongsAnalysis.Division) -> some View {
+        let most = max(book.chapters.map(\.occurrenceCount).max() ?? 1, 1)
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Chapters of \(book.name)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(LampTheme.caption)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(book.chapters) { chapter in
+                        let chapterFilter = LampStrongsFilter.chapter(book: book.id, number: chapter.number)
+                        let isChosen = filter == chapterFilter
+                        let isEmpty = chapter.occurrenceCount == 0
+                        VStack(spacing: 3) {
+                            Capsule()
+                                .fill(isChosen ? Color.accentColor : isEmpty ? StrongsBarTrack.track : StrongsBarTrack.neutral)
+                                .frame(width: 10, height: isEmpty ? 3 : max(5, 44 * CGFloat(chapter.occurrenceCount) / CGFloat(most)))
+                            Text("\(chapter.number)")
+                                .font(.caption2.weight(isChosen ? .bold : .regular))
+                                .monospacedDigit()
+                                .foregroundStyle(isChosen ? Color.accentColor : LampTheme.caption)
+                        }
+                        .frame(minWidth: 20, minHeight: 62, alignment: .bottom)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if !isEmpty { choose(chapterFilter) }
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Chapter \(chapter.number), \(chapter.occurrenceCount) times")
+                        .accessibilityAddTraits(isChosen ? [.isButton, .isSelected] : .isButton)
+                    }
+                }
+            }
+        }
+        .listRowSeparator(.hidden, edges: .top)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16))
+    }
+
+    private func spreadColumns(_ analysis: LampStrongsAnalysis) -> some View {
+        let entries = activeGrouping.divisions(of: analysis)
+        let bars = LampStrongsSpread.bars(entries.map(\.division), measure: activeMeasure)
+        return StrongsColumns(
+            bars: bars,
+            filters: entries.map(\.filter),
+            chosen: filter,
+            color: barColor,
+            label: measureLabel
+        ) { chosen in
+            choose(chosen)
+        }
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
+    }
+
+    /// Every chapter of each book holding the word, shaded against the
+    /// busiest chapter anywhere, so one occurrence never looks like many.
+    @ViewBuilder
+    private func chapterGrid(_ analysis: LampStrongsAnalysis) -> some View {
+        ForEach(LampStrongsGrid.rows(from: analysis.books)) { row in
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(row.name)
+                        .font(.subheadline.weight(openBook == row.id ? .semibold : .regular))
+                        .foregroundStyle(openBook == row.id ? Color.accentColor : Color.primary)
+                    Spacer(minLength: 8)
+                    Text("\(row.occurrenceCount)")
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                }
+                FlowLayout(spacing: 3, lineSpacing: 3) {
+                    ForEach(row.cells) { cell in
+                        let cellFilter = LampStrongsFilter.chapter(book: row.id, number: cell.number)
+                        let isChosen = filter == cellFilter
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(cell.occurrenceCount == 0
+                                ? StrongsBarTrack.track
+                                : Color.accentColor.opacity(0.25 + 0.75 * cell.intensity))
+                            .frame(width: 15, height: 15)
+                            .overlay {
+                                if isChosen {
+                                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                        .strokeBorder(Color.primary, lineWidth: 2)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if cell.occurrenceCount > 0 { choose(cellFilter) }
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(row.name) \(cell.number), \(cell.occurrenceCount) times")
+                            .accessibilityAddTraits(isChosen ? [.isButton, .isSelected] : .isButton)
+                    }
+                }
+            }
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 10, trailing: 16))
+        }
     }
 
     // MARK: Share
 
-    /// A share as core slices it for a deck's ring (`LampPresentationChart`):
-    /// the largest first, the rest gathered as "Others", each named slice a
-    /// way to filter the verses.
+    /// Each part's share as core slices it, the largest six and the rest as
+    /// "Other", each named slice a way to filter the verses.
     @ViewBuilder
-    private func share(
-        _ analysis: LampStrongsAnalysis,
-        by grouping: LampPresentationChart.Grouping,
-        filterIDs: [String: String],
-        selectedID: String?,
-        toggle: @escaping (String) -> Void
-    ) -> some View {
-        let chart = LampPresentationChart(
-            source: .init(strongs: analysis.key, translationID: analysis.translationID),
-            by: grouping,
-            style: .share
+    private func share(of entries: [LampStrongsChartDivision]) -> some View {
+        let slices = LampStrongsShare.slices(from: entries.map(\.division))
+        let filters = Dictionary(
+            entries.map { (String($0.division.id), $0.filter) },
+            uniquingKeysWith: { first, _ in first }
         )
-        let slices = chart.values(from: analysis)
         let total = slices.reduce(0) { $0 + $1.value }
-        StrongsShareRing(slices: slices, total: Int(total)) { index in
+        StrongsShareRing(slices: slices, total: total) { index in
             shareColor(index, of: slices)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 6)
-        // "Others" names nothing to filter by, so its row is no button.
-        ForEach(Array(slices.enumerated()), id: \.offset) { index, slice in
-            let filterID = filterIDs[slice.label]
-            let isSelected = filterID != nil && selectedID == filterID
+        // "Other" names nothing to filter by, so its row is no button.
+        ForEach(Array(slices.enumerated()), id: \.element.id) { index, slice in
+            let sliceFilter = slice.isOther ? nil : filters[slice.id] ?? nil
+            let isSelected = sliceFilter != nil && filter == sliceFilter
             Button {
-                if let filterID { toggle(filterID) }
+                choose(sliceFilter)
             } label: {
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(shareColor(index, of: slices))
                         .frame(width: 10, height: 10)
-                    Text(slice.label)
+                    Text(slice.name)
                         .font(.subheadline.weight(isSelected ? .semibold : .regular))
                         .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                         .lineLimit(1)
                     Spacer(minLength: 8)
-                    Text("\(Int(slice.value))")
+                    Text("\(slice.value)")
                         .font(.subheadline)
                         .monospacedDigit()
-                    Text("\(total > 0 ? Int((slice.value / total * 100).rounded()) : 0)%")
+                    Text(StrongsShareRing.share(slice.fraction))
                         .font(.subheadline)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
@@ -592,52 +1095,18 @@ struct StrongsAnalysisView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(filterID == nil)
+            .disabled(sliceFilter == nil)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
     }
 
-    /// The books' share, filtering by book.
-    @ViewBuilder
-    private func bookShare(_ analysis: LampStrongsAnalysis) -> some View {
-        share(
-            analysis,
-            by: .book,
-            filterIDs: Dictionary(analysis.books.map { ($0.name, String($0.id)) }, uniquingKeysWith: { first, _ in first }),
-            selectedID: bookFilter.map(String.init)
-        ) { id in
-            let book = Int(id)
-            bookFilter = bookFilter == book ? nil : book
-            shownVerseCount = 50
-        }
-    }
-
-    /// The renderings' share, filtering by rendering. Core labels the one with
-    /// no English of its own "(no English)".
-    @ViewBuilder
-    private func renderingShare(_ analysis: LampStrongsAnalysis) -> some View {
-        share(
-            analysis,
-            by: .rendering,
-            filterIDs: Dictionary(
-                analysis.renderings.map { ($0.text.isEmpty ? "(no English)" : $0.text, $0.id) },
-                uniquingKeysWith: { first, _ in first }
-            ),
-            selectedID: renderingFilter
-        ) { id in
-            renderingFilter = renderingFilter == id ? nil : id
-            shownVerseCount = 50
-        }
-    }
-
-    /// One hue, deepest for the largest slice, as a deck's ring has it; the
-    /// gathered rest faintest, being a remainder rather than a finding.
-    private func shareColor(_ index: Int, of slices: [LampPresentationChart.Value]) -> Color {
-        let isOthers = index == slices.count - 1 && slices.count == LampPresentationChart.shareSlices
-            && slices[index].label == "Others"
-        guard !isOthers else { return Color.accentColor.opacity(0.2) }
-        guard slices.count > 1 else { return .accentColor }
-        return Color.accentColor.opacity(1 - 0.6 * Double(index) / Double(slices.count - 1))
+    /// One hue, deepest for the largest slice; the gathered rest faintest,
+    /// being a remainder rather than a finding.
+    private func shareColor(_ index: Int, of slices: [LampStrongsShare.Slice]) -> Color {
+        guard slices.indices.contains(index), !slices[index].isOther else { return Color.accentColor.opacity(0.2) }
+        let named = slices.filter { !$0.isOther }.count
+        guard named > 1 else { return .accentColor }
+        return Color.accentColor.opacity(1 - 0.6 * Double(index) / Double(named - 1))
     }
 
     /// Blue against orange, a pair that stays apart for most colour vision,
@@ -659,39 +1128,138 @@ struct StrongsAnalysisView: View {
         }
     }
 
+    /// The books in runs of one canon division (Gospels, Paul's Letters…),
+    /// in order, so a long list has landmarks.
+    private func bookGroups(_ books: [LampStrongsAnalysis.Division]) -> [(name: String, books: [LampStrongsAnalysis.Division])] {
+        var groups: [(name: String, books: [LampStrongsAnalysis.Division])] = []
+        for book in books {
+            let name = LampStrongsAnalysis.canonSections.first { $0.books.contains(book.id) }?.name ?? ""
+            if let last = groups.last, last.name == name {
+                groups[groups.count - 1].books.append(book)
+            } else {
+                groups.append((name, [book]))
+            }
+        }
+        return groups
+    }
+
     // MARK: Companions
 
-    private func companions(_ analysis: LampStrongsAnalysis) -> some View {
-        // In the order given, by how certain each association is. Sorted by
-        // how many times chance it is instead, a pairing from two verses would
-        // lead.
-        ForEach(analysis.companions.prefix(strongsAnalysisListed)) { companion in
-            let companionHeadword = companionHeadwords[companion.key]
-            NavigationLink(value: StrongsAnalysisItem(key: companion.key)) {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(companionHeadword?.lemma ?? companion.key)
-                                .font(.headline)
-                            Text(companion.key)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let gloss = companionHeadword?.gloss, !gloss.isEmpty {
-                            Text(gloss)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+    private func companionsSection(_ analysis: LampStrongsAnalysis) -> some View {
+        Section {
+            // In the order given, by how certain each association is. Sorted
+            // by how many times chance it is instead, a pairing from two
+            // verses would lead.
+            let listed = showsAllCompanions
+                ? analysis.companions
+                : Array(analysis.companions.prefix(strongsAnalysisListed))
+            ForEach(listed) { companion in
+                companionRow(companion)
+            }
+            if !showsAllCompanions && analysis.companions.count > strongsAnalysisListed {
+                Button("Show All \(analysis.companions.count) Words") {
+                    showsAllCompanions = true
+                }
+            }
+        } header: {
+            sectionHeader("Found With")
+        } footer: {
+            Text("Strongest association first, which is not the largest multiple: a high multiple over a few shared verses says less than a smaller one over many.")
+        }
+    }
+
+    private func companionRow(_ companion: LampStrongsAnalysis.Companion) -> some View {
+        let companionHeadword = companionHeadwords[companion.key]
+        return NavigationLink(value: StrongsAnalysisItem(key: companion.key)) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(companionHeadword?.lemma ?? companion.key)
+                            .font(.headline)
+                        Text(companion.key)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    Spacer(minLength: 8)
-                    Text("\(companion.sharedVerseCount) shared")
-                        .font(.subheadline)
+                    if let gloss = companionHeadword?.gloss, !gloss.isEmpty {
+                        Text(gloss)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("\(companion.lift.formatted(.number.precision(.fractionLength(1))))× chance")
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                    Text("\(companion.sharedVerseCount) of its \(companion.verseCount)")
+                        .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("\(companion.sharedVerseCount) of its \(companion.verseCount) verses are shared with this word")
+    }
+
+    // MARK: Compare
+
+    private func compareSection(_ analysis: LampStrongsAnalysis) -> some View {
+        Section {
+            ForEach(
+                LampStrongsAnalysisOrder.ordered([analysis] + compared, activeTranslationID: translationId),
+                id: \.translationID
+            ) { other in
+                compareRow(other, isRead: other.translationID == translationId)
+            }
+            if isComparing {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Counting the other translations…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            sectionHeader("Compare")
+        } footer: {
+            Text("Counts depend on how each translation was tagged, so they don’t all measure the same thing.")
+        }
+    }
+
+    private func compareRow(_ other: LampStrongsAnalysis, isRead: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(other.translationAbbreviation ?? other.translationName)
+                    .font(.headline)
+                if isRead {
+                    Text("Reading")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                // A translation can tag the language and still leave this
+                // word untagged: the WEB leaves out "love" in John 13:35.
+                Text(other.occurrenceCount == 0
+                    ? "None tagged"
+                    : "\(other.occurrenceCount) in \(other.verseCount) \(other.verseCount == 1 ? "verse" : "verses")")
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            let renderings = other.renderings.prefix(3)
+                .map { "\($0.text.isEmpty ? "—" : $0.text) (\($0.count))" }
+                .joined(separator: ", ")
+            if !renderings.isEmpty {
+                Text(renderings)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: Septuagint
@@ -779,15 +1347,11 @@ struct StrongsAnalysisView: View {
 
     // MARK: Verses
 
+    /// The verses holding an occurrence the filter leaves, in order.
     private func filteredReferences(_ analysis: LampStrongsAnalysis) -> [Int] {
-        guard renderingFilter != nil || bookFilter != nil else { return analysis.references }
-        return analysis.references.filter { reference in
-            if let bookFilter, reference / 1_000_000 != bookFilter { return false }
-            if let renderingFilter {
-                return occurrencesByVerse[reference]?.contains { $0.renderingID == renderingFilter } == true
-            }
-            return true
-        }
+        guard let filter else { return analysis.references }
+        let matching = Set(analysis.occurrences(matching: filter).map(\.reference))
+        return analysis.references.filter(matching.contains)
     }
 
     @ViewBuilder
@@ -805,12 +1369,11 @@ struct StrongsAnalysisView: View {
             }
         } header: {
             HStack {
-                Text(versesTitle(references.count, analysis: analysis, bookNames: bookNames))
+                Text(versesTitle(references.count))
                 Spacer()
-                if renderingFilter != nil || bookFilter != nil {
+                if filter != nil {
                     Button("Show All") {
-                        renderingFilter = nil
-                        bookFilter = nil
+                        filter = nil
                         shownVerseCount = 50
                     }
                     .font(.footnote)
@@ -820,16 +1383,11 @@ struct StrongsAnalysisView: View {
         }
     }
 
-    private func versesTitle(_ count: Int, analysis: LampStrongsAnalysis, bookNames: [Int: String]) -> String {
-        var title = "\(count) Verses"
-        if let renderingFilter,
-           let rendering = analysis.renderings.first(where: { $0.id == renderingFilter }) {
-            title += " · “\(rendering.text)”"
-        }
-        if let bookFilter, let name = bookNames[bookFilter] {
-            title += " · \(name)"
-        }
-        return title
+    /// "12 Verses · rendered “love”": what a tap above did, said where its
+    /// effect is.
+    private func versesTitle(_ count: Int) -> String {
+        let title = count == 1 ? "1 Verse" : "\(count) Verses"
+        return filter.map { "\(title) · \($0.narrowing)" } ?? title
     }
 
     /// As a search hit is shown: the reference over the verse cut around
@@ -883,13 +1441,118 @@ struct StrongsAnalysisView: View {
     }
 }
 
+/// A key's whole entry from one dictionary at a time, as the Mac's analysis
+/// has it: the dictionaries with an entry for the key, in the order the
+/// reader set for its language and without those hidden, the first of them
+/// to begin with, and a menu to read another. The one chosen is kept across
+/// words, so someone reading one lexicon keeps reading it.
+private struct StrongsDefinitionPage: View {
+    let key: String
+    let translationId: String
+    var onNavigateToVerse: ((Int) -> Void)? = nil
+
+    @AppStorage("strongs.analysis.definitionLexicon") private var chosenLexicon = ""
+    @State private var entries: [LexiconEntry]?
+
+    /// The dictionaries with an entry, each once, in the reader's order.
+    private var lexicons: [(key: String, name: String)] {
+        var seen = Set<String>()
+        return (entries ?? []).compactMap { entry in
+            seen.insert(entry.lexiconKey).inserted ? (entry.lexiconKey, entry.lexiconName) : nil
+        }
+    }
+
+    private var shownLexicon: String? {
+        LampStrongsDefinitionChoice.shown(
+            among: lexicons.map(\.key),
+            chosen: chosenLexicon.isEmpty ? nil : chosenLexicon,
+            preferred: nil
+        )
+    }
+
+    var body: some View {
+        Group {
+            if let entries {
+                if let shownLexicon {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            ForEach(entries.filter { $0.lexiconKey == shownLexicon }) { entry in
+                                LexiconEntryView(
+                                    entry: entry,
+                                    senses: entry.parsedSenses,
+                                    translationId: translationId,
+                                    onNavigateToVerse: onNavigateToVerse,
+                                    baseFontSize: CGFloat(UserDatabase.shared.getSettings().readerFontSize) * 0.92
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 24)
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "Not in Any Dictionary",
+                        systemImage: "character.book.closed",
+                        description: Text("No dictionary on this iPhone has an entry for \(key).")
+                    )
+                }
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .navigationTitle("Definition")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if lexicons.count > 1, let shownLexicon {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Picker("Dictionary", selection: Binding(
+                            get: { shownLexicon },
+                            set: { chosenLexicon = $0 }
+                        )) {
+                            ForEach(lexicons, id: \.key) { lexicon in
+                                Text(lexicon.name).tag(lexicon.key)
+                            }
+                        }
+                    } label: {
+                        Label("Dictionary", systemImage: "character.book.closed")
+                    }
+                }
+            }
+        }
+        .task(id: key) {
+            let key = key
+            entries = await Task.detached(priority: .userInitiated) {
+                StrongsDefinitionPage.entries(for: key)
+            }.value
+        }
+    }
+
+    /// Every entry for the key, in the order the reader set for its
+    /// language, without the dictionaries the reader hid.
+    nonisolated static func entries(for key: String) -> [LexiconEntry] {
+        let settings = UserDatabase.shared.getSettings()
+        let isHebrew = key.hasPrefix("H")
+        let hidden = Set(LampModuleSelection.identifiers(
+            in: isHebrew ? settings.hiddenHebrewLexicons : settings.hiddenGreekLexicons
+        ))
+        return LexiconLookup.sortedEntries(
+            for: key,
+            orderString: isHebrew ? settings.hebrewLexiconOrder : settings.greekLexiconOrder
+        )
+        .filter { !hidden.contains($0.lexiconKey) }
+    }
+}
+
 /// A ring of the whole, largest slice first from twelve o'clock, with the
 /// total in its hole: the one number a share otherwise leaves you to add up.
 /// A slice tapped is read out in the hole, its name, count and share, and
 /// the rest fade: shades of one hue are hard to match to their rows by eye.
 /// Tapping it again, or the hole, goes back to the total.
 private struct StrongsShareRing: View {
-    let slices: [LampPresentationChart.Value]
+    let slices: [LampStrongsShare.Slice]
     let total: Int
     let color: (Int) -> Color
 
@@ -898,19 +1561,15 @@ private struct StrongsShareRing: View {
     private static let size: CGFloat = 140
     private static let holeRatio: CGFloat = 0.6
 
-    private var sum: Double { slices.reduce(0) { $0 + $1.value } }
-
     var body: some View {
         ZStack {
             Canvas { context, size in
                 let centre = CGPoint(x: size.width / 2, y: size.height / 2)
                 let radius = min(size.width, size.height) / 2
                 let hole = radius * Self.holeRatio
-                let sum = sum
-                guard sum > 0 else { return }
                 var start = Angle.degrees(-90)
                 for (index, slice) in slices.enumerated() {
-                    let sweep = Angle.degrees(360 * slice.value / sum)
+                    let sweep = Angle.degrees(360 * slice.fraction)
                     var path = Path()
                     path.addArc(center: centre, radius: radius, startAngle: start, endAngle: start + sweep, clockwise: false)
                     path.addArc(center: centre, radius: hole, startAngle: start + sweep, endAngle: start, clockwise: true)
@@ -925,7 +1584,12 @@ private struct StrongsShareRing: View {
             }
             .contentShape(Circle())
             .onTapGesture(coordinateSpace: .local) { location in
-                let tapped = slice(at: location)
+                let tapped = LampStrongsShareHit.index(
+                    at: location,
+                    in: CGSize(width: Self.size, height: Self.size),
+                    fractions: slices.map(\.fraction),
+                    thickness: Double(1 - Self.holeRatio)
+                )
                 withAnimation(.easeOut(duration: 0.15)) {
                     selected = tapped == selected ? nil : tapped
                 }
@@ -935,9 +1599,9 @@ private struct StrongsShareRing: View {
                 .allowsHitTesting(false)
         }
         .frame(width: Self.size, height: Self.size)
-        .onChange(of: slices.map(\.label)) { selected = nil }
+        .onChange(of: slices.map(\.id)) { selected = nil }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(slices.map { "\($0.label), \(Int($0.value))" }.joined(separator: "; "))
+        .accessibilityLabel(slices.map { "\($0.name), \($0.value)" }.joined(separator: "; "))
     }
 
     @ViewBuilder
@@ -945,15 +1609,15 @@ private struct StrongsShareRing: View {
         if let selected, slices.indices.contains(selected) {
             let slice = slices[selected]
             VStack(spacing: 0) {
-                Text(slice.label)
+                Text(slice.name)
                     .font(.caption2.weight(.semibold))
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
                     .multilineTextAlignment(.center)
-                Text("\(Int(slice.value))")
+                Text("\(slice.value)")
                     .font(.title3.weight(.semibold))
                     .monospacedDigit()
-                Text(Self.share(slice.value, of: sum))
+                Text(Self.share(slice.fraction))
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -970,27 +1634,97 @@ private struct StrongsShareRing: View {
         }
     }
 
-    static func share(_ value: Double, of sum: Double) -> String {
-        guard sum > 0 else { return "" }
-        let percent = 100 * value / sum
+    /// A fraction of the whole as a percentage, a sliver as "<1%".
+    static func share(_ fraction: Double) -> String {
+        let percent = 100 * fraction
         return percent > 0 && percent < 1 ? "<1%" : "\(Int(percent.rounded()))%"
     }
+}
 
-    /// The slice under `location`, or nil in the hole or outside the ring.
-    /// The slices run clockwise from twelve o'clock.
-    private func slice(at location: CGPoint) -> Int? {
-        let radius = Self.size / 2
-        let dx = location.x - radius, dy = location.y - radius
-        let distance = (dx * dx + dy * dy).squareRoot()
-        guard distance >= radius * Self.holeRatio, distance <= radius, sum > 0 else { return nil }
-        var angle = atan2(dy, dx) * 180 / .pi + 90
-        if angle < 0 { angle += 360 }
-        var end = 0.0
-        for (index, slice) in slices.enumerated() {
-            end += 360 * slice.value / sum
-            if angle < end { return index }
+/// The spread as columns side by side, a histogram that shows its shape:
+/// where the word gathers and where it thins. A column tapped is named above
+/// the chart and narrows the verse list, where its part names one.
+private struct StrongsColumns: View {
+    let bars: [LampStrongsSpreadBar]
+    let filters: [LampStrongsFilter?]
+    let chosen: LampStrongsFilter?
+    let color: (LampStrongsAnalysis.Expectation) -> Color
+    let label: (LampStrongsSpreadBar) -> String
+    let choose: (LampStrongsFilter?) -> Void
+
+    @State private var selected: Int?
+
+    private static let height: CGFloat = 120
+
+    private var spacing: CGFloat { bars.count > 40 ? 1.5 : 3 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            readout
+            GeometryReader { proxy in
+                let width = max(2, (proxy.size.width - spacing * CGFloat(max(bars.count - 1, 0))) / CGFloat(max(bars.count, 1)))
+                HStack(alignment: .bottom, spacing: spacing) {
+                    ForEach(Array(bars.enumerated()), id: \.element.id) { index, bar in
+                        let isChosen = selected == index || (filters.indices.contains(index) && filters[index] != nil && filters[index] == chosen)
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(bar.occurrenceCount == 0 ? StrongsBarTrack.track : isChosen ? Color.accentColor : color(bar.expectation))
+                            .frame(width: width, height: bar.occurrenceCount == 0 ? 2 : max(4, Self.height * CGFloat(bar.share)))
+                            .frame(maxHeight: .infinity, alignment: .bottom)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard bar.occurrenceCount > 0 else { return }
+                                selected = selected == index ? nil : index
+                                if filters.indices.contains(index) { choose(filters[index]) }
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(bar.name), \(label(bar))")
+                            .accessibilityAddTraits(.isButton)
+                    }
+                }
+            }
+            .frame(height: Self.height)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(LampTheme.caption.opacity(0.5))
+                    .frame(height: 1)
+                    .offset(y: 1)
+            }
+            HStack {
+                Text(bars.first?.name ?? "")
+                Spacer(minLength: 8)
+                Text(bars.last?.name ?? "")
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(LampTheme.caption)
+            .lineLimit(1)
         }
-        return slices.indices.last
+        .onChange(of: bars.map(\.id)) { selected = nil }
+    }
+
+    /// The column tapped, named with its figure; until then, how to read it.
+    @ViewBuilder
+    private var readout: some View {
+        if let selected, bars.indices.contains(selected) {
+            let bar = bars[selected]
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(bar.name)
+                    .font(.subheadline.weight(.semibold))
+                Text(label(bar))
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                if bar.expectation != .asExpected {
+                    Text(bar.expectation == .more ? "↑ more than expected" : "↓ fewer than expected")
+                        .font(.footnote)
+                        .foregroundStyle(color(bar.expectation))
+                }
+            }
+            .lineLimit(1)
+        } else {
+            Text("Tap a column to name it.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

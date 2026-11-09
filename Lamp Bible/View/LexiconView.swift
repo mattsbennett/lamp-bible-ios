@@ -669,6 +669,11 @@ private func parseSensesForEntry(_ entry: LexiconEntry) -> [DictionarySense] {
     return parseUserSensesStatic(entry.sensesJson)
 }
 
+extension LexiconEntry {
+    /// The entry's senses, as `LexiconEntryView` is handed them.
+    var parsedSenses: [DictionarySense] { parseSensesForEntry(self) }
+}
+
 /// Thread-safe popover count that doesn't require Realm access
 /// Uses simple regex counting instead of full verse reference parsing
 private func countPopoverItemsInTextThreadSafe(_ text: String) -> Int {

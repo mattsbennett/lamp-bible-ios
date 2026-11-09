@@ -679,6 +679,7 @@ struct SearchView: View {
                     StrongsAnalysisSheet(
                         key: item.key,
                         translationId: translationId,
+                        bookRange: bookRange,
                         onNavigateToVerse: navigateToHighlightedVerse
                     )
                 }
