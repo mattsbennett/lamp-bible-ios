@@ -12,10 +12,13 @@ struct StrongsAnalysisItem: Identifiable, Hashable {
 private let strongsAnalysisListed = 8
 
 /// A key's headword and short meaning, from the bundled lexicons keyed by
-/// Strong's: the lemma Strong's gives, else another's; for a meaning a
-/// lexicon's own gloss (TBESG's, for Greek, which has the Septuagint's extended
-/// numbers too), else Dodson's short definition, which is a gloss, else
-/// Strong's own definition, the shortest the bundle has for Hebrew.
+/// Strong's. The lemma and gloss are core's, as the Mac names a word: the
+/// lemma Strong's gives, else another's, and a lexicon's own gloss (TBESG's,
+/// for Greek, which has the Septuagint's extended numbers too), read as its
+/// head where it lists senses of one word. Where no lexicon has a gloss, the
+/// phone's card still says something, as it always has: Dodson's short
+/// definition, which is a gloss, else Strong's own definition, the shortest
+/// the bundle has for Hebrew.
 struct StrongsHeadword: Sendable {
     let lemma: String?
     let transliteration: String?
@@ -28,15 +31,26 @@ struct StrongsHeadword: Sendable {
             .filter { $0.language == language && $0.isKeyedByStrongs }
             .compactMap { lexicon in
                 (try? database.getDictionaryEntry(moduleId: lexicon.moduleId, key: key))
-                    .map { (lexicon: lexicon.lexiconKey, entry: $0) }
+                    .map { (lexicon: lexicon, entry: $0) }
             }
-        let strongs = entries.first { $0.lexicon == "strongs" }?.entry
-        let dodson = entries.first { $0.lexicon == "dodson" }?.entry
+        let named = LampStrongsHeadword.merging(entries.map { found in
+            LampDictionaryResult(
+                entryID: found.entry.id,
+                moduleID: found.lexicon.moduleId,
+                moduleName: found.lexicon.name,
+                key: found.entry.key,
+                lemma: found.entry.lemma,
+                transliteration: found.entry.transliteration,
+                pronunciation: found.entry.pronunciation,
+                senses: LampDictionarySense.senses(fromJSON: found.entry.sensesJson)
+            )
+        })[LampStrongsKey.normalized(key)]
+        let strongs = entries.first { $0.lexicon.lexiconKey == "strongs" }?.entry
+        let dodson = entries.first { $0.lexicon.lexiconKey == "dodson" }?.entry
         return StrongsHeadword(
-            lemma: strongs?.lemma ?? entries.first?.entry.lemma,
-            transliteration: strongs?.transliteration
-                ?? entries.lazy.compactMap(\.entry.transliteration).first,
-            gloss: entries.lazy.compactMap { $0.entry.senses.first?.gloss }.first
+            lemma: named?.lemma,
+            transliteration: named?.transliteration,
+            gloss: named?.shortGloss
                 ?? dodson?.senses.first?.shortDefinition?.plainText
                 ?? strongs?.senses.first?.definition?.plainText
         )

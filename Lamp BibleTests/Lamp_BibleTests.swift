@@ -6069,6 +6069,16 @@ final class BundledLexiconTests: XCTestCase {
         XCTAssertEqual(StrongsHeadword.lookUp("G20001").gloss, "be made desert")
     }
 
+    /// The card names a word as the Mac does, and still says something where
+    /// no lexicon has a gloss, as Hebrew's don't.
+    func testTheCardNamesAWordByCoresRuleAndFallsBackToADefinition() {
+        let faith = StrongsHeadword.lookUp("G4102")
+        XCTAssertEqual(faith.lemma, "πίστις", "Strong's bare word, not Dodson's with its endings")
+        XCTAssertEqual(faith.gloss, "faith", "TBESG's senses of one word read as their head")
+        XCTAssertEqual(StrongsHeadword.lookUp("G86").gloss, "hell: Hades", "A single sense stays whole")
+        XCTAssertEqual(StrongsHeadword.lookUp("H160").gloss, "{affection (in a good or a bad sense)}")
+    }
+
     func testAUserWhoNeverChoseGetsStrongsThenTBESG() {
         // "strongs,dodson" is what every install held before TBESG.
         for order in ["strongs,dodson", LexiconLookup.defaultGreekOrder] {
