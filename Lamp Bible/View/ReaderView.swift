@@ -1343,11 +1343,6 @@ struct ChapterTextView: UIViewRepresentable {
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let textView = textView else { return }
 
-            // Skip if text is selected (user was doing long-press selection)
-            if textView.selectedRange.length > 0 {
-                return
-            }
-
             let point = gesture.location(in: textView)
             let adjustedPoint = CGPoint(
                 x: point.x - textView.textContainerInset.left,
@@ -1359,6 +1354,16 @@ struct ChapterTextView: UIViewRepresentable {
                 in: textView.textContainer,
                 fractionOfDistanceBetweenInsertionPoints: nil
             )
+
+            // A tap away from selected text ends the selection, and nothing
+            // more: it opens no word or verse. A tap on it is left to UIKit.
+            let selected = textView.selectedRange
+            if selected.length > 0 {
+                if !NSLocationInRange(characterIndex, selected) {
+                    endSelection(in: textView)
+                }
+                return
+            }
 
             guard characterIndex < textView.attributedText.length else { return }
 
@@ -1388,6 +1393,18 @@ struct ChapterTextView: UIViewRepresentable {
                     }
                 }
             }
+        }
+
+        /// Close the selection's menu where it stands, then clear the
+        /// selection. Left to UIKit, the selection went a third of a second
+        /// after the tap, once the tap could no longer be a double tap, and
+        /// went before the menu, which then flew to the top of the text as
+        /// it faded, having nothing selected left to point at.
+        private func endSelection(in textView: UITextView) {
+            for case let menu as UIEditMenuInteraction in textView.interactions {
+                menu.dismissMenu()
+            }
+            textView.selectedTextRange = nil
         }
 
         private func showVerseMenu(for verse: TranslationVerse, at rect: CGRect, in textView: UITextView) {
