@@ -1835,6 +1835,37 @@ class TranslationDatabase {
         }
     }
 
+    /// Every verse of the translation tagging `key`, in order: from the
+    /// Strong's index, or, while the translation has none, by reading the
+    /// verses that may tag it.
+    func strongsReferences(translationId: String, key: String) throws -> [Int] {
+        if let refs = StrongsIndex.shared.refs(
+            translationId: translationId, key: key, source: try verseSource(for: translationId)
+        ) {
+            return refs
+        }
+        return try searchVersesByStrongs(translationId: translationId, strongsNum: key, limit: 100_000).map(\.ref)
+    }
+
+    /// How the translation numbers its verses: the scheme it names, with the
+    /// departures from it its row lists, as core reads a module's.
+    func versification(of translation: TranslationModule) -> LampVersification {
+        let numbering = LampVersification.standard(
+            LampVersification.Scheme(moduleValue: translation.versification) ?? .english
+        )
+        // A table older than the column has no departures to read.
+        let departures = try? verseSource(for: translation.id).read { db in
+            try String.fetchOne(
+                db, sql: "SELECT versification_mappings FROM translations WHERE id = ?",
+                arguments: [translation.id]
+            )
+        }
+        guard let data = departures?.data(using: .utf8),
+              let lines = try? JSONDecoder().decode([String].self, from: data), !lines.isEmpty
+        else { return numbering }
+        return numbering.departing(by: lines)
+    }
+
     /// Get the last verse ref in a chapter
     func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
         if try bundledDb.isTranslationBundled(id: translationId) {

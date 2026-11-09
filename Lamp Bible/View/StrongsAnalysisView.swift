@@ -1,5 +1,6 @@
 import SwiftUI
 import LampCore
+import LampModuleKit
 
 /// A Strong's key to analyse, for a sheet or a pushed page.
 struct StrongsAnalysisItem: Identifiable, Hashable {
@@ -99,6 +100,11 @@ struct StrongsAnalysisView: View {
     @State private var bookFilter: Int?
     @State private var shownVerseCount = 50
     @State private var previewReference: VersePreviewReference?
+    @State private var septuagint = SeptuagintLoader()
+    /// Collapsed to begin with: the Septuagint is a second subject, and
+    /// opening it costs a search of the Hebrew text a word.
+    @State private var isShowingSeptuagint = false
+    @State private var septuagintPreview: SeptuagintPreview?
     @AppStorage("strongs.analysis.bookChartAsRing") private var showsRing = false
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = false
@@ -135,6 +141,16 @@ struct StrongsAnalysisView: View {
                 onOpen: onNavigateToVerse.map { navigate in { navigate(preview.id) } }
             )
         }
+        .sheet(item: $septuagintPreview) { preview in
+            VersePreviewSheet(
+                title: Self.referenceTitle(preview.id, bookNames: [:]),
+                verseId: preview.id,
+                translationId: translationId,
+                highlightQuery: preview.key,
+                highlightMode: .strongs,
+                onOpen: onNavigateToVerse.map { navigate in { navigate(preview.id) } }
+            )
+        }
     }
 
     private func load() async {
@@ -156,6 +172,7 @@ struct StrongsAnalysisView: View {
         companionHeadwords = loaded.2
         occurrencesByVerse = Dictionary(grouping: loaded.0?.occurrences ?? [], by: \.reference)
         isLoading = false
+        await septuagint.loadWords(key: key)
     }
 
     private func content(_ analysis: LampStrongsAnalysis) -> some View {
@@ -216,6 +233,9 @@ struct StrongsAnalysisView: View {
                 } footer: {
                     Text("Most certain first: a word that shares many verses with this one leads one that shares a few, however rare it is.")
                 }
+            }
+            if !septuagint.words.isEmpty {
+                septuagintSection
             }
             verses(analysis)
         }
@@ -674,6 +694,89 @@ struct StrongsAnalysisView: View {
         }
     }
 
+    // MARK: Septuagint
+
+    /// For a Greek word the lexicon gives Hebrew for, and collapsed: the
+    /// Hebrew it renders in the Septuagint, each word followable to its own
+    /// analysis where it has a number, then each one's Old Testament verses
+    /// with the Septuagint's Greek. Nothing here is counted above.
+    private var septuagintSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $isShowingSeptuagint) {
+                ForEach(septuagint.words) { word in
+                    translatesRow(word)
+                }
+                if septuagint.words.allSatisfy({ $0.references == nil }) {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                }
+                ForEach(septuagint.words) { word in
+                    if let references = word.references, !references.isEmpty {
+                        SeptuagintWordGroup(word: word, references: references, loader: septuagint) { reference, key in
+                            septuagintPreview = SeptuagintPreview(id: reference, key: key)
+                        }
+                    }
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Translates")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    // Marks either side of each separator keep the words in
+                    // the lexicon's order left to right, rather than letting
+                    // the Hebrew run them right to left as one phrase.
+                    Text("\u{200E}" + septuagint.words
+                        .map { LampSeptuagintSection.word($0.hebrew) }
+                        .joined(separator: "\u{200E}  ·  \u{200E}"))
+                        .font(.title3)
+                        .lineLimit(1)
+                }
+            }
+            .task(id: isShowingSeptuagint) {
+                guard isShowingSeptuagint else { return }
+                await septuagint.loadCounts(key: key)
+            }
+        } header: {
+            sectionHeader("Septuagint")
+        } footer: {
+            Text("The Hebrew this word renders in the Greek Old Testament. The verses are each Hebrew word’s, not this word’s: the Septuagint doesn’t always use it there, and none are counted above.")
+        }
+    }
+
+    /// A Hebrew word the Greek renders, with its meaning, followable to its
+    /// own analysis where it has a number. A word the lexicon couldn't pin to
+    /// one number is still shown: it is still what the Greek translates.
+    @ViewBuilder
+    private func translatesRow(_ word: SeptuagintLoader.Word) -> some View {
+        if let strongs = word.hebrew.strongs {
+            NavigationLink(value: StrongsAnalysisItem(key: strongs)) {
+                hebrewWord(word, number: strongs)
+            }
+        } else {
+            hebrewWord(word, number: nil)
+        }
+    }
+
+    private func hebrewWord(_ word: SeptuagintLoader.Word, number: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(LampSeptuagintSection.word(word.hebrew))
+                    .font(.title3)
+                if let number {
+                    Text(number)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let gloss = word.gloss, !gloss.isEmpty {
+                Text(gloss)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
     // MARK: Verses
 
     private func filteredReferences(_ analysis: LampStrongsAnalysis) -> [Int] {
@@ -1094,5 +1197,263 @@ private struct StrongsExpectationLegend: View {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(title).lineLimit(1)
         }
+    }
+}
+
+// MARK: - Septuagint
+
+/// Where the phone finds what core's `LampSeptuagintSection` works on: the
+/// Hebrew a Greek word renders in the Septuagint, the Hebrew text that says
+/// where that Hebrew stands, and the Septuagint to read beside it.
+///
+/// No module is named: the note comes from whichever bundled Greek lexicon
+/// carries it (TBESG's reading of Abbott-Smith), the Hebrew text is the
+/// translation in Hebrew with Strong's tags, and the Septuagint is the Greek
+/// one that numbers its verses the Septuagint's way, as on the Mac.
+enum StrongsSeptuagint {
+    /// The most verses listed under one Hebrew word, as on the Mac. דָּבָר
+    /// stands in over a thousand; the rest are in that word's own analysis.
+    static let shownVerses = 25
+
+    /// The Hebrew a Greek key's entries name, in the order the lexicons
+    /// print it, without the same word twice.
+    static func words(forGreekKey key: String) -> [LampSeptuagintHebrew] {
+        guard BundledModuleDatabase.Lexicon.language(ofStrongs: key) == "greek" else { return [] }
+        let database = BundledModuleDatabase.shared
+        let normalized = LampStrongsKey.normalized(key)
+        let keys = normalized == key ? [key] : [key, normalized]
+        let entrySenses = database.lexicons()
+            .filter { $0.language == "greek" && $0.isKeyedByStrongs }
+            .flatMap { lexicon in
+                Self.senses(fromJSON: keys.lazy
+                    .compactMap { try? database.getDictionaryEntry(moduleId: lexicon.moduleId, key: $0) }
+                    .first?.sensesJson)
+            }
+        return LampSeptuagintSection.words(in: entrySenses)
+    }
+
+    /// An entry's senses with their Septuagint notes, read as core reads them:
+    /// either spelling of the field, a word with nothing to print skipped, a
+    /// padded number ("H07941") normalized. Core's own reader is private to
+    /// its library; until it is shared, only the note is read here, since the
+    /// phone reads the rest of a sense itself.
+    static func senses(fromJSON json: String?) -> [LampDictionarySense] {
+        guard let data = json?.data(using: .utf8),
+              let senses = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+        else { return [] }
+        return senses.map { sense in
+            let notes = (sense["septuagintHebrew"] ?? sense["septuagint_hebrew"]) as? [[String: Any]] ?? []
+            return LampDictionarySense(septuagintHebrew: notes.compactMap { note in
+                func field(_ name: String) -> String? {
+                    let value = (note[name] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return value?.isEmpty == false ? value : nil
+                }
+                guard let text = field("text") else { return nil }
+                return LampSeptuagintHebrew(
+                    text: text,
+                    stem: field("stem"),
+                    strongs: field("strongs").flatMap(LampStrongsKey.typedKey)
+                )
+            })
+        }
+    }
+
+    /// The Hebrew Old Testament, by its language, with tags to count by.
+    static func hebrewText(in translations: [TranslationModule]) -> TranslationModule? {
+        translations.first {
+            ["hbo", "he", "heb", "hebrew"].contains($0.language.lowercased()) && $0.features?.strongs == true
+        }
+    }
+
+    /// The Septuagint: a Greek text that numbers its verses the Septuagint's
+    /// way, as its own versification says, where a name can't be trusted to.
+    static func septuagintText(in translations: [TranslationModule]) -> TranslationModule? {
+        translations.first {
+            ["grc", "el", "ell", "greek"].contains($0.language.lowercased())
+                && LampVersification.Scheme(moduleValue: $0.versification) == .septuagint
+        }
+    }
+
+    /// The Septuagint's Greek for each of `references`, numbered as the Hebrew
+    /// text numbers them, where the Septuagint has the verse.
+    static func greek(
+        for references: [Int],
+        hebrew: TranslationModule,
+        septuagint: TranslationModule
+    ) async -> [Int: String] {
+        let database = TranslationDatabase.shared
+        return await LampSeptuagintSection.greek(
+            for: references,
+            hebrewNumbering: database.versification(of: hebrew),
+            septuagintNumbering: database.versification(of: septuagint)
+        ) { book, chapter in
+            Dictionary(
+                try database.getChapter(translationId: septuagint.id, book: book, chapter: chapter)
+                    .verses.map { ($0.verse, $0.text) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+    }
+}
+
+/// The Septuagint section's data, in three loads, each paid for only when
+/// something asks: the words with the analysis, since without them there is
+/// no section; each word's verses in the Hebrew text when the section is
+/// opened; and the Greek beside them when a word is.
+@MainActor @Observable
+final class SeptuagintLoader {
+    struct Word: Identifiable {
+        let hebrew: LampSeptuagintHebrew
+        /// What the Hebrew word means, from the lexicons, for a reader who
+        /// doesn't read Hebrew.
+        let gloss: String?
+        /// The Old Testament verses the word stands in: nil until counted,
+        /// and empty for a word with no number to count by.
+        var references: [Int]?
+
+        var id: String { "\(hebrew.text)|\(hebrew.strongs ?? "")" }
+    }
+
+    struct Verse: Identifiable {
+        let reference: Int
+        /// The Septuagint's Greek for the verse, where it has that verse.
+        let greek: String?
+
+        var id: Int { reference }
+    }
+
+    private(set) var words: [Word] = []
+    /// The verses listed under a word, by its id, once read.
+    private(set) var verses: [String: [Verse]] = [:]
+    /// The Greek text's name, for saying which text is missing a verse.
+    private(set) var septuagintName: String?
+
+    private var loadedKey: String?
+    private var countedKey: String?
+    private var reading: Set<String> = []
+
+    func loadWords(key: String) async {
+        guard loadedKey != key else { return }
+        loadedKey = key
+        words = []
+        verses = [:]
+        countedKey = nil
+        let found = await Task.detached(priority: .userInitiated) {
+            StrongsSeptuagint.words(forGreekKey: key).map { hebrew in
+                Word(hebrew: hebrew, gloss: hebrew.strongs.flatMap { StrongsHeadword.lookUp($0).gloss })
+            }
+        }.value
+        guard loadedKey == key else { return }
+        words = found
+    }
+
+    /// Where each Hebrew word stands, counted in the Hebrew text itself rather
+    /// than in a translation that tags it.
+    func loadCounts(key: String) async {
+        guard countedKey != key, loadedKey == key, !words.isEmpty else { return }
+        countedKey = key
+        let hebrew = words.map(\.hebrew)
+        let counted = await Task.detached(priority: .userInitiated) { () -> [[Int]] in
+            let database = TranslationDatabase.shared
+            guard let text = StrongsSeptuagint.hebrewText(in: (try? database.getAllTranslations()) ?? []) else {
+                return hebrew.map { _ in [] }
+            }
+            return hebrew.map { word in
+                word.strongs.flatMap { try? database.strongsReferences(translationId: text.id, key: $0) } ?? []
+            }
+        }.value
+        guard countedKey == key, counted.count == words.count else { return }
+        for index in words.indices {
+            words[index].references = counted[index]
+        }
+    }
+
+    /// The first of a word's verses, each with the Septuagint's Greek.
+    func loadVerses(for word: Word) async {
+        guard verses[word.id] == nil, !reading.contains(word.id),
+              let references = word.references, !references.isEmpty else { return }
+        reading.insert(word.id)
+        defer { reading.remove(word.id) }
+        let shown = Array(references.prefix(StrongsSeptuagint.shownVerses))
+        let read = await Task.detached(priority: .userInitiated) { () -> (name: String?, greek: [Int: String]) in
+            let translations = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
+            guard let hebrew = StrongsSeptuagint.hebrewText(in: translations),
+                  let septuagint = StrongsSeptuagint.septuagintText(in: translations)
+            else { return (nil, [:]) }
+            return (septuagint.name, await StrongsSeptuagint.greek(for: shown, hebrew: hebrew, septuagint: septuagint))
+        }.value
+        septuagintName = read.name
+        verses[word.id] = shown.map { Verse(reference: $0, greek: read.greek[$0]) }
+    }
+}
+
+/// A Septuagint verse to open over the analysis, with the Hebrew word's key
+/// to mark in the translation being read.
+private struct SeptuagintPreview: Identifiable {
+    let id: Int
+    let key: String
+}
+
+/// One Hebrew word's Old Testament verses, each with the Septuagint's Greek,
+/// read when it is opened. A verse tapped opens in the translation being
+/// read, the Hebrew word's English marked, for a reader without Greek.
+private struct SeptuagintWordGroup: View {
+    let word: SeptuagintLoader.Word
+    /// Every verse the word stands in: the heading's count, even when only
+    /// the first few are listed.
+    let references: [Int]
+    let loader: SeptuagintLoader
+    let onPreview: (Int, String) -> Void
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if let listed = loader.verses[word.id] {
+                ForEach(listed) { verse in
+                    row(verse)
+                }
+                if references.count > listed.count, let strongs = word.hebrew.strongs {
+                    NavigationLink(value: StrongsAnalysisItem(key: strongs)) {
+                        Text("All \(references.count) verses in \(strongs)")
+                    }
+                }
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+            }
+        } label: {
+            Text(LampSeptuagintSection.heading(word.hebrew, verses: references.count))
+                .font(.subheadline.weight(.semibold))
+        }
+        .task(id: isExpanded) {
+            guard isExpanded else { return }
+            await loader.loadVerses(for: word)
+        }
+    }
+
+    private func row(_ verse: SeptuagintLoader.Verse) -> some View {
+        Button {
+            onPreview(verse.reference, word.hebrew.strongs ?? "")
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(StrongsAnalysisView.referenceTitle(verse.reference, bookNames: [:]))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                if let greek = verse.greek {
+                    Text(greek)
+                        .font(.system(.body, design: .serif))
+                        .foregroundStyle(.primary)
+                } else {
+                    Text(LampSeptuagintSection.missingVerse(in: loader.septuagintName))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

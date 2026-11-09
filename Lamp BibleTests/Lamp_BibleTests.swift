@@ -6097,3 +6097,57 @@ final class BundledLexiconTests: XCTestCase {
         })
     }
 }
+
+// MARK: - The Septuagint section
+
+/// The Hebrew a Greek word renders in the Septuagint, read from a lexicon's
+/// notes, and the Hebrew word's verses with the Septuagint's Greek beside them.
+final class StrongsSeptuagintTests: XCTestCase {
+
+    /// As core reads a sense's notes: either spelling of the field, a word with
+    /// nothing to print skipped, a padded number normalized, a stem kept; and
+    /// core lists a word named twice once.
+    func testTheHebrewIsReadFromASensesNotes() {
+        let json = """
+        [{"gloss": "rejoice", "septuagintHebrew": [
+            {"text": "רנן", "stem": "pi."},
+            {"text": " ", "strongs": "H1"},
+            {"text": "שׂמח", "strongs": "H07796"}
+        ]}, {"septuagint_hebrew": [{"text": "גיל", "strongs": "H1523"}, {"text": "רנן", "stem": "pi."}]},
+        {"gloss": "none"}]
+        """
+        let senses = StrongsSeptuagint.senses(fromJSON: json)
+        XCTAssertEqual(senses.count, 3)
+        XCTAssertEqual(LampSeptuagintSection.words(in: senses), [
+            LampSeptuagintHebrew(text: "רנן", stem: "pi."),
+            LampSeptuagintHebrew(text: "שׂמח", strongs: "H7796"),
+            LampSeptuagintHebrew(text: "גיל", strongs: "H1523"),
+        ])
+        XCTAssertEqual(StrongsSeptuagint.senses(fromJSON: "not json"), [])
+        XCTAssertEqual(StrongsSeptuagint.senses(fromJSON: nil), [])
+    }
+
+    /// From the bundle: love's Hebrew, where that Hebrew stands in TAHOT, and
+    /// the Septuagint's Greek for a psalm the two number differently.
+    func testLovesHebrewIsFoundWithItsVersesAndTheGreekBesideThem() async throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let words = StrongsSeptuagint.words(forGreekKey: "G26")
+        XCTAssertTrue(words.contains(LampSeptuagintHebrew(text: "אַהֲבָה", strongs: "H160")))
+        XCTAssertEqual(StrongsSeptuagint.words(forGreekKey: "H160"), [], "Only a Greek word has the note")
+
+        let translations = try TranslationDatabase.shared.getAllTranslations()
+        let hebrew = try XCTUnwrap(StrongsSeptuagint.hebrewText(in: translations))
+        let septuagint = try XCTUnwrap(StrongsSeptuagint.septuagintText(in: translations))
+        XCTAssertEqual(hebrew.id, "TAHOT")
+        XCTAssertEqual(septuagint.id, "LXX")
+
+        let references = try TranslationDatabase.shared.strongsReferences(translationId: hebrew.id, key: "H160")
+        XCTAssertTrue(references.contains(1_029_020), "Genesis 29:20, Jacob's love for Rachel")
+        XCTAssertGreaterThan(references.count, 30)
+
+        // Psalm 51:1 in TAHOT's English numbering is the Septuagint's 50:3,
+        // its title taking two verses there.
+        let greek = await StrongsSeptuagint.greek(for: [19_051_001], hebrew: hebrew, septuagint: septuagint)
+        XCTAssertTrue(greek[19_051_001]?.hasPrefix("Ἐλέησον") == true, greek[19_051_001] ?? "no verse")
+    }
+}
