@@ -2032,9 +2032,27 @@ final class SeptuagintLoader {
         var id: Int { reference }
     }
 
+    /// What opening a word gives: its verses with the Greek beside them, or
+    /// why there is no Greek to give. Said apart from a verse the Greek text
+    /// hasn't got, since that is a claim about the text.
+    enum Listing {
+        case rows([Verse])
+        case withoutSeptuagint
+        case unreadable
+    }
+
+    /// What reading a word's Greek came to.
+    private enum Outcome: Sendable {
+        case read(septuagint: String, greek: [Int: String])
+        case withoutSeptuagint
+        case unreadable(septuagint: String?)
+        /// Stopped part way, when the word or the sheet was closed.
+        case cutShort
+    }
+
     private(set) var words: [Word] = []
-    /// The verses listed under a word, by its id, once read.
-    private(set) var verses: [String: [Verse]] = [:]
+    /// What is listed under a word, by its id, once read.
+    private(set) var verses: [String: Listing] = [:]
     /// The Greek text's name, for saying which text is missing a verse.
     private(set) var septuagintName: String?
 
@@ -2080,27 +2098,55 @@ final class SeptuagintLoader {
 
     /// The first of a word's verses, each with the Septuagint's Greek.
     func loadVerses(for word: Word) async {
+        // A read that failed is worth trying again when the word is opened
+        // again. The other outcomes are settled.
+        if case .unreadable = verses[word.id] { verses[word.id] = nil }
         guard verses[word.id] == nil, !reading.contains(word.id),
               let references = word.references, !references.isEmpty else { return }
         reading.insert(word.id)
         defer { reading.remove(word.id) }
         let shown = Array(references.prefix(StrongsSeptuagint.shownVerses))
-        let reader = Task.detached(priority: .userInitiated) { () throws -> (name: String?, greek: [Int: String]) in
-            let translations = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
-            guard let hebrew = StrongsSeptuagint.hebrewText(in: translations),
-                  let septuagint = StrongsSeptuagint.septuagintText(in: translations)
-            else { return (nil, [:]) }
-            return (septuagint.name, try await StrongsSeptuagint.greek(for: shown, hebrew: hebrew, septuagint: septuagint))
+        let reader = Task.detached(priority: .userInitiated) { () -> Outcome in
+            let translations: [TranslationModule]
+            do {
+                translations = try TranslationDatabase.shared.getAllTranslations()
+            } catch {
+                return .unreadable(septuagint: nil)
+            }
+            guard let septuagint = StrongsSeptuagint.septuagintText(in: translations) else {
+                return .withoutSeptuagint
+            }
+            guard let hebrew = StrongsSeptuagint.hebrewText(in: translations) else {
+                return .unreadable(septuagint: septuagint.name)
+            }
+            do {
+                return .read(
+                    septuagint: septuagint.name,
+                    greek: try await StrongsSeptuagint.greek(for: shown, hebrew: hebrew, septuagint: septuagint)
+                )
+            } catch {
+                return error is CancellationError || Task.isCancelled
+                    ? .cutShort : .unreadable(septuagint: septuagint.name)
+            }
         }
-        // Stopped part way, when the word or the sheet is closed, the verses
-        // are dropped rather than kept: one not reached would read as missing
-        // from the Greek. Opening the word again reads them afresh.
-        guard let read = try? await withTaskCancellationHandler(
-            operation: { try await reader.value },
+        let outcome = await withTaskCancellationHandler(
+            operation: { await reader.value },
             onCancel: { reader.cancel() }
-        ) else { return }
-        septuagintName = read.name
-        verses[word.id] = shown.map { Verse(reference: $0, greek: read.greek[$0]) }
+        )
+        switch outcome {
+        case .read(let name, let greek):
+            septuagintName = name
+            verses[word.id] = .rows(shown.map { Verse(reference: $0, greek: greek[$0]) })
+        case .withoutSeptuagint:
+            verses[word.id] = .withoutSeptuagint
+        case .unreadable(let name):
+            septuagintName = name ?? septuagintName
+            verses[word.id] = .unreadable
+        case .cutShort:
+            // Dropped rather than kept: a verse not reached would read as
+            // missing from the Greek. Opening the word again reads them afresh.
+            break
+        }
     }
 }
 
@@ -2126,16 +2172,19 @@ private struct SeptuagintWordGroup: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            if let listed = loader.verses[word.id] {
+            switch loader.verses[word.id] {
+            case .rows(let listed):
                 ForEach(listed) { verse in
                     row(verse)
                 }
-                if references.count > listed.count, let strongs = word.hebrew.strongs {
-                    NavigationLink(value: StrongsAnalysisItem(key: strongs)) {
-                        Text("All \(references.count) verses in \(strongs)")
-                    }
-                }
-            } else {
+                allVerses(beyond: listed.count)
+            case .withoutSeptuagint:
+                note(LampSeptuagintSection.withoutSeptuagint)
+                allVerses(beyond: 0)
+            case .unreadable:
+                note(LampSeptuagintSection.unreadable(loader.septuagintName))
+                allVerses(beyond: 0)
+            case nil:
                 ProgressView()
                     .frame(maxWidth: .infinity)
             }
@@ -2147,6 +2196,22 @@ private struct SeptuagintWordGroup: View {
             guard isExpanded else { return }
             await loader.loadVerses(for: word)
         }
+    }
+
+    /// The word's own analysis, for its verses past the ones listed.
+    @ViewBuilder
+    private func allVerses(beyond listed: Int) -> some View {
+        if references.count > listed, let strongs = word.hebrew.strongs {
+            NavigationLink(value: StrongsAnalysisItem(key: strongs)) {
+                Text("All \(references.count) verses in \(strongs)")
+            }
+        }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
     }
 
     private func row(_ verse: SeptuagintLoader.Verse) -> some View {
