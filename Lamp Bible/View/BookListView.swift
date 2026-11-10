@@ -141,10 +141,14 @@ struct BookListView: View {
                                 translationAbbreviation = trans.abbreviation
                                 onTranslationChange?(trans.id)
                             } label: {
+                                // A menu item's second text is its subtitle:
+                                // the badge a list row gives a tagged text.
+                                Text(trans.name)
+                                if trans.features?.strongs == true {
+                                    Text("Strong’s numbers")
+                                }
                                 if trans.id == translationId {
-                                    Label(trans.name, systemImage: "checkmark")
-                                } else {
-                                    Text(trans.name)
+                                    Image(systemName: "checkmark")
                                 }
                             }
                         }

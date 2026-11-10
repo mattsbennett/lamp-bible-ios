@@ -112,6 +112,8 @@ struct DisplayModule: Identifiable {
     let isEditable: Bool
     let entryCount: Int?
     let series: String?  // For grouping (e.g., "Greek", "Hebrew" for dictionaries)
+    /// A translation whose words carry Strong's numbers, badged as such.
+    var isStrongsTagged = false
 
     // Reference to underlying user module (nil for bundled)
     let userModule: Module?
@@ -970,14 +972,16 @@ struct ModuleManagerView: View {
                 let isBundled = (try? TranslationDatabase.shared.isTranslationBundled(id: translation.id)) ?? true
 
                 if isBundled {
-                    allModules.append(DisplayModule(
+                    var display = DisplayModule(
                         id: "translation-\(translation.id)",
                         name: translation.name,
                         type: .translation,
                         description: translation.translationDescription?.isEmpty == false ? translation.translationDescription : nil,
                         version: translation.abbreviation,
                         entryCount: verseCount
-                    ))
+                    )
+                    display.isStrongsTagged = translation.features?.strongs == true
+                    allModules.append(display)
                 } else {
                     // User-imported translation - create a Module to use the user DisplayModule initializer
                     let userModule = Module(
@@ -989,7 +993,9 @@ struct ModuleManagerView: View {
                         filePath: "\(translation.id).lamp",
                         isEditable: false
                     )
-                    allModules.append(DisplayModule(from: userModule, entryCount: verseCount))
+                    var display = DisplayModule(from: userModule, entryCount: verseCount)
+                    display.isStrongsTagged = translation.features?.strongs == true
+                    allModules.append(display)
                 }
             }
         }
@@ -1580,7 +1586,8 @@ struct ModuleRow: View {
                 title: module.name,
                 meta: meta,
                 isBundled: module.isBundled,
-                description: module.description
+                description: module.description,
+                isStrongsTagged: module.isStrongsTagged
             )
             Spacer(minLength: 0)
 
@@ -1722,14 +1729,8 @@ struct ModuleTile: View {
     let type: ModuleType
     var abbreviation: String? = nil
 
-    /// "ASVs" is the ASV with Strong's numbers; the name already says so,
-    /// and on a tile the trailing "s" reads as a typo.
     private var shownAbbreviation: String? {
         guard let abbreviation, !abbreviation.isEmpty else { return nil }
-        if abbreviation.count > 2, abbreviation.hasSuffix("s"),
-           abbreviation.dropLast().allSatisfy({ $0.isUppercase || $0.isNumber }) {
-            return String(abbreviation.dropLast())
-        }
         return abbreviation
     }
 
@@ -1771,13 +1772,19 @@ struct ModuleRowText: View {
     let meta: [String]
     let isBundled: Bool
     let description: String?
+    var isStrongsTagged = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if isStrongsTagged {
+                    StrongsBadge()
+                }
+            }
             HStack(spacing: 5) {
                 if !meta.isEmpty {
                     Text(verbatim: meta.joined(separator: " · "))
@@ -1802,6 +1809,22 @@ struct ModuleRowText: View {
         }
         // The row's separator starts under the name, not the tile.
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+    }
+}
+
+/// Marks a translation whose words carry Strong's numbers, which its name no
+/// longer says: the ones the word analysis, a Strong's search and a tapped
+/// word's lexicon entry can read.
+struct StrongsBadge: View {
+    var body: some View {
+        Text("Strong’s")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Color.primary.opacity(0.7))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(LampTheme.tileFill, in: Capsule())
+            .fixedSize()
+            .accessibilityLabel("Tagged with Strong’s numbers")
     }
 }
 

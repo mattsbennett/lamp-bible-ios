@@ -235,8 +235,13 @@ struct TranslationRow: View {
     var body: some View {
         HStack {
             Button(action: onTap) {
-                Text(translation.name)
-                    .tint(.primary)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(translation.name)
+                    if translation.features?.strongs == true {
+                        StrongsBadge()
+                    }
+                }
+                .tint(.primary)
             }
             Spacer()
             if isDefault {
