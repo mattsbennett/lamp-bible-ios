@@ -8,6 +8,14 @@ struct StrongsAnalysisItem: Identifiable, Hashable {
     var id: String { key }
 }
 
+/// The same word's analysis in another text over the same books: the Greek
+/// or Hebrew text whose tags give what a translation's lack.
+struct StrongsAnalysisInText: Hashable {
+    let key: String
+    let translationId: String
+    let bookRange: ClosedRange<Int>?
+}
+
 /// How many renderings and companions the analysis lists.
 private let strongsAnalysisListed = 8
 
@@ -80,10 +88,17 @@ struct StrongsAnalysisSheet: View {
                 .navigationDestination(for: StrongsAnalysisItem.self) { item in
                     analysis(of: item.key)
                 }
+                .navigationDestination(for: StrongsAnalysisInText.self) { item in
+                    analysis(of: item.key, in: item.translationId, bookRange: item.bookRange)
+                }
         }
     }
 
     private func analysis(of key: String) -> StrongsAnalysisView {
+        analysis(of: key, in: translationId, bookRange: bookRange)
+    }
+
+    private func analysis(of key: String, in translationId: String, bookRange: ClosedRange<Int>?) -> StrongsAnalysisView {
         StrongsAnalysisView(
             key: key,
             translationId: translationId,
@@ -128,6 +143,9 @@ struct StrongsAnalysisView: View {
     @State private var chosenRange: BookRangeChoice?
     /// The other translations that tag the key, as each is worked out.
     @State private var compared: [LampStrongsAnalysis] = []
+    /// Each translation's language as its module declares it, by ID, to
+    /// tell a Greek or Hebrew text among those compared.
+    @State private var translationLanguages: [String: String] = [:]
     @State private var isComparing = false
     @State private var showsAllRenderings = false
     @State private var showsAllForms = false
@@ -268,7 +286,9 @@ struct StrongsAnalysisView: View {
     /// verses' text, which nothing here reads.
     private func loadComparison(key: String, range: ClosedRange<Int>?) async {
         let current = translationId
-        let others = ((try? TranslationDatabase.shared.getAllTranslations()) ?? [])
+        let translations = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
+        translationLanguages = Dictionary(translations.map { ($0.id, $0.language) }) { first, _ in first }
+        let others = translations
             .filter { $0.features?.strongs == true && $0.id != current }
             .map(\.id)
         guard !others.isEmpty else { return }
@@ -302,7 +322,9 @@ struct StrongsAnalysisView: View {
             if !analysis.renderings.isEmpty {
                 renderingsSection(analysis)
             }
-            if !analysis.forms.isEmpty {
+            // A Greek or Hebrew key always has its Forms, which say why
+            // where a translation's tags give none.
+            if !analysis.forms.isEmpty || "GH".contains(LampStrongsKey.normalized(analysis.key).first ?? " ") {
                 formsSection(analysis)
             }
             if !analysis.grammar.isEmpty {
@@ -604,57 +626,55 @@ struct StrongsAnalysisView: View {
     // MARK: Forms and grammar
 
     private func formsSection(_ analysis: LampStrongsAnalysis) -> some View {
-        Section {
-            Picker("Chart", selection: $showsFormRing) {
-                Text("List").tag(false)
-                Text("Ring").tag(true)
+        let readings = formReadings(of: analysis)
+        return Section {
+            if !analysis.forms.isEmpty {
+                Picker("Chart", selection: $showsFormRing) {
+                    Text("List").tag(false)
+                    Text("Ring").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .listRowSeparator(.hidden)
+                if showsFormRing {
+                    share(
+                        of: LampStrongsGrouping.forms.divisions(of: analysis),
+                        isOriginalLanguage: true,
+                        details: Dictionary(uniqueKeysWithValues: analysis.forms.enumerated().map { index, form in
+                            (String(index), ShareDetail(
+                                aside: readings[form.id]?.transliteration,
+                                line: formLine(readings[form.id])
+                            ))
+                        })
+                    )
+                } else {
+                    forms(analysis)
+                }
             }
-            .pickerStyle(.segmented)
-            .listRowSeparator(.hidden)
-            if showsFormRing {
-                let readings = formReadings(of: analysis)
-                share(
-                    of: LampStrongsGrouping.forms.divisions(of: analysis),
-                    isOriginalLanguage: true,
-                    details: Dictionary(uniqueKeysWithValues: analysis.forms.enumerated().map { index, form in
-                        (String(index), ShareDetail(
-                            aside: readings[form.id]?.transliteration,
-                            line: formLine(readings[form.id])
-                        ))
-                    })
-                )
-            } else {
-                forms(analysis)
-            }
+            formGaps(analysis)
         } header: {
             sectionHeader("Forms")
         } footer: {
             // Why one word has several spellings, for a reader new to the
-            // language, before what the rows hold.
-            Text(LampStrongsFormReading.note(forKey: analysis.key)
-                + unspelledNote(analysis)
-                + " Tap one to filter the verse list below.")
+            // language, and what each spelling below is shown with.
+            Text(LampStrongsFormReading.note(for: analysis, readings: Array(readings.values))
+                + (analysis.forms.isEmpty ? "" : " Tap one to filter the verse list below."))
         }
     }
 
     /// What the form readings are read from: the word, the translation and
-    /// its books, how many occurrences, and how many other translations have
-    /// been counted to lend their parsings and English.
+    /// its books, and how many occurrences.
     private func formsSource(of analysis: LampStrongsAnalysis) -> String {
-        "\(analysis.key)|\(analysis.translationID)|\(String(describing: bookRange))|\(analysis.occurrenceCount)|\(compared.count)"
+        "\(analysis.key)|\(analysis.translationID)|\(String(describing: bookRange))|\(analysis.occurrenceCount)"
     }
 
-    /// Reads each form, off the main thread: it reads every occurrence,
-    /// which for an article or a common verb runs to thousands.
+    /// Reads each form from the translation's own tags, off the main thread:
+    /// it reads every occurrence, which for an article or a common verb runs
+    /// to thousands.
     private func readForms(_ analysis: LampStrongsAnalysis) async {
         let source = formsSource(of: analysis)
         guard formReadings?.source != source else { return }
-        // A translation whose tags give only the spelling, as the BSB's do,
-        // borrows the parsings the others give the same spelling; a Greek
-        // or Hebrew text, which has no English, borrows theirs.
-        let others = compared
         let readings = await Task.detached(priority: .userInitiated) {
-            LampStrongsFormReading.readings(of: analysis, parsingsFrom: others)
+            LampStrongsFormReading.readings(of: analysis)
         }.value
         guard !Task.isCancelled else { return }
         formReadings = (source, Dictionary(readings.map { ($0.form.id, $0) }) { first, _ in first })
@@ -666,25 +686,67 @@ struct StrongsAnalysisView: View {
     }
 
     /// A form's line under its spelling: what it does, and the English it
-    /// became, as "“of …” · here “of love”", or "in BSB “of love”" where
-    /// the English is another translation's.
+    /// became, as "“of …” · here “of love”". Only this translation's own: a
+    /// Greek or Hebrew text has no English, and none is borrowed.
     private func formLine(_ reading: LampStrongsFormReading?) -> String? {
         guard let reading else { return nil }
         let english = reading.renderedAs.isEmpty
             ? nil
-            : (reading.renderedIn.map { "in \($0) " } ?? "here ")
-                + reading.renderedAs.map { "“\($0)”" }.joined(separator: ", ")
+            : "here " + reading.renderedAs.map { "“\($0)”" }.joined(separator: ", ")
         let parts = [reading.role, english].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Said only for a word some of whose occurrences the translation's tags
-    /// give no spelling for, so the forms count fewer than the card.
-    private func unspelledNote(_ analysis: LampStrongsAnalysis) -> String {
-        let spelled = analysis.forms.reduce(0) { $0 + $1.count }
-        let unspelled = analysis.occurrenceCount - spelled
-        guard unspelled > 0 else { return "" }
-        return " \(unspelled) of its \(analysis.occurrenceCount) occurrences \(unspelled == 1 ? "has" : "have") no spelling in the tags of the \(analysis.translationAbbreviation ?? analysis.translationName), so these count \(spelled)."
+    /// What this translation's tags don't say about the word's forms, so a
+    /// figure that can't be given reads as missing rather than miscounted,
+    /// and the text in the word's own language whose tags do say it.
+    @ViewBuilder
+    private func formGaps(_ analysis: LampStrongsAnalysis) -> some View {
+        // Not until the readings are in, which the grammar's gap is read
+        // from, unless there are no forms to read.
+        let isRead = formReadings?.source == formsSource(of: analysis) || analysis.forms.isEmpty
+        let gaps = isRead
+            ? LampStrongsFormReading.gaps(of: analysis, readings: Array(formReadings(of: analysis).values))
+            : []
+        if !gaps.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(gaps, id: \.self) { gap in
+                    Text(gap)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+            if let original = originalText(for: analysis) {
+                let name = original.translationAbbreviation ?? original.translationName
+                NavigationLink(value: StrongsAnalysisInText(
+                    key: analysis.key,
+                    translationId: original.translationID,
+                    bookRange: bookRange
+                )) {
+                    Text("Open in \(name)")
+                }
+                .accessibilityHint("Analyses \(analysis.key) in \(name), whose tags give each spelling and its grammar")
+            }
+        }
+    }
+
+    /// The text in the key's own language among those compared, with the
+    /// forms this translation's tags lack: TAGNT for a Greek key, TAHOT for a
+    /// Hebrew one, found by the language its module declares rather than by
+    /// name. Of two, the one sharing the most verses, so the Septuagint is
+    /// not offered for a New Testament word.
+    private func originalText(for analysis: LampStrongsAnalysis) -> LampStrongsAnalysis? {
+        let languages = LampStrongsKey.normalized(analysis.key).first == "H" ? ["hbo", "he", "arc"] : ["grc"]
+        let verses = Set(analysis.references)
+        return compared
+            .filter { other in
+                !other.forms.isEmpty
+                    && translationLanguages[other.translationID].map { language in
+                        languages.contains { language.lowercased().hasPrefix($0) }
+                    } == true
+            }
+            .max { verses.intersection($0.references).count < verses.intersection($1.references).count }
     }
 
     @ViewBuilder
