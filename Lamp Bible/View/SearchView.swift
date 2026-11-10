@@ -2018,7 +2018,7 @@ struct SearchResultRow: View {
         return Self.snippetText(fromMarked: marked, limit: 120)
     }
 
-    /// `<mark>`ed text as a `Text`, the marks in the find-match style, cut to
+    /// `<mark>`ed text as a `Text`, the marks as a result row marks them, cut to
     /// about `limit` characters starting a little before the first mark.
     static func snippetText(fromMarked marked: String, limit: Int) -> Text {
         var segments: [(text: String, isMark: Bool)] = []
@@ -2249,9 +2249,8 @@ struct ModuleSearchResultRow: View {
                                 attrText.uiKit.underlineColor = highlightColor.uiColor
                             }
                         } else {
-                            // Default search highlighting
-                            attrText.backgroundColor = SearchMatchStyle.background
-                            attrText.foregroundColor = SearchMatchStyle.ink
+                            // A searched word in a result row
+                            attrText.foregroundColor = .primary
                             attrText.font = .system(size: 15 * scaleFactor, weight: .semibold)
                         }
                     } else {
@@ -2815,8 +2814,7 @@ private struct HighlightedTextUIView: UIViewRepresentable {
 
             while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                 let nsRange = NSRange(range, in: fullString)
-                result.addAttribute(.backgroundColor, value: SearchMatchStyle.uiBackground, range: nsRange)
-                result.addAttribute(.foregroundColor, value: SearchMatchStyle.uiInk, range: nsRange)
+                result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
                 searchStartIndex = range.upperBound
             }
         }
@@ -3630,17 +3628,15 @@ struct TranslationSearchPreviewSheet: View {
                 if let markEnd = remaining.range(of: "</mark>") {
                     let marked = String(remaining[..<markEnd.lowerBound])
                     var attrText = AttributedString(marked)
-                    attrText.backgroundColor = SearchMatchStyle.background
-                    attrText.foregroundColor = SearchMatchStyle.ink
-                    attrText.font = .body.bold()
+                    attrText.backgroundColor = Color.lampFindMatch
+                    attrText.foregroundColor = .primary
                     attributedResult.append(attrText)
                     remaining = String(remaining[markEnd.upperBound...])
                 } else {
                     // No closing tag, treat rest as marked
                     var attrText = AttributedString(remaining)
-                    attrText.backgroundColor = SearchMatchStyle.background
-                    attrText.foregroundColor = SearchMatchStyle.ink
-                    attrText.font = .body.bold()
+                    attrText.backgroundColor = Color.lampFindMatch
+                    attrText.foregroundColor = .primary
                     attributedResult.append(attrText)
                     remaining = ""
                 }
@@ -3861,28 +3857,6 @@ private struct SearchOfferRow: View {
     }
 }
 
-// MARK: - Search Match Style
-
-/// How a searched word is marked in results: a pale yellow wash in light, and
-/// in dark a soft amber with warm light ink. Translucent yellow over black
-/// reads as olive, and solid yellow glares; amber sits between them.
-enum SearchMatchStyle {
-    static let uiBackground = UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.96, green: 0.70, blue: 0.24, alpha: 0.30)
-            : UIColor(red: 1.0, green: 0.84, blue: 0.22, alpha: 0.42)
-    }
-    /// A warm light ink on the dark amber, so the match reads brighter than
-    /// the words round it without a solid block of yellow glaring on black.
-    static let uiInk = UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 1.0, green: 0.88, blue: 0.62, alpha: 1)
-            : .label
-    }
-    static let background = Color(uiColor: uiBackground)
-    static let ink = Color(uiColor: uiInk)
-}
-
 /// The search field's mode menu: the mode's glyph and a chevron, in the
 /// field's own grey, so it reads as a menu rather than a stray accent.
 private struct SearchModeMenuLabel: View {
@@ -3902,11 +3876,12 @@ private struct SearchModeMenuLabel: View {
 }
 
 extension Text {
-    /// A searched word in a result's snippet.
+    /// A searched word in a result row: semibold in the label colour, on no
+    /// ground, while the words round it keep their own. A ground behind
+    /// every match in a list pulls the eye harder than the rows' titles; the
+    /// yellow ground is for a match inside the text being read
+    /// (`Text.findMatch`).
     static func searchMatch<S: StringProtocol>(_ text: S) -> Text {
-        var marked = AttributedString(String(text))
-        marked.backgroundColor = SearchMatchStyle.background
-        marked.foregroundColor = SearchMatchStyle.ink
-        return Text(marked).fontWeight(.semibold)
+        Text(String(text)).fontWeight(.semibold).foregroundStyle(Color.primary)
     }
 }
