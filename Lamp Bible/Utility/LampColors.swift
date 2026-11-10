@@ -25,8 +25,10 @@ extension UIColor {
     }
 
     /// Anything in text that takes you somewhere: verse references,
-    /// cross-references, footnote markers, web links.
-    static let lampLink = UIColor.systemBlue
+    /// cross-references, footnote markers, web links. Core's own blue, softer
+    /// than the system's and readable in dense text, the one link style both
+    /// apps draw.
+    static let lampLink = UIColor(LampColorRole.link.color)
 
     /// Strong's numbers, Greek and Hebrew words, lexicon references.
     static let lampOriginalLanguage = UIColor.systemPurple

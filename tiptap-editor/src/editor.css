@@ -16,8 +16,9 @@
   --audio-bg: rgba(0, 0, 0, 0.06);
   --audio-border: rgba(0, 0, 0, 0.12);
   /* Lamp's colour roles (core's Documentation/ColorRules.md): links in
-     the text are blue, and the caret takes the app's accent. */
-  --link-color: #007AFF;
+     the text are core's link blue, softer than the system's, and the caret
+     takes the app's accent. */
+  --link-color: #1A61CC;
   --accent-color: #DB344A;
   --popover-bg: #fff;
   --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
@@ -40,7 +41,7 @@
     --image-caption-color: rgba(255, 255, 255, 0.5);
     --audio-bg: rgba(255, 255, 255, 0.08);
     --audio-border: rgba(255, 255, 255, 0.15);
-    --link-color: #0A84FF;
+    --link-color: #78ABF5;
     --accent-color: #EF4F63;
     --popover-bg: #2c2c2e;
     --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.14);
@@ -62,7 +63,7 @@ body.dark {
   --image-caption-color: rgba(255, 255, 255, 0.5);
   --audio-bg: rgba(255, 255, 255, 0.08);
   --audio-border: rgba(255, 255, 255, 0.15);
-  --link-color: #0A84FF;
+  --link-color: #78ABF5;
   --accent-color: #EF4F63;
   --popover-bg: #2c2c2e;
   --popover-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.14);
