@@ -135,20 +135,22 @@ struct BookListView: View {
                 }
                 ToolbarItem(placement: .principal) {
                     Menu {
-                        ForEach(orderedVisibleTranslations, id: \.id) { trans in
-                            Button {
-                                translationId = trans.id
-                                translationAbbreviation = trans.abbreviation
-                                onTranslationChange?(trans.id)
-                            } label: {
-                                // A menu item's second text is its subtitle:
-                                // the badge a list row gives a tagged text.
-                                Text(trans.name)
-                                if trans.features?.strongs == true {
-                                    Text("Strong’s numbers")
-                                }
-                                if trans.id == translationId {
-                                    Image(systemName: "checkmark")
+                        TranslationLanguageSections(translations: orderedVisibleTranslations) { items in
+                            ForEach(items, id: \.id) { trans in
+                                Button {
+                                    translationId = trans.id
+                                    translationAbbreviation = trans.abbreviation
+                                    onTranslationChange?(trans.id)
+                                } label: {
+                                    // A menu item's second text is its subtitle:
+                                    // the badge a list row gives a tagged text.
+                                    Text(trans.name)
+                                    if trans.features?.strongs == true {
+                                        Text("Strong’s numbers")
+                                    }
+                                    if trans.id == translationId {
+                                        Image(systemName: "checkmark")
+                                    }
                                 }
                             }
                         }

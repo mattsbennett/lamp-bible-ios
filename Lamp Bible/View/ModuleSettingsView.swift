@@ -167,32 +167,34 @@ struct TranslationList: View {
     }
 
     var body: some View {
-        ForEach(visibleTranslationsList) { translation in
-            TranslationRow(
-                translation: translation,
-                isDefault: translation.id == defaultTranslationId,
-                onTap: { onSetDefault(translation.id) }
-            )
-            .swipeActions(edge: .trailing) {
-                if visibleTranslationsList.count > 1 {
-                    Button {
-                        hideTranslation(translation.id)
-                    } label: {
-                        Label("Hide", systemImage: "eye.slash")
+        // Under their languages, as the pickers list them; inside the one
+        // Translations section, so as headings in it like Hidden's.
+        let groups = LampTranslationLanguages.grouped(visibleTranslationsList, language: { $0.language })
+        ForEach(groups) { group in
+            if groups.count > 1 {
+                subheader(group.title, isFirst: group.id == groups.first?.id)
+            }
+            ForEach(group.items) { translation in
+                TranslationRow(
+                    translation: translation,
+                    isDefault: translation.id == defaultTranslationId,
+                    onTap: { onSetDefault(translation.id) }
+                )
+                .swipeActions(edge: .trailing) {
+                    if visibleTranslationsList.count > 1 {
+                        Button {
+                            hideTranslation(translation.id)
+                        } label: {
+                            Label("Hide", systemImage: "eye.slash")
+                        }
+                        .tint(.orange)
                     }
-                    .tint(.orange)
                 }
             }
         }
 
         if !hiddenTranslationsList.isEmpty {
-            Text("Hidden")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .listRowInsets(EdgeInsets(top: 24, leading: 20, bottom: 8, trailing: 20))
-                .listRowSeparator(.hidden, edges: .bottom)
+            subheader("Hidden")
 
             ForEach(hiddenTranslationsList) { translation in
                 HStack {
@@ -212,6 +214,17 @@ struct TranslationList: View {
                 }
             }
         }
+    }
+
+    /// A heading among the rows, the first one close under the section's own.
+    private func subheader(_ title: String, isFirst: Bool = false) -> some View {
+        Text(title)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .listRowInsets(EdgeInsets(top: isFirst ? 12 : 24, leading: 20, bottom: 8, trailing: 20))
+            .listRowSeparator(.hidden, edges: .bottom)
     }
 
     private func hideTranslation(_ id: String) {
@@ -248,6 +261,26 @@ struct TranslationRow: View {
                 Image(systemName: "checkmark")
                     .foregroundColor(.accentColor)
             }
+        }
+    }
+}
+
+/// Translations under the languages they are written in (core
+/// `LampTranslationLanguages`): the reader's own first, any other modern
+/// language, then Biblical Languages, a section each; one plain run where
+/// they share a language. For a menu's or a picker's content.
+struct TranslationLanguageSections<Rows: View>: View {
+    let translations: [TranslationModule]
+    @ViewBuilder let rows: ([TranslationModule]) -> Rows
+
+    var body: some View {
+        let groups = LampTranslationLanguages.grouped(translations, language: { $0.language })
+        if groups.count > 1 {
+            ForEach(groups) { group in
+                Section(group.title) { rows(group.items) }
+            }
+        } else {
+            rows(translations)
         }
     }
 }

@@ -716,17 +716,19 @@ struct SearchView: View {
                         if isStandaloneMode && searchScope == .bible {
                             Divider()
                             Menu {
-                                ForEach(availableTranslations, id: \.id) { trans in
-                                    Button {
-                                        selectedTranslationIdString = trans.id
-                                        // Clear results when changing translation
-                                        searchResults = []
-                                        resultsVisible = false
-                                    } label: {
-                                        if trans.id == translationId {
-                                            Label(trans.name, systemImage: "checkmark")
-                                        } else {
-                                            Text(trans.name)
+                                TranslationLanguageSections(translations: availableTranslations) { items in
+                                    ForEach(items, id: \.id) { trans in
+                                        Button {
+                                            selectedTranslationIdString = trans.id
+                                            // Clear results when changing translation
+                                            searchResults = []
+                                            resultsVisible = false
+                                        } label: {
+                                            if trans.id == translationId {
+                                                Label(trans.name, systemImage: "checkmark")
+                                            } else {
+                                                Text(trans.name)
+                                            }
                                         }
                                     }
                                 }

@@ -2096,8 +2096,10 @@ struct ScriptureQuoteSheet: View {
             Form {
                 Section("Translation") {
                     Picker("Translation", selection: $selectedTranslationId) {
-                        ForEach(availableTranslations, id: \.id) { translation in
-                            Text("\(translation.abbreviation) - \(translation.name)").tag(translation.id)
+                        TranslationLanguageSections(translations: availableTranslations) { items in
+                            ForEach(items, id: \.id) { translation in
+                                Text("\(translation.abbreviation) - \(translation.name)").tag(translation.id)
+                            }
                         }
                     }
                 }

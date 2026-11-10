@@ -2632,9 +2632,11 @@ struct CreateModuleView: View {
                         } else {
                             Picker("Translation", selection: $selectedTranslationId) {
                                 Text("Select a translation").tag("")
-                                ForEach(translations, id: \.id) { translation in
-                                    Text("\(translation.abbreviation) - \(translation.name)")
-                                        .tag(translation.id)
+                                TranslationLanguageSections(translations: translations) { items in
+                                    ForEach(items, id: \.id) { translation in
+                                        Text("\(translation.abbreviation) - \(translation.name)")
+                                            .tag(translation.id)
+                                    }
                                 }
                             }
                         }
