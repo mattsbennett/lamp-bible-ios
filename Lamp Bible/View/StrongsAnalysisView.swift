@@ -604,10 +604,10 @@ struct StrongsAnalysisView: View {
                 renderings(analysis)
             }
         } header: {
-            sectionHeader("Rendered As")
+            sectionHeader("Translated As")
         } footer: {
             Text(showsRenderingRing
-                ? "How it is rendered, the commonest first. Tap one to filter the verse list below."
+                ? "How it is translated, the commonest first. Tap one to filter the verse list below."
                 : "What translators reached for, not what the word means. Tap one to filter the verse list below.")
         }
     }
@@ -634,7 +634,7 @@ struct StrongsAnalysisView: View {
             isOriginalLanguage: false
         )
         if !showsAllRenderings && analysis.renderings.count > strongsAnalysisListed {
-            Button("Show All \(analysis.renderings.count) Renderings") {
+            Button("Show All \(analysis.renderings.count)") {
                 showsAllRenderings = true
             }
         }
@@ -1640,7 +1640,7 @@ struct StrongsAnalysisView: View {
         }
     }
 
-    /// "12 Verses · rendered “love”": what a tap above did, said where its
+    /// "12 Verses · translated “love”": what a tap above did, said where its
     /// effect is.
     private func versesTitle(_ count: Int) -> String {
         let title = count == 1 ? "1 Verse" : "\(count) Verses"

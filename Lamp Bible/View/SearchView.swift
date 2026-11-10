@@ -1546,7 +1546,7 @@ struct SearchView: View {
                     SearchOfferRow(
                         icon: "chart.pie",
                         title: "Analyse \(strongsKey)",
-                        subtitle: "Where it's found and how it's rendered"
+                        subtitle: "Where it's found and how it's translated"
                     ) {
                         analysisItem = StrongsAnalysisItem(key: strongsKey)
                     }
