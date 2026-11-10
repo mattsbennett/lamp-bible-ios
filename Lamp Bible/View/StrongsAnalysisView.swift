@@ -561,12 +561,21 @@ struct StrongsAnalysisView: View {
             case let grouping?:
                 let divisions = grouping.divisions(of: analysis)
                 let slices = LampStrongsShare.slices(from: divisions.map(\.division))
+                let readings = formReadings(of: analysis)
                 StrongsCardShareBar(
                     slices: slices,
                     filters: Dictionary(
                         divisions.map { (String($0.division.id), $0.filter) },
                         uniquingKeysWith: { first, _ in first }
                     ),
+                    // A form's division is its place in the list of forms,
+                    // as the Forms ring keys its details.
+                    asides: grouping == .forms
+                        ? Dictionary(uniqueKeysWithValues: analysis.forms.enumerated().compactMap { index, form in
+                            readings[form.id]?.transliteration.map { (String(index), $0) }
+                        })
+                        : [:],
+                    isOriginalLanguage: grouping == .forms,
                     color: { shareColor($0, of: slices) },
                     choose: choose
                 )
@@ -1886,16 +1895,20 @@ private struct StrongsDefinitionPage: View {
 /// A slice tapped is read out in the hole, its name, count and share, and
 /// the rest fade: shades of one hue are hard to match to their rows by eye.
 /// Tapping it again, or the hole, goes back to the total.
-/// A grouping's shares as one band under the card's figures: a segment for
-/// each slice, largest first, in the ring's own shades and under its "six
-/// largest and Other" rule, so the card and the section below never disagree
-/// about what the slices are. The largest is named above the band, as the
-/// canon strip names its standout book; a tap on a segment narrows the verse
-/// list, as the ring's rows do.
+/// A grouping's shares as one band under the card's figures, with a key
+/// under it: a segment for each slice, largest first, in the ring's own
+/// shades and under its "six largest and Other" rule, so the card and the
+/// section below never disagree about what the slices are. The key names
+/// every slice with its share, a form with its Latin letters too, the
+/// largest in the accent as the canon strip names its standout book. A tap
+/// on a segment or its name narrows the verse list, as the ring's rows do.
 private struct StrongsCardShareBar: View {
     let slices: [LampStrongsShare.Slice]
     /// By division ID.
     let filters: [String: LampStrongsFilter?]
+    /// A form's Latin letters, by division ID.
+    var asides: [String: String] = [:]
+    var isOriginalLanguage = false
     let color: (Int) -> Color
     let choose: (LampStrongsFilter?) -> Void
 
@@ -1903,42 +1916,83 @@ private struct StrongsCardShareBar: View {
     private static let gap: CGFloat = 2
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let largest = slices.first {
-                HStack(spacing: 6) {
-                    Text(largest.name)
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(Color.accentColor)
-                        .lineLimit(1)
-                    Text(LampStrongsSpread.percent(largest.fraction))
-                        .font(.footnote.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(LampTheme.caption)
-                }
-            }
+        VStack(alignment: .leading, spacing: 10) {
             GeometryReader { proxy in
                 let room = proxy.size.width - Self.gap * CGFloat(max(slices.count - 1, 0))
                 HStack(spacing: Self.gap) {
                     ForEach(Array(slices.enumerated()), id: \.element.id) { index, slice in
-                        // "Other" names nothing to filter by.
-                        let filter = slice.isOther ? nil : filters[slice.id] ?? nil
-                        Button {
-                            choose(filter)
-                        } label: {
+                        narrowing(slice) {
                             RoundedRectangle(cornerRadius: 3, style: .continuous)
                                 .fill(color(index))
                                 .frame(width: max(2, room * slice.fraction), height: Self.height)
                                 .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .disabled(filter == nil)
                     }
                 }
             }
             .frame(height: Self.height)
+            // The key says what the band does, one name at a time.
+            .accessibilityHidden(true)
+
+            // Each name whole on its line, never broken across two.
+            FlowLayout(spacing: 14, lineSpacing: 6) {
+                ForEach(Array(slices.enumerated()), id: \.element.id) { index, slice in
+                    key(slice, index: index)
+                }
+            }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(slices.map { "\($0.name) \($0.value)" }.joined(separator: ", "))
+    }
+
+    private func key(_ slice: LampStrongsShare.Slice, index: Int) -> some View {
+        let aside = slice.isOther ? nil : asides[slice.id]
+        let percent = LampStrongsSpread.percent(slice.fraction)
+        return narrowing(slice) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(color(index))
+                    .frame(width: 9, height: 9)
+                // A form in the serif its list sets it in; "Other" is
+                // English, whatever the slices name.
+                Text(slice.name)
+                    .font(isOriginalLanguage && !slice.isOther
+                        ? .system(.subheadline, design: .serif).weight(index == 0 ? .bold : .regular)
+                        : .footnote.weight(index == 0 ? .bold : .medium))
+                    .foregroundStyle(index == 0 ? Color.accentColor : Color.primary)
+                if let aside {
+                    Text(aside)
+                        .font(.system(.footnote, design: .serif).italic())
+                        .foregroundStyle(LampTheme.caption)
+                }
+                Text(percent)
+                    .font(.footnote.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(LampTheme.caption)
+            }
+            .fixedSize()
+        }
+        .accessibilityLabel([slice.name, aside, "\(slice.value)", percent].compactMap { $0 }.joined(separator: ", "))
+    }
+
+    /// "Other" names nothing to filter by, and nor does a grouping the verse
+    /// list can't be narrowed to, as the sections.
+    private func filter(for slice: LampStrongsShare.Slice) -> LampStrongsFilter? {
+        slice.isOther ? nil : filters[slice.id] ?? nil
+    }
+
+    /// A button where the slice narrows the verses, else the label alone:
+    /// not a disabled button, which draws the slice dimmed as if switched
+    /// off rather than in its own shade.
+    @ViewBuilder
+    private func narrowing<Label: View>(
+        _ slice: LampStrongsShare.Slice,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        if let filter = filter(for: slice) {
+            Button { choose(filter) } label: { label() }
+                .buttonStyle(.plain)
+        } else {
+            label()
+        }
     }
 }
 
