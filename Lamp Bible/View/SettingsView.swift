@@ -639,7 +639,8 @@ struct SettingsView: View {
                 .textCase(nil)
 
                 // Off until someone turns it on, and one choice for every
-                // device. Worded as on the Mac, but for what the phone has.
+                // device. Worded as on the Mac, but for what the phone has:
+                // no chats or drafts to keep.
                 Section {
                     Toggle(isOn: Binding(
                         get: { aiFeatures.isEnabled },
@@ -654,7 +655,7 @@ struct SettingsView: View {
                 } header: {
                     Text("AI Features").lampSectionHeader()
                 } footer: {
-                    Text("Make reading plans from a description. Off hides them all, including the system's writing tools in Lamp's text. Your chats and drafts are kept.")
+                    Text("Make reading plans from a description. Off hides them all, including the system's writing tools in Lamp's text.")
                         .foregroundStyle(LampTheme.caption)
                 }
                 .textCase(nil)
