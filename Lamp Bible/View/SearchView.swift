@@ -3808,6 +3808,7 @@ struct QuizSearchResultSheet: View {
                         }
                     } footer: {
                         Text("Day \(question.day) · \(question.ageGroup.capitalized)")
+                            .lampFootnote()
                     }
                 } else {
                     ContentUnavailableView("Question Not Found", systemImage: "questionmark.bubble")

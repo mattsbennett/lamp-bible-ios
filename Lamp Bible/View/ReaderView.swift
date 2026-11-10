@@ -4468,20 +4468,7 @@ struct QuizSheetView: View {
                 }
             }
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "person.2.fill")
-                    .font(.caption)
-                    .foregroundStyle(LampTheme.caption)
-                Text(selectedAgeGroupLabel ?? "Everyone")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color(uiColor: .label))
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(LampTheme.caption)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(LampTheme.tileFill, in: Capsule())
+            LampMenuChip(title: selectedAgeGroupLabel ?? "Everyone", systemImage: "person.2.fill")
         }
         .accessibilityLabel("Questions for \(selectedAgeGroupLabel ?? "everyone")")
     }

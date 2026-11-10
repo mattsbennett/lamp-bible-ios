@@ -161,12 +161,19 @@ struct StrongsAnalysisView: View {
     /// Collapsed to begin with: the Septuagint is a second subject, and
     /// opening it costs a search of the Hebrew text a word.
     @State private var isShowingSeptuagint = false
+    /// Closed to begin with: where the forms' spellings come from, and what
+    /// the tags leave out, read once rather than every time.
+    @State private var isShowingFormNotes = false
     @State private var septuagintPreview: SeptuagintPreview?
     @AppStorage("strongs.analysis.spreadGrouping") private var spreadGrouping: LampStrongsSpreadGrouping = .books
     @AppStorage("strongs.analysis.measure") private var measure: LampStrongsSpreadMeasure = .occurrences
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = true
     @AppStorage("strongs.analysis.formChartAsRing") private var showsFormRing = true
+    /// List or ring, chosen for one word's figure that opened as a list
+    /// because one share was nearly all of it. Not stored: the setting
+    /// above still decides every other word.
+    @State private var ringChoices: [String: Bool] = [:]
     /// Which figures the card prints and what it draws under them, by name.
     /// Per device, as on the Mac: which figures a reader wants at a glance is
     /// how one person reads, not something the library holds about the word.
@@ -344,6 +351,7 @@ struct StrongsAnalysisView: View {
                         Text(disclosure)
                     }
                 }
+                .lampFootnote()
             }
             definitionSection
             if !analysis.renderings.isEmpty {
@@ -677,15 +685,39 @@ struct StrongsAnalysisView: View {
 
     // MARK: Renderings
 
+    /// The reader's list-or-ring setting, except where one share is nearly
+    /// all of the figure: that opens as a list, as on the Mac, because the
+    /// ring would say only that one thing (core decides when). Switching it
+    /// there is remembered for that word, not stored as the setting.
+    private func ringBinding(
+        _ part: String,
+        stored: Binding<Bool>,
+        counts: [Int],
+        of analysis: LampStrongsAnalysis
+    ) -> Binding<Bool> {
+        let id = "\(part)|\(analysis.key)|\(analysis.translationID)"
+        let isDominated = LampStrongsShare.isDominated(counts)
+        return Binding(
+            get: { ringChoices[id] ?? (isDominated ? false : stored.wrappedValue) },
+            set: { chosen in
+                if isDominated { ringChoices[id] = chosen } else { stored.wrappedValue = chosen }
+            }
+        )
+    }
+
     private func renderingsSection(_ analysis: LampStrongsAnalysis) -> some View {
-        Section {
-            Picker("Chart", selection: $showsRenderingRing) {
+        let asRing = ringBinding(
+            "renderings", stored: $showsRenderingRing,
+            counts: analysis.renderings.map(\.count), of: analysis
+        )
+        return Section {
+            Picker("Chart", selection: asRing) {
                 Text("List").tag(false)
                 Text("Ring").tag(true)
             }
             .pickerStyle(.segmented)
             .listRowSeparator(.hidden)
-            if showsRenderingRing {
+            if asRing.wrappedValue {
                 share(of: LampStrongsGrouping.renderings.divisions(of: analysis))
             } else {
                 renderings(analysis)
@@ -693,9 +725,10 @@ struct StrongsAnalysisView: View {
         } header: {
             sectionHeader("Translated As")
         } footer: {
-            Text(showsRenderingRing
+            Text(asRing.wrappedValue
                 ? "How it is translated, the commonest first. Tap one to filter the verse list below."
                 : "What translators reached for, not what the word means. Tap one to filter the verse list below.")
+                .lampFootnote()
         }
     }
 
@@ -731,15 +764,19 @@ struct StrongsAnalysisView: View {
 
     private func formsSection(_ analysis: LampStrongsAnalysis) -> some View {
         let readings = formReadings(of: analysis)
+        let asRing = ringBinding(
+            "forms", stored: $showsFormRing,
+            counts: analysis.forms.map(\.count), of: analysis
+        )
         return Section {
             if !analysis.forms.isEmpty {
-                Picker("Chart", selection: $showsFormRing) {
+                Picker("Chart", selection: asRing) {
                     Text("List").tag(false)
                     Text("Ring").tag(true)
                 }
                 .pickerStyle(.segmented)
                 .listRowSeparator(.hidden)
-                if showsFormRing {
+                if asRing.wrappedValue {
                     share(
                         of: LampStrongsGrouping.forms.divisions(of: analysis),
                         isOriginalLanguage: true,
@@ -762,6 +799,7 @@ struct StrongsAnalysisView: View {
             // language, and what each spelling below is shown with.
             Text(LampStrongsFormReading.note(for: analysis, readings: Array(readings.values))
                 + (analysis.forms.isEmpty ? "" : " Tap one to filter the verse list below."))
+                .lampFootnote()
         }
     }
 
@@ -827,14 +865,26 @@ struct StrongsAnalysisView: View {
             ? LampStrongsFormReading.gaps(of: analysis, readings: Array(formReadings(of: analysis).values))
             : []
         if !matched.isEmpty || !gaps.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(matched + gaps, id: \.self) { line in
-                    Text(line)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+            // Behind a disclosure, as the Septuagint is, and as on the Mac:
+            // set out in full they were several paragraphs of fine print
+            // between the reader and the forms. The label stays, so it is
+            // still said that there is something to know.
+            let name = analysis.translationAbbreviation ?? analysis.translationName
+            DisclosureGroup(isExpanded: $isShowingFormNotes) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(matched + gaps, id: \.self) { line in
+                        Text(line)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .padding(.vertical, 2)
+            } label: {
+                Text(matched.isEmpty
+                    ? "What \(name)\u{2019}s tags leave out"
+                    : "Where \(name)\u{2019}s spellings come from")
+                    .font(.subheadline)
             }
-            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
         }
         if !gaps.isEmpty, let original = originalText(for: analysis) {
             let name = original.translationAbbreviation ?? original.translationName
@@ -921,6 +971,7 @@ struct StrongsAnalysisView: View {
             sectionHeader("Grammar")
         } footer: {
             Text("How it is parsed where it occurs. Tap one to filter the verse list below.")
+                .lampFootnote()
         }
     }
 
@@ -983,7 +1034,7 @@ struct StrongsAnalysisView: View {
                             if let aside = row.aside {
                                 Text(aside)
                                     .font(.system(.subheadline, design: .serif).italic())
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(LampTheme.caption)
                                     .lineLimit(1)
                             }
                         }
@@ -1091,13 +1142,14 @@ struct StrongsAnalysisView: View {
             sectionHeader(spreadTitle)
         } footer: {
             Text(spreadFootnote)
+                .lampFootnote()
         }
     }
 
     /// What to group by and what to count, as menus that state the choice in
     /// a word: segmented bars would outweigh the chart.
     private var spreadMenus: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 10) {
             Menu {
                 Picker("Group By", selection: $spreadGrouping) {
                     ForEach(LampStrongsSpreadGrouping.allCases) { Text($0.title).tag($0) }
@@ -1105,8 +1157,7 @@ struct StrongsAnalysisView: View {
             } label: {
                 menuLabel("By \(spreadGrouping.title)")
             }
-            .menuStyle(.button)
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             if spreadGrouping.usesMeasure {
                 Menu {
                     Picker("Measure", selection: $measure) {
@@ -1115,8 +1166,7 @@ struct StrongsAnalysisView: View {
                 } label: {
                     menuLabel(measure.title)
                 }
-                .menuStyle(.button)
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
             }
             Spacer(minLength: 0)
         }
@@ -1125,12 +1175,7 @@ struct StrongsAnalysisView: View {
     }
 
     private func menuLabel(_ title: String) -> some View {
-        HStack(spacing: 4) {
-            Text(title)
-            Image(systemName: "chevron.up.chevron.down")
-                .imageScale(.small)
-        }
-        .font(.subheadline.weight(.medium))
+        LampMenuChip(title: title)
     }
 
     private var spreadFootnote: String {
@@ -1138,7 +1183,9 @@ struct StrongsAnalysisView: View {
             return "A square for each chapter, darker where the word is commoner. Tap one to filter the verse list below."
         }
         let share = activeMeasure == .occurrences ? " Beside each count, its share of them all." : ""
-        return "Expected is the share a part of its length would hold. ↑ More and ↓ fewer mark a gap too wide to be chance.\(share) Tap one to filter the verse list below."
+        // Short sentences, each saying one thing: as one run of grey prose
+        // this was the paragraph the eye skipped.
+        return "↑ More or ↓ fewer than its length would lead you to expect, by more than chance.\(share) Tap one to filter the verse list below."
     }
 
     /// The figure a bar is drawn to: a count, or a rate to two places.
@@ -1226,7 +1273,7 @@ struct StrongsAnalysisView: View {
                     Text(isEmpty ? "" : LampStrongsSpread.percent(bar.fractionOfOccurrences))
                         .font(.footnote)
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LampTheme.caption)
                         .frame(width: 34, alignment: .trailing)
                 }
                 Image(systemName: bar.expectation == .fewer ? "arrow.down" : "arrow.up")
@@ -1382,7 +1429,7 @@ struct StrongsAnalysisView: View {
                         if let aside = detail?.aside {
                             Text(aside)
                                 .font(.system(.subheadline, design: .serif).italic())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(LampTheme.caption)
                                 .lineLimit(1)
                         }
                         Spacer(minLength: 8)
@@ -1393,7 +1440,7 @@ struct StrongsAnalysisView: View {
                         Text(LampStrongsSpread.percent(slice.fraction))
                             .font(.subheadline)
                             .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LampTheme.caption)
                             .lineLimit(1)
                             .fixedSize()
                             .frame(minWidth: 40, alignment: .trailing)
@@ -1417,20 +1464,52 @@ struct StrongsAnalysisView: View {
     /// One hue, deepest for the largest slice; the gathered rest faintest,
     /// being a remainder rather than a finding.
     private func shareColor(_ index: Int, of slices: [LampStrongsShare.Slice]) -> Color {
-        guard slices.indices.contains(index), !slices[index].isOther else { return Color.accentColor.opacity(0.2) }
+        guard slices.indices.contains(index), !slices[index].isOther else { return Self.shade(0.2) }
         let named = slices.filter { !$0.isOther }.count
         guard named > 1 else { return .accentColor }
-        return Color.accentColor.opacity(1 - 0.6 * Double(index) / Double(named - 1))
+        // Steps across three quarters of the range, not three fifths: five
+        // shades over 60% were too alike to match a slice to its row.
+        return Self.shade(1 - 0.75 * Double(index) / Double(named - 1))
     }
 
-    /// Blue against orange, a pair that stays apart for most colour vision,
-    /// and not the app's red accent, which beside orange reads as one warm
-    /// colour.
+    /// The accent at a share's strength. In light mode it is faded towards
+    /// the white card. On a dark card fading darkens it, to maroons too
+    /// alike to match a slice to its row, so there it is lightened towards
+    /// white instead: the same steps from strong to pale either way.
+    static func shade(_ strength: Double) -> Color {
+        Color(uiColor: UIColor { traits in
+            // The asset by name: UIColor(Color.accentColor) gives the system
+            // blue inside a provider, not the app's red.
+            let accent = (UIColor(named: "AccentColor") ?? .systemRed).resolvedColor(with: traits)
+            guard traits.userInterfaceStyle == .dark else {
+                return accent.withAlphaComponent(strength)
+            }
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            accent.getRed(&r, green: &g, blue: &b, alpha: &a)
+            let toWhite = (1 - strength) * 0.75
+            return UIColor(
+                red: r + (1 - r) * toWhite,
+                green: g + (1 - g) * toWhite,
+                blue: b + (1 - b) * toWhite,
+                alpha: 1
+            )
+        })
+    }
+
+    /// As the Mac and the deck slides draw them: the accent for more, the
+    /// accent paled for as expected, grey for fewer. Told apart by lightness
+    /// and by the arrows beside them, not by hue, so they read in any colour
+    /// vision and the card holds one colour, not three: blue and orange
+    /// beside the red accent were three colour systems on one card.
     private func barColor(_ expectation: LampStrongsAnalysis.Expectation) -> Color {
+        Self.expectationColor(expectation)
+    }
+
+    static func expectationColor(_ expectation: LampStrongsAnalysis.Expectation) -> Color {
         switch expectation {
-        case .more: .blue
-        case .fewer: .orange
-        case .asExpected: StrongsBarTrack.neutral
+        case .more: .accentColor
+        case .asExpected: shade(0.5)
+        case .fewer: StrongsBarTrack.neutral
         }
     }
 
@@ -1468,7 +1547,7 @@ struct StrongsAnalysisView: View {
                 ? analysis.companions
                 : Array(analysis.companions.prefix(strongsAnalysisListed))
             ForEach(listed) { companion in
-                companionRow(companion)
+                companionRow(companion, among: analysis.companions)
             }
             if !showsAllCompanions && analysis.companions.count > strongsAnalysisListed {
                 Button("Show All \(analysis.companions.count) Words") {
@@ -1478,12 +1557,17 @@ struct StrongsAnalysisView: View {
         } header: {
             sectionHeader("Found With")
         } footer: {
-            Text("Strongest association first, which is not the largest multiple: a high multiple over a few shared verses says less than a smaller one over many.")
+            Text("The bar is each word's strength of association with this one, against the strongest here, and the list follows it. The multiple says how much more often than chance the two share a verse: a high multiple over a few shared verses says less than a smaller one over many.")
+                .lampFootnote()
         }
     }
 
-    private func companionRow(_ companion: LampStrongsAnalysis.Companion) -> some View {
+    private func companionRow(
+        _ companion: LampStrongsAnalysis.Companion,
+        among companions: [LampStrongsAnalysis.Companion]
+    ) -> some View {
         let companionHeadword = companionHeadwords[companion.key]
+        let strength = LampStrongsCompanionStrength.fraction(of: companion, among: companions)
         return NavigationLink(value: StrongsAnalysisItem(key: companion.key)) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1500,6 +1584,11 @@ struct StrongsAnalysisView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
+                    // The strength the list is ordered by, against the
+                    // strongest here: without it the multipliers beside the
+                    // rows read as a list sorted badly.
+                    StrongsCompanionStrength(fraction: strength)
+                        .padding(.top, 3)
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 1) {
@@ -1539,6 +1628,7 @@ struct StrongsAnalysisView: View {
             sectionHeader("Compare")
         } footer: {
             Text("Counts depend on how each translation was tagged, so they don’t all measure the same thing.")
+                .lampFootnote()
         }
     }
 
@@ -1633,6 +1723,7 @@ struct StrongsAnalysisView: View {
             sectionHeader(LampSeptuagintSection.title)
         } footer: {
             Text(LampSeptuagintSection.note(greek: headword.lemma))
+                .lampFootnote()
         }
     }
 
@@ -1750,9 +1841,13 @@ struct StrongsAnalysisView: View {
                 Text(Self.referenceTitle(reference, bookNames: bookNames))
                     .font(.headline)
                     .foregroundStyle(.primary)
+                // Scripture as a search result shows it: the reader's serif
+                // in its own colour. Small grey sans made these the faintest
+                // verses in the app.
                 SearchResultRow.snippetText(fromMarked: marked(reference, in: analysis), limit: 120)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 16, design: .serif))
+                    .foregroundStyle(LampTheme.readerText)
+                    .lineSpacing(2)
             }
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2116,7 +2211,9 @@ private struct StrongsShareRing: View {
 
     @State private var selected: Int?
 
-    private static let size: CGFloat = 140
+    /// Smaller than it was: the legend beside it carries every figure,
+    /// and the ring took half a screen to say the largest share.
+    private static let size: CGFloat = 124
     private static let holeRatio: CGFloat = 0.6
 
     var body: some View {
@@ -2213,7 +2310,9 @@ private struct StrongsBarTrack: View {
     /// The empty track: plain enough to read as "none", firm enough to see.
     static let track = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0x3A / 255, green: 0x3A / 255, blue: 0x3E / 255, alpha: 1)
+            // A step lighter on dark than it was: at 3A the empty track
+            // was barely off the card, and short bars floated.
+            ? UIColor(red: 0x48 / 255, green: 0x48 / 255, blue: 0x4C / 255, alpha: 1)
             : UIColor(red: 0xE8 / 255, green: 0xE8 / 255, blue: 0xED / 255, alpha: 1)
     })
 
@@ -2224,11 +2323,12 @@ private struct StrongsBarTrack: View {
             .overlay(alignment: .leading) {
                 GeometryReader { proxy in
                     if fraction > 0 {
-                        // At least a short bar, never a dot: one occurrence is
-                        // still plainly more than none.
+                        // At least a round pip, so one occurrence is still
+                        // plainly more than none. No longer than that: a
+                        // floor of two heights drew 1 and 3 the same length.
                         Capsule()
                             .fill(color)
-                            .frame(width: max(height * 2, proxy.size.width * min(fraction, 1)))
+                            .frame(width: max(height, proxy.size.width * min(fraction, 1)))
                     }
                 }
             }
@@ -2381,13 +2481,41 @@ private struct StrongsCanonStrip: View {
     }
 }
 
+/// A companion's strength of association, as a share of the strongest
+/// listed: a short bar in the accent, named, as on the Mac.
+private struct StrongsCompanionStrength: View {
+    let fraction: Double
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Wide and thick enough to compare down the list: at 48 by 4
+            // points the panel found it a hairline nobody could read.
+            Capsule()
+                .fill(StrongsBarTrack.track)
+                .frame(width: 64, height: 6)
+                .overlay(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: max(6, 64 * fraction), height: 6)
+                }
+            Text("strength")
+                .font(.caption)
+                .foregroundStyle(LampTheme.caption)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Strength of association")
+        .accessibilityValue("\(Int((fraction * 100).rounded()))% of the strongest")
+    }
+}
+
 /// What the colours of the bars mean, beside the bars themselves.
 private struct StrongsExpectationLegend: View {
     var body: some View {
         HStack(spacing: 14) {
-            item("More than expected", .blue)
-            item("Fewer", .orange)
-            item("As expected", StrongsBarTrack.neutral)
+            // The Mac's words and order, with its arrows.
+            item("More ↑", StrongsAnalysisView.expectationColor(.more))
+            item("As expected", StrongsAnalysisView.expectationColor(.asExpected))
+            item("Fewer ↓", StrongsAnalysisView.expectationColor(.fewer))
         }
         .font(.caption.weight(.medium))
         .foregroundStyle(.secondary)

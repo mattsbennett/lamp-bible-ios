@@ -191,6 +191,46 @@ extension View {
     }
 }
 
+extension View {
+    /// A content section's footnote — how to read a figure, where its numbers
+    /// come from — in the firmer caption grey, not the system's footer grey.
+    /// A blind panel found these the paragraphs the eye skipped. Forms and
+    /// settings keep the system footer.
+    func lampFootnote() -> some View {
+        foregroundStyle(LampTheme.caption)
+    }
+}
+
+/// An inline menu's label in a page's content — who the questions are for,
+/// what to group by, what to count — as a quiet chip: its words in the label
+/// colour on the tile fill, with the up-down chevron. Red text menus read as
+/// links, and a red one beside the chart's own colours was one accent too
+/// many. Every such menu draws this, so they match.
+struct LampMenuChip: View {
+    let title: String
+    var systemImage: String? = nil
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.caption)
+                    .foregroundStyle(LampTheme.caption)
+            }
+            Text(title)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color(uiColor: .label))
+                .lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(LampTheme.caption)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(LampTheme.tileFill, in: Capsule())
+    }
+}
+
 // MARK: - UIKit colours
 
 extension UIColor {
