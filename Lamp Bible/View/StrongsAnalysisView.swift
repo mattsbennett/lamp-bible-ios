@@ -146,6 +146,9 @@ struct StrongsAnalysisView: View {
     /// Each translation's language as its module declares it, by ID, to
     /// tell a Greek or Hebrew text among those compared.
     @State private var translationLanguages: [String: String] = [:]
+    /// What the translation declares was matched to it when its module was
+    /// built, said beside what rests on it.
+    @State private var tagSources: [LampTranslationSource] = []
     @State private var isComparing = false
     @State private var showsAllRenderings = false
     @State private var showsAllForms = false
@@ -179,6 +182,7 @@ struct StrongsAnalysisView: View {
         let analysis: LampStrongsAnalysis?
         let headword: StrongsHeadword
         let companions: [String: StrongsHeadword]
+        let tagSources: [LampTranslationSource]
     }
 
     private var bookRange: ClosedRange<Int>? { chosenRange.map(\.range) ?? initialBookRange }
@@ -261,7 +265,12 @@ struct StrongsAnalysisView: View {
                 for companion in analysis?.companions ?? [] {
                     companions[companion.key] = StrongsHeadword.lookUp(companion.key)
                 }
-                return Loaded(analysis: analysis, headword: StrongsHeadword.lookUp(key), companions: companions)
+                return Loaded(
+                    analysis: analysis,
+                    headword: StrongsHeadword.lookUp(key),
+                    companions: companions,
+                    tagSources: TranslationDatabase.shared.tagSources(of: translationId)
+                )
             }
         }.value
         guard !Task.isCancelled else { return }
@@ -270,6 +279,7 @@ struct StrongsAnalysisView: View {
             analysis = loaded.analysis
             headword = loaded.headword
             companionHeadwords = loaded.companions
+            tagSources = loaded.tagSources
             occurrencesByVerse = Dictionary(grouping: loaded.analysis?.occurrences ?? [], by: \.reference)
         case .failure(let error):
             analysis = nil
@@ -316,7 +326,14 @@ struct StrongsAnalysisView: View {
             } footer: {
                 // The rate, outside the card: the card keeps to the figures
                 // and the chart.
-                Text(rateLine(analysis))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(rateLine(analysis))
+                    // Every figure counts these numbers, so where they were
+                    // matched to the text is said under the figures.
+                    ForEach(disclosures(.strongs, for: analysis), id: \.self) { disclosure in
+                        Text(disclosure)
+                    }
+                }
             }
             definitionSection
             if !analysis.renderings.isEmpty {
@@ -697,37 +714,51 @@ struct StrongsAnalysisView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// What this translation's tags don't say about the word's forms, so a
-    /// figure that can't be given reads as missing rather than miscounted,
-    /// and the text in the word's own language whose tags do say it.
+    /// The sentences saying what the translation declares was matched to it
+    /// for `part` when its module was built.
+    private func disclosures(_ part: LampTranslationSource.Part, for analysis: LampStrongsAnalysis) -> [String] {
+        tagSources.filter { $0.part == part }.map {
+            $0.disclosure(
+                translationName: analysis.translationAbbreviation ?? analysis.translationName,
+                strongsKey: analysis.key
+            )
+        }
+    }
+
+    /// Where the spellings were matched to the text when its module was
+    /// built, so they are not read as the translation's own print; then what
+    /// its tags don't say about the word's forms, so a figure that can't be
+    /// given reads as missing rather than miscounted, and the text in the
+    /// word's own language whose tags do say it.
     @ViewBuilder
     private func formGaps(_ analysis: LampStrongsAnalysis) -> some View {
+        let matched = analysis.forms.isEmpty ? [] : disclosures(.forms, for: analysis)
         // Not until the readings are in, which the grammar's gap is read
         // from, unless there are no forms to read.
         let isRead = formReadings?.source == formsSource(of: analysis) || analysis.forms.isEmpty
         let gaps = isRead
             ? LampStrongsFormReading.gaps(of: analysis, readings: Array(formReadings(of: analysis).values))
             : []
-        if !gaps.isEmpty {
+        if !matched.isEmpty || !gaps.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(gaps, id: \.self) { gap in
-                    Text(gap)
+                ForEach(matched + gaps, id: \.self) { line in
+                    Text(line)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
             .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-            if let original = originalText(for: analysis) {
-                let name = original.translationAbbreviation ?? original.translationName
-                NavigationLink(value: StrongsAnalysisInText(
-                    key: analysis.key,
-                    translationId: original.translationID,
-                    bookRange: bookRange
-                )) {
-                    Text("Open in \(name)")
-                }
-                .accessibilityHint("Analyses \(analysis.key) in \(name), whose tags give each spelling and its grammar")
+        }
+        if !gaps.isEmpty, let original = originalText(for: analysis) {
+            let name = original.translationAbbreviation ?? original.translationName
+            NavigationLink(value: StrongsAnalysisInText(
+                key: analysis.key,
+                translationId: original.translationID,
+                bookRange: bookRange
+            )) {
+                Text("Open in \(name)")
             }
+            .accessibilityHint("Analyses \(analysis.key) in \(name), whose tags give each spelling and its grammar")
         }
     }
 

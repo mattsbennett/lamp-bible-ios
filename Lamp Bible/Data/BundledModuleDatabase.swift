@@ -1866,6 +1866,15 @@ class TranslationDatabase {
         }) ?? .standard(.english)
     }
 
+    /// What the translation declares was matched to it when its module was
+    /// built, its Strong's numbers or its Greek and Hebrew spellings, read
+    /// as core reads a module's; empty where it declares none.
+    func tagSources(of translationId: String) -> [LampTranslationSource] {
+        (try? verseSource(for: translationId).read {
+            try LampTranslationSource.declared(in: $0, translationID: translationId)
+        }) ?? []
+    }
+
     /// Get the last verse ref in a chapter
     func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
         if try bundledDb.isTranslationBundled(id: translationId) {
