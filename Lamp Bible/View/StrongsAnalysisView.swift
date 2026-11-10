@@ -335,47 +335,56 @@ struct StrongsAnalysisView: View {
     }
 
     private func content(_ analysis: LampStrongsAnalysis) -> some View {
-        List {
-            Section {
-                summary(analysis)
-            } footer: {
-                // The rate, outside the card: the card keeps to the figures
-                // and the chart, unless one of its figures is the rate.
-                VStack(alignment: .leading, spacing: 6) {
-                    if !cardChoice.showsRate {
-                        Text(rateLine(analysis))
+        // A reader, so a section can bring Compare into view.
+        ScrollViewReader { proxy in
+            List {
+                Section {
+                    summary(analysis)
+                } footer: {
+                    // The rate, outside the card: the card keeps to the figures
+                    // and the chart, unless one of its figures is the rate.
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !cardChoice.showsRate {
+                            Text(rateLine(analysis))
+                        }
+                        // Every figure counts these numbers, so where they were
+                        // matched to the text is said under the figures.
+                        ForEach(disclosures(.strongs, for: analysis), id: \.self) { disclosure in
+                            Text(disclosure)
+                        }
                     }
-                    // Every figure counts these numbers, so where they were
-                    // matched to the text is said under the figures.
-                    ForEach(disclosures(.strongs, for: analysis), id: \.self) { disclosure in
-                        Text(disclosure)
-                    }
+                    .lampFootnote()
                 }
-                .lampFootnote()
+                definitionSection
+                if analysis.isInKeysOwnLanguage {
+                    ownLanguageSection(analysis) {
+                        // Short of the top, so the heading shows above the
+                        // first row rather than under the bar.
+                        withAnimation { proxy.scrollTo(Self.compareAnchor, anchor: UnitPoint(x: 0.5, y: 0.15)) }
+                    }
+                } else if !analysis.renderings.isEmpty {
+                    renderingsSection(analysis)
+                }
+                // A Greek or Hebrew key always has its Forms, which say why
+                // where a translation's tags give none.
+                if !analysis.forms.isEmpty || "GH".contains(LampStrongsKey.normalized(analysis.key).first ?? " ") {
+                    formsSection(analysis)
+                }
+                if !analysis.grammar.isEmpty {
+                    grammarSection(analysis)
+                }
+                spreadSection(analysis)
+                if !analysis.companions.isEmpty {
+                    companionsSection(analysis)
+                }
+                if !compared.isEmpty || isComparing {
+                    compareSection(analysis)
+                }
+                if !septuagint.words.isEmpty {
+                    septuagintSection
+                }
+                verses(analysis)
             }
-            definitionSection
-            if !analysis.renderings.isEmpty {
-                renderingsSection(analysis)
-            }
-            // A Greek or Hebrew key always has its Forms, which say why
-            // where a translation's tags give none.
-            if !analysis.forms.isEmpty || "GH".contains(LampStrongsKey.normalized(analysis.key).first ?? " ") {
-                formsSection(analysis)
-            }
-            if !analysis.grammar.isEmpty {
-                grammarSection(analysis)
-            }
-            spreadSection(analysis)
-            if !analysis.companions.isEmpty {
-                companionsSection(analysis)
-            }
-            if !compared.isEmpty || isComparing {
-                compareSection(analysis)
-            }
-            if !septuagint.words.isEmpty {
-                septuagintSection
-            }
-            verses(analysis)
         }
         .listStyle(.insetGrouped)
         .listSectionSpacing(.compact)
@@ -737,6 +746,29 @@ struct StrongsAnalysisView: View {
                 ? "How it is translated, the commonest first. Tap one to filter the verse list below."
                 : "What translators reached for, not what the word means. Tap one to filter the verse list below.")
                 .lampFootnote()
+        }
+    }
+
+    /// For a text in the key's own language, TAGNT for a Greek key or TAHOT
+    /// for a Hebrew one: what it "translates as" is the key's own spellings,
+    /// which Forms lists below with their Latin letters, so the section says
+    /// where each translation's English is instead, and goes there.
+    private func ownLanguageSection(
+        _ analysis: LampStrongsAnalysis,
+        showCompare: @escaping () -> Void
+    ) -> some View {
+        let name = analysis.translationAbbreviation ?? analysis.translationName
+        let language = LampStrongsKey.normalized(analysis.key).first == "H" ? "Hebrew" : "Greek"
+        return Section {
+            Text("\(name) is the \(language) text itself, so its words are the forms below. How each translation renders it is under Compare.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            // Not until Compare is there to go to.
+            if !compared.isEmpty || isComparing {
+                Button("Compare Translations", action: showCompare)
+            }
+        } header: {
+            sectionHeader("Translated As")
         }
     }
 
@@ -1633,13 +1665,33 @@ struct StrongsAnalysisView: View {
 
     // MARK: Compare
 
+    /// Where Translated As sends a reader of the text in the key's own
+    /// language.
+    private static let compareAnchor = "compare"
+
+    /// Each translation's count and English for the word, each but the one
+    /// being read opening the word's analysis in it: the way from one
+    /// translation to another, from any of them.
     private func compareSection(_ analysis: LampStrongsAnalysis) -> some View {
         Section {
             ForEach(
                 LampStrongsAnalysisOrder.ordered([analysis] + compared, activeTranslationID: translationId),
                 id: \.translationID
             ) { other in
-                compareRow(other, isRead: other.translationID == translationId)
+                // One that tags none of the word has nothing to open.
+                if other.translationID == translationId || other.occurrenceCount == 0 {
+                    compareRow(other, isRead: other.translationID == translationId)
+                } else {
+                    let name = other.translationAbbreviation ?? other.translationName
+                    NavigationLink(value: StrongsAnalysisInText(
+                        key: analysis.key,
+                        translationId: other.translationID,
+                        bookRange: bookRange
+                    )) {
+                        compareRow(other, isRead: false)
+                    }
+                    .accessibilityHint("Analyses \(analysis.key) in \(name)")
+                }
             }
             if isComparing {
                 HStack(spacing: 8) {
@@ -1655,6 +1707,7 @@ struct StrongsAnalysisView: View {
             Text("Counts depend on how each translation was tagged, so they don’t all measure the same thing.")
                 .lampFootnote()
         }
+        .id(Self.compareAnchor)
     }
 
     private func compareRow(_ other: LampStrongsAnalysis, isRead: Bool) -> some View {
