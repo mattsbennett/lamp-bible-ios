@@ -1502,6 +1502,15 @@ class ModuleDatabase {
             try db.execute(sql: "ALTER TABLE commentary_units ADD COLUMN footnotes_text TEXT")
         }
 
+        // A book's genre, the id the bundle's `book_genres` names and groups,
+        // as a book module built since books had genres carries it.
+        migrator.registerMigration("v33_book_genre") { db in
+            guard try db.tableExists("book_modules"),
+                  try !db.columns(in: "book_modules").contains(where: { $0.name == "genre" })
+            else { return }
+            try db.execute(sql: "ALTER TABLE book_modules ADD COLUMN genre TEXT")
+        }
+
         return migrator
     }
 

@@ -276,10 +276,13 @@ struct BookModule: Codable, FetchableRecord, PersistableRecord, Identifiable {
     var lastModified: Int?
     var footnotesJson: String?
     var mediaJson: String?
+    /// The id of the book's genre, which the bundle's `book_genres` names
+    /// and groups; nil for a book built before books had genres.
+    var genre: String?
 
     enum CodingKeys: String, CodingKey {
         case id, title, subtitle, description, author, editor, publisher, year
-        case edition, isbn, language, copyright, license, version, created
+        case edition, isbn, language, copyright, license, version, created, genre
         case textDirection = "text_direction"
         case schemaVersion = "schema_version"
         case tagsJson = "tags_json"

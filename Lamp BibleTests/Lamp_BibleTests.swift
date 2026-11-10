@@ -895,7 +895,8 @@ final class Lamp_BibleTests: XCTestCase {
             "type": "book",
             "title": "Imported Book",
             "language": "en",
-            "coverMediaId": "cover"
+            "coverMediaId": "cover",
+            "genre": "first-principles"
           },
           "sections": [
             {
@@ -925,6 +926,7 @@ final class Lamp_BibleTests: XCTestCase {
         )
 
         XCTAssertEqual(try ModuleDatabase.shared.getBookModule(id: moduleID)?.title, "Imported Book")
+        XCTAssertEqual(try ModuleDatabase.shared.getBookModule(id: moduleID)?.genre, "first-principles")
         XCTAssertEqual(try ModuleDatabase.shared.getBookSections(moduleId: moduleID).count, 1)
         let mediaRef = try XCTUnwrap(try ModuleDatabase.shared.getBookModule(id: moduleID)?.coverMediaReference)
         XCTAssertNotNil(ModuleMediaStorage.shared.getMediaURL(for: mediaRef, moduleId: moduleID))

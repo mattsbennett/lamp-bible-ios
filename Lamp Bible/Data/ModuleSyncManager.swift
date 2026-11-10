@@ -579,7 +579,10 @@ class ModuleSyncManager: ObservableObject {
             }
 
         case .book:
-            let moduleColumns = LampPortableModuleInspector.bookModuleColumns
+            // The genre too, from a book built since books had genres.
+            let hasGenre = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(book_modules)")
+                .contains { ($0["name"] as String?) == "genre" }
+            let moduleColumns = (LampPortableModuleInspector.bookModuleColumns + (hasGenre ? ["genre"] : []))
                 .joined(separator: ", ")
             let sectionColumns = LampPortableModuleInspector.bookSectionColumns
                 .joined(separator: ", ")
