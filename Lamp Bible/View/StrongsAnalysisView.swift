@@ -718,7 +718,15 @@ struct StrongsAnalysisView: View {
             .pickerStyle(.segmented)
             .listRowSeparator(.hidden)
             if asRing.wrappedValue {
-                share(of: LampStrongsGrouping.renderings.divisions(of: analysis))
+                // A Greek text translates as its own Greek, said in Latin
+                // letters beside it, as the forms are.
+                share(
+                    of: LampStrongsGrouping.renderings.divisions(of: analysis),
+                    isOriginalLanguage: rendersInGreek(analysis),
+                    details: Dictionary(uniqueKeysWithValues: analysis.renderings.enumerated().map { index, rendering in
+                        (String(index), ShareDetail(aside: LampGreekTransliteration.latinIfGreek(rendering.text)))
+                    })
+                )
             } else {
                 renderings(analysis)
             }
@@ -730,6 +738,12 @@ struct StrongsAnalysisView: View {
                 : "What translators reached for, not what the word means. Tap one to filter the verse list below.")
                 .lampFootnote()
         }
+    }
+
+    /// Whether the text translates the word as its own Greek, as TAGNT does:
+    /// its renderings are then set as the forms are, in the serif.
+    private func rendersInGreek(_ analysis: LampStrongsAnalysis) -> Bool {
+        analysis.renderings.contains { LampGreekTransliteration.latinIfGreek($0.text) != nil }
     }
 
     @ViewBuilder
@@ -748,10 +762,11 @@ struct StrongsAnalysisView: View {
                         .map(\.text)
                         .joined(separator: ", "),
                     count: rendering.count,
-                    filter: .rendering(id: rendering.id, text: rendering.text)
+                    filter: .rendering(id: rendering.id, text: rendering.text),
+                    aside: LampGreekTransliteration.latinIfGreek(rendering.text)
                 )
             },
-            isOriginalLanguage: false
+            isOriginalLanguage: rendersInGreek(analysis)
         )
         if !showsAllRenderings && analysis.renderings.count > strongsAnalysisListed {
             Button("Show All \(analysis.renderings.count)") {
@@ -1010,7 +1025,10 @@ struct StrongsAnalysisView: View {
                     .foregroundStyle(LampTheme.caption)
                 FlowLayout(spacing: 6, lineSpacing: 6) {
                     ForEach(once) { row in
-                        filterChip(row.title, count: nil, filter: row.filter, isOriginalLanguage: isOriginalLanguage)
+                        filterChip(
+                            row.title, count: nil, filter: row.filter,
+                            isOriginalLanguage: isOriginalLanguage, aside: row.aside
+                        )
                     }
                 }
             }
@@ -1071,14 +1089,16 @@ struct StrongsAnalysisView: View {
     }
 
     /// A chip that narrows the verses to its figure, its count beside it
-    /// where there is one to give.
+    /// where there is one to give, and its Latin letters where it is Greek.
     private func filterChip(
         _ title: String,
         count: Int?,
         filter chipFilter: LampStrongsFilter,
-        isOriginalLanguage: Bool = false
+        isOriginalLanguage: Bool = false,
+        aside: String? = nil
     ) -> some View {
         let isSelected = filter == chipFilter
+        let said = aside.map { "\(title) \($0)" } ?? title
         return Button {
             choose(chipFilter)
         } label: {
@@ -1087,6 +1107,11 @@ struct StrongsAnalysisView: View {
                     .font(isOriginalLanguage
                         ? .system(.subheadline, design: .serif).weight(isSelected ? .semibold : .regular)
                         : .subheadline.weight(isSelected ? .semibold : .regular))
+                if let aside {
+                    Text(aside)
+                        .font(.system(.footnote, design: .serif).italic())
+                        .foregroundStyle(LampTheme.caption)
+                }
                 if let count {
                     Text("\(count)")
                         .font(.subheadline.weight(.semibold))
@@ -1106,7 +1131,7 @@ struct StrongsAnalysisView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(count.map { "\(title), \($0)" } ?? "\(title), once")
+        .accessibilityLabel(count.map { "\(said), \($0)" } ?? "\(said), once")
         .accessibilityHint("Filters the verse list")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -1652,9 +1677,8 @@ struct StrongsAnalysisView: View {
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            let renderings = other.renderings.prefix(3)
-                .map { "\($0.text.isEmpty ? "—" : $0.text) (\($0.count))" }
-                .joined(separator: ", ")
+            // Core's line, as the Mac and the deck slide give it.
+            let renderings = LampStrongsRenderingSummary.line(of: other)
             if !renderings.isEmpty {
                 Text(renderings)
                     .font(.subheadline)
