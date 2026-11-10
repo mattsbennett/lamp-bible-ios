@@ -600,23 +600,40 @@ struct StrongsAnalysisView: View {
                 .foregroundStyle(LampTheme.caption)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(value)
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                if !unit.isEmpty {
-                    // A word as well as "of 27": the commonest's “love”.
-                    Text(unit)
-                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+            // The unit beside the number where it fits, else under it. It can
+            // be a word as well as "of 27", the commonest's “loving
+            // devotion”, and with no hover a word cut short can't be read.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    statValue(value)
+                    if !unit.isEmpty {
+                        statUnit(unit)
+                            .lineLimit(1)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    statValue(value)
+                    statUnit(unit)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func statValue(_ value: String) -> some View {
+        Text(value)
+            .font(.system(size: 34, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+    }
+
+    private func statUnit(_ unit: String) -> some View {
+        Text(unit)
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .foregroundStyle(.secondary)
     }
 
     /// The card's slots as they are stored, read forgivingly in core so a
