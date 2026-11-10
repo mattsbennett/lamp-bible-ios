@@ -2998,6 +2998,22 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(after, before, "nothing changed, so nothing is written")
     }
 
+    /// A file replaced by hand on the server touches no bundle, so the poll
+    /// compares the folders' listing with this device's records, which must
+    /// name each file it holds by the revision a listing reports.
+    func testAFileReplacedByHandIsWhatTheListingProbeFinds() async throws {
+        try saveNotesModule(notes: ["a"])
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+        let recorded = try database.libraryRecords(source: source).listedRevisions(in: source)
+
+        let quiet = try await LampSyncFilePlan.listing(in: storage, recorded: recorded)
+        await server.seed(notesPath, Data("replaced by hand".utf8))
+        let replaced = try await LampSyncFilePlan.listing(in: storage, recorded: recorded)
+
+        XCTAssertEqual(LampSyncFilePlan.remoteChanges(listing: quiet, recorded: recorded), [])
+        XCTAssertEqual(LampSyncFilePlan.remoteChanges(listing: replaced, recorded: recorded), [notesPath])
+    }
+
     func testANoteAddedElsewhereArrivesAndDoesNotEchoBack() async throws {
         try saveNotesModule(notes: ["a"])
         _ = try await pass().run()

@@ -45,6 +45,12 @@ class UserSettingsSyncManager {
     private var changeObserver: NSObjectProtocol?
     private var isRunning = false
     private var syncInProgress = false
+    /// When the listed folders were last compared with this device's records.
+    private var listingProbedAt = Date.distantPast
+    /// The listing a probe last started a pass for. A file this device does
+    /// not take, or a record a pass leaves as it was, would otherwise read as
+    /// work on every probe, and start a pass every two minutes for ever.
+    private var listingActedOn: [String: String]?
 
     private static let readingsBaseKey = "UserSettingsSync.readingsBase.v1"
 
@@ -211,6 +217,10 @@ class UserSettingsSyncManager {
             if !due {
                 due = (try? await LampSyncSettingsStore.hasChanged(since: revision, in: endpoint)) ?? true
             }
+            if !due {
+                // The bundle has not moved, but a module file can still have.
+                due = await listedFoldersHaveWork(at: endpoint)
+            }
             guard due else { return }
             do {
                 try await LibrarySyncPass.runIfMigrated(storage: endpoint)
@@ -219,6 +229,24 @@ class UserSettingsSyncManager {
             }
             return
         }
+    }
+
+    /// Whether the module and deck folders hold anything this device has not
+    /// taken: a file replaced or dropped in by hand on the server, or taken
+    /// away, which touches no bundle and so no bundle probe sees. One Depth:1
+    /// listing a folder and no file read, every two minutes, as the Mac does.
+    private func listedFoldersHaveWork(at endpoint: any LibraryEndpoint) async -> Bool {
+        guard Date().timeIntervalSince(listingProbedAt) >= 120 else { return false }
+        listingProbedAt = Date()
+        let source = endpoint.librarySource
+        guard let recorded = try? ModuleDatabase.shared.libraryRecords(source: source)
+                .listedRevisions(in: source),
+              let listing = try? await LampSyncFilePlan.listing(in: endpoint, recorded: recorded),
+              !LampSyncFilePlan.remoteChanges(listing: listing, recorded: recorded).isEmpty,
+              listing != listingActedOn else { return false }
+        listingActedOn = listing
+        print("[UserSettingsSync] Poll: listed folders changed outside a pass; syncing")
+        return true
     }
 
     private struct MergeResult {
