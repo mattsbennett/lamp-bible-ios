@@ -413,6 +413,7 @@ struct StrongsAnalysisView: View {
             StrongsCardSlotsSheet(
                 available: LampStrongsCardChoice.available(for: analysis),
                 charts: LampStrongsGrouping.allCases.filter { $0.canDraw(analysis) },
+                standIn: cardChoice.standIn(for: analysis),
                 figures: $storedCardFigures,
                 chart: $storedCardChart
             )
@@ -2188,6 +2189,10 @@ private struct StrongsCardShareBar: View {
 private struct StrongsCardSlotsSheet: View {
     let available: [LampStrongsCardFigure]
     let charts: [LampStrongsGrouping]
+    /// What the card draws for the stored chart where that one has nothing
+    /// to draw and another says the same: the forms, for Translated As in
+    /// TAGNT or TAHOT.
+    let standIn: LampStrongsGrouping?
     @Binding var figures: String
     @Binding var chart: String
     @Environment(\.dismiss) private var dismiss
@@ -2245,15 +2250,16 @@ private struct StrongsCardSlotsSheet: View {
     }
 
     /// The charts this word can draw, the stored one where it cannot — so
-    /// the picker shows what is actually set rather than going blank — and
-    /// no chart at all.
+    /// the picker shows what is actually set rather than going blank, and
+    /// what is drawn for it here — and no chart at all.
     private var offeredCharts: [(tag: String, title: String)] {
         var offered = charts.map { (tag: $0.rawValue, title: $0.title) }
         if chart != LampStrongsCardChoice.noChart,
            !charts.contains(where: { $0.rawValue == chart }) {
             offered.append((
                 tag: chart,
-                title: (LampStrongsGrouping(rawValue: chart)?.title ?? chart) + " (none)"
+                title: (LampStrongsGrouping(rawValue: chart)?.title ?? chart)
+                    + (standIn.map { " (\($0.title) here)" } ?? " (none)")
             ))
         }
         offered.append((tag: LampStrongsCardChoice.noChart, title: "None"))
