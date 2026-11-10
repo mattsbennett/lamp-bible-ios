@@ -302,6 +302,9 @@ struct StrongsAnalysisView: View {
         }
         isLoading = false
         guard loadError == nil else { return }
+        // Counting from the first look, so nothing says no other translation
+        // tags the word before the others are counted.
+        isComparing = true
         await septuagint.loadWords(key: key)
         await loadComparison(key: key, range: range)
     }
@@ -316,8 +319,10 @@ struct StrongsAnalysisView: View {
         let others = translations
             .filter { $0.features?.strongs == true && $0.id != current }
             .map(\.id)
-        guard !others.isEmpty else { return }
-        isComparing = true
+        guard !others.isEmpty else {
+            isComparing = false
+            return
+        }
         for other in others {
             let found = await Task.detached(priority: .utility) {
                 try? TranslationDatabase.shared.analyzeStrongs(
@@ -759,12 +764,18 @@ struct StrongsAnalysisView: View {
     ) -> some View {
         let name = analysis.translationAbbreviation ?? analysis.translationName
         let language = LampStrongsKey.normalized(analysis.key).first == "H" ? "Hebrew" : "Greek"
+        // Compare answers only where another translation tags the word: the
+        // English tag a Septuagint's Old Testament word in Hebrew, so it may
+        // have none. Said as on the Mac, and no button to an empty answer.
+        let othersTagIt = isComparing
+            || compared.contains { $0.translationID != translationId && $0.occurrenceCount > 0 }
         return Section {
-            Text("\(name) is the \(language) text itself, so its words are the forms below. How each translation renders it is under Compare.")
+            Text(othersTagIt
+                ? "\(name) is the \(language) text itself, so its words are the forms below. How each translation renders it is under Compare."
+                : "\(name) is the \(language) text itself, so its words are the forms below. No other installed translation tags this word.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            // Not until Compare is there to go to.
-            if !compared.isEmpty || isComparing {
+            if othersTagIt {
                 Button("Compare Translations", action: showCompare)
             }
         } header: {
