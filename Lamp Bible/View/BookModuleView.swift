@@ -4,7 +4,15 @@ import LampCore
 import LampModuleKit
 
 struct BookLibraryView: View {
+    /// How the shelf is divided: by genre, the bundle's catalog, or not at all.
+    enum Grouping: String {
+        case genre
+        case none
+    }
+
     @State private var books: [BookLibraryItem] = []
+    @State private var genres: [LampBookGenre] = []
+    @AppStorage("books.grouping") private var grouping: Grouping = .genre
     @State private var positions: [String: LampBookReadingPosition] = [:]
     @State private var sectionTitles: [String: String] = [:]
     @State private var selectedBook: BookLibraryItem?
@@ -61,11 +69,13 @@ struct BookLibraryView: View {
                 // A shelf of covers, as a bookshop or Apple Books lays one out.
                 ScrollView {
                     VStack(alignment: .leading, spacing: 30) {
-                        if !isSearching && !recentBooks.isEmpty {
-                            shelf("Continue Reading", recentBooks)
-                            shelf("All Books", books)
+                        if isSearching {
+                            shelf(nil, filteredBooks, showsImport: false)
                         } else {
-                            shelf(nil, filteredBooks)
+                            if !recentBooks.isEmpty {
+                                shelf("Continue Reading", recentBooks, showsImport: false)
+                            }
+                            genreShelves
                         }
                     }
                     .padding(.horizontal, 20)
@@ -79,6 +89,17 @@ struct BookLibraryView: View {
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $searchText, prompt: "Title, author, or tag")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Picker("Group By", selection: $grouping) {
+                        Text("Genre").tag(Grouping.genre)
+                        Text("None").tag(Grouping.none)
+                    }
+                } label: {
+                    Label("Group By", systemImage: "rectangle.3.group")
+                }
+                .disabled(books.isEmpty)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Import Book", systemImage: "square.and.arrow.down") {
                     showingImporter = true
@@ -141,12 +162,48 @@ struct BookLibraryView: View {
         }
     }
 
-    private func shelf(_ title: String?, _ items: [BookLibraryItem]) -> some View {
+    /// The whole library, a shelf to each genre in the catalog's order with
+    /// its group named over the first of the group's genres, or one shelf.
+    /// While no book has a genre, as books installed before genres don't,
+    /// it is one shelf rather than a lone "Other Books".
+    @ViewBuilder
+    private var genreShelves: some View {
+        let sections = grouping == .genre
+            ? LampBookGenre.grouped(books, genre: { $0.book.genre }, catalog: genres)
+            : []
+        if sections.count > 1 || sections.first.map({ $0.group != nil }) == true {
+            ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                let opensGroup = section.group != nil && (index == 0 || sections[index - 1].group != section.group)
+                shelf(
+                    section.title,
+                    section.books,
+                    group: opensGroup ? section.group : nil,
+                    showsImport: index == sections.count - 1
+                )
+            }
+        } else {
+            shelf(recentBooks.isEmpty ? nil : "All Books", books, showsImport: true)
+        }
+    }
+
+    private func shelf(
+        _ title: String?,
+        _ items: [BookLibraryItem],
+        group: String? = nil,
+        showsImport: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             if let title {
-                Text(title)
-                    .font(.title3.weight(.bold))
-                    .accessibilityAddTraits(.isHeader)
+                VStack(alignment: .leading, spacing: 2) {
+                    if let group {
+                        Text(group)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(LampTheme.caption)
+                    }
+                    Text(title)
+                        .font(.title3.weight(.bold))
+                        .accessibilityAddTraits(.isHeader)
+                }
             }
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 150, maximum: 210), spacing: 20, alignment: .top)],
@@ -154,9 +211,9 @@ struct BookLibraryView: View {
                 spacing: 28
             ) {
                 ForEach(items) { row(for: $0) }
-                // The shelf's last place is the way to add to it, named, as
+                // The library's last place is the way to add to it, named, as
                 // well as the toolbar's import button.
-                if title != "Continue Reading" && !isSearching {
+                if showsImport {
                     importTile
                 }
             }
@@ -219,6 +276,7 @@ struct BookLibraryView: View {
         books = byID.values.sorted {
             $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending
         }
+        genres = BundledModuleDatabase.shared.bookGenres()
         loadPositions()
     }
 

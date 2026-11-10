@@ -631,6 +631,13 @@ class BundledModuleDatabase {
         }) == 1
     }
 
+    /// The genres books are grouped by, in the bundle's order; empty for a
+    /// bundle built before books had genres.
+    func bookGenres() -> [LampBookGenre] {
+        guard isAvailable else { return [] }
+        return (try? read { try LampBookGenre.catalog(in: $0) }) ?? []
+    }
+
     func getBookModules() throws -> [BookModule] {
         guard hasBookModulesTable() else { return [] }
         return try read { db in
