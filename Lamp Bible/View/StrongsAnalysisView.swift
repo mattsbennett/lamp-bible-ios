@@ -167,6 +167,14 @@ struct StrongsAnalysisView: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("strongs.analysis.renderingChartAsRing") private var showsRenderingRing = true
     @AppStorage("strongs.analysis.formChartAsRing") private var showsFormRing = true
+    /// Which figures the card prints and what it draws under them, by name.
+    /// Per device, as on the Mac: which figures a reader wants at a glance is
+    /// how one person reads, not something the library holds about the word.
+    @AppStorage("strongs.analysis.cardFigures")
+    private var storedCardFigures = LampStrongsCardChoice.standard.storedFigures
+    @AppStorage("strongs.analysis.cardChart")
+    private var storedCardChart = LampStrongsCardChoice.standard.storedChart
+    @State private var isChoosingCardSlots = false
 
     private struct BookRangeChoice: Equatable {
         let range: ClosedRange<Int>?
@@ -325,9 +333,11 @@ struct StrongsAnalysisView: View {
                 summary(analysis)
             } footer: {
                 // The rate, outside the card: the card keeps to the figures
-                // and the chart.
+                // and the chart, unless one of its figures is the rate.
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(rateLine(analysis))
+                    if !cardChoice.showsRate {
+                        Text(rateLine(analysis))
+                    }
                     // Every figure counts these numbers, so where they were
                     // matched to the text is said under the figures.
                     ForEach(disclosures(.strongs, for: analysis), id: \.self) { disclosure in
@@ -377,6 +387,14 @@ struct StrongsAnalysisView: View {
                 .allowsHitTesting(false)
         }
         .task(id: formsSource(of: analysis)) { await readForms(analysis) }
+        .sheet(isPresented: $isChoosingCardSlots) {
+            StrongsCardSlotsSheet(
+                available: LampStrongsCardChoice.available(for: analysis),
+                charts: LampStrongsGrouping.allCases.filter { $0.canDraw(analysis) },
+                figures: $storedCardFigures,
+                chart: $storedCardChart
+            )
+        }
     }
 
     /// A section's title, set as a heading rather than a grey caption.
@@ -478,8 +496,7 @@ struct StrongsAnalysisView: View {
     }
 
     private func summary(_ analysis: LampStrongsAnalysis) -> some View {
-        let booksWithIt = analysis.booksWithOccurrences
-        return VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text(headword.lemma ?? analysis.key)
@@ -494,6 +511,17 @@ struct StrongsAnalysisView: View {
                         .background(LampTheme.tileFill, in: Capsule())
                     // As the Mac's card has it, and the dictionary's entries.
                     PronounceButton(key: analysis.key, size: 20)
+                    Spacer(minLength: 0)
+                    // On the card rather than on a tile: the chart under the
+                    // figures is chosen here too, which no tile owns.
+                    Button {
+                        isChoosingCardSlots = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 18, weight: .medium))
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Choose this card’s figures and chart")
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     if let transliteration = headword.transliteration, !transliteration.isEmpty {
@@ -509,18 +537,41 @@ struct StrongsAnalysisView: View {
                 }
             }
 
-            // The figures that answer "how common is it": a label over a large
-            // number, its unit small beside it, to take in at a glance.
-            HStack(alignment: .top, spacing: 0) {
-                statTile(label: "Occurrences", value: "\(analysis.occurrenceCount)", unit: "")
-                statTile(label: "Verses", value: "\(analysis.verseCount)", unit: "")
-                statTile(label: "Books", value: "\(booksWithIt)", unit: "of \(analysis.books.count)")
+            // The figures the reader chose, those this word can answer: a
+            // label over a large number, its unit small beside it, to take
+            // in at a glance.
+            let figures = cardChoice.readings(of: analysis)
+            if !figures.isEmpty {
+                // Apart, so a unit as long as the commonest's “love” never
+                // runs into the next tile's number.
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(figures) {
+                        statTile(label: $0.figure.title, value: $0.reading.value, unit: $0.reading.of ?? "")
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                // The row read as a row. One tile at a time is three numbers
+                // where the card says a sentence.
+                .accessibilityLabel(cardChoice.spoken(of: analysis))
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(analysis.occurrenceCount) times in \(analysis.verseCount) verses, in \(booksWithIt) of \(analysis.books.count) books")
 
-            if analysis.books.count > 1 {
+            switch cardChoice.chart(for: analysis) {
+            case .books?:
                 StrongsCanonStrip(books: analysis.books, color: barColor)
+            case let grouping?:
+                let divisions = grouping.divisions(of: analysis)
+                let slices = LampStrongsShare.slices(from: divisions.map(\.division))
+                StrongsCardShareBar(
+                    slices: slices,
+                    filters: Dictionary(
+                        divisions.map { (String($0.division.id), $0.filter) },
+                        uniquingKeysWith: { first, _ in first }
+                    ),
+                    color: { shareColor($0, of: slices) },
+                    choose: choose
+                )
+            case nil:
+                EmptyView()
             }
         }
         .padding(.vertical, 12)
@@ -548,6 +599,7 @@ struct StrongsAnalysisView: View {
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(LampTheme.caption)
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value)
                     .font(.system(size: 34, weight: .bold, design: .rounded))
@@ -555,13 +607,22 @@ struct StrongsAnalysisView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 if !unit.isEmpty {
+                    // A word as well as "of 27": the commonest's “love”.
                     Text(unit)
                         .font(.system(.subheadline, design: .rounded).weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The card's slots as they are stored, read forgivingly in core so a
+    /// name this app does not know leaves the standard three.
+    private var cardChoice: LampStrongsCardChoice {
+        LampStrongsCardChoice(storedFigures: storedCardFigures, storedChart: storedCardChart)
     }
 
     // MARK: Definition
@@ -1808,6 +1869,175 @@ private struct StrongsDefinitionPage: View {
 /// A slice tapped is read out in the hole, its name, count and share, and
 /// the rest fade: shades of one hue are hard to match to their rows by eye.
 /// Tapping it again, or the hole, goes back to the total.
+/// A grouping's shares as one band under the card's figures: a segment for
+/// each slice, largest first, in the ring's own shades and under its "six
+/// largest and Other" rule, so the card and the section below never disagree
+/// about what the slices are. The largest is named above the band, as the
+/// canon strip names its standout book; a tap on a segment narrows the verse
+/// list, as the ring's rows do.
+private struct StrongsCardShareBar: View {
+    let slices: [LampStrongsShare.Slice]
+    /// By division ID.
+    let filters: [String: LampStrongsFilter?]
+    let color: (Int) -> Color
+    let choose: (LampStrongsFilter?) -> Void
+
+    private static let height: CGFloat = 26
+    private static let gap: CGFloat = 2
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let largest = slices.first {
+                HStack(spacing: 6) {
+                    Text(largest.name)
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(Color.accentColor)
+                        .lineLimit(1)
+                    Text(LampStrongsSpread.percent(largest.fraction))
+                        .font(.footnote.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(LampTheme.caption)
+                }
+            }
+            GeometryReader { proxy in
+                let room = proxy.size.width - Self.gap * CGFloat(max(slices.count - 1, 0))
+                HStack(spacing: Self.gap) {
+                    ForEach(Array(slices.enumerated()), id: \.element.id) { index, slice in
+                        // "Other" names nothing to filter by.
+                        let filter = slice.isOther ? nil : filters[slice.id] ?? nil
+                        Button {
+                            choose(filter)
+                        } label: {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(color(index))
+                                .frame(width: max(2, room * slice.fraction), height: Self.height)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(filter == nil)
+                    }
+                }
+            }
+            .frame(height: Self.height)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(slices.map { "\($0.name) \($0.value)" }.joined(separator: ", "))
+    }
+}
+
+/// Which figures the card prints, and what it draws under them.
+///
+/// Only what this word can answer is offered: a slot set to Forms on a word
+/// with none would draw nothing, and a chooser that offers it reads as a card
+/// that is broken rather than a word with no forms. A figure already in
+/// another slot trades places with it instead of appearing twice.
+private struct StrongsCardSlotsSheet: View {
+    let available: [LampStrongsCardFigure]
+    let charts: [LampStrongsGrouping]
+    @Binding var figures: String
+    @Binding var chart: String
+    @Environment(\.dismiss) private var dismiss
+
+    private static let slotNames = ["First", "Second", "Third"]
+
+    var body: some View {
+        let chosen = LampStrongsCardChoice(storedFigures: figures, storedChart: chart)
+        NavigationStack {
+            Form {
+                Section {
+                    ForEach(0 ..< LampStrongsCardChoice.slots, id: \.self) { slot in
+                        Picker(
+                            Self.slotNames[min(slot, Self.slotNames.count - 1)],
+                            selection: Binding(
+                                get: { figure(at: slot, in: chosen) },
+                                set: { put($0, at: slot, in: chosen) }
+                            )
+                        ) {
+                            ForEach(offered(at: slot, in: chosen)) { figure in
+                                Text(title(of: figure)).tag(figure)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Figures")
+                } footer: {
+                    // What each counts, its denominator where it has one: a
+                    // number this size is read at a glance and guessed at.
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(chosen.figures) { figure in
+                            Text("\(Text(figure.title).bold()): \(figure.note)")
+                        }
+                    }
+                }
+                Section {
+                    Picker("Chart", selection: $chart) {
+                        ForEach(offeredCharts, id: \.tag) { Text($0.title).tag($0.tag) }
+                    }
+                } footer: {
+                    if available.count < LampStrongsCardFigure.allCases.count {
+                        Text("Figures this word has no answer for aren’t offered.")
+                    }
+                }
+            }
+            .navigationTitle("Card")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    /// The charts this word can draw, the stored one where it cannot — so
+    /// the picker shows what is actually set rather than going blank — and
+    /// no chart at all.
+    private var offeredCharts: [(tag: String, title: String)] {
+        var offered = charts.map { (tag: $0.rawValue, title: $0.title) }
+        if chart != LampStrongsCardChoice.noChart,
+           !charts.contains(where: { $0.rawValue == chart }) {
+            offered.append((
+                tag: chart,
+                title: (LampStrongsGrouping(rawValue: chart)?.title ?? chart) + " (none)"
+            ))
+        }
+        offered.append((tag: LampStrongsCardChoice.noChart, title: "None"))
+        return offered
+    }
+
+    private func title(of figure: LampStrongsCardFigure) -> String {
+        available.contains(figure) ? figure.title : "\(figure.title) (none)"
+    }
+
+    private func figure(at slot: Int, in chosen: LampStrongsCardChoice) -> LampStrongsCardFigure {
+        if chosen.figures.indices.contains(slot) { return chosen.figures[slot] }
+        return offered(at: slot, in: chosen).first ?? .occurrences
+    }
+
+    private func offered(at slot: Int, in chosen: LampStrongsCardChoice) -> [LampStrongsCardFigure] {
+        guard chosen.figures.indices.contains(slot) else { return available }
+        let held = chosen.figures[slot]
+        return available.contains(held) ? available : available + [held]
+    }
+
+    private func put(_ figure: LampStrongsCardFigure, at slot: Int, in chosen: LampStrongsCardChoice) {
+        var slots = chosen.figures
+        // Only reachable from a short stored list, and filled rather than
+        // refused so the sheet can always write a full row.
+        while slots.count <= slot {
+            slots.append(LampStrongsCardFigure.allCases.first { !slots.contains($0) } ?? .occurrences)
+        }
+        if let held = slots.firstIndex(of: figure), held != slot {
+            // Two slots counting one thing is a card printing a number twice.
+            slots.swapAt(held, slot)
+        } else {
+            slots[slot] = figure
+        }
+        figures = LampStrongsCardChoice(figures: slots, chart: chosen.chart).storedFigures
+    }
+}
+
 private struct StrongsShareRing: View {
     let slices: [LampStrongsShare.Slice]
     let total: Int
