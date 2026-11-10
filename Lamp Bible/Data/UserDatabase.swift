@@ -332,6 +332,14 @@ class UserDatabase {
             }
         }
 
+        // Whether the AI features show, once someone has chosen: NULL until
+        // then, which is not the same as off (`AIFeatures`).
+        migrator.registerMigration("v10_ai_enabled") { db in
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "ai_enabled", .boolean)
+            }
+        }
+
         return migrator
     }
 
@@ -639,6 +647,7 @@ class UserDatabase {
                         highlight_color_order = ?,
                         default_quiz_age_group = ?,
                         plan_reader_count = ?,
+                        ai_enabled = COALESCE(?, ai_enabled),
                         updated_at = ?
                     WHERE id = 1
                     """, arguments: [
@@ -665,6 +674,9 @@ class UserDatabase {
                         remote.highlightColorOrder,
                         remote.defaultQuizAgeGroup,
                         remote.planReaderCount,
+                        // A device that never chose, or a build that doesn't
+                        // know the setting, has no say in it.
+                        remote.aiEnabled,
                         remote.updatedAt
                     ])
                 // Plans chosen on a phone without plan progress reach the

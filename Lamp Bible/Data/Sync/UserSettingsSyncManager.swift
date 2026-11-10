@@ -308,6 +308,10 @@ class UserSettingsSyncManager {
         take(\.highlightColorOrder)
         take(\.defaultQuizAgeGroup)
         take(\.planReaderCount)
+        take(\.aiEnabled)
+        // Only a choice travels: a device that never chose, or a build that
+        // doesn't know the setting and wrote the row without it, has no say.
+        if merged.aiEnabled == nil { merged.aiEnabled = local.aiEnabled }
         merged.updatedAt = max(local.updatedAt, remote.updatedAt)
         return merged
     }
@@ -571,6 +575,13 @@ enum SharedPreferenceArchiveSync {
         if shouldInclude("plans.reminder.minute", differsFromDefault: settings.planNotificationMinute != standard.planNotificationMinute) {
             values["plans.reminder.minute"] = .integer(settings.planNotificationMinute)
         }
+        // Only a choice travels, never the default: a device that was never
+        // asked keeps what the ledger holds rather than clearing it.
+        if let enabled = settings.aiEnabled {
+            values[LampPreferenceDefaults.aiFeaturesKey] = .boolean(enabled)
+        } else if let held = base?.fields[LampPreferenceDefaults.aiFeaturesKey]?.value {
+            values[LampPreferenceDefaults.aiFeaturesKey] = held
+        }
         return values
     }
 
@@ -588,7 +599,8 @@ enum SharedPreferenceArchiveSync {
             || current.devotionalFontSize != updated.devotionalFontSize
             || current.planNotification != updated.planNotification
             || current.planNotificationHour != updated.planNotificationHour
-            || current.planNotificationMinute != updated.planNotificationMinute else { return }
+            || current.planNotificationMinute != updated.planNotificationMinute
+            || current.aiEnabled != updated.aiEnabled else { return }
         try UserDatabase.shared.updateSettings { settings in
             overwrite(&settings, with: ledger)
         }
@@ -642,6 +654,11 @@ enum SharedPreferenceArchiveSync {
                     settings.planNotificationMinute = value
                 } else if field.value == nil {
                     settings.planNotificationMinute = standard.planNotificationMinute
+                }
+            case LampPreferenceDefaults.aiFeaturesKey:
+                // A choice, never a clearing: none leaves this device's own.
+                if case .some(.boolean(let value)) = field.value {
+                    settings.aiEnabled = value
                 }
             default:
                 break

@@ -1111,9 +1111,41 @@ final class Lamp_BibleTests: XCTestCase {
         // The merge names every setting; one added since must join it, or a
         // change to it made on two devices at once keeps only the remote's.
         XCTAssertEqual(
-            Mirror(reflecting: UserSettings()).children.count, 25,
+            Mirror(reflecting: UserSettings()).children.count, 26,
             "A new setting needs a line in UserSettingsSyncManager.mergingFields"
         )
+    }
+
+    @MainActor
+    func testAnAIChoiceOutlivesARowWrittenWithoutIt() {
+        var baseSettings = UserSettings()
+        baseSettings.aiEnabled = true
+        baseSettings.updatedAt = Date(timeIntervalSince1970: 100)
+        let localSettings = baseSettings
+        // An older build writes the row back without the setting, and with
+        // an edit of its own.
+        var remoteSettings = baseSettings
+        remoteSettings.aiEnabled = nil
+        remoteSettings.readerFontSize = 20
+        remoteSettings.updatedAt = Date(timeIntervalSince1970: 200)
+
+        let merged = UserSettingsSyncManager.mergingFields(
+            base: baseSettings, local: localSettings, remote: remoteSettings
+        )
+        XCTAssertEqual(merged.aiEnabled, true)
+        XCTAssertEqual(merged.readerFontSize, 20)
+
+        // A choice made there still arrives.
+        remoteSettings.aiEnabled = false
+        XCTAssertEqual(UserSettingsSyncManager.mergingFields(
+            base: baseSettings, local: localSettings, remote: remoteSettings
+        ).aiEnabled, false)
+
+        // And nothing chosen anywhere is not a choice.
+        XCTAssertNil(UserSettingsSyncManager.mergingFields(
+            base: UserSettings(), local: UserSettings(), remote: UserSettings()
+        ).aiEnabled)
+        XCTAssertFalse(AIFeatures.isEnabled(in: UserSettings()))
     }
 
     @MainActor

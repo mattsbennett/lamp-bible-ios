@@ -188,6 +188,9 @@ struct LampBibleApp: App {
     var body: some Scene {
         WindowGroup {
             ContentBootstrapView()
+                // Apple's Writing Tools in the app's SwiftUI text, sheets
+                // included, only with the AI features on.
+                .writingToolsFollowAIFeatures()
                 .onOpenURL { url in
                     DeepLinkManager.shared.handleURL(url)
                 }

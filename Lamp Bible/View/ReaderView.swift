@@ -427,6 +427,8 @@ struct ChapterTextView: UIViewRepresentable {
 
         let textView = CompactSelectionTextView(frame: .zero, textContainer: textContainer)
         textView.isEditable = false
+        // Apple's Writing Tools only with the AI features on.
+        AIFeatures.shared.govern(textView)
         textView.isSelectable = !isSimplifiedText
         textView.isScrollEnabled = false
         // Big scrolling text: keep it opaque to avoid expensive blending/compositing while scrolling.
@@ -4085,6 +4087,8 @@ private struct SelectableQuizText: UIViewRepresentable {
         let textView = UITextView()
         textView.isEditable = false
         textView.isSelectable = true
+        // Apple's Writing Tools only with the AI features on.
+        AIFeatures.shared.govern(textView)
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero

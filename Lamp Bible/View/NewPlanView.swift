@@ -133,10 +133,14 @@ struct NewPlanView: View {
     @State private var isAsking = false
     @State private var askError: String?
     @State private var showsPreview = false
+    @ObservedObject private var aiFeatures = AIFeatures.shared
 
     var body: some View {
         Form {
-            describeSection
+            // Apple Intelligence, so only with the AI features on.
+            if aiFeatures.isEnabled {
+                describeSection
+            }
 
             Section {
                 ForEach($form.tracks) { $track in

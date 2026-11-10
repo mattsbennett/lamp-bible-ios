@@ -24,6 +24,9 @@ final class TipTapPage: NSObject, WKScriptMessageHandler, WKNavigationDelegate, 
     let webView: WKWebView
     private(set) var isReady = false
     private(set) var isDead = false
+    /// Whether Apple's Writing Tools were offered when the page was made,
+    /// as the AI features stood: a web view's is fixed then.
+    let offersWritingTools: Bool
     private var queued: [(js: String, done: ((Any?) -> Void)?)] = []
 
     /// Names the document loaded last. Every message about it carries this,
@@ -50,6 +53,8 @@ final class TipTapPage: NSObject, WKScriptMessageHandler, WKNavigationDelegate, 
         let configuration = WKWebViewConfiguration()
         let controller = WKUserContentController()
         configuration.userContentController = controller
+        offersWritingTools = AIFeatures.shared.isEnabled
+        configuration.writingToolsBehavior = offersWritingTools ? .default : .none
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         controller.add(WeakMessageHandler(self), name: "tiptapBridge")
@@ -325,12 +330,12 @@ final class TipTapPagePool {
 
     /// Loads a page ahead of need, so the first editor opened is warm.
     func warmUp(_ kind: TipTapPage.Kind) {
-        if idle[kind]?.isDead != false { idle[kind] = TipTapPage(kind: kind) }
+        if idle[kind].map(isUsable) != true { idle[kind] = TipTapPage(kind: kind) }
         idle[kind]?.useVerseCatalog(translationId: UserDatabase.shared.getSettings().readerTranslationId)
     }
 
     func take(_ kind: TipTapPage.Kind) -> TipTapPage {
-        if let page = idle[kind], !page.isDead {
+        if let page = idle[kind], isUsable(page) {
             idle[kind] = nil
             return page
         }
@@ -340,8 +345,14 @@ final class TipTapPagePool {
 
     func giveBack(_ page: TipTapPage) {
         page.onMessage = nil
-        guard !page.isDead, idle[page.kind] == nil else { return }
+        guard isUsable(page), idle[page.kind] == nil else { return }
         idle[page.kind] = page
+    }
+
+    /// A page still alive, made with Writing Tools as the AI features now
+    /// stand.
+    private func isUsable(_ page: TipTapPage) -> Bool {
+        !page.isDead && page.offersWritingTools == AIFeatures.shared.isEnabled
     }
 }
 

@@ -230,6 +230,8 @@ struct LexiconTextView: UIViewRepresentable {
         let textView = UITextView()
         textView.isEditable = false
         textView.isSelectable = true
+        // Apple's Writing Tools only with the AI features on.
+        AIFeatures.shared.govern(textView)
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
@@ -1616,6 +1618,8 @@ private struct LinkedTextView: UIViewRepresentable {
         textView.isEditable = false
         // Selectable, so a word can be looked up, copied or shared.
         textView.isSelectable = true
+        // Apple's Writing Tools only with the AI features on.
+        AIFeatures.shared.govern(textView)
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
@@ -1894,6 +1898,8 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         textView.isEditable = false
         // Selectable, so a word can be looked up, copied or shared.
         textView.isSelectable = true
+        // Apple's Writing Tools only with the AI features on.
+        AIFeatures.shared.govern(textView)
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero

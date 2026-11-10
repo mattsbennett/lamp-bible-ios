@@ -24,6 +24,9 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
     override init(frame: CGRect) {
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        // Apple's Writing Tools only with the AI features on, fixed when the
+        // editor opens.
+        config.writingToolsBehavior = AIFeatures.shared.writingTools
 
         webView = WKWebView(frame: .zero, configuration: config)
         super.init(frame: frame)

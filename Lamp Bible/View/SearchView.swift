@@ -2755,6 +2755,8 @@ private struct HighlightedTextUIView: UIViewRepresentable {
     func makeUIView(context: Context) -> UITextView {
         let textView = UITextView()
         textView.isEditable = false
+        // Apple's Writing Tools only with the AI features on.
+        AIFeatures.shared.govern(textView)
         textView.isScrollEnabled = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero

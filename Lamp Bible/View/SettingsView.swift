@@ -50,6 +50,7 @@ struct SettingsView: View {
     @State private var showingWipeConfirmation: Bool = false
     @ObservedObject private var syncCoordinator = SyncCoordinator.shared
     @ObservedObject private var moduleSyncManager = ModuleSyncManager.shared
+    @ObservedObject private var aiFeatures = AIFeatures.shared
     @State private var showingNoteConflicts: Bool = false
     @State private var showingDevotionalConflicts: Bool = false
 
@@ -634,6 +635,27 @@ struct SettingsView: View {
                     }
                 } message: {
                     Text("A reading plan must be selected before notifications can be enabled.")
+                }
+                .textCase(nil)
+
+                // Off until someone turns it on, and one choice for every
+                // device. Worded as on the Mac, but for what the phone has.
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { aiFeatures.isEnabled },
+                        set: { aiFeatures.choose($0) }
+                    )) {
+                        Label {
+                            Text("Show AI Features")
+                        } icon: {
+                            LampIconTile(systemName: "sparkles", color: .indigo)
+                        }
+                    }.tint(.accentColor)
+                } header: {
+                    Text("AI Features").lampSectionHeader()
+                } footer: {
+                    Text("Make reading plans from a description. Off hides them all, including the system's writing tools in Lamp's text. Your chats and drafts are kept.")
+                        .foregroundStyle(LampTheme.caption)
                 }
                 .textCase(nil)
 

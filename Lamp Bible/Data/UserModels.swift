@@ -38,6 +38,10 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
     var highlightColorOrder: String = ""    // Comma-separated hex values of ALL visible colors in order
     var defaultQuizAgeGroup: String = "adult"
     var planReaderCount: Int = 1
+    /// Whether Lamp shows its AI features, as someone chose it: nil until
+    /// someone does, which is not the same as off (`AIFeatures`). Only a
+    /// choice travels to other devices.
+    var aiEnabled: Bool? = nil
     var updatedAt: Date = Date()
 
     // MARK: - CodingKeys for snake_case mapping
@@ -67,6 +71,7 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
         case highlightColorOrder = "highlight_color_order"
         case defaultQuizAgeGroup = "default_quiz_age_group"
         case planReaderCount = "plan_reader_count"
+        case aiEnabled = "ai_enabled"
         case updatedAt = "updated_at"
     }
 

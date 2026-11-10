@@ -25,6 +25,7 @@
 		B82BBB882B4D0679002248CC /* PlanDateToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */; };
 		B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2222B450B4100E8AC49 /* Extensions.swift */; };
 		2FF8A37F705D44F2AB0765DD /* LampColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 471A3E15F4CF4428BD71A9D6 /* LampColors.swift */; };
+		5D53E0A6D1692F7D5B0BED6C /* AIFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 136740861E0F1C7750BB0654 /* AIFeatures.swift */; };
 		B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */; };
 		D7A1C0A62F0B000000000001 /* NewPlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A1C0A52F0B000000000001 /* NewPlanView.swift */; };
 		B82DA2272B450DED00E8AC49 /* PlanInfoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B82DA2262B450DED00E8AC49 /* PlanInfoSheet.swift */; };
@@ -206,6 +207,7 @@
 		B82BBB872B4D0679002248CC /* PlanDateToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanDateToolbarView.swift; sourceTree = "<group>"; };
 		B82DA2222B450B4100E8AC49 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		471A3E15F4CF4428BD71A9D6 /* LampColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampColors.swift; sourceTree = "<group>"; };
+		136740861E0F1C7750BB0654 /* AIFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIFeatures.swift; sourceTree = "<group>"; };
 		B82DA2242B450C3200E8AC49 /* PlanPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanPickerView.swift; sourceTree = "<group>"; };
 		D7A1C0A52F0B000000000001 /* NewPlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewPlanView.swift; sourceTree = "<group>"; };
 		B82DA2262B450DED00E8AC49 /* PlanInfoSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanInfoSheet.swift; sourceTree = "<group>"; };
@@ -429,6 +431,7 @@
 				B85B89AB2F1F1206004B4F61 /* AudioRecorder.swift */,
 				B82DA2222B450B4100E8AC49 /* Extensions.swift */,
 				471A3E15F4CF4428BD71A9D6 /* LampColors.swift */,
+				136740861E0F1C7750BB0654 /* AIFeatures.swift */,
 				B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */,
 				B85B898F2F19F248004B4F61 /* MarkdownDevotionalConverter.swift */,
 				B89229582F05FE3100A58F81 /* MarkdownConverter.swift */,
@@ -818,6 +821,7 @@
 				B87B2AD12F008237006DC53D /* ToolPanelView.swift in Sources */,
 				B82DA2232B450B4100E8AC49 /* Extensions.swift in Sources */,
 				2FF8A37F705D44F2AB0765DD /* LampColors.swift in Sources */,
+				5D53E0A6D1692F7D5B0BED6C /* AIFeatures.swift in Sources */,
 				B892295D2F05FE4200A58F81 /* ModuleDatabase.swift in Sources */,
 				B87B2AD72F01FAE7006DC53D /* NavigationHistory.swift in Sources */,
 				B8FC33482B3F4AC7009C544D /* ReaderView.swift in Sources */,
