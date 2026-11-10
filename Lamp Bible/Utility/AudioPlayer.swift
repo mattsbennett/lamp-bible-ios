@@ -244,6 +244,45 @@ struct TextSpeechRequest: Equatable {
 enum SpeechVoiceCatalog {
     private static let preferenceKeyPrefix = "readAloudVoice."
 
+    /// Every installed voice. Listing them asks the speech service, which is
+    /// slow enough to drop frames, and the speaker button asks each time it
+    /// is drawn; so the list is read once, and again only when the system
+    /// says the voices changed (one installed or removed in Settings).
+    static var installedVoices: [AVSpeechSynthesisVoice] { installed.voices }
+
+    private static let installed = InstalledVoices()
+
+    private final class InstalledVoices: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cached: [AVSpeechSynthesisVoice]?
+        private var observer: NSObjectProtocol?
+
+        init() {
+            observer = NotificationCenter.default.addObserver(
+                forName: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.forget()
+            }
+        }
+
+        var voices: [AVSpeechSynthesisVoice] {
+            lock.lock()
+            defer { lock.unlock() }
+            if let cached { return cached }
+            let read = AVSpeechSynthesisVoice.speechVoices()
+            cached = read
+            return read
+        }
+
+        private func forget() {
+            lock.lock()
+            cached = nil
+            lock.unlock()
+        }
+    }
+
     /// Installed voices for an ISO 639-1 code, higher-quality ones first.
     ///
     /// Novelty voices ("Bad News", "Bells", "Bubbles") and Personal Voice are
@@ -251,7 +290,7 @@ enum SpeechVoiceCatalog {
     /// name, and the latter needs an authorization prompt we don't ask for.
     static func voices(for languageCode: String?) -> [AVSpeechSynthesisVoice] {
         guard let base = normalized(languageCode) else { return [] }
-        return AVSpeechSynthesisVoice.speechVoices()
+        return installedVoices
             .filter { voice in
                 let language = voice.language.lowercased()
                 guard language == base || language.hasPrefix("\(base)-") else { return false }
@@ -287,7 +326,7 @@ enum SpeechVoiceCatalog {
     }
 
     private static func choose(_ language: String, stored: String?) -> AVSpeechSynthesisVoice? {
-        let installed = AVSpeechSynthesisVoice.speechVoices()
+        let installed = installedVoices
         let preferred = AVSpeechSynthesisVoice.currentLanguageCode()
         let chosen = LampSpeechVoice.choose(
             language: language,

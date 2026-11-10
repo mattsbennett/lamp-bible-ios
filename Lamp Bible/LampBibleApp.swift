@@ -177,6 +177,9 @@ struct LampBibleApp: App {
                 print("[TemporaryFiles] removed \(swept.removed) left by earlier runs (\(swept.bytes / 1_000_000) MB)")
             }
         }
+        // The installed voices, listed once off the main thread: asking the
+        // speech service for them is slow, and the speaker button needs them.
+        DispatchQueue.global(qos: .utility).async { _ = SpeechVoiceCatalog.installedVoices }
         SearchIndexMaintenance.start()
         // Indexed once and kept, so a Strong's search is a lookup.
         StrongsIndex.shared.prepare(readerTranslationId: UserDatabase.shared.getSettings().readerTranslationId)
