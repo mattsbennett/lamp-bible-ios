@@ -5458,6 +5458,31 @@ final class CommentaryFootnoteSearchTests: XCTestCase {
         XCTAssertFalse(try queue.read { try $0.tableExists("commentary_units_fts_stale") })
     }
 
+    /// A standalone module's units are named for it, and so are the parents
+    /// they name, or a child would point at a unit no longer there.
+    func testAStandaloneModulesUnitsKeepTheirParents() throws {
+        let queue = try DatabaseQueue()
+        try queue.writeWithoutTransaction { db in
+            try makeCurrentSchema(db)
+            try db.execute(sql: "ATTACH DATABASE ':memory:' AS today")
+            try db.execute(sql: """
+                CREATE TABLE today.commentary_units (
+                    id TEXT, book INTEGER, chapter INTEGER, sv INTEGER, ev INTEGER, unit_type TEXT, level INTEGER,
+                    parent_id TEXT, title TEXT, suffix TEXT, introduction_json TEXT, translation_json TEXT,
+                    commentary_json TEXT, footnotes_json TEXT, search_text TEXT, order_index INTEGER,
+                    footnotes_text TEXT NOT NULL DEFAULT '');
+                INSERT INTO today.commentary_units (id, book, sv, unit_type, parent_id, search_text, order_index)
+                VALUES ('43:section:1', 43, 43001001, 'section', NULL, 'In the beginning', 0),
+                       ('43:pericope:1:2', 43, 43001001, 'pericope', '43:section:1', 'was the Word', 1);
+                """)
+            try ModuleSyncManager.copyCommentaryUnits(from: "today", standaloneModuleId: "NIC", in: db)
+
+            let rows = try Row.fetchAll(db, sql: "SELECT id, parent_id FROM commentary_units ORDER BY id")
+            XCTAssertEqual(rows.map { $0["id"] as String }, ["NIC:43:pericope:1:2", "NIC:43:section:1"])
+            XCTAssertEqual(rows.map { $0["parent_id"] as String? }, ["NIC:43:section:1", nil])
+        }
+    }
+
     func testAnImportCarriesAModulesNoteTextAndWritesItForAnOlderOne() throws {
         let queue = try DatabaseQueue()
         try queue.writeWithoutTransaction { db in

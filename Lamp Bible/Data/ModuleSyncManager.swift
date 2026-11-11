@@ -451,7 +451,11 @@ class ModuleSyncManager: ObservableObject {
         let lastRowid = try Int64.fetchOne(db, sql: "SELECT max(rowid) FROM commentary_units") ?? 0
         try copyCompiled(
             "commentary_units", of: .commentary, from: dbAlias,
-            filling: standaloneModuleId == nil ? [:] : ["id": ":module || ':' || id", "module_id": ":module"],
+            filling: standaloneModuleId == nil ? [:] : [
+                "id": ":module || ':' || id", "module_id": ":module",
+                // The parent named as its unit now is; none stays none.
+                "parent_id": ":module || ':' || parent_id",
+            ],
             arguments: ["module": standaloneModuleId], in: db
         )
         if !carriesFootnotesText {
