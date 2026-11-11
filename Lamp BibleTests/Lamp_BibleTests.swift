@@ -6779,7 +6779,8 @@ extension LibrarySyncPassTests {
         DevotionalMediaReference(id: "pic", type: .image, filename: "pic.jpg", mimeType: "image/jpeg")
     }
 
-    private var picturePath: String { "NoteMedia/\(moduleId!)/43001001/pic.jpg" }
+    /// A notes module's picture, kept once for the module.
+    private var picturePath: String { "NoteMedia/\(moduleId!)/pic.jpg" }
 
     /// The notes file as another device would publish it: note "a" as given,
     /// exported from here, then this device's own copy put back as it was.
@@ -6864,7 +6865,9 @@ extension LibrarySyncPassTests {
 
     /// A picture's file, as attaching it here leaves it.
     private func attachHere(_ ref: DevotionalMediaReference, verseId: Int) throws {
-        try DevotionalMediaStorage.notes.ensureMediaDirectory(devotionalId: NoteMedia.owner(verseId), moduleId: moduleId)
+        try FileManager.default.createDirectory(
+            at: NoteMedia.folder(moduleId: moduleId, verseId: verseId), withIntermediateDirectories: true
+        )
         try Data("a picture".utf8).write(to: NoteMedia.expectedURL(for: ref, moduleId: moduleId, verseId: verseId))
     }
 
@@ -6999,14 +7002,40 @@ final class NoteMediaTests: XCTestCase {
     /// Moved to another verse, a note's pictures go to that verse's folder,
     /// where they sync from.
     func testANoteMovedToAnotherVerseTakesItsPictures() throws {
-        let storage = DevotionalMediaStorage.notes
-        try storage.ensureMediaDirectory(devotionalId: NoteMedia.owner(43_001_003), moduleId: moduleId)
-        try Data("a picture".utf8).write(to: NoteMedia.expectedURL(for: picture, moduleId: moduleId, verseId: 43_001_003))
+        // The reader's own collection, whose pictures are kept by verse, at
+        // verses no other test writes.
+        let notes = LampSyncLocalDeletion.notesCollectionID
+        let (from, to) = (66_022_019, 66_022_021)
+        defer {
+            for verse in [from, to] { try? FileManager.default.removeItem(at: NoteMedia.folder(moduleId: notes, verseId: verse)) }
+        }
+        try FileManager.default.createDirectory(at: NoteMedia.folder(moduleId: notes, verseId: from), withIntermediateDirectories: true)
+        try Data("a picture".utf8).write(to: NoteMedia.expectedURL(for: picture, moduleId: notes, verseId: from))
 
-        try NoteMedia.move(moduleId: moduleId, from: 43_001_003, to: 43_001_005)
+        try NoteMedia.move(moduleId: notes, from: from, to: to)
 
-        XCTAssertNil(NoteMedia.url(for: picture, moduleId: moduleId, verseId: 43_001_003))
-        XCTAssertNotNil(NoteMedia.url(for: picture, moduleId: moduleId, verseId: 43_001_005))
+        XCTAssertNil(NoteMedia.url(for: picture, moduleId: notes, verseId: from))
+        XCTAssertNotNil(NoteMedia.url(for: picture, moduleId: notes, verseId: to))
+    }
+
+    /// The reader's own notes keep a picture by its note's verse; a notes
+    /// module keeps one for the module, which its notes point at. As core
+    /// keys them, so the paths are the Mac's.
+    func testAPictureIsKeptByVerseOnlyInTheReadersOwnNotes() throws {
+        let notes = LampSyncLocalDeletion.notesCollectionID
+        XCTAssertEqual(
+            try NoteMedia.remotePath(for: picture, moduleId: notes, verseId: 43_011_035),
+            "NoteMedia/notes/43011035/pic.jpg"
+        )
+        XCTAssertEqual(
+            try NoteMedia.remotePath(for: picture, moduleId: "lazarus-notes", verseId: 43_011_035),
+            "NoteMedia/lazarus-notes/pic.jpg"
+        )
+        XCTAssertEqual(
+            NoteMedia.expectedURL(for: picture, moduleId: "lazarus-notes", verseId: 43_011_035),
+            NoteMedia.expectedURL(for: picture, moduleId: "lazarus-notes", verseId: 43_011_044),
+            "a module's picture is the same file for every note"
+        )
     }
 }
 

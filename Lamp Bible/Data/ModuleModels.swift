@@ -888,7 +888,7 @@ struct NoteEntry: Codable, FetchableRecord, PersistableRecord, Identifiable {
     /// The note's pictures, each read on its own: one this version can't
     /// read costs its own picture, not every one in the note.
     var media: [DevotionalMediaReference] {
-        LampPortableBookJSON.decodeArray(mediaJson, as: DevotionalMediaReference.self).items
+        DevotionalMediaReference.list(fromJSON: mediaJson)
     }
 
     var verseRefs: [Int]? {

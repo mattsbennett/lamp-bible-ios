@@ -11,28 +11,50 @@ import LampModuleKit
 
 // MARK: - Note Media
 
-/// A note's pictures. Kept as the Mac keeps them, in a folder named for the
-/// note's verse rather than its id: a module holds one note a verse, and
-/// the id's colon has no place in a path. The folder is the path the
-/// pictures sync under, NoteMedia/<module>/<verse>/<file>.
+/// A note's pictures, kept as core keys them (`LampLibrary.noteMediaOwnerID`)
+/// and at the path they sync under. The reader's own notes keep each note's
+/// in a folder named for its verse, NoteMedia/notes/<verse>/<file>: one note
+/// a verse, and the id's colon has no place in a path. A notes module
+/// declares its pictures once for the module and its notes point at them,
+/// so they are the module's, NoteMedia/<module>/<file>.
 enum NoteMedia {
     static func owner(_ verseId: Int) -> String {
         LampLibrary.noteMediaOwnerID(verseId)
     }
 
-    static func url(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) -> URL? {
-        DevotionalMediaStorage.notes.getMediaURL(for: ref, devotionalId: owner(verseId), moduleId: moduleId)
+    /// Whether a module's notes keep their pictures by verse: only the
+    /// reader's own collection does, whatever a module says of editing.
+    static func isKeptByVerse(_ moduleId: String) -> Bool {
+        moduleId == LampSyncLocalDeletion.notesCollectionID
+    }
+
+    /// Where a note's pictures are kept on this device.
+    static func folder(moduleId: String, verseId: Int) -> URL {
+        let module = DevotionalMediaStorage.notes.mediaDirectory(moduleId: moduleId)
+        return isKeptByVerse(moduleId) ? module.appendingPathComponent(owner(verseId)) : module
+    }
+
+    /// Where a note's picture syncs.
+    static func remotePath(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) throws -> String {
+        isKeptByVerse(moduleId)
+            ? try LampSyncFolderLayout.noteMediaPath(moduleID: moduleId, noteOwnerID: owner(verseId), filename: ref.filename)
+            : try LampSyncFolderLayout.noteModuleMediaPath(moduleID: moduleId, filename: ref.filename)
     }
 
     static func expectedURL(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) -> URL {
-        DevotionalMediaStorage.notes.expectedMediaURL(for: ref, devotionalId: owner(verseId), moduleId: moduleId)
+        folder(moduleId: moduleId, verseId: verseId).appendingPathComponent(ref.filename)
+    }
+
+    static func url(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) -> URL? {
+        let url = expectedURL(for: ref, moduleId: moduleId, verseId: verseId)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     /// Where each of a note's pictures is, by id, for the editor and the
     /// note as drawn. A picture not on this device yet is left out.
     static func map(_ mediaJson: String?, moduleId: String, verseId: Int) -> [String: URL] {
         var map: [String: URL] = [:]
-        for ref in LampPortableBookJSON.decodeArray(mediaJson, as: DevotionalMediaReference.self).items {
+        for ref in DevotionalMediaReference.list(fromJSON: mediaJson) {
             if let url = url(for: ref, moduleId: moduleId, verseId: verseId) { map[ref.id] = url }
         }
         return map
@@ -48,16 +70,15 @@ enum NoteMedia {
         return String(decoding: try JSONSerialization.data(withJSONObject: list, options: [.sortedKeys]), as: UTF8.self)
     }
 
-    /// A note moved to another verse takes its pictures with it, since the
+    /// A note moved to another verse takes its pictures with it, where the
     /// folder is named for the verse.
     static func move(moduleId: String, from oldVerseId: Int, to newVerseId: Int) throws {
-        guard oldVerseId != newVerseId else { return }
-        let storage = DevotionalMediaStorage.notes
-        let source = storage.mediaDirectory(devotionalId: owner(oldVerseId), moduleId: moduleId)
+        guard isKeptByVerse(moduleId), oldVerseId != newVerseId else { return }
+        let source = folder(moduleId: moduleId, verseId: oldVerseId)
+        let destination = folder(moduleId: moduleId, verseId: newVerseId)
         let manager = FileManager.default
         guard let files = try? manager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return }
-        try storage.ensureMediaDirectory(devotionalId: owner(newVerseId), moduleId: moduleId)
-        let destination = storage.mediaDirectory(devotionalId: owner(newVerseId), moduleId: moduleId)
+        try manager.createDirectory(at: destination, withIntermediateDirectories: true)
         for file in files {
             let target = destination.appendingPathComponent(file.lastPathComponent)
             try? manager.removeItem(at: target)

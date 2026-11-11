@@ -2913,7 +2913,7 @@ struct ToolPanelView: View {
         let verseId = scope.verseId(sections[index].verseStart ?? 0)
         do {
             let ref = try DevotionalMediaStorage.notes.saveImage(
-                image, devotionalId: NoteMedia.owner(verseId), moduleId: scope.moduleId
+                image, into: NoteMedia.folder(moduleId: scope.moduleId, verseId: verseId)
             )
             sections[index].mediaJson = try NoteMedia.appending(ref, to: sections[index].mediaJson)
             let media = NoteMedia.map(sections[index].mediaJson, moduleId: scope.moduleId, verseId: verseId)

@@ -14,8 +14,8 @@ import LampModuleKit
 /// Manages storage and retrieval of media files for devotionals
 class DevotionalMediaStorage {
     static let shared = DevotionalMediaStorage(scope: .devotional)
-    /// A note's pictures, the same way in a folder of their own. The owner a
-    /// note's media is filed under is its verse (`NoteMedia.owner`).
+    /// A note's pictures, the same way in a folder of their own, filed as
+    /// `NoteMedia.folder` says.
     static let notes = DevotionalMediaStorage(scope: .note)
 
     private let fileManager = FileManager.default
@@ -76,7 +76,19 @@ class DevotionalMediaStorage {
         moduleId: String,
         quality: CGFloat = 0.8
     ) throws -> DevotionalMediaReference {
-        try ensureMediaDirectory(devotionalId: devotionalId, moduleId: moduleId)
+        try saveImage(image, id: id, into: mediaDirectory(devotionalId: devotionalId, moduleId: moduleId), quality: quality)
+    }
+
+    /// Save an image into a folder of its owner's, and create a media reference
+    func saveImage(
+        _ image: UIImage,
+        id: String = UUID().uuidString,
+        into folder: URL,
+        quality: CGFloat = 0.8
+    ) throws -> DevotionalMediaReference {
+        if !fileManager.fileExists(atPath: folder.path) {
+            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
 
         // Determine format and data
         let filename: String
@@ -96,7 +108,7 @@ class DevotionalMediaStorage {
         }
 
         // Write to file
-        let fileURL = mediaDirectory(devotionalId: devotionalId, moduleId: moduleId).appendingPathComponent(filename)
+        let fileURL = folder.appendingPathComponent(filename)
         try data.write(to: fileURL)
 
         return DevotionalMediaReference(

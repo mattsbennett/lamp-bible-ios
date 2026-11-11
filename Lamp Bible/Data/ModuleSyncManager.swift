@@ -2289,9 +2289,8 @@ class ModuleSyncManager: ObservableObject {
         return entries.flatMap { entry in
             entry.media.compactMap { ref -> LampSyncReferencedMedia.Item? in
                 guard BookMediaPath.isSafeFilename(ref.filename),
-                      let remotePath = try? LampSyncFolderLayout.noteMediaPath(
-                          moduleID: moduleId, noteOwnerID: NoteMedia.owner(entry.verseId), filename: ref.filename
-                      ) else { return nil }
+                      let remotePath = try? NoteMedia.remotePath(for: ref, moduleId: moduleId, verseId: entry.verseId)
+                else { return nil }
                 return LampSyncReferencedMedia.Item(
                     remotePath: remotePath,
                     localURL: NoteMedia.expectedURL(for: ref, moduleId: moduleId, verseId: entry.verseId)
