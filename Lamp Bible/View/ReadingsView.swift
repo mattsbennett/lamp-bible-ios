@@ -23,6 +23,9 @@ struct ReadingsView: View {
     /// The opening verse of the next reading not yet read, for the card
     /// that invites the reader in.
     @State private var upNext: (ref: Int, text: String)?
+    /// The day card folded to a band, for those who go straight to the
+    /// readings below it: kept on this device, for every plan.
+    @AppStorage("plans.cardCollapsed") private var isCardCollapsed = false
     @Binding var date: Date
     let planMetaData: PlanMetaData
     let stackHorizontally: Bool
@@ -76,16 +79,37 @@ struct ReadingsView: View {
     /// The day at a glance: which plan, where it stands in the year, how far
     /// through the day's readings, and the way through them. Set on the
     /// plan's own warm ground so the day's task is the first thing seen.
+    /// It folds to a band, so the readings can sit higher on the screen.
     private var hero: some View {
         let readCount = readings.filter(isRead).count
-        return VStack(alignment: .leading, spacing: 0) {
-            if let eyebrow = heroEyebrow {
-                Text(eyebrow)
-                    .font(.caption.weight(.bold))
-                    .tracking(1.2)
-                    .foregroundStyle(.white.opacity(0.88))
-                    .padding(.bottom, 6)
+        return Group {
+            if isCardCollapsed {
+                heroBand(readCount: readCount)
+            } else {
+                heroCard(readCount: readCount)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            HeroBackground()
+                .clipShape(RoundedRectangle(cornerRadius: LampTheme.Radius.panel, style: .continuous))
+        }
+        .shadow(color: Color(red: 0.55, green: 0.1, blue: 0.2).opacity(0.22), radius: 18, y: 8)
+    }
+
+    private func heroCard(readCount: Int) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(heroEyebrow)
+                .font(.caption.weight(.bold))
+                .tracking(1.2)
+                .foregroundStyle(.white.opacity(0.88))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Laid over the line rather than in it, so the card is no
+                // taller for it.
+                .overlay(alignment: .trailing) {
+                    foldButton
+                }
+                .padding(.bottom, 6)
             Text(planMetaData.plan.name)
                 .font(.title.weight(.bold))
                 .foregroundStyle(.white)
@@ -104,16 +128,64 @@ struct ReadingsView: View {
                 .padding(.top, 18)
         }
         .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            HeroBackground()
-                .clipShape(RoundedRectangle(cornerRadius: LampTheme.Radius.panel, style: .continuous))
+    }
+
+    /// The card folded: the plan and how far through the day it is, in one
+    /// band that opens the card again.
+    private func heroBand(readCount: Int) -> some View {
+        Button {
+            withAnimation(.snappy) { isCardCollapsed = false }
+        } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Text(planMetaData.plan.name)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    readStatus(readCount: readCount)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.92))
+                    foldGlyph
+                }
+                progressBar(readCount: readCount)
+            }
+            .padding(EdgeInsets(top: 12, leading: 20, bottom: 16, trailing: 20))
+            .contentShape(Rectangle())
         }
-        .shadow(color: Color(red: 0.55, green: 0.1, blue: 0.2).opacity(0.22), radius: 18, y: 8)
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(planMetaData.plan.name)
+        .accessibilityValue(readCount == readings.count ? "All read" : "\(readCount) of \(readings.count) read")
+        .accessibilityHint("Shows the whole card")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// Folds the card to its band.
+    private var foldButton: some View {
+        Button {
+            withAnimation(.snappy) { isCardCollapsed = true }
+        } label: {
+            foldGlyph
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, -7)
+        .accessibilityLabel("Collapse")
+    }
+
+    /// A chevron on a disc of light, pointing the way the card will go.
+    private var foldGlyph: some View {
+        Image(systemName: isCardCollapsed ? "chevron.down" : "chevron.up")
+            .font(.footnote.weight(.bold))
+            .foregroundStyle(.white)
+            .frame(width: 30, height: 30)
+            .background(.white.opacity(0.2), in: Circle())
     }
 
     /// "Day 310 of 365": where a year-long plan stands on this date.
-    private var heroEyebrow: String? {
+    private var heroEyebrow: String {
         let calendar = Calendar.current
         let date = planMetaData.date
         guard let duration = planMetaData.plan.duration, duration >= 365,
@@ -135,17 +207,23 @@ struct ReadingsView: View {
                 Text("\(planMetaData.readingTime) min")
             }
             Spacer()
-            if readCount == readings.count {
-                Label("All read", systemImage: "checkmark.circle.fill")
-                    .fontWeight(.semibold)
-            } else {
-                Text("\(readCount) of \(readings.count) read")
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
-            }
+            readStatus(readCount: readCount)
         }
         .font(.subheadline)
         .foregroundStyle(.white.opacity(0.92))
+    }
+
+    /// "1 of 3 read", or once they all are, saying so.
+    @ViewBuilder
+    private func readStatus(readCount: Int) -> some View {
+        if readCount == readings.count {
+            Label("All read", systemImage: "checkmark.circle.fill")
+                .fontWeight(.semibold)
+        } else {
+            Text("\(readCount) of \(readings.count) read")
+                .fontWeight(.semibold)
+                .monospacedDigit()
+        }
     }
 
     /// One segment per reading, filled as each is read.
@@ -361,13 +439,16 @@ struct ReadingsView: View {
 
             // Below the name rather than beside it, which left "2 Chronicles
             // 36" too narrow a column to keep to one line; side by side
-            // where they fit, else one above the other.
+            // where they fit, else one above the other. Beside the Bible
+            // app's button the chip counts the readers by its figure alone,
+            // on every row alike, so they keep to one line on a phone and
+            // the day's readings stay on its screen.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    readingActions(reading)
+                    readingActions(reading, chip: externalApp == nil ? .chip : .shortChip)
                 }
                 VStack(alignment: .leading, spacing: 8) {
-                    readingActions(reading)
+                    readingActions(reading, chip: .chip)
                 }
             }
             .padding(.leading, 54)
@@ -376,13 +457,13 @@ struct ReadingsView: View {
     }
 
     @ViewBuilder
-    private func readingActions(_ reading: ReadingMetaData) -> some View {
+    private func readingActions(_ reading: ReadingMetaData, chip: ReaderSplitControl.Style) -> some View {
         // What the count is, and the readers it's shared among.
         ReaderSplitControl(
             chapterVerseCounts: reading.chapterVerseCounts,
             isResolved: reading.isResolved,
             readerCount: $readerCount,
-            style: .chip
+            style: chip
         )
         .fixedSize()
 
@@ -556,6 +637,10 @@ struct ReaderSplitControl: View {
     enum Style {
         case compact
         case chip
+        /// The chip with the readers counted by its figure alone, as the
+        /// toolbar's short form counts them, to fit beside the Bible app's
+        /// button.
+        case shortChip
     }
 
     private var totalVerses: Int { chapterVerseCounts.reduce(0, +) }
@@ -603,6 +688,13 @@ struct ReaderSplitControl: View {
         return Text("\(readerCount) readers · ") + labelContent
     }
 
+    /// "9 · 9 · 9 ea.", the readers left to the figure beside it. One
+    /// reader's "27 verses" is short already, and says what it counts.
+    private var shortChipText: Text {
+        guard isResolved, readerCount > 1, !chapterVerseCounts.isEmpty else { return chipText }
+        return labelContent
+    }
+
     var body: some View {
         Button {
             showingPopover = true
@@ -610,12 +702,16 @@ struct ReaderSplitControl: View {
             switch style {
             case .compact:
                 compactLabel
-            case .chip:
+            case .chip, .shortChip:
                 HStack(spacing: 5) {
-                    Image(systemName: personIcon)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tint)
-                    chipText
+                    if style == .shortChip {
+                        countedPersonIcon(font: .caption.weight(.semibold))
+                    } else {
+                        Image(systemName: personIcon)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tint)
+                    }
+                    (style == .shortChip ? shortChipText : chipText)
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(.primary.opacity(0.8))
                         .monospacedDigit()
@@ -626,7 +722,7 @@ struct ReaderSplitControl: View {
                 .contentShape(Capsule())
             }
         }
-        .if(style == .chip) { view in
+        .if(style != .compact) { view in
             view
                 .accessibilityLabel("Readers: \(readerCount)")
                 .accessibilityValue(chipText)
@@ -671,30 +767,36 @@ struct ReaderSplitControl: View {
 
     private var compactLabel: some View {
         HStack(spacing: 4) {
-            ZStack(alignment: .topLeading) {
-                Image(systemName: personIcon)
-                    .font(.caption)
-                    .foregroundStyle(.tint)
-                if readerCount > 3 {
-                    Text("\(readerCount)")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tint)
-                        .padding(.horizontal, 3)
-                        .padding(.vertical, 1)
-                        .background(
-                            Capsule()
-                                .fill(Color(.systemBackground))
-                        )
-                        .overlay(
-                            Capsule()
-                                .stroke(Color.accentColor, lineWidth: 0.5)
-                        )
-                        .offset(x: -4, y: -4)
-                }
-            }
+            countedPersonIcon(font: .caption)
             labelContent
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// One, two or three people for as many readers; past three, a badge
+    /// with the count.
+    private func countedPersonIcon(font: Font) -> some View {
+        ZStack(alignment: .topLeading) {
+            Image(systemName: personIcon)
+                .font(font)
+                .foregroundStyle(.tint)
+            if readerCount > 3 {
+                Text("\(readerCount)")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tint)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(
+                        Capsule()
+                            .fill(Color(.systemBackground))
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.accentColor, lineWidth: 0.5)
+                    )
+                    .offset(x: -4, y: -4)
+            }
         }
     }
 }
