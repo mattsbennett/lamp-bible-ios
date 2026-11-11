@@ -263,7 +263,8 @@ class ModuleSyncManager: ObservableObject {
         fileInfo: ModuleFileInfo,
         type: ModuleType,
         snapshot: LampSyncRemoteFile,
-        storage: ModuleStorage
+        storage: ModuleStorage,
+        keepingNewerLocalHighlights: Bool = true
     ) async throws {
         let pairedInfo = ModuleFileInfo(
             id: fileInfo.id,
@@ -290,7 +291,8 @@ class ModuleSyncManager: ObservableObject {
             fileInfo: pairedInfo,
             type: type,
             compressedData: snapshot.data,
-            mediaStorage: storage
+            mediaStorage: storage,
+            keepingNewerLocalHighlights: keepingNewerLocalHighlights
         )
     }
 
@@ -317,11 +319,15 @@ class ModuleSyncManager: ObservableObject {
 
     /// Imports module bytes through the same compatibility path regardless of
     /// whether they came from remote storage or a user-selected local file.
+    /// A highlight set here newer than the module's is kept, unless
+    /// `keepingNewerLocalHighlights` is off: a sync pass turns it off when
+    /// the set here is as it last agreed, so has no edits to keep.
     private func importModuleFromSQLite(
         fileInfo: ModuleFileInfo,
         type: ModuleType,
         compressedData data: Data,
-        mediaStorage: ModuleStorage?
+        mediaStorage: ModuleStorage?,
+        keepingNewerLocalHighlights: Bool = true
     ) async throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
 
@@ -360,7 +366,7 @@ class ModuleSyncManager: ObservableObject {
             }
             return
         }
-        if type == .highlights,
+        if type == .highlights, keepingNewerLocalHighlights,
            try shouldPreserveLocalHighlights(moduleId: fileInfo.id, tempURL: tempURL) {
             print("[HighlightSync] Preserving newer local highlight set \(fileInfo.id)")
             return
@@ -579,11 +585,15 @@ class ModuleSyncManager: ObservableObject {
             }
 
         case .book:
-            // The genre too, from a book built since books had genres.
-            let hasGenre = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(book_modules)")
-                .contains { ($0["name"] as String?) == "genre" }
-            let moduleColumns = (LampPortableModuleInspector.bookModuleColumns + (hasGenre ? ["genre"] : []))
-                .joined(separator: ", ")
+            // The required columns, and those core says an older book may
+            // lack (its genre) where both the book and this table have them.
+            let columns = { (schema: String) in
+                Set(try Row.fetchAll(db, sql: "PRAGMA \(schema).table_info(book_modules)")
+                    .compactMap { $0["name"] as String? })
+            }
+            let moduleColumns = LampPortableModuleInspector.bookModuleColumnsToCopy(
+                source: try columns(dbAlias), destination: try columns("main")
+            ).joined(separator: ", ")
             let sectionColumns = LampPortableModuleInspector.bookSectionColumns
                 .joined(separator: ", ")
             try db.execute(sql: """
@@ -1187,13 +1197,15 @@ class ModuleSyncManager: ObservableObject {
             return false
         }
 
-        let remoteQueue = try DatabaseQueue(path: tempURL.path)
-        let remoteModified = try remoteQueue.read { db in
+        let remoteModified = try DatabaseQueue(path: tempURL.path).read { db in
             try Int.fetchOne(
                 db,
                 sql: "SELECT last_modified FROM highlight_meta LIMIT 1"
-            ) ?? 0
+            )
         }
+        // A module that gives no time, as core's compiler writes one whose
+        // source names none, can't be shown newer than the edits here.
+        guard let remoteModified else { return true }
         return localSet.lastModified >= remoteModified
     }
 

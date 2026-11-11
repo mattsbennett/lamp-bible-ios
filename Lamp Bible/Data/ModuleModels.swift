@@ -3003,7 +3003,8 @@ struct QuizModule: Codable, FetchableRecord, TableRecord, MutablePersistableReco
     var planId: String
     var name: String
     var description: String?
-    var questionsPerReading: Int
+    /// `nil` where the module doesn't say, which a quiz module need not.
+    var questionsPerReading: Int?
     var ageGroupsJson: String
 
     enum CodingKeys: String, CodingKey {

@@ -520,7 +520,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             try FileManager.default.copyItem(at: url, to: local)
             return nil
         case .module:
-            return try await installModule(path, from: url)
+            return try await installModule(path, from: url, merging: false)
         default:
             return nil
         }
@@ -531,7 +531,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     func reconcile(_ downloaded: [String: URL]) async throws -> [String: URL] {
         var republish: [String: URL] = [:]
         for (path, url) in downloaded.sorted(by: { $0.key < $1.key }) {
-            _ = try await installModule(path, from: url)
+            _ = try await installModule(path, from: url, merging: true)
             guard let id = heldModules[path]?.id ?? LampSyncFolderLayout.remoteModuleID(of: path),
                   let module = try database.getModule(id: id) else { continue }
             let merged = scratch.appendingPathComponent("\(UUID().uuidString).lamp")
@@ -573,8 +573,9 @@ final class PhonePassLibrary: LampSyncPassLibrary {
 
     /// Returns what this device holds at the path afterwards, as it would
     /// publish it, for an editable collection taken in whole; nil when that
-    /// is the bytes that arrived.
-    private func installModule(_ path: String, from url: URL) async throws -> String? {
+    /// is the bytes that arrived. `merging` when both sides changed it;
+    /// otherwise the copy here is as last agreed, and is simply replaced.
+    private func installModule(_ path: String, from url: URL, merging: Bool) async throws -> String? {
         guard let type = LibrarySyncPass.moduleType(of: path),
               let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
         let fileName = String(path.dropFirst(storage.directoryName(for: type).count + 1))
@@ -591,7 +592,8 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         let fileInfo = ModuleFileInfo(id: id, type: type, filePath: fileName, fileHash: nil, modificationDate: nil)
         try await modules.importRemoteModuleSnapshot(
             fileInfo: fileInfo, type: type,
-            snapshot: LampSyncRemoteFile(data: data, revision: nil), storage: storage
+            snapshot: LampSyncRemoteFile(data: data, revision: nil), storage: storage,
+            keepingNewerLocalHighlights: merging
         )
         guard editable, let module = try database.getModule(id: id),
               !(try database.pendingModulePublications(type: type).contains(id)) else { return nil }

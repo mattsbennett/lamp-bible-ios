@@ -2709,6 +2709,41 @@ final class SearchIndexRepairTests: XCTestCase {
     }
 }
 
+final class QuizModulesMigrationTests: XCTestCase {
+    /// A quiz installed before v34 keeps its questions through the rebuild,
+    /// its count with them, and the rebuilt table still takes them away with
+    /// the quiz.
+    func testTheRebuildKeepsEachQuizsQuestions() throws {
+        let queue = try DatabaseQueue()
+        var migrator = DatabaseMigrator()
+        migrator.registerMigration("v21") { db in
+            try db.execute(sql: """
+                CREATE TABLE quiz_modules (
+                    id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
+                    questions_per_reading INTEGER NOT NULL DEFAULT 0, age_groups_json TEXT);
+                CREATE TABLE quiz_questions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    quiz_module_id TEXT NOT NULL REFERENCES quiz_modules(id) ON DELETE CASCADE,
+                    question_json TEXT NOT NULL);
+                INSERT INTO quiz_modules (id, plan_id, name, questions_per_reading) VALUES ('q', 'p', 'Quiz', 3);
+                INSERT INTO quiz_questions (quiz_module_id, question_json) VALUES ('q', '{}'), ('q', '{}');
+                """)
+        }
+        migrator.registerMigration("v34") { try ModuleDatabase.allowUnknownQuestionsPerReading(in: $0) }
+        try migrator.migrate(queue)
+
+        try queue.write { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM quiz_questions"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT questions_per_reading FROM quiz_modules"), 3)
+            try db.execute(sql: """
+                INSERT INTO quiz_modules (id, plan_id, name, questions_per_reading) VALUES ('r', 'p', 'Unsaid', NULL)
+                """)
+            try db.execute(sql: "DELETE FROM quiz_modules WHERE id = 'q'")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM quiz_questions"), 0)
+        }
+    }
+}
+
 final class SyncFileRecordTests: XCTestCase {
     private let database = ModuleDatabase.shared
     private let source = "webdav:https://records-\(UUID().uuidString).test/LampBible|someone"
@@ -3318,6 +3353,123 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(try questions(), 0, "its questions go with it")
         XCTAssertEqual(report.deletedHere, [path])
         XCTAssertEqual(report.deletionsNotCarriedOut, [])
+    }
+
+    /// Compiles a module's JSON and puts it in the library as another device
+    /// would, over `replacing` when it is a rebuild; returns its revision.
+    private func publishCompiledElsewhere(_ json: String, at path: String, replacing: String? = nil) async throws -> String {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent(moduleId).appendingPathExtension("lamp")
+        _ = try LampModuleCompiler().compile(
+            data: Data(json.utf8), sourceFilename: "\(moduleId!).json", destinationURL: url
+        )
+        let revision = await server.seed(path, try Data(contentsOf: url))
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.recordingWrite(
+                path, revision: revision, replacing: replacing, at: ModuleDatabase.nowMilliseconds()
+            )
+        }
+        return revision
+    }
+
+    /// A quiz module need not say how many questions a reading has. The
+    /// compiler then writes none, which is taken as unknown; it once failed
+    /// the column's NOT NULL and rolled the whole install back.
+    func testAQuizThatDoesNotSayHowManyQuestionsEachReadingHasIsTaken() async throws {
+        defer { try? database.deleteAllEntriesForModule(moduleId: moduleId) }
+        _ = try await pass().run()
+        _ = try await publishCompiledElsewhere(#"""
+            {
+              "meta": {
+                "schemaVersion": "1.0", "id": "\#(moduleId!)", "type": "quiz",
+                "planId": "romans-in-a-week", "name": "Questions without a count",
+                "ageGroups": [{"id": "adult", "label": "Adult", "ageRange": "18+"}]
+              },
+              "days": [{
+                "day": 1,
+                "readings": [{
+                  "sv": 45001001, "ev": 45001032,
+                  "quizzes": {"adult": [{
+                    "question": {"text": "Of what is Paul not ashamed?"},
+                    "answer": "The gospel, the power of God for salvation.",
+                    "theme": "doctrine", "christFocused": true,
+                    "references": [45001016]
+                  }]}
+                }]
+              }]
+            }
+            """#, at: "Quizzes/\(moduleId!).lamp")
+        // A failed install fails the pass, which throws.
+        _ = try await pass().run()
+
+        let quiz = try XCTUnwrap(database.getQuizModule(id: moduleId))
+        XCTAssertNil(quiz.questionsPerReading)
+        let questions = try database.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM quiz_questions WHERE quiz_module_id = ?", arguments: [self.moduleId])
+        }
+        XCTAssertEqual(questions, 1)
+    }
+
+    /// Highlights as core's compiler builds them from JSON that gives no
+    /// `lastModified`.
+    private func highlightsJSON(_ highlights: [(ref: Int, sc: Int, ec: Int)]) -> String {
+        let verses = highlights.map {
+            #"{"ref": \#($0.ref), "highlights": [{"sc": \#($0.sc), "ec": \#($0.ec), "style": 0}]}"#
+        }
+        return #"""
+            {
+              "meta": {
+                "schemaVersion": "1.0", "id": "\#(moduleId!)", "type": "highlights",
+                "name": "Shared Highlights", "translationId": "KJV"
+              },
+              "verses": [\#(verses.joined(separator: ", "))]
+            }
+            """#
+    }
+
+    private func storedHighlightRefs() throws -> [Int] {
+        try database.getAllHighlights(setId: moduleId).map(\.ref).sorted()
+    }
+
+    /// A highlights module rebuilt elsewhere replaces the set here when the
+    /// set here is as last agreed. With no time in the module, the set here,
+    /// stamped when it arrived, once looked newer and kept the old content,
+    /// with the pass reporting success.
+    func testARebuiltHighlightsModuleWithNoTimeReplacesAnUneditedSetHere() async throws {
+        let path = "Highlights/\(moduleId!).lamp"
+        _ = try await pass().run()
+        let first = try await publishCompiledElsewhere(highlightsJSON([(43_003_016, 0, 3)]), at: path)
+        _ = try await pass().run()
+        XCTAssertEqual(try storedHighlightRefs(), [43_003_016])
+
+        _ = try await publishCompiledElsewhere(
+            highlightsJSON([(43_003_016, 0, 3), (43_003_017, 0, 5)]), at: path, replacing: first
+        )
+        _ = try await pass().run()
+
+        XCTAssertEqual(try storedHighlightRefs(), [43_003_016, 43_003_017])
+    }
+
+    /// Edited here and rebuilt elsewhere: a module that gives no time can't
+    /// be shown newer than the edits here, so they stand and go back up.
+    func testHighlightsEditedHereStandAgainstARebuildWithNoTime() async throws {
+        let path = "Highlights/\(moduleId!).lamp"
+        _ = try await pass().run()
+        let first = try await publishCompiledElsewhere(highlightsJSON([(43_003_016, 0, 3)]), at: path)
+        _ = try await pass().run()
+        try database.saveHighlight(HighlightEntry(setId: moduleId, ref: 43_003_018, sc: 0, ec: 4))
+        try database.updateHighlightSetModified(id: moduleId)
+
+        let rebuilt = try await publishCompiledElsewhere(
+            highlightsJSON([(43_003_016, 0, 3), (43_003_017, 0, 5)]), at: path, replacing: first
+        )
+        _ = try await pass().run()
+
+        XCTAssertEqual(try storedHighlightRefs(), [43_003_016, 43_003_018])
+        let published = await server.file(path)
+        XCTAssertNotEqual(published?.revision, rebuilt, "the set here goes back up")
     }
 
     /// This device's default notes and writings land on the two paths core

@@ -2002,7 +2002,9 @@ struct QuizDetailView: View {
                     if let description = quiz.description, !description.isEmpty {
                         LabeledContent("Description", value: description)
                     }
-                    LabeledContent("Questions per Reading", value: "\(quiz.questionsPerReading)")
+                    if let questionsPerReading = quiz.questionsPerReading {
+                        LabeledContent("Questions per Reading", value: "\(questionsPerReading)")
+                    }
                     LabeledContent("Total Questions", value: "\(questionCount)")
                     LabeledContent("Days Available", value: "\(availableDays.count)")
                 }

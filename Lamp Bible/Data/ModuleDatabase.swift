@@ -1511,7 +1511,39 @@ class ModuleDatabase {
             try db.execute(sql: "ALTER TABLE book_modules ADD COLUMN genre TEXT")
         }
 
+        // Questions per reading, which a quiz module need not give: core's
+        // compiler writes NULL then, and the NOT NULL column refused the
+        // whole install. Unknown is kept unknown rather than read as none.
+        migrator.registerMigration("v34_quiz_questions_per_reading_optional") { db in
+            try Self.allowUnknownQuestionsPerReading(in: db)
+        }
+
         return migrator
+    }
+
+    /// Rebuilds `quiz_modules` without the NOT NULL on
+    /// `questions_per_reading`. Run as a migration runs, with foreign keys
+    /// off: dropping the table with them on would take every question.
+    static func allowUnknownQuestionsPerReading(in db: Database) throws {
+        guard try db.tableExists("quiz_modules"),
+              try db.columns(in: "quiz_modules")
+                .contains(where: { $0.name == "questions_per_reading" && $0.isNotNull })
+        else { return }
+        try db.create(table: "quiz_modules_new") { t in
+            t.column("id", .text).primaryKey()
+            t.column("plan_id", .text).notNull()
+            t.column("name", .text).notNull()
+            t.column("description", .text)
+            t.column("questions_per_reading", .integer)
+            t.column("age_groups_json", .text)
+        }
+        try db.execute(sql: """
+            INSERT INTO quiz_modules_new (id, plan_id, name, description, questions_per_reading, age_groups_json)
+            SELECT id, plan_id, name, description, questions_per_reading, age_groups_json
+            FROM quiz_modules
+            """)
+        try db.drop(table: "quiz_modules")
+        try db.rename(table: "quiz_modules_new", to: "quiz_modules")
     }
 
     // MARK: - Module CRUD
