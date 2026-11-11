@@ -1541,6 +1541,14 @@ class ModuleDatabase {
             }
         }
 
+        // A commentary volume's description, which core stores from 4371c95.
+        migrator.registerMigration("v36_commentary_book_description") { db in
+            guard try db.tableExists("commentary_books"),
+                  try !db.columns(in: "commentary_books").contains(where: { $0.name == "description" })
+            else { return }
+            try db.execute(sql: "ALTER TABLE commentary_books ADD COLUMN description TEXT")
+        }
+
         return migrator
     }
 
