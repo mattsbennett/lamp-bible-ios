@@ -613,7 +613,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         try await modules.importRemoteModuleSnapshot(
             fileInfo: fileInfo, type: type,
             snapshot: LampSyncRemoteFile(data: data, revision: nil), storage: storage,
-            keepingNewerLocalHighlights: merging || editedDuringPass
+            mergingHighlights: merging || editedDuringPass
         )
         guard editable, !editedDuringPass, let module = try database.getModule(id: id),
               !(try database.pendingModulePublications(type: type).contains(id)) else { return nil }

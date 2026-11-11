@@ -264,7 +264,7 @@ class ModuleSyncManager: ObservableObject {
         type: ModuleType,
         snapshot: LampSyncRemoteFile,
         storage: ModuleStorage,
-        keepingNewerLocalHighlights: Bool = true
+        mergingHighlights: Bool = true
     ) async throws {
         let pairedInfo = ModuleFileInfo(
             id: fileInfo.id,
@@ -292,7 +292,8 @@ class ModuleSyncManager: ObservableObject {
             type: type,
             compressedData: snapshot.data,
             mediaStorage: storage,
-            keepingNewerLocalHighlights: keepingNewerLocalHighlights
+            mergingHighlights: mergingHighlights,
+            forSync: true
         )
     }
 
@@ -319,15 +320,18 @@ class ModuleSyncManager: ObservableObject {
 
     /// Imports module bytes through the same compatibility path regardless of
     /// whether they came from remote storage or a user-selected local file.
-    /// A highlight set here newer than the module's is kept, unless
-    /// `keepingNewerLocalHighlights` is off: a sync pass turns it off when
-    /// the set here is as it last agreed, so has no edits to keep.
+    /// A highlight set already here takes the module's highlights in with its
+    /// own (`mergeHighlightSet`), unless `mergingHighlights` is off: a sync
+    /// pass turns it off when the set here is as it last agreed, so has no
+    /// edits to keep, and is replaced. `forSync` is off for a file taken in
+    /// by hand.
     private func importModuleFromSQLite(
         fileInfo: ModuleFileInfo,
         type: ModuleType,
         compressedData data: Data,
         mediaStorage: ModuleStorage?,
-        keepingNewerLocalHighlights: Bool = true
+        mergingHighlights: Bool = true,
+        forSync: Bool = false
     ) async throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".db")
 
@@ -369,9 +373,9 @@ class ModuleSyncManager: ObservableObject {
             }
             return
         }
-        if type == .highlights, keepingNewerLocalHighlights,
-           try shouldPreserveLocalHighlights(moduleId: fileInfo.id, tempURL: tempURL) {
-            print("[HighlightSync] Preserving newer local highlight set \(fileInfo.id)")
+        if type == .highlights, mergingHighlights,
+           let local = try database.getHighlightSets(forModule: fileInfo.id).first {
+            try mergeHighlightSet(local, from: tempURL, forSync: forSync)
             return
         }
 
@@ -1189,24 +1193,86 @@ class ModuleSyncManager: ObservableObject {
         }
     }
 
-    private func shouldPreserveLocalHighlights(
-        moduleId: String,
-        tempURL: URL
-    ) throws -> Bool {
-        guard let localSet = try database.getHighlightSets(forModule: moduleId).first else {
-            return false
-        }
-
-        let remoteModified = try DatabaseQueue(path: tempURL.path).read { db in
-            try Int.fetchOne(
-                db,
-                sql: "SELECT last_modified FROM highlight_meta LIMIT 1"
+    /// Another copy of a highlight set taken into the one here, highlight by
+    /// highlight, as the Mac takes it: each highlight not here is added,
+    /// unless the deletion ledger says it was deleted, and none here is taken
+    /// away for being missing there. A highlight is a small thing on its own,
+    /// and a set kept or replaced whole lost whichever side's new highlights
+    /// the other copy lacked. The ledger is what keeps the union from
+    /// bringing back a deletion, so a sync checks it first; a file taken in
+    /// by hand doesn't, and what it brings counts as saved here.
+    ///
+    /// The set's name and description, and each theme's, go to whichever
+    /// copy was changed last.
+    private func mergeHighlightSet(_ local: HighlightSet, from tempURL: URL, forSync: Bool) throws {
+        let (meta, highlights, themes) = try DatabaseQueue(path: tempURL.path).read { db in
+            let tables = try String.fetchSet(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'")
+            return (
+                try Row.fetchOne(db, sql: "SELECT * FROM highlight_meta LIMIT 1"),
+                try Row.fetchAll(db, sql: "SELECT ref, sc, ec, style, color FROM highlights"),
+                tables.contains("highlight_themes")
+                    ? try Row.fetchAll(db, sql: "SELECT color, style, name, description FROM highlight_themes")
+                    : []
             )
         }
-        // A module that gives no time, as core's compiler writes one whose
-        // source names none, can't be shown newer than the edits here.
-        guard let remoteModified else { return true }
-        return localSet.lastModified >= remoteModified
+        try database.write { db in
+            let ledger = try ModuleDatabase.personalDeletionLedger(in: db)
+            let incomingModified: Int? = meta?["last_modified"]
+            // This copy predates the set's deletion; the set here was made again since.
+            if forSync, ledger.isDeleted(.highlightSet, local.id, itemModified: incomingModified) { return }
+            let incomingIsNewer = (incomingModified ?? 0) > local.lastModified
+
+            if incomingIsNewer, let meta, let name: String = meta["name"] {
+                try db.execute(sql: """
+                    UPDATE highlight_sets SET name = ?, description = ?, last_modified = ? WHERE id = ?
+                    """, arguments: [name, meta["description"] as String?, incomingModified, local.id])
+                try db.execute(sql: "UPDATE modules SET name = ?, description = ? WHERE id = ?",
+                               arguments: [name, meta["description"] as String?, local.moduleId])
+            }
+
+            for row in highlights {
+                var entry = HighlightEntry(setId: local.id, ref: row["ref"], sc: row["sc"], ec: row["ec"])
+                entry.style = row["style"] ?? 0
+                entry.color = Self.normalizedHighlightColor(row["color"])
+                guard entry.sc >= 0, entry.ec > entry.sc else { continue }
+                let key = ModuleDatabase.ledgerKey(entry)
+                if forSync, ledger.isDeleted(.highlight, key, itemModified: nil) { continue }
+                let here = try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM highlights
+                        WHERE set_id = ? AND ref = ? AND sc = ? AND ec = ? AND style = ?
+                          AND COALESCE(color, '') = COALESCE(?, '')
+                    )
+                    """, arguments: [entry.setId, entry.ref, entry.sc, entry.ec, entry.style, entry.color]) ?? false
+                if here { continue }
+                try entry.insert(db)
+                if !forSync { try ModuleDatabase.recordPersonalPresence(db, .highlight, key) }
+            }
+
+            for row in themes {
+                let theme = HighlightTheme(
+                    setId: local.id, color: row["color"] ?? "", style: row["style"] ?? 0,
+                    name: row["name"] ?? "", description: row["description"]
+                )
+                let key = ModuleDatabase.ledgerKey(theme)
+                if forSync, ledger.isDeleted(.highlightTheme, key, itemModified: nil) { continue }
+                if try HighlightTheme.exists(db, key: theme.id) {
+                    if incomingIsNewer { try theme.update(db) }
+                } else {
+                    try theme.insert(db)
+                }
+                if !forSync { try ModuleDatabase.recordPersonalPresence(db, .highlightTheme, key) }
+            }
+        }
+    }
+
+    /// A highlight's colour as the Mac keys it: hex without its `#`, in
+    /// capitals, and anything else as it came.
+    static func normalizedHighlightColor(_ color: String?) -> String? {
+        guard var color else { return nil }
+        if color.hasPrefix("#") { color.removeFirst() }
+        let isHex = [6, 8].contains(color.count) && color.allSatisfy(\.isHexDigit)
+        return isHex ? color.uppercased() : color
     }
 
     private func editableModuleMetadata(

@@ -3601,7 +3601,8 @@ final class LibrarySyncPassTests: XCTestCase {
 
     /// A highlight added while the rebuilt module downloads: the pass
     /// planned from a set as last agreed, but the set has changed since, so
-    /// it is weighed as both sides changed, kept, and sent next pass.
+    /// it is weighed as both sides changed: both sides' highlights are kept,
+    /// and the set goes up next pass.
     func testAHighlightAddedWhileTheModuleDownloadsIsKeptAndSent() async throws {
         let path = "Highlights/\(moduleId!).lamp"
         _ = try await pass().run()
@@ -3617,16 +3618,20 @@ final class LibrarySyncPassTests: XCTestCase {
         }
 
         _ = try await pass().run()
-        XCTAssertEqual(try storedHighlightRefs(), [43_003_016, 43_003_018], "the highlight added during the download")
+        XCTAssertEqual(
+            try storedHighlightRefs(), [43_003_016, 43_003_017, 43_003_018],
+            "the highlight added during the download, and the one added elsewhere"
+        )
 
         _ = try await pass().run()
         let published = await server.file(path)
         XCTAssertNotEqual(published?.revision, rebuilt, "the set here goes up next pass")
     }
 
-    /// Edited here and rebuilt elsewhere: a module that gives no time can't
-    /// be shown newer than the edits here, so they stand and go back up.
-    func testHighlightsEditedHereStandAgainstARebuildWithNoTime() async throws {
+    /// Highlighted here and elsewhere between passes: each device's new
+    /// highlight is kept, as the Mac keeps them, rather than whichever copy
+    /// of the set was newer, which lost the other's. The set goes back up.
+    func testHighlightsAddedOnBothSidesAreAllKept() async throws {
         let path = "Highlights/\(moduleId!).lamp"
         _ = try await pass().run()
         let first = try await publishCompiledElsewhere(highlightsJSON([(43_003_016, 0, 3)]), at: path)
@@ -3639,9 +3644,43 @@ final class LibrarySyncPassTests: XCTestCase {
         )
         _ = try await pass().run()
 
-        XCTAssertEqual(try storedHighlightRefs(), [43_003_016, 43_003_018])
+        XCTAssertEqual(try storedHighlightRefs(), [43_003_016, 43_003_017, 43_003_018])
         let published = await server.file(path)
         XCTAssertNotEqual(published?.revision, rebuilt, "the set here goes back up")
+    }
+
+    /// What makes the union safe: a highlight deleted here is not brought
+    /// back by another copy that still has it.
+    func testAHighlightDeletedHereIsNotBroughtBackByAnotherCopy() async throws {
+        let path = "Highlights/\(moduleId!).lamp"
+        _ = try await pass().run()
+        let first = try await publishCompiledElsewhere(highlightsJSON([(43_003_016, 0, 3)]), at: path)
+        _ = try await pass().run()
+        try database.deleteHighlight(setId: moduleId, ref: 43_003_016, sc: 0, ec: 3)
+        try database.saveHighlight(HighlightEntry(setId: moduleId, ref: 43_003_018, sc: 0, ec: 4))
+        try database.updateHighlightSetModified(id: moduleId)
+
+        _ = try await publishCompiledElsewhere(
+            highlightsJSON([(43_003_016, 0, 3), (43_003_017, 0, 5)]), at: path, replacing: first
+        )
+        _ = try await pass().run()
+
+        XCTAssertEqual(try storedHighlightRefs(), [43_003_017, 43_003_018])
+        let published = try await publishedHighlightRefs(at: path)
+        XCTAssertEqual(published, [43_003_017, 43_003_018], "nor sent back")
+    }
+
+    /// The highlights in the set as it was last sent.
+    private func publishedHighlightRefs(at path: String) async throws -> [Int] {
+        let stored = await server.file(path)
+        let compressed = try XCTUnwrap(stored).data
+        let data = try XCTUnwrap((compressed as NSData).decompressed(using: .zlib) as Data)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try data.write(to: url)
+        return try await DatabaseQueue(path: url.path).read { db in
+            try Int.fetchAll(db, sql: "SELECT ref FROM highlights ORDER BY ref")
+        }
     }
 
     /// This device's default notes and writings land on the two paths core
