@@ -2431,6 +2431,42 @@ private struct StrongsBarTrack: View {
     }
 }
 
+/// Where the canon strip names its standout book. The name is wider than
+/// one column, so it has to clear every column it spans, not only its own:
+/// Romans, named over its own column, ran through Acts beside it.
+enum StrongsCanonStripLabel {
+    /// The name's centre, and the height of the tallest column under it.
+    ///
+    /// Tries the name centred over the book's column, then starting at its
+    /// left edge, then ending at its right edge, and keeps whichever stands
+    /// lowest, so the name stays by its column when a tall neighbour sits
+    /// on one side only; a tie keeps it centred.
+    static func place(
+        labelWidth: CGFloat,
+        over index: Int,
+        heights: [CGFloat],
+        column: CGFloat,
+        spacing: CGFloat,
+        in width: CGFloat
+    ) -> (x: CGFloat, clearing: CGFloat) {
+        let half = labelWidth / 2
+        let left = (column + spacing) * CGFloat(index)
+        let clearing = { (x: CGFloat) -> CGFloat in
+            heights.indices
+                .filter { i in
+                    let start = (column + spacing) * CGFloat(i)
+                    return start < x + half + 2 && start + column > x - half - 2
+                }
+                .map { heights[$0] }
+                .max() ?? 0
+        }
+        return [left + column / 2, left + half, left + column - half]
+            .map { min(max($0, half), width - half) }
+            .map { (x: $0, clearing: clearing($0)) }
+            .min { $0.clearing < $1.clearing }!
+    }
+}
+
 /// The key's whole spread through the canon at a glance: a column for each
 /// book in canonical order, coloured as the book list colours it, over the
 /// canon's divisions, with the tallest column's count as the scale and the
@@ -2441,6 +2477,8 @@ private struct StrongsCanonStrip: View {
 
     private static let chartHeight: CGFloat = 84
     private static let labelBand: CGFloat = 18
+
+    @State private var standoutSize = CGSize.zero
 
     private var spacing: CGFloat { books.count > 40 ? 1.5 : 3 }
 
@@ -2470,12 +2508,25 @@ private struct StrongsCanonStrip: View {
         (width - spacing * CGFloat(books.count - 1)) / CGFloat(books.count)
     }
 
+    private func columnHeight(_ book: LampStrongsAnalysis.Division, most: Int) -> CGFloat {
+        book.occurrenceCount == 0 ? 2 : max(6, Self.chartHeight * CGFloat(book.occurrenceCount) / CGFloat(most))
+    }
+
     var body: some View {
         let most = max(books.map(\.occurrenceCount).max() ?? 1, 1)
         VStack(alignment: .leading, spacing: 6) {
             GeometryReader { proxy in
                 let column = columnWidth(in: proxy.size.width)
-                let standoutCentre = standout.map { (column + spacing) * CGFloat($0.index) + column / 2 }
+                let label = standout.map {
+                    StrongsCanonStripLabel.place(
+                        labelWidth: standoutSize.width,
+                        over: $0.index,
+                        heights: books.map { columnHeight($0, most: most) },
+                        column: column,
+                        spacing: spacing,
+                        in: proxy.size.width
+                    )
+                }
                 ZStack(alignment: .topLeading) {
                     // The scale: a dotted line at the tallest column, with its
                     // count at the end away from the standout book's name, which
@@ -2491,7 +2542,7 @@ private struct StrongsCanonStrip: View {
                         .foregroundStyle(LampTheme.caption)
                         .frame(
                             maxWidth: .infinity,
-                            alignment: (standoutCentre ?? .infinity) < proxy.size.width / 2 ? .trailing : .leading
+                            alignment: (label?.x ?? .infinity) < proxy.size.width / 2 ? .trailing : .leading
                         )
                     // The baseline the columns stand on.
                     Rectangle()
@@ -2504,7 +2555,7 @@ private struct StrongsCanonStrip: View {
                             let isEmpty = book.occurrenceCount == 0
                             RoundedRectangle(cornerRadius: 2, style: .continuous)
                                 .fill(isEmpty ? LampTheme.rule : color(book.expectation))
-                                .frame(height: isEmpty ? 2 : max(6, Self.chartHeight * CGFloat(book.occurrenceCount) / CGFloat(most)))
+                                .frame(height: columnHeight(book, most: most))
                                 .frame(maxWidth: .infinity)
                         }
                     }
@@ -2530,16 +2581,16 @@ private struct StrongsCanonStrip: View {
                     .frame(height: 9)
                     .offset(y: Self.labelBand + Self.chartHeight + 4)
 
-                    if let standout, let centre = standoutCentre {
-                        let barTop = Self.labelBand + Self.chartHeight
-                            - max(4, Self.chartHeight * CGFloat(standout.book.occurrenceCount) / CGFloat(most))
+                    if let standout, let label {
+                        let half = standoutSize.height / 2
                         Text(standout.book.name)
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(color(.more))
                             .fixedSize()
+                            .onGeometryChange(for: CGSize.self) { $0.size } action: { standoutSize = $0 }
                             .position(
-                                x: min(max(centre, 36), proxy.size.width - 36),
-                                y: max(barTop - 9, 7)
+                                x: label.x,
+                                y: max(Self.labelBand + Self.chartHeight - label.clearing - 2 - half, half)
                             )
                     }
                 }

@@ -6653,3 +6653,61 @@ final class StrongsSeptuagintTests: XCTestCase {
         XCTAssertNil(psalm.english?.snippet)
     }
 }
+
+final class StrongsCanonStripLabelTests: XCTestCase {
+    // The New Testament across a phone's card: 27 columns 3 points apart.
+    private let width: CGFloat = 330
+    private let spacing: CGFloat = 3
+    private var column: CGFloat { (width - spacing * 26) / 27 }
+
+    private func start(_ index: Int) -> CGFloat { (column + spacing) * CGFloat(index) }
+
+    /// ἔθνος in the ESV: Romans stands out, and Acts beside it is taller.
+    func testANameClearsATallerNeighbourByRunningTheOtherWay() {
+        var heights = [CGFloat](repeating: 2, count: 27)
+        heights[0...5] = [32, 12, 28, 6, 84, 60]
+        heights[8] = 20
+
+        let label = StrongsCanonStripLabel.place(
+            labelWidth: 50, over: 5, heights: heights, column: column, spacing: spacing, in: width
+        )
+
+        XCTAssertEqual(label.clearing, 60, "the name stands on Romans, not on Acts")
+        XCTAssertEqual(label.x - 25, start(5), accuracy: 0.001, "and starts at Romans' own column")
+    }
+
+    func testANameStaysCentredWhenNothingUnderItIsTaller() {
+        var heights = [CGFloat](repeating: 6, count: 27)
+        heights[12] = 50
+
+        let label = StrongsCanonStripLabel.place(
+            labelWidth: 50, over: 12, heights: heights, column: column, spacing: spacing, in: width
+        )
+
+        XCTAssertEqual(label.clearing, 50)
+        XCTAssertEqual(label.x, start(12) + column / 2, accuracy: 0.001)
+    }
+
+    func testANameClearsTheTallerOfTwoNeighbours() {
+        var heights = [CGFloat](repeating: 6, count: 27)
+        heights[9...11] = [70, 40, 84]
+
+        let label = StrongsCanonStripLabel.place(
+            labelWidth: 50, over: 10, heights: heights, column: column, spacing: spacing, in: width
+        )
+
+        XCTAssertEqual(label.clearing, 70, "over the lower neighbour, since both can't be avoided")
+    }
+
+    func testANameAtTheEndStaysOnTheChart() {
+        var heights = [CGFloat](repeating: 6, count: 27)
+        heights[26] = 84
+
+        let label = StrongsCanonStripLabel.place(
+            labelWidth: 80, over: 26, heights: heights, column: column, spacing: spacing, in: width
+        )
+
+        XCTAssertEqual(label.x, width - 40, accuracy: 0.001)
+        XCTAssertEqual(label.clearing, 84)
+    }
+}
