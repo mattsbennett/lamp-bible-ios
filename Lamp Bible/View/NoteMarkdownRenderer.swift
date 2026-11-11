@@ -3,6 +3,7 @@
 //  Lamp Bible
 //
 
+import ImageIO
 import UIKit
 
 /// A note's Markdown as the reader sees it, drawn natively.
@@ -11,7 +12,8 @@ import UIKit
 /// typed as plain text breaks its lines where it was typed, where Markdown
 /// would run them together. Each line may open a heading, a list item, a
 /// quote or a rule; within it, emphasis, code, links and escapes are read by
-/// Foundation's own inline Markdown.
+/// Foundation's own inline Markdown. A line that is only a picture, as the
+/// editor writes one (`![caption](media/<id>)`), is drawn as the picture.
 enum NoteMarkdown {
     /// An app link to a verse, `lampbible://verse/<start>[/<end>]`, and where
     /// its text ended up.
@@ -26,11 +28,20 @@ enum NoteMarkdown {
         let verseLinks: [VerseLink]
     }
 
-    static func render(_ markdown: String, fontSize: CGFloat) -> Rendered {
+    /// `media` is where each of the note's pictures is on this device, by id.
+    static func render(_ markdown: String, fontSize: CGFloat, media: [String: URL] = [:]) -> Rendered {
         let out = NSMutableAttributedString()
         var links: [VerseLink] = []
         let lines = markdown.components(separatedBy: "\n")
         for (index, raw) in lines.enumerated() {
+            if let picture = raw.wholeMatch(of: #/\s*!\[([^\]]*)\]\(media/([^)\s]+)\)\s*/#) {
+                let attributes = baseAttributes(fontSize: fontSize)
+                if index > 0 { out.append(NSAttributedString(string: "\n", attributes: attributes)) }
+                out.append(self.picture(
+                    media[String(picture.2)], caption: String(picture.1), fontSize: fontSize
+                ))
+                continue
+            }
             let block = Block(raw)
             let style = paragraphStyle(fontSize: fontSize, block: block)
             var attributes = baseAttributes(fontSize: block.fontSize(fontSize), bold: block.isHeading)
@@ -57,6 +68,41 @@ enum NoteMarkdown {
             out.append(line.text)
         }
         return Rendered(text: out, verseLinks: links)
+    }
+
+    // MARK: Pictures
+
+    /// A picture, as wide as the note up to its own width, with its caption
+    /// under it. One not on this device yet, as before a sync brings it,
+    /// is named where it will be.
+    private static func picture(_ url: URL?, caption: String, fontSize: CGFloat) -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.paragraphSpacingBefore = fontSize * 0.3
+        style.paragraphSpacing = fontSize * 0.3
+        var captionAttributes = baseAttributes(fontSize: fontSize * 0.85)
+        captionAttributes[.foregroundColor] = UIColor.secondaryLabel
+        captionAttributes[.paragraphStyle] = style
+
+        let out = NSMutableAttributedString()
+        if let url, let image = NotePictures.image(at: url) {
+            let attachment = NotePictureAttachment()
+            attachment.image = image
+            out.append(NSAttributedString(attachment: attachment))
+            out.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: out.length))
+            if !caption.isEmpty {
+                out.append(NSAttributedString(string: "\n" + caption, attributes: captionAttributes))
+            }
+        } else {
+            let symbol = NSTextAttachment()
+            symbol.image = UIImage(systemName: "photo", withConfiguration: UIImage.SymbolConfiguration(pointSize: fontSize * 0.85))?
+                .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
+            out.append(NSAttributedString(attachment: symbol))
+            out.append(NSAttributedString(
+                string: " " + (caption.isEmpty ? "Picture" : caption), attributes: captionAttributes
+            ))
+            out.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: out.length))
+        }
+        return out
     }
 
     // MARK: Blocks
@@ -204,5 +250,47 @@ enum NoteMarkdown {
             base.fontDescriptor.symbolicTraits.union(.traitItalic)
         ) else { return base }
         return UIFont(descriptor: descriptor, size: size)
+    }
+}
+
+/// A picture in a note, laid out against the line it sits on: as wide as the
+/// note, but never wider than the picture.
+final class NotePictureAttachment: NSTextAttachment {
+    override func attachmentBounds(
+        for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect,
+        glyphPosition position: CGPoint, characterIndex charIndex: Int
+    ) -> CGRect {
+        guard let image, image.size.width > 0 else { return .zero }
+        let available = lineFrag.width - (textContainer?.lineFragmentPadding ?? 0) * 2
+        let width = min(image.size.width, max(available, 1))
+        return CGRect(x: 0, y: 0, width: width, height: width * image.size.height / image.size.width)
+    }
+}
+
+/// Note pictures, read at a size fit to draw: a photo at its full size would
+/// cost that much memory each time a note shows it. Their corners are
+/// rounded as the editor rounds them.
+enum NotePictures {
+    private static let cache = NSCache<NSURL, UIImage>()
+
+    static func image(at url: URL, maxPixels: Int = 1600) -> UIImage? {
+        if let hit = cache.object(forKey: url as NSURL) { return hit }
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+        ] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
+        let scale = UITraitCollection.current.displayScale
+        let size = CGSize(width: CGFloat(thumbnail.width) / scale, height: CGFloat(thumbnail.height) / scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 8).addClip()
+            UIImage(cgImage: thumbnail, scale: scale, orientation: .up).draw(in: CGRect(origin: .zero, size: size))
+        }
+        cache.setObject(image, forKey: url as NSURL)
+        return image
     }
 }

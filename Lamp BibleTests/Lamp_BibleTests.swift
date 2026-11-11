@@ -4482,6 +4482,38 @@ final class NoteMarkdownTests: XCTestCase {
         NoteMarkdown.render(markdown, fontSize: 16).text
     }
 
+    /// A picture the editor put in a note is drawn as the picture, with its
+    /// caption under it, and the text around it as text.
+    func testAPictureInANoteIsDrawnAsThePicture() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 20)).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 20))
+        }
+        try XCTUnwrap(image.pngData()).write(to: url)
+
+        let text = NoteMarkdown.render(
+            "Before\n![The well](media/pic)\nAfter", fontSize: 16, media: ["pic": url]
+        ).text
+
+        var pictures = 0
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            if value is NotePictureAttachment { pictures += 1 }
+        }
+        XCTAssertEqual(pictures, 1)
+        XCTAssertTrue(text.string.contains("The well"), "its caption is under it")
+        XCTAssertFalse(text.string.contains("media/pic"), "not its Markdown")
+        XCTAssertTrue(text.string.hasPrefix("Before\n") && text.string.hasSuffix("\nAfter"))
+    }
+
+    /// One not on this device yet is named where it will be.
+    func testAPictureNotHereYetIsNamed() {
+        let text = render("![](media/pic)")
+        XCTAssertTrue(text.string.contains("Picture"))
+        XCTAssertFalse(text.string.contains("media/pic"))
+    }
+
     private func traits(_ text: NSAttributedString, at word: String) -> UIFontDescriptor.SymbolicTraits {
         let range = (text.string as NSString).range(of: word)
         let font = text.attribute(.font, at: range.location, effectiveRange: nil) as? UIFont

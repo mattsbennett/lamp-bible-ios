@@ -81,12 +81,50 @@ final class TipTapPage: NSObject, WKScriptMessageHandler, WKNavigationDelegate, 
         keyboardBar = bar
         hasKeyboardBar = NoteKeyboardBar.install(holder, in: webView)
 
-        guard let html = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "TipTapEditor") else {
+        guard let page = Self.editorPage() else {
             print("[TipTapPage] TipTapEditor/index.html is not in the bundle")
             isDead = true
             return
         }
-        webView.loadFileURL(html, allowingReadAccessTo: html.deletingLastPathComponent())
+        webView.loadFileURL(page.url, allowingReadAccessTo: page.readable)
+    }
+
+    /// The editor's page, copied into Documents so it can show the pictures
+    /// a note or a writing keeps there: a page loaded from the app bundle
+    /// can read only what is beside it. The copy is refreshed whenever the
+    /// bundled page differs from it.
+    static func editorPage() -> (url: URL, readable: URL)? {
+        guard let bundled = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "TipTapEditor") else {
+            return nil
+        }
+        let manager = FileManager.default
+        let documents = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let folder = documents.appendingPathComponent("TipTapEditorCache", isDirectory: true)
+        let copy = folder.appendingPathComponent("index.html")
+        let stamp = { (url: URL) -> String? in
+            guard let attributes = try? manager.attributesOfItem(atPath: url.path) else { return nil }
+            let date = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            return "\(date)|\(attributes[.size] as? Int ?? -1)"
+        }
+        if stamp(copy) == nil || stamp(copy) != stamp(bundled) {
+            do {
+                try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+                try? manager.removeItem(at: copy)
+                try manager.copyItem(at: bundled, to: copy)
+            } catch {
+                // The bundled page still edits; it just can't show pictures.
+                return (bundled, bundled.deletingLastPathComponent())
+            }
+        }
+        return (copy, documents)
+    }
+
+    /// Where each of the document's pictures is, by id, for the editor.
+    func useMedia(_ media: [String: URL]) {
+        let map = media.mapValues(\.absoluteString)
+        let json = (try? JSONSerialization.data(withJSONObject: map, options: [.sortedKeys]))
+            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        run("window.editorAPI.setMediaMap(\(json))")
     }
 
     // MARK: Driving the page
@@ -396,6 +434,8 @@ final class NoteEditorHandle: ObservableObject {
     @Published fileprivate(set) var barIsOnKeyboard = false
     /// Asks for a footnote from the keyboard's bar.
     var onFootnote: (() -> Void)?
+    /// Asks for a picture from the keyboard's bar.
+    var onPicture: (() -> Void)?
 
     func run(_ command: String) { host?.page?.run("window.editorAPI.\(command)") }
 
@@ -407,6 +447,14 @@ final class NoteEditorHandle: ObservableObject {
     func insertFootnoteRef(_ id: String) {
         TipTapKeyboard.allowFocus()
         run("insertFootnoteRef(\(TipTapPage.literal(id)))")
+    }
+
+    /// Puts a picture where the caret was kept by `saveSelection`, the editor
+    /// told where it and the note's others are, and brings the keyboard back.
+    func insertPicture(id: String, at url: URL, media: [String: URL]) {
+        host?.page?.useMedia(media)
+        TipTapKeyboard.allowFocus()
+        run("restoreSelection(); window.editorAPI.insertImage(\(TipTapPage.literal(id)), '', \(TipTapPage.literal(url.absoluteString)))")
     }
 
     func dismissKeyboard() { run("blur()") }
@@ -428,6 +476,7 @@ final class NoteEditorHostView: UIView {
     fileprivate var page: TipTapPage?
     private var key = ""
     private var lastReported = ""
+    private var media: [String: URL] = [:]
     private var caret: CGRect?
     private var editorHasFocus = false
     private static var keyboardFrame: CGRect = .null
@@ -472,11 +521,14 @@ final class NoteEditorHostView: UIView {
     /// text is in it, so the last document on it is never seen here.
     @MainActor
     func attach(
-        key: String, markdown: String, fontSize: CGFloat, focusAt point: CGPoint? = nil,
-        handle: NoteEditorHandle? = nil
+        key: String, markdown: String, fontSize: CGFloat, media: [String: URL] = [:],
+        focusAt point: CGPoint? = nil, handle: NoteEditorHandle? = nil
     ) {
         let page = TipTapPagePool.shared.take(.note)
         self.page = page
+        // Before the text, which finds its pictures as it is loaded.
+        page.useMedia(media)
+        self.media = media
         page.useVerseCatalog(translationId: UserDatabase.shared.getSettings().readerTranslationId)
         if let handle {
             page.showKeyboardBar(for: handle)
@@ -545,6 +597,15 @@ final class NoteEditorHostView: UIView {
         page.load(markdown, key: key)
     }
 
+    /// The note's pictures changed from outside the editor, as when one
+    /// arrives by sync.
+    @MainActor
+    func use(media: [String: URL]) {
+        guard let page, media != self.media else { return }
+        self.media = media
+        page.useMedia(media)
+    }
+
     @MainActor
     func applyAppearance(fontSize: CGFloat) {
         let isDark = traitCollection.userInterfaceStyle == .dark
@@ -588,7 +649,7 @@ final class NoteEditorHostView: UIView {
             let text = lastReported
             page?.webView.removeFromSuperview()
             page = nil
-            attach(key: key, markdown: text, fontSize: 16)
+            attach(key: key, markdown: text, fontSize: 16, media: media)
         default:
             break
         }
@@ -664,6 +725,8 @@ struct PooledNoteEditor: UIViewRepresentable {
     let onContent: (String) -> Void
     let onHeight: (CGFloat) -> Void
     let onFootnote: () -> Void
+    var media: [String: URL] = [:]
+    var onPicture: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> NoteEditorHostView {
         let view = NoteEditorHostView()
@@ -672,11 +735,12 @@ struct PooledNoteEditor: UIViewRepresentable {
         handle.focusOnOpen = nil
         handle.host = view
         handle.onFootnote = onFootnote
+        handle.onPicture = onPicture
         // A section opens as another closes, and SwiftUI makes the new editor
         // before it takes down the old: one turn later the old has given the
         // warm page back, so the new one takes it rather than starting cold.
-        DispatchQueue.main.async { [key, markdown, fontSize, handle] in
-            view.attach(key: key, markdown: markdown, fontSize: fontSize, focusAt: point, handle: handle)
+        DispatchQueue.main.async { [key, markdown, fontSize, media, handle] in
+            view.attach(key: key, markdown: markdown, fontSize: fontSize, media: media, focusAt: point, handle: handle)
         }
         return view
     }
@@ -685,6 +749,8 @@ struct PooledNoteEditor: UIViewRepresentable {
         wire(view)
         handle.host = view
         handle.onFootnote = onFootnote
+        handle.onPicture = onPicture
+        view.use(media: media)
         // Only a change from outside the editor: its own edits come back the
         // same as what it last reported.
         view.replace(with: markdown)
@@ -723,6 +789,10 @@ struct NoteSectionEditor: View {
     @ObservedObject var handle: NoteEditorHandle
     let onContent: (String) -> Void
     let onFootnote: () -> Void
+    /// Where the note's pictures are on this device, by id.
+    var media: [String: URL] = [:]
+    /// Asks for a picture to put in the note.
+    var onPicture: (() -> Void)? = nil
 
     @State private var height: CGFloat = 44
 
@@ -738,7 +808,9 @@ struct NoteSectionEditor: View {
                     let fitted = max(newHeight, 44)
                     if abs(fitted - height) > 0.5 { height = fitted }
                 },
-                onFootnote: onFootnote
+                onFootnote: onFootnote,
+                media: media,
+                onPicture: onPicture
             )
             .frame(height: height)
             .background(Color(uiColor: .secondarySystemBackground).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
@@ -760,6 +832,12 @@ struct NoteFormattingBar: View {
             toggle("text.quote", "Quote", on: handle.formatting.blockquote) { handle.run("toggleBlockquote()") }
             if handle.formatting.link {
                 toggle("link.badge.minus", "Remove link", on: false) { handle.run("removeLink()") }
+            }
+            if let onPicture = handle.onPicture {
+                toggle("photo", "Add picture", on: false) {
+                    handle.saveSelection()
+                    onPicture()
+                }
             }
             // Footnotes are not offered in notes for now; ones already written
             // are still shown, and open to edit, below the note.

@@ -1019,6 +1019,7 @@ struct NoteSectionData: Equatable {
         lhs.sectionIndex == rhs.sectionIndex &&
         lhs.section.id == rhs.section.id &&
         lhs.section.content == rhs.section.content &&
+        lhs.section.mediaJson == rhs.section.mediaJson &&
 
         lhs.section.footnotes?.count == rhs.section.footnotes?.count &&
         lhs.section.footnotes?.map { $0.id } == rhs.section.footnotes?.map { $0.id } &&
@@ -1052,6 +1053,10 @@ struct NoteSectionCell: View {
     let onDelete: ((Int) -> Void)?  // (sectionIndex)
     /// Opens the passage, with what surrounds it, in a sheet.
     let onShowPassage: ((Int) -> Void)?
+    /// Where the note's pictures are on this device, by id.
+    var media: [String: URL] = [:]
+    /// Asks for a picture to put in the note open in the editor.
+    var onAddPicture: ((Int) -> Void)? = nil
 
     /// The editor's page sets its text this far in from the section's edges;
     /// the note drawn here does the same, so a tap on it carries over.
@@ -1068,7 +1073,9 @@ struct NoteSectionCell: View {
                     fontSize: CGFloat(fontSize),
                     handle: noteEditor,
                     onContent: { onEditorContent?($0) },
-                    onFootnote: { onShowFootnotePicker?(data.sectionIndex, nil) }
+                    onFootnote: { onShowFootnotePicker?(data.sectionIndex, nil) },
+                    media: media,
+                    onPicture: onAddPicture.map { add in { add(data.sectionIndex) } }
                 )
             } else if data.section.content.isEmpty {
                 Text(data.section.isGeneral ? "Add a note on this chapter…" : "Add a note…")
@@ -1089,7 +1096,8 @@ struct NoteSectionCell: View {
                     onNavigateToVerse: onNavigateToVerseId,
                     onPlainTap: { point in
                         onOpenEditor?(CGPoint(x: point.x + Self.textInset.leading, y: point.y + Self.textInset.top))
-                    }
+                    },
+                    media: media
                 )
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(Self.textInset)
@@ -1256,6 +1264,11 @@ struct ToolPanelView: View {
     /// The footnote picker is open over the section in the editor, so the
     /// reference goes in at the editor's caret.
     @State private var footnoteGoesThroughEditor = false
+
+    // A picture being chosen for the note in the editor
+    @State private var showingNotePicturePicker = false
+    @State private var pictureSectionId: String? = nil
+    @State private var pictureInserted = false
 
     // The note editor: the section open in it, and whose notes are in memory
     @StateObject private var noteEditor = NoteEditorHandle()
@@ -2003,6 +2016,15 @@ struct ToolPanelView: View {
                 }
                 .sheet(isPresented: $showingFootnoteEditor) {
                     footnoteEditorSheet
+                }
+                .sheet(isPresented: $showingNotePicturePicker, onDismiss: {
+                    // Put in, the picture left the caret after it; only a
+                    // sheet closed without one goes back to where it was.
+                    if !pictureInserted, editingNoteSectionId != nil { noteEditor.resumeTyping() }
+                }) {
+                    ImagePickerSheet(isPresented: $showingNotePicturePicker) { image in
+                        addPicture(image)
+                    }
                 }
         }
     }
@@ -2870,8 +2892,38 @@ struct ToolPanelView: View {
             },
             onShowPassage: { sectionIndex in
                 showPassage(ofSectionAt: sectionIndex)
+            },
+            media: scope.map {
+                NoteMedia.map(data.section.mediaJson, moduleId: $0.moduleId, verseId: $0.verseId(data.section.verseStart ?? 0))
+            } ?? [:],
+            onAddPicture: { sectionIndex in
+                guard sectionIndex < sections.count else { return }
+                pictureSectionId = sections[sectionIndex].id
+                pictureInserted = false
+                showingNotePicturePicker = true
             }
         )
+    }
+
+    /// Puts a picture in the note open in the editor, at its caret: kept in
+    /// the note's own folder, named in its media, and linked in its text.
+    private func addPicture(_ image: UIImage) {
+        guard let scope = loadedNotes, let id = pictureSectionId,
+              let index = sections.firstIndex(where: { $0.id == id }) else { return }
+        let verseId = scope.verseId(sections[index].verseStart ?? 0)
+        do {
+            let ref = try DevotionalMediaStorage.notes.saveImage(
+                image, devotionalId: NoteMedia.owner(verseId), moduleId: scope.moduleId
+            )
+            sections[index].mediaJson = try NoteMedia.appending(ref, to: sections[index].mediaJson)
+            let media = NoteMedia.map(sections[index].mediaJson, moduleId: scope.moduleId, verseId: verseId)
+            guard let url = media[ref.id] else { return }
+            pictureInserted = true
+            noteEditor.insertPicture(id: ref.id, at: url, media: media)
+            scheduleSave()
+        } catch {
+            print("[Notes] Failed to add a picture: \(error)")
+        }
     }
 
     private var notePassageSheet: some View {
@@ -3956,12 +4008,14 @@ private struct NoteContentRenderer {
     private static let cache = NSCache<NSString, Box>()
     private final class Box { let result: RenderResult; init(_ r: RenderResult) { result = r } }
 
-    /// The note as the reader sees it, worked out once for each text and size:
-    /// the text view and the preview sheet read the same references.
-    static func cached(_ content: String, fontSize: CGFloat) -> RenderResult {
-        let key = "\(fontSize)|\(content)" as NSString
+    /// The note as the reader sees it, worked out once for each text, size
+    /// and set of pictures here: the text view and the preview sheet read
+    /// the same references.
+    static func cached(_ content: String, fontSize: CGFloat, media: [String: URL] = [:]) -> RenderResult {
+        let pictures = media.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.path)" }.joined(separator: ",")
+        let key = "\(fontSize)|\(pictures)|\(content)" as NSString
         if let hit = cache.object(forKey: key) { return hit.result }
-        let result = render(content, fontSize: fontSize)
+        let result = render(content, fontSize: fontSize, media: media)
         cache.setObject(Box(result), forKey: key)
         return result
     }
@@ -3969,8 +4023,8 @@ private struct NoteContentRenderer {
     /// Render note content: its Markdown, then every verse it refers to as a
     /// tappable reference, whether written out ("John 3:16") or linked, and
     /// footnote markers as superscript.
-    static func render(_ content: String, fontSize: CGFloat) -> RenderResult {
-        let rendered = NoteMarkdown.render(content, fontSize: fontSize)
+    static func render(_ content: String, fontSize: CGFloat, media: [String: URL] = [:]) -> RenderResult {
+        let rendered = NoteMarkdown.render(content, fontSize: fontSize, media: media)
         let text = rendered.text
         let plain = text.string
 
@@ -4136,10 +4190,10 @@ private struct NoteContentTextViewRepresentable: UIViewRepresentable {
         textView.onPlainTap = onPlainTap
         textView.isUserInteractionEnabled = interactive
 
-        // Only re-render if content or fontSize changed
-        let cacheKey = "\(content.hashValue)_\(fontSize)"
-        if context.coordinator.lastCacheKey != cacheKey {
-            context.coordinator.lastCacheKey = cacheKey
+        // Only when the drawing changed: its text, its size, or a picture
+        // that has since arrived.
+        if context.coordinator.shown !== rendered.attributedString {
+            context.coordinator.shown = rendered.attributedString
             context.coordinator.cachedSize = nil
 
             textView.attributedText = rendered.attributedString
@@ -4171,7 +4225,7 @@ private struct NoteContentTextViewRepresentable: UIViewRepresentable {
     }
 
     class Coordinator {
-        var lastCacheKey: String = ""
+        var shown: NSAttributedString?
         var cachedSize: CGSize?
     }
 }
@@ -4187,11 +4241,13 @@ struct InteractiveNoteContentView: View {
     var interactive: Bool = true
     /// A tap anywhere but on a verse, with where it was in the text.
     var onPlainTap: ((CGPoint) -> Void)? = nil
+    /// Where the note's pictures are on this device, by id.
+    var media: [String: URL] = [:]
 
     @State private var previewState: PreviewSheetState? = nil
 
     var body: some View {
-        let rendered = NoteContentRenderer.cached(content, fontSize: CGFloat(fontSize))
+        let rendered = NoteContentRenderer.cached(content, fontSize: CGFloat(fontSize), media: media)
         NoteContentTextViewRepresentable(
             content: content,
             fontSize: CGFloat(fontSize),
@@ -4219,7 +4275,7 @@ struct InteractiveNoteContentView: View {
 
     /// Count the number of verse references in this content
     var referenceCount: Int {
-        NoteContentRenderer.cached(content, fontSize: CGFloat(fontSize)).previewItems.count
+        NoteContentRenderer.cached(content, fontSize: CGFloat(fontSize), media: media).previewItems.count
     }
 }
 

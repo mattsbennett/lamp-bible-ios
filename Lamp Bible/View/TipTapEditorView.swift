@@ -254,27 +254,8 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         }
 
         // Load the editor HTML
-        let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let editorDir = documentsDir.appendingPathComponent("TipTapEditorCache", isDirectory: true)
-        let destHTML = editorDir.appendingPathComponent("index.html")
-
-        if let bundleHTML = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "TipTapEditor") {
-            try? FileManager.default.createDirectory(at: editorDir, withIntermediateDirectories: true)
-
-            var shouldCopy = true
-            if FileManager.default.fileExists(atPath: destHTML.path) {
-                if let bundleDate = try? FileManager.default.attributesOfItem(atPath: bundleHTML.path)[.modificationDate] as? Date,
-                   let destDate = try? FileManager.default.attributesOfItem(atPath: destHTML.path)[.modificationDate] as? Date {
-                    shouldCopy = bundleDate > destDate
-                }
-            }
-
-            if shouldCopy {
-                try? FileManager.default.removeItem(at: destHTML)
-                try? FileManager.default.copyItem(at: bundleHTML, to: destHTML)
-            }
-
-            webView.loadFileURL(destHTML, allowingReadAccessTo: documentsDir)
+        if let page = TipTapPage.editorPage() {
+            webView.loadFileURL(page.url, allowingReadAccessTo: page.readable)
         } else {
             print("[TipTapEditorView] ERROR: TipTapEditor/index.html not found in bundle!")
         }
