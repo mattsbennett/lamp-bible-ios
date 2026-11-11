@@ -43,6 +43,13 @@ struct ModuleSearchResult: Identifiable {
     var verse: Int? { verseId.map { $0 % 1000 } }
 }
 
+/// A search's results, shared among the kinds that matched, and the kinds
+/// that had more than they kept.
+struct ModuleSearchPage {
+    var results: [ModuleSearchResult]
+    var moreIn: Set<ModuleType>
+}
+
 // MARK: - Search Filter
 
 struct ModuleSearchFilter {
@@ -321,7 +328,18 @@ class ModuleSearch {
 
     /// Search across all module types with filters
     func search(query: String, filter: ModuleSearchFilter = .default, limit: Int = 50) throws -> [ModuleSearchResult] {
+        try searchByKind(query: query, filter: filter, limit: limit).results
+    }
+
+    /// The search's `limit` results shared among the kinds that matched, as
+    /// core shares the Mac's (`LampModuleSearch.sharedByKind`): each kind's
+    /// best, so a common word's verses can't take every place, and the kinds
+    /// that had more than they kept.
+    func searchByKind(query: String, filter: ModuleSearchFilter = .default, limit: Int = 50) throws -> ModuleSearchPage {
         var results: [ModuleSearchResult] = []
+        // One more from each kind than the page holds, so that a kind with
+        // more than it keeps says so even when it is the only one to match.
+        let perKind = limit + 1
 
         // Words to find, even where an index can't ask for them by itself,
         // as `*faith`, whose FTS query is empty. A query without any allows a
@@ -331,20 +349,20 @@ class ModuleSearch {
         let hasKeyFilter = filter.strongsKey != nil
         let hasColorFilter = filter.highlightColorOnly && filter.highlightColors != nil
 
-        guard hasTextQuery || hasKeyFilter || hasColorFilter else { return [] }
+        guard hasTextQuery || hasKeyFilter || hasColorFilter else { return ModuleSearchPage(results: [], moreIn: []) }
 
         if filter.types.contains(.dictionary) {
             // User dictionaries (SQLite)
             if hasTextQuery {
-                results.append(contentsOf: try searchDictionaries(query: parsedQuery, filter: filter, limit: limit))
+                results.append(contentsOf: try searchDictionaries(query: parsedQuery, filter: filter, limit: perKind))
             } else if hasKeyFilter {
                 // Key-only search for user dictionaries
-                results.append(contentsOf: try searchDictionariesByKey(filter: filter, limit: limit))
+                results.append(contentsOf: try searchDictionariesByKey(filter: filter, limit: perKind))
             }
 
             // Bundled dictionaries (Realm)
             if filter.includeBundledDictionaries {
-                results.append(contentsOf: searchBundledDictionaries(query: query, filter: filter, limit: limit))
+                results.append(contentsOf: searchBundledDictionaries(query: query, filter: filter, limit: perKind))
             }
         }
 
@@ -353,48 +371,50 @@ class ModuleSearch {
         // one for every result each database offered, most of them then
         // dropped, was most of a search's time.
         if filter.types.contains(.commentary) && hasTextQuery {
-            results.append(contentsOf: try searchCommentaries(query: LampSearchQuery(query), filter: filter, limit: limit))
+            results.append(contentsOf: try searchCommentaries(query: LampSearchQuery(query), filter: filter, limit: perKind))
         }
 
         if filter.types.contains(.book) && hasTextQuery {
-            results.append(contentsOf: try searchBooks(query: LampSearchQuery(query), filter: filter, limit: limit))
+            results.append(contentsOf: try searchBooks(query: LampSearchQuery(query), filter: filter, limit: perKind))
         }
 
         if filter.types.contains(.devotional) && hasTextQuery {
-            results.append(contentsOf: try searchDevotionals(query: LampSearchQuery(query), filter: filter, limit: limit))
+            results.append(contentsOf: try searchDevotionals(query: LampSearchQuery(query), filter: filter, limit: perKind))
         }
 
         if filter.types.contains(.notes) && hasTextQuery {
-            results.append(contentsOf: try searchNotes(query: LampSearchQuery(query), filter: filter, limit: limit))
+            results.append(contentsOf: try searchNotes(query: LampSearchQuery(query), filter: filter, limit: perKind))
         }
 
         if filter.types.contains(.translation) {
             if hasTextQuery {
-                results.append(contentsOf: try searchTranslations(query: query, filter: filter, limit: limit))
+                results.append(contentsOf: try searchTranslations(query: query, filter: filter, limit: perKind))
             } else if hasKeyFilter {
                 // Strong's key search for translations with Strong's support
-                results.append(contentsOf: try searchTranslationsByStrongs(filter: filter, limit: limit))
+                results.append(contentsOf: try searchTranslationsByStrongs(filter: filter, limit: perKind))
             }
         }
 
         if filter.types.contains(.plan) && hasTextQuery {
-            results.append(contentsOf: try searchPlans(query: query, filter: filter, limit: limit))
+            results.append(contentsOf: try searchPlans(query: query, filter: filter, limit: perKind))
         }
 
         if filter.types.contains(.quiz) && hasTextQuery {
-            results.append(contentsOf: try searchQuizzes(query: query, filter: filter, limit: limit))
+            results.append(contentsOf: try searchQuizzes(query: query, filter: filter, limit: perKind))
         }
 
         if filter.types.contains(.highlights) && (hasTextQuery || hasColorFilter) {
-            results.append(contentsOf: try searchHighlights(query: query, filter: filter, limit: limit))
+            results.append(contentsOf: try searchHighlights(query: query, filter: filter, limit: perKind))
         }
 
         // A text search is merged as core merges the Mac's, by what names
         // and shows each result and whether it holds the words together, the
         // modules taking turns among equals: the kinds' own ranks are not on
-        // one scale. A search by key or colour alone has no words to rank by.
+        // one scale. A search by key or colour alone has no words to rank by,
+        // and each kind keeps its own best.
+        let share: LampModuleSearch.KindShare<ModuleSearchResult>
         if hasTextQuery {
-            return try fillSnippets(LampModuleSearch.ranked(
+            share = LampModuleSearch.rankedByKind(
                 results, by: parsedQuery, limit: limit,
                 // A quiz result's title is its question, which shows it
                 // rather than names it.
@@ -402,10 +422,15 @@ class ModuleSearch {
                 shown: { $0.moduleType == .quiz ? [$0.title, $0.snippet] : [$0.snippet] },
                 holdingPhrase: { $0.holdsPhrase },
                 from: { ($0.moduleType.rawValue, $0.moduleId) }
-            ), query: parsedQuery)
+            )
+        } else {
+            results.sort { $0.rank > $1.rank }
+            share = LampModuleSearch.sharedByKind(results, limit: limit, kind: \.moduleType.rawValue)
         }
-        results.sort { $0.rank > $1.rank }
-        return Array(results.prefix(limit))
+        return ModuleSearchPage(
+            results: try fillSnippets(share.results, query: parsedQuery),
+            moreIn: Set(share.moreIn.compactMap(ModuleType.init(rawValue:)))
+        )
     }
 
     /// The results with the snippets they were found without, cut now that

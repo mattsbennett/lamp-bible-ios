@@ -5433,6 +5433,22 @@ final class SearchAuditFixTests: XCTestCase {
         XCTAssertTrue(ModuleSearch.shared.getSearchableModules().contains { $0.id == "tske" && $0.type == .commentary })
     }
 
+    func testAPageIsSharedAmongTheKindsThatMatched() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.translation, .commentary]
+        let page = try ModuleSearch.shared.searchByKind(query: "love", filter: filter, limit: 4)
+        XCTAssertEqual(page.results.count, 4)
+        XCTAssertEqual(Set(page.results.map(\.moduleType)), [.translation, .commentary], "a common word's verses can't take every place")
+        XCTAssertEqual(page.moreIn, [.translation, .commentary])
+
+        // One type alone has the page to itself, and still says it has more.
+        filter.types = [.commentary]
+        let alone = try ModuleSearch.shared.searchByKind(query: "love", filter: filter, limit: 4)
+        XCTAssertEqual(alone.results.count, 4)
+        XCTAssertEqual(alone.moreIn, [.commentary])
+    }
+
     func testABibleRowMarksEveryWordTheSearchMatched() {
         let marked = LampSearchQuery("faith works").markedSnippet("Faith without works is dead", limit: 120)
         XCTAssertEqual(marked, "<mark>Faith</mark> without <mark>works</mark> is dead")

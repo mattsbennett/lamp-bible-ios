@@ -108,8 +108,12 @@ class SearchStateManager: ObservableObject {
     // Module search state
     @Published var moduleSearchText: String = ""
     @Published var moduleSearchResults: [ModuleSearchResult] = []
-    @Published var moduleResultLimit: Int = 100
+    @Published var moduleResultLimit: Int = SearchStateManager.modulePage
     @Published var moduleTotalResultCount: Int = 0
+    /// The types that had more results than the page shared among them kept.
+    @Published var moduleMoreIn: Set<ModuleType> = []
+    /// The one type shown, from its header's More, until the next search.
+    @Published var moduleTypeFocus: ModuleType? = nil
     @Published var moduleResultsVisible: Bool = false
     var moduleScrollToId: String? = nil  // Not @Published - only read on appear
 
@@ -126,9 +130,18 @@ class SearchStateManager: ObservableObject {
         bibleScrollToId = nil
     }
 
+    /// A module search's first page, shared among the types that matched:
+    /// a few of each, a screen or two, each with More for the rest.
+    static let modulePage = 30
+    /// One type's page, from its More.
+    static let moduleTypePage = 100
+
     func clearModuleResults() {
         moduleSearchResults = []
         moduleTotalResultCount = 0
+        moduleMoreIn = []
+        moduleTypeFocus = nil
+        moduleResultLimit = Self.modulePage
         moduleResultsVisible = false
         moduleScrollToId = nil
     }
@@ -356,6 +369,14 @@ struct SearchView: View {
     private var moduleSearchResults: [ModuleSearchResult] {
         get { stateManager.moduleSearchResults }
         nonmutating set { stateManager.moduleSearchResults = newValue }
+    }
+    private var moduleMoreIn: Set<ModuleType> {
+        get { stateManager.moduleMoreIn }
+        nonmutating set { stateManager.moduleMoreIn = newValue }
+    }
+    private var moduleTypeFocus: ModuleType? {
+        get { stateManager.moduleTypeFocus }
+        nonmutating set { stateManager.moduleTypeFocus = newValue }
     }
     private var isSearching: Bool {
         get { stateManager.isSearching }
@@ -846,6 +867,7 @@ struct SearchView: View {
             .onChange(of: moduleSearchText) {
                 guard searchScope == .modules else { return }
                 resultsVisible = false
+                showEveryModuleType()
             }
             .onChange(of: searchMode) {
                 // Clear results and auto-submit when switching modes with text
@@ -868,6 +890,7 @@ struct SearchView: View {
                 moduleSearchResults = []
                 totalResultCount = 0
                 resultsVisible = false
+                showEveryModuleType()
             }
             .onChange(of: searchScope) {
                 // Clear results when switching scope - don't auto-search, let user see their previous text
@@ -875,6 +898,7 @@ struct SearchView: View {
                 moduleSearchResults = []
                 totalResultCount = 0
                 resultsVisible = false
+                showEveryModuleType()
             }
             .onAppear {
                 // Reload settings in case they changed
@@ -1296,9 +1320,9 @@ struct SearchView: View {
     /// Group results by module type for sectioned display
     private var groupedModuleResults: [(type: ModuleType, results: [ModuleSearchResult])] {
         let grouped = Dictionary(grouping: moduleSearchResults) { $0.moduleType }
-        // Order by type display order.
-        let typeOrder: [ModuleType] = [.dictionary, .translation, .commentary, .book, .notes, .devotional, .plan, .quiz, .highlights]
-        return typeOrder.compactMap { type in
+        // In the order the Mac shows them: the Bible first, then the
+        // reader's own, then reference works.
+        return LampModuleSearch.shelfOrder.compactMap { type in
             if let results = grouped[type], !results.isEmpty {
                 return (type: type, results: results)
             }
@@ -1308,14 +1332,24 @@ struct SearchView: View {
 
     private var moduleResultsList: some View {
         List {
-            // Header with total count
+            // Header with total count, and the way back from one type to all
             Section {
                 EmptyView()
             } header: {
-                if totalResultCount < 0 {
-                    Text("\(-totalResultCount)+ results")
-                } else {
-                    Text("\(totalResultCount) results")
+                HStack {
+                    if moduleTypeFocus != nil {
+                        Button {
+                            showEveryModuleType(searching: true)
+                        } label: {
+                            Label("All Results", systemImage: "chevron.left")
+                        }
+                        Spacer()
+                    }
+                    if totalResultCount < 0 {
+                        Text("\(-totalResultCount)+ results")
+                    } else {
+                        Text("\(totalResultCount) results")
+                    }
                 }
             }
 
@@ -1339,14 +1373,28 @@ struct SearchView: View {
                     HStack {
                         Text(group.type.displayName)
                         Spacer()
-                        Text("\(group.results.count)")
-                            .foregroundStyle(.secondary)
+                        // A type cut to its share counts only what's shown.
+                        if !moduleMoreIn.contains(group.type) {
+                            Text("\(group.results.count)")
+                                .foregroundStyle(.secondary)
+                        } else if offersMoreByType {
+                            Button {
+                                showModuleType(group.type)
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text("More")
+                                    Image(systemName: "chevron.right")
+                                        .imageScale(.small)
+                                }
+                            }
+                            .accessibilityLabel("More \(group.type.displayName)")
+                        }
                     }
                 }
             }
 
-            // Load more button if there are more results (negative totalResultCount means more available)
-            if totalResultCount < 0 {
+            // One type's next page; among several, each type's More instead.
+            if !offersMoreByType && !moduleMoreIn.isEmpty {
                 Button {
                     loadMoreResults()
                 } label: {
@@ -1707,6 +1755,9 @@ struct SearchView: View {
                 filter.translationIds = [translationId]
             }
         }
+        if let moduleTypeFocus {
+            filter.types.formIntersection([moduleTypeFocus])
+        }
 
         // Validation
         let hasQuery = query.count >= 2
@@ -1723,29 +1774,27 @@ struct SearchView: View {
             isSearching = true
         }
 
-        // Request one extra to detect if there are more results
         let searchQuery = (moduleSearchMode == .strongsKey || moduleSearchMode == .highlightColor) ? "" : query
         let moduleSearch = moduleSearch
-        let requested = resultLimit + 1
+        let limit = resultLimit
         let filterToSearch = filter
         let outcome = await Task.detached(priority: .userInitiated) {
-            Result { try moduleSearch.search(query: searchQuery, filter: filterToSearch, limit: requested) }
+            Result { try moduleSearch.searchByKind(query: searchQuery, filter: filterToSearch, limit: limit) }
         }.value
         guard !Task.isCancelled else { return }
 
         do {
-            let results = try outcome.get()
-            let hasMoreResults = results.count > resultLimit
-            let limitedResults = hasMoreResults ? Array(results.prefix(resultLimit)) : results
-
+            let page = try outcome.get()
             // Use negative count to signal "more available" (e.g., -100 means "100+")
-            totalResultCount = hasMoreResults ? -resultLimit : results.count
-            moduleSearchResults = limitedResults
+            totalResultCount = page.moreIn.isEmpty ? page.results.count : -page.results.count
+            moduleSearchResults = page.results
+            moduleMoreIn = page.moreIn
 
-            recordSearch(resultCount: results.count)
+            recordSearch(resultCount: page.results.count)
         } catch {
             print("Module search failed: \(error)")
             moduleSearchResults = []
+            moduleMoreIn = []
             totalResultCount = 0
         }
 
@@ -1799,6 +1848,31 @@ struct SearchView: View {
     private func isValidBDBQuery(_ query: String) -> Bool {
         let pattern = "^BDB\\d+$"
         return query.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Whether each type with more offers it from its header: among several
+    /// types, each cut to its share. One type, alone or chosen, pages instead.
+    private var offersMoreByType: Bool {
+        moduleTypeFocus == nil && groupedModuleResults.count > 1
+    }
+
+    /// Shows one type's results alone, a page of them, from its header's
+    /// More: the page shared among several kept only each type's best.
+    private func showModuleType(_ type: ModuleType) {
+        moduleTypeFocus = type
+        stateManager.moduleResultLimit = SearchStateManager.moduleTypePage
+        submitSearch()
+    }
+
+    /// Back to every type, from the first page: for a new search, or again
+    /// for this one.
+    private func showEveryModuleType(searching: Bool = false) {
+        guard moduleTypeFocus != nil || stateManager.moduleResultLimit != SearchStateManager.modulePage else { return }
+        moduleTypeFocus = nil
+        stateManager.moduleResultLimit = SearchStateManager.modulePage
+        if searching {
+            submitSearch()
+        }
     }
 
     /// Searches for verses containing the exact Strong's number with proper boundary matching
