@@ -6896,16 +6896,40 @@ final class NoteMediaTests: XCTestCase {
     /// shape is declared in core and each side's exporter is pinned to it.
     func testTheExportedNotesShapeMatchesTheDeclaration() throws {
         let module = try XCTUnwrap(database.getModule(id: moduleId))
-        let compressed = try ModuleSyncManager.shared.exportNoteModuleToSQLite(module)
+        try assertExport(
+            ModuleSyncManager.shared.exportNoteModuleToSQLite(module),
+            matches: LampPersonalExportSchema.exportedTables(for: .notes)
+        )
+    }
+
+    /// The writings file, held to its declaration the same way.
+    func testTheExportedWritingsShapeMatchesTheDeclaration() throws {
+        let writings = Module(
+            id: "\(moduleId!)-writings", type: .devotional, name: "Writings",
+            filePath: "\(moduleId!)-writings.lamp", isEditable: true
+        )
+        try database.saveModule(writings)
+        defer { try? database.deleteModule(id: writings.id) }
+        try assertExport(
+            ModuleSyncManager.shared.exportDevotionalModuleToSQLite(writings),
+            matches: LampPersonalExportSchema.exportedTables(for: .writing)
+        )
+    }
+
+    private func assertExport(
+        _ compressed: Data, matches declared: [LampModuleTableShape],
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
         let data = try XCTUnwrap((compressed as NSData).decompressed(using: .zlib) as Data)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
         defer { try? FileManager.default.removeItem(at: url) }
         try data.write(to: url)
-        let columns = try DatabaseQueue(path: url.path).read { db in
-            try db.columns(in: "note_entries").map(\.name)
+        XCTAssertFalse(declared.isEmpty, "nothing declared", file: file, line: line)
+        try DatabaseQueue(path: url.path).read { db in
+            for shape in declared {
+                let columns = try db.columns(in: shape.table).map(\.name)
+                XCTAssertEqual(columns, shape.columns, shape.table, file: file, line: line)
+            }
         }
-
-        let declared = try XCTUnwrap(LampModuleCompiledSchema.tables(for: .notes).first { $0.table == "note_entries" })
-        XCTAssertEqual(columns, declared.columns)
     }
 }

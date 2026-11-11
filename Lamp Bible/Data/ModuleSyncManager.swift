@@ -1814,12 +1814,14 @@ class ModuleSyncManager: ObservableObject {
                     summary_json TEXT,
                     content_json TEXT NOT NULL,
                     footnotes_json TEXT,
-                    media_json TEXT,
                     related_ids TEXT,
                     created INTEGER NOT NULL,
                     last_modified INTEGER,
                     search_text TEXT,
-                    record_change_tag TEXT
+                    record_change_tag TEXT,
+                    subscription_id TEXT,
+                    is_read_only INTEGER,
+                    media_json TEXT
                 )
             """)
 
@@ -1847,8 +1849,9 @@ class ModuleSyncManager: ObservableObject {
                     sql: """
                         INSERT INTO devotional_entries
                         (id, module_id, title, subtitle, author, date, tags, category, series_id, series_name, series_order,
-                         key_scriptures_json, summary_json, content_json, footnotes_json, media_json, related_ids, created, last_modified, search_text, record_change_tag)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         key_scriptures_json, summary_json, content_json, footnotes_json, related_ids, created, last_modified, search_text, record_change_tag,
+                         subscription_id, is_read_only, media_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     arguments: [
                         entry.id,
@@ -1866,12 +1869,16 @@ class ModuleSyncManager: ObservableObject {
                         entry.summaryJson,
                         entry.contentJson,
                         entry.footnotesJson,
-                        entry.mediaJson,
                         entry.relatedIds,
                         entry.created,
                         entry.lastModified,
                         entry.searchText,
-                        entry.recordChangeTag
+                        entry.recordChangeTag,
+                        // A writing from a subscription stays one, and stays
+                        // read-only, wherever this copy is taken in.
+                        entry.subscriptionId,
+                        entry.isReadOnly,
+                        entry.mediaJson
                     ]
                 )
             }
@@ -2278,10 +2285,6 @@ enum CompiledModuleLanding {
             return Table(destination: "highlights", notKept: ["id": numberedHere])
         case (.highlights, "highlight_themes"):
             return Table(destination: "highlight_themes")
-        case (.notes, "note_entries"):
-            // Taken in as records by the notes merge rather than copied, but
-            // into this table, which has to keep everything the file carries.
-            return Table(destination: compiled)
         default:
             return nil
         }
