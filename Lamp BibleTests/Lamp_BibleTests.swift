@@ -6962,28 +6962,54 @@ final class NoteMediaTests: XCTestCase {
         XCTAssertNil(NoteMedia.url(for: picture, moduleId: moduleId, verseId: 43_001_003))
         XCTAssertNotNil(NoteMedia.url(for: picture, moduleId: moduleId, verseId: 43_001_005))
     }
+}
 
-    /// The notes file is written by this device and the Mac alike, so its
-    /// shape is declared in core and each side's exporter is pinned to it.
-    func testTheExportedNotesShapeMatchesTheDeclaration() throws {
-        let module = try XCTUnwrap(database.getModule(id: moduleId))
+/// What this device writes the reader's own notes, writings and highlights
+/// as, held to core's declarations of the same files, which the Mac's
+/// writers are held to as well. A column one side writes and the other
+/// never declared is how a note's pictures went missing on one device.
+final class PersonalExportShapeTests: XCTestCase {
+    private let database = ModuleDatabase.shared
+    private var moduleId: String!
+
+    override func setUp() async throws {
+        moduleId = "export-shape-\(UUID().uuidString)"
+    }
+
+    override func tearDown() async throws {
+        try? database.deleteAllEntriesForModule(moduleId: moduleId)
+        try? database.deleteModule(id: moduleId)
+    }
+
+    func testTheNotesFileIsTheDeclaredShape() throws {
+        let module = Module(id: moduleId, type: .notes, name: "My Notes", filePath: "\(moduleId!).lamp", isEditable: true)
+        try database.saveModule(module)
         try assertExport(
             ModuleSyncManager.shared.exportNoteModuleToSQLite(module),
             matches: LampPersonalExportSchema.exportedTables(for: .notes)
         )
     }
 
-    /// The writings file, held to its declaration the same way.
-    func testTheExportedWritingsShapeMatchesTheDeclaration() throws {
-        let writings = Module(
-            id: "\(moduleId!)-writings", type: .devotional, name: "Writings",
-            filePath: "\(moduleId!)-writings.lamp", isEditable: true
-        )
-        try database.saveModule(writings)
-        defer { try? database.deleteModule(id: writings.id) }
+    func testTheWritingsFileIsTheDeclaredShape() throws {
+        let module = Module(id: moduleId, type: .devotional, name: "Writings", filePath: "\(moduleId!).lamp", isEditable: true)
+        try database.saveModule(module)
         try assertExport(
-            ModuleSyncManager.shared.exportDevotionalModuleToSQLite(writings),
+            ModuleSyncManager.shared.exportDevotionalModuleToSQLite(module),
             matches: LampPersonalExportSchema.exportedTables(for: .writing)
+        )
+    }
+
+    /// A highlight set syncs as one compiled module, the shape the Mac's
+    /// compiler writes it in, not as the whole collection a backup holds.
+    func testAHighlightSetsFileIsTheCompiledShape() throws {
+        let module = Module(id: moduleId, type: .highlights, name: "Highlights", filePath: "\(moduleId!).lamp", isEditable: true)
+        try database.saveModule(module)
+        try database.write { db in
+            try HighlightSet(id: self.moduleId, moduleId: self.moduleId, name: "Highlights", translationId: "KJV").insert(db)
+        }
+        try assertExport(
+            ModuleSyncManager.shared.exportHighlightModuleToSQLite(module),
+            matches: LampModuleCompiledSchema.tables(for: .highlights)
         )
     }
 
@@ -7004,3 +7030,4 @@ final class NoteMediaTests: XCTestCase {
         }
     }
 }
+
