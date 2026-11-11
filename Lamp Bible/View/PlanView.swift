@@ -97,38 +97,8 @@ struct PlanView: View {
                             .accessibilityLabel("Presentation Remote")
                         }
                     }
-                    .toolbar {
-                        ToolbarItem(placement: .bottomBar) {
-                            HStack(spacing: 16) {
-                                bottomBarLink("Read", systemImage: "book.fill") {
-                                    SplitReaderView(date: $date)
-                                }
-
-                                bottomBarLink("Search", systemImage: "magnifyingglass") {
-                                    SearchView()
-                                }
-
-                                bottomBarLink("Books", systemImage: "books.vertical.fill") {
-                                    BookLibraryView()
-                                }
-
-                                bottomBarLink("Write", systemImage: "pencil.line") {
-                                    DevotionalPickerView(
-                                        isFullScreen: false,
-                                        showNewProminent: true,
-                                        initialModuleId: "devotionals"
-                                    )
-                                }
-
-                                bottomBarLink("Settings", systemImage: "gear") {
-                                    SettingsView(
-                                        externalApps: externalBibleApps,
-                                        planViewRefreshId: $planViewRefreshId
-                                    )
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                        }
+                    .planBottomBar {
+                        bottomBar
                     }
                     .onChange(of: deepLinkManager.pendingVerseId) { _, newVerseId in
                         if let verseId = newVerseId {
@@ -255,12 +225,49 @@ struct PlanView: View {
 
     // MARK: - Bottom Bar
 
-    /// One destination in the bottom bar.
-    ///
-    /// These are sized by their labels, not divided evenly: a `bottomBar`
-    /// `ToolbarItem` is laid out at its ideal size, so `maxWidth: .infinity` here
-    /// is silently ignored and only removes the spacing that was holding the row
-    /// apart. Explicit spacing on the enclosing `HStack` is what keeps it legible.
+    /// Taller than the system's bottom bar, whose glass keeps its own height
+    /// whatever its items ask for and left the labels pressed to its edges.
+    private static let bottomBarHeight: CGFloat = 58
+
+    /// The app's destinations, on a capsule of the system's glass the plans
+    /// scroll under: drawn here, as the reader draws its header, so it can
+    /// be as tall as it needs.
+    private var bottomBar: some View {
+        HStack(spacing: 0) {
+            bottomBarLink("Read", systemImage: "book.fill") {
+                SplitReaderView(date: $date)
+            }
+
+            bottomBarLink("Search", systemImage: "magnifyingglass") {
+                SearchView()
+            }
+
+            bottomBarLink("Books", systemImage: "books.vertical.fill") {
+                BookLibraryView()
+            }
+
+            bottomBarLink("Write", systemImage: "pencil.line") {
+                DevotionalPickerView(
+                    isFullScreen: false,
+                    showNewProminent: true,
+                    initialModuleId: "devotionals"
+                )
+            }
+
+            bottomBarLink("Settings", systemImage: "gear") {
+                SettingsView(
+                    externalApps: externalBibleApps,
+                    planViewRefreshId: $planViewRefreshId
+                )
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: Self.bottomBarHeight)
+        .modifier(BottomBarGlass())
+        .padding(.horizontal, 20)
+    }
+
+    /// One destination in the bottom bar, an equal share of its width.
     private func bottomBarLink<Destination: View>(
         _ title: String,
         systemImage: String,
@@ -272,12 +279,14 @@ struct PlanView: View {
                 // destinations, none of them selected, so none takes the accent.
                 Image(systemName: systemImage)
                     .font(.body.weight(.medium))
+                    // The size a toolbar gave them, before the bar was its own.
+                    .imageScale(.large)
                     .foregroundColor(iOS26OrLater ? .primary : .accentColor)
                     // These glyphs differ in intrinsic height - books.vertical.fill
                     // and gear are noticeably taller than pencil.line - so without a
                     // shared box each label sits at its own baseline and the row
                     // reads as ragged.
-                    .frame(height: 22)
+                    .frame(height: 26)
                 Text(title)
                     .font(.caption2)
                     .foregroundColor(iOS26OrLater ? .primary : .accentColor)
@@ -287,10 +296,7 @@ struct PlanView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
-            // The 44pt target is the whole height of the item: the glass capsule
-            // behind the bar does not grow to fit its contents, so stacking icon,
-            // label and vertical padding on top of that overflowed it.
-            .frame(minWidth: 44, minHeight: 44, maxHeight: 44)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }
     }
@@ -454,6 +460,30 @@ struct PlanView: View {
         }
     }
 
+}
+
+/// The system's glass behind the plan screen's bar, or a material where the
+/// OS has no glass.
+private struct BottomBarGlass: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule())
+        } else {
+            content.background(.regularMaterial, in: Capsule())
+        }
+    }
+}
+
+private extension View {
+    /// Pins the plan screen's bottom bar, as a bar the plans scroll under.
+    @ViewBuilder
+    func planBottomBar<Bar: View>(@ViewBuilder _ bar: () -> Bar) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: .bottom, content: bar)
+        } else {
+            safeAreaInset(edge: .bottom, content: bar)
+        }
+    }
 }
 
 #Preview {
