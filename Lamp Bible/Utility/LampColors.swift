@@ -24,6 +24,11 @@ extension UIColor {
         }
     }
 
+    /// One of core's colours that holds in either appearance.
+    convenience init(_ rgb: LampRGB) {
+        self.init(red: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+    }
+
     /// Anything in text that takes you somewhere: verse references,
     /// cross-references, footnote markers, web links. Core's own blue, softer
     /// than the system's and readable in dense text, the one link style both
@@ -45,9 +50,22 @@ extension UIColor {
     /// Red-letter text, and only that.
     static let lampWordsOfChrist = UIColor(LampColorRole.wordsOfChrist.color)
 
-    /// Behind the words searched for.
-    static let lampFindMatch = UIColor.systemYellow
-        .withAlphaComponent(LampColorRole.findMatchOpacity)
+    /// Behind the words searched for, wherever a match is shown: the system
+    /// yellow's wash in light, and in dark a solid deep amber under cream
+    /// words (`lampOnFindMatch`), as the wash goes olive on charcoal.
+    static let lampFindMatch = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(LampColorRole.findMatchDarkGround)
+            : UIColor.systemYellow.withAlphaComponent(LampColorRole.findMatchOpacity)
+    }
+
+    /// The words on a find match's ground: the label colour in light, core's
+    /// cream (`findMatchDarkText`) on the dark amber.
+    static let lampOnFindMatch = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(LampColorRole.findMatchDarkText)
+            : .label
+    }
 }
 
 extension Color {
@@ -66,15 +84,39 @@ extension Color {
 
     /// Behind the words searched for.
     static let lampFindMatch = Color(uiColor: .lampFindMatch)
+
+    /// The words on a find match's ground.
+    static let lampOnFindMatch = Color(uiColor: .lampOnFindMatch)
 }
 
 extension Text {
-    /// Words searched for, marked as Safari marks a find: on a yellow ground,
-    /// in the text's own colour.
+    /// Words searched for, wherever a match is shown, a result's row as much
+    /// as a passage: on the find ground, in `lampOnFindMatch`, and bold, as
+    /// core's colour rules mark them. Bold alone, with no ground, was tried
+    /// for rows and was too easy to miss as a hit.
     static func findMatch<S: StringProtocol>(_ text: S) -> Text {
         var marked = AttributedString(String(text))
         marked.backgroundColor = .lampFindMatch
-        return Text(marked)
+        marked.foregroundColor = .lampOnFindMatch
+        return Text(marked).bold()
+    }
+}
+
+extension NSMutableAttributedString {
+    /// Marks words searched for in text being read as `Text.findMatch` marks
+    /// them: on the find ground, in `lampOnFindMatch`, and bold in the
+    /// text's own face and size.
+    func markFindMatch(in range: NSRange) {
+        addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: range)
+        addAttribute(.foregroundColor, value: UIColor.lampOnFindMatch, range: range)
+        enumerateAttribute(.font, in: range) { value, run, _ in
+            guard let font = value as? UIFont,
+                  let bold = font.fontDescriptor.withSymbolicTraits(
+                      font.fontDescriptor.symbolicTraits.union(.traitBold)
+                  )
+            else { return }
+            addAttribute(.font, value: UIFont(descriptor: bold, size: font.pointSize), range: run)
+        }
     }
 }
 

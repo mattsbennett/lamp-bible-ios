@@ -2018,7 +2018,7 @@ struct SearchResultRow: View {
         return Self.snippetText(fromMarked: marked, limit: 120)
     }
 
-    /// `<mark>`ed text as a `Text`, the marks as a result row marks them, cut to
+    /// `<mark>`ed text as a `Text`, the marks as find matches, cut to
     /// about `limit` characters starting a little before the first mark.
     static func snippetText(fromMarked marked: String, limit: Int) -> Text {
         var segments: [(text: String, isMark: Bool)] = []
@@ -2058,7 +2058,7 @@ struct SearchResultRow: View {
             if lower < upper {
                 let characters = Array(segment.text)
                 let piece = String(characters[lower..<upper])
-                text = text + (segment.isMark ? Text.searchMatch(piece) : Text(piece))
+                text = text + (segment.isMark ? Text.findMatch(piece) : Text(piece))
             }
             offset += segment.text.count
         }
@@ -2249,9 +2249,10 @@ struct ModuleSearchResultRow: View {
                                 attrText.uiKit.underlineColor = highlightColor.uiColor
                             }
                         } else {
-                            // A searched word in a result row
-                            attrText.foregroundColor = .primary
-                            attrText.font = .system(size: 15 * scaleFactor, weight: .semibold)
+                            // A searched word, as `Text.findMatch` marks it
+                            attrText.backgroundColor = Color.lampFindMatch
+                            attrText.foregroundColor = Color.lampOnFindMatch
+                            attrText.font = .system(size: 15 * scaleFactor, weight: .bold)
                         }
                     } else {
                         attrText.foregroundColor = LampTheme.readerText
@@ -2814,7 +2815,7 @@ private struct HighlightedTextUIView: UIViewRepresentable {
 
             while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                 let nsRange = NSRange(range, in: fullString)
-                result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
+                result.markFindMatch(in: nsRange)
                 searchStartIndex = range.upperBound
             }
         }
@@ -3629,14 +3630,16 @@ struct TranslationSearchPreviewSheet: View {
                     let marked = String(remaining[..<markEnd.lowerBound])
                     var attrText = AttributedString(marked)
                     attrText.backgroundColor = Color.lampFindMatch
-                    attrText.foregroundColor = .primary
+                    attrText.foregroundColor = Color.lampOnFindMatch
+                    attrText.font = .body.bold()
                     attributedResult.append(attrText)
                     remaining = String(remaining[markEnd.upperBound...])
                 } else {
                     // No closing tag, treat rest as marked
                     var attrText = AttributedString(remaining)
                     attrText.backgroundColor = Color.lampFindMatch
-                    attrText.foregroundColor = .primary
+                    attrText.foregroundColor = Color.lampOnFindMatch
+                    attrText.font = .body.bold()
                     attributedResult.append(attrText)
                     remaining = ""
                 }
@@ -3875,13 +3878,3 @@ private struct SearchModeMenuLabel: View {
     }
 }
 
-extension Text {
-    /// A searched word in a result row: semibold in the label colour, on no
-    /// ground, while the words round it keep their own. A ground behind
-    /// every match in a list pulls the eye harder than the rows' titles; the
-    /// yellow ground is for a match inside the text being read
-    /// (`Text.findMatch`).
-    static func searchMatch<S: StringProtocol>(_ text: S) -> Text {
-        Text(String(text)).fontWeight(.semibold).foregroundStyle(Color.primary)
-    }
-}

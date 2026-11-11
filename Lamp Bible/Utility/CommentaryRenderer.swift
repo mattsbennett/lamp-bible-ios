@@ -400,7 +400,7 @@ struct CommentaryRenderer {
 
                 while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                     let nsRange = NSRange(range, in: fullString)
-                    result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
+                    result.markFindMatch(in: nsRange)
                     searchStartIndex = range.upperBound
                 }
             }
@@ -630,7 +630,7 @@ struct CommentaryRenderer {
 
                 while let searchRange = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                     let nsRange = NSRange(searchRange, in: fullString)
-                    result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
+                    result.markFindMatch(in: nsRange)
                     searchStartIndex = searchRange.upperBound
                 }
             }

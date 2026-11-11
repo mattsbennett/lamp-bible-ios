@@ -202,7 +202,7 @@ struct LexiconTextRenderer {
                 var searchStart = fullString.startIndex
                 while let range = fullString.range(of: termLower, range: searchStart..<fullString.endIndex) {
                     let nsRange = NSRange(range, in: result.string)
-                    result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
+                    result.markFindMatch(in: nsRange)
                     searchStart = range.upperBound
                 }
             }
@@ -1762,7 +1762,7 @@ private struct LinkedTextView: UIViewRepresentable {
 
                 while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                     let nsRange = NSRange(range, in: fullString)
-                    result.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
+                    result.markFindMatch(in: nsRange)
                     searchStartIndex = range.upperBound
                 }
             }
@@ -2050,7 +2050,7 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
 
                 while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
                     let nsRange = NSRange(range, in: fullString)
-                    mutableAttrString.addAttribute(.backgroundColor, value: UIColor.lampFindMatch, range: nsRange)
+                    mutableAttrString.markFindMatch(in: nsRange)
                     searchStartIndex = range.upperBound
                 }
             }

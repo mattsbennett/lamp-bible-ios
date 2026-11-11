@@ -4473,6 +4473,7 @@ struct VerseSheetContent: View {
                 var highlight = AttributedString(String(text[range]))
                 highlight.font = .body.bold()
                 highlight.backgroundColor = .lampFindMatch
+                highlight.foregroundColor = .lampOnFindMatch
                 result.append(highlight)
                 currentIndex = range.upperBound
             } else {
@@ -4537,6 +4538,7 @@ struct VerseSheetContent: View {
                 var highlight = AttributedString(String(text[startIdx..<endIdx]))
                 highlight.font = .body.bold()
                 highlight.backgroundColor = .lampFindMatch
+                highlight.foregroundColor = .lampOnFindMatch
                 result.append(highlight)
             }
 
