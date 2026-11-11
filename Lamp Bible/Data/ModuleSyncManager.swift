@@ -446,23 +446,80 @@ class ModuleSyncManager: ObservableObject {
         standaloneModuleId: String?,
         in db: Database
     ) throws {
-        let sourceColumns = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(commentary_units)")
-            .compactMap { $0["name"] as String? }
-        let carriesFootnotesText = sourceColumns.contains("footnotes_text")
+        let carriesFootnotesText = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(commentary_units)")
+            .contains { ($0["name"] as String?) == "footnotes_text" }
         let lastRowid = try Int64.fetchOne(db, sql: "SELECT max(rowid) FROM commentary_units") ?? 0
-        try db.execute(sql: """
-            INSERT INTO commentary_units
-            (id, module_id, book, chapter, sv, ev, unit_type, level, parent_id,
-             title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index,
-             footnotes_text)
-            SELECT \(standaloneModuleId == nil ? "id, module_id" : "? || ':' || id, ?"), book, chapter, sv, ev, unit_type, level, parent_id,
-                   title, suffix, introduction_json, translation_json, commentary_json, footnotes_json, search_text, order_index,
-                   \(carriesFootnotesText ? "footnotes_text" : "NULL")
-            FROM \(dbAlias).commentary_units
-            """, arguments: StatementArguments(standaloneModuleId.map { [$0, $0] } ?? []))
+        try copyCompiled(
+            "commentary_units", of: .commentary, from: dbAlias,
+            filling: standaloneModuleId == nil ? [:] : ["id": ":module || ':' || id", "module_id": ":module"],
+            arguments: ["module": standaloneModuleId], in: db
+        )
         if !carriesFootnotesText {
             try CommentaryFootnoteSearchText.fill(in: db, after: lastRowid)
         }
+    }
+
+    /// A dictionary's own account of its publication, kept beside its
+    /// entry in `modules`.
+    static let dictionaryBibliography = ["editor", "publisher", "year", "isbn", "language"]
+
+    /// Copies one table of an attached module: every column it shares with
+    /// this database's `destination`, so a column both have arrives without
+    /// a list to edit, less those this database numbers itself
+    /// (`excluding`), and with `filling` giving, as SQL over the source row,
+    /// the columns this database sets for itself. Named arguments in
+    /// `filling` and `filter` bind from `arguments`.
+    static func copyRows(
+        from alias: String,
+        table: String,
+        into destination: String,
+        excluding: Set<String> = [],
+        filling: [String: String] = [:],
+        filter: String? = nil,
+        order: String? = nil,
+        arguments: [String: (any DatabaseValueConvertible)?] = [:],
+        in db: Database
+    ) throws {
+        func columns(_ schema: String, _ table: String) throws -> [String] {
+            try Row.fetchAll(db, sql: "PRAGMA \(schema).table_info(\(table))").compactMap { $0["name"] as String? }
+        }
+        let held = Set(try columns("main", destination))
+        let shared = try columns(alias, table).filter {
+            held.contains($0) && !excluding.contains($0) && filling[$0] == nil
+        }
+        let filled = filling.sorted { $0.key < $1.key }
+        let sql = """
+            INSERT INTO \(destination) (\((shared + filled.map(\.key)).joined(separator: ", ")))
+            SELECT \((shared + filled.map(\.value)).joined(separator: ", "))
+            FROM \(alias).\(table)
+            \(filter.map { "WHERE \($0)" } ?? "")
+            \(order.map { "ORDER BY \($0)" } ?? "")
+            """
+        // Only the arguments the statement names: SQLite refuses others.
+        let named = arguments.filter { sql.contains(":\($0.key)") }
+        try db.execute(sql: sql, arguments: StatementArguments(named))
+    }
+
+    /// `copyRows` for a table core says a compiled module holds, into where
+    /// `CompiledModuleLanding` says this database keeps it.
+    static func copyCompiled(
+        _ table: String,
+        of kind: ModuleType,
+        from alias: String,
+        filling: [String: String] = [:],
+        filter: String? = nil,
+        order: String? = nil,
+        arguments: [String: (any DatabaseValueConvertible)?] = [:],
+        in db: Database
+    ) throws {
+        guard let landing = CompiledModuleLanding.table(table, of: kind) else {
+            throw ModuleSyncError.importFailed("No place here for a \(kind.rawValue) module's \(table)")
+        }
+        try copyRows(
+            from: alias, table: table, into: landing.destination,
+            excluding: Set(landing.notKept.keys), filling: filling, filter: filter, order: order,
+            arguments: arguments, in: db
+        )
     }
 
     /// Copy one validated source into the caller's active transaction.
@@ -477,14 +534,7 @@ class ModuleSyncManager: ObservableObject {
         case .dictionary:
             // Copy dictionary entries, with the search text a compiled module
             // carries; one from before it gets its text written here.
-            let sourceColumns = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(dictionary_entries)")
-                .compactMap { $0["name"] as String? }
-            let searchText = sourceColumns.contains("search_text") ? "search_text" : "NULL"
-            try db.execute(sql: """
-                INSERT INTO dictionary_entries (id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json, search_text)
-                SELECT id, module_id, key, lemma, transliteration, pronunciation, senses_json, metadata_json, \(searchText)
-                FROM \(dbAlias).dictionary_entries
-                """)
+            try Self.copyCompiled("dictionary_entries", of: .dictionary, from: dbAlias, in: db)
             try DictionarySearchText.fill(in: db, moduleId: fileInfo.id)
 
         case .commentary:
@@ -543,14 +593,15 @@ class ModuleSyncManager: ObservableObject {
 
                     // Copy commentary books (standalone format - no module_id, series_full, series_abbrev columns)
                     // Use series info from series_meta instead
-                    try db.execute(sql: """
-                        INSERT INTO commentary_books
-                        (id, module_id, book_number, series_full, series_abbrev, title, author, editor,
-                         publisher, year, abbreviations_json, front_matter_json, indices_json)
-                        SELECT ? || ':' || book_number, ?, book_number, ?, ?, title, author, editor,
-                               publisher, year, abbreviations_json, front_matter_json, indices_json
-                        FROM \(dbAlias).commentary_books
-                        """, arguments: [fileInfo.id, fileInfo.id, seriesName, seriesAbbrev])
+                    try Self.copyCompiled(
+                        "commentary_books", of: .commentary, from: dbAlias,
+                        filling: [
+                            "id": ":module || ':' || book_number", "module_id": ":module",
+                            "series_full": ":seriesFull", "series_abbrev": ":seriesAbbrev",
+                        ],
+                        arguments: ["module": fileInfo.id, "seriesFull": seriesName, "seriesAbbrev": seriesAbbrev],
+                        in: db
+                    )
 
                     // Copy commentary units (standalone format - no module_id column)
                     try Self.copyCommentaryUnits(from: dbAlias, standaloneModuleId: fileInfo.id, in: db)
@@ -571,47 +622,23 @@ class ModuleSyncManager: ObservableObject {
                     """, arguments: [fileInfo.id, bookTitle, seriesFull, bookAuthor, filePath, fileInfo.fileHash, now, seriesFull, seriesAbbrev, now, now])
 
                 // Copy commentary book metadata
-                try db.execute(sql: """
-                    INSERT INTO commentary_books
-                    (id, module_id, book_number, series_full, series_abbrev, title, author, editor,
-                     publisher, year, abbreviations_json, front_matter_json, indices_json)
-                    SELECT id, module_id, book_number, series_full, series_abbrev, title, author, editor,
-                           publisher, year, abbreviations_json, front_matter_json, indices_json
-                    FROM \(dbAlias).commentary_books
-                    """)
+                try Self.copyCompiled("commentary_books", of: .commentary, from: dbAlias, in: db)
 
                 // Copy commentary units
                 try Self.copyCommentaryUnits(from: dbAlias, standaloneModuleId: nil, in: db)
             }
 
         case .book:
-            // The required columns, and those core says an older book may
-            // lack (its genre) where both the book and this table have them.
-            let columns = { (schema: String) in
-                Set(try Row.fetchAll(db, sql: "PRAGMA \(schema).table_info(book_modules)")
-                    .compactMap { $0["name"] as String? })
-            }
-            let moduleColumns = LampPortableModuleInspector.bookModuleColumnsToCopy(
-                source: try columns(dbAlias), destination: try columns("main")
-            ).joined(separator: ", ")
-            let sectionColumns = LampPortableModuleInspector.bookSectionColumns
-                .joined(separator: ", ")
-            try db.execute(sql: """
-                INSERT INTO book_modules (\(moduleColumns))
-                SELECT \(moduleColumns)
-                FROM \(dbAlias).book_modules
-                WHERE id = ?
-                """, arguments: [fileInfo.id])
-
+            try Self.copyCompiled(
+                "book_modules", of: .book, from: dbAlias,
+                filter: "id = :module", arguments: ["module": fileInfo.id], in: db
+            )
             // Compiler/bundler output stores parents before children.
             // Preserve that order so the self-referencing FK is valid.
-            try db.execute(sql: """
-                INSERT INTO book_sections (\(sectionColumns))
-                SELECT \(sectionColumns)
-                FROM \(dbAlias).book_sections
-                WHERE module_id = ?
-                ORDER BY rowid
-                """, arguments: [fileInfo.id])
+            try Self.copyCompiled(
+                "book_sections", of: .book, from: dbAlias,
+                filter: "module_id = :module", order: "rowid", arguments: ["module": fileInfo.id], in: db
+            )
 
         case .devotional:
             // Check which schema the source database uses
@@ -718,19 +745,19 @@ class ModuleSyncManager: ObservableObject {
             } else if tableNames.contains("plans") && tableNames.contains("plan_days") {
                 // Both compiled plans and full GRDB exports use these content
                 // columns. The local installation owns its path and revision.
-                let now = Int(Date().timeIntervalSince1970)
-                try db.execute(sql: """
-                    INSERT INTO plans (id, name, description, author, full_description, duration, readings_per_day,
-                        file_path, file_hash, last_synced, created_at, updated_at)
-                    SELECT id, name, description, author, full_description, duration, readings_per_day,
-                        ?, ?, ?, ?, ?
-                    FROM \(dbAlias).plans
-                    """, arguments: ["\(fileInfo.id).lamp", fileInfo.fileHash, now, now, now])
-                try db.execute(sql: """
-                    INSERT INTO plan_days (plan_id, day, readings_json)
-                    SELECT plan_id, day, readings_json
-                    FROM \(dbAlias).plan_days
-                    """)
+                try Self.copyCompiled(
+                    "plans", of: .plan, from: dbAlias,
+                    filling: [
+                        "file_path": ":filePath", "file_hash": ":hash", "last_synced": ":now",
+                        "created_at": ":now", "updated_at": ":now",
+                    ],
+                    arguments: [
+                        "filePath": "\(fileInfo.id).lamp", "hash": fileInfo.fileHash,
+                        "now": Int(Date().timeIntervalSince1970),
+                    ],
+                    in: db
+                )
+                try Self.copyCompiled("plan_days", of: .plan, from: dbAlias, in: db)
             } else {
                 throw ModuleSyncError.importFailed("Unknown plan database schema")
             }
@@ -748,7 +775,7 @@ class ModuleSyncManager: ObservableObject {
                 guard let metaRow = try Row.fetchOne(db, sql: "SELECT * FROM \(dbAlias).highlight_meta LIMIT 1"),
                       let setId: String = metaRow["id"],
                       let setName: String = metaRow["name"],
-                      let translationId: String = metaRow["translation_id"] else {
+                      metaRow["translation_id"] as String? != nil else {
                     throw ModuleSyncError.importFailed("Could not read highlight metadata")
                 }
 
@@ -758,34 +785,39 @@ class ModuleSyncManager: ObservableObject {
                     VALUES (?, 'highlights', ?, ?, ?, ?, ?, 1, ?, ?)
                     """, arguments: [fileInfo.id, setName, metaRow["description"] as String?, filePath, fileInfo.fileHash, now, now, now])
 
-                // Copy highlight set metadata
-                try db.execute(sql: """
-                    INSERT INTO highlight_sets (id, module_id, name, description, translation_id, created, last_modified)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, arguments: [setId, fileInfo.id, setName, metaRow["description"] as String?, translationId,
-                                     (metaRow["created"] as Int?) ?? now, (metaRow["last_modified"] as Int?) ?? now])
+                // Copy highlight set metadata. A set that gives no times is
+                // stamped with its arrival here, which the deletion ledger
+                // reads as when it was saved here.
+                try Self.copyCompiled(
+                    "highlight_meta", of: .highlights, from: dbAlias,
+                    filling: [
+                        "module_id": ":module",
+                        "created": "COALESCE(created, :now)",
+                        "last_modified": "COALESCE(last_modified, :now)",
+                    ],
+                    arguments: ["module": fileInfo.id, "now": now], in: db
+                )
 
                 // Copy highlights
-                try db.execute(sql: """
-                    INSERT INTO highlights (set_id, ref, sc, ec, style, color)
-                    SELECT ?, ref, sc, ec, style, color
-                    FROM \(dbAlias).highlights
-                    """, arguments: [setId])
+                try Self.copyCompiled(
+                    "highlights", of: .highlights, from: dbAlias,
+                    filling: ["set_id": ":set"], arguments: ["set": setId], in: db
+                )
 
-                // Copy themes if table exists
+                // Copy themes if table exists, each keyed by its set, colour
+                // and style
                 if tableNames.contains("highlight_themes") {
-                    let themeRows = try Row.fetchAll(db, sql: "SELECT * FROM \(dbAlias).highlight_themes")
-                    for row in themeRows {
-                        let color: String = row["color"] ?? ""
-                        let style: Int = row["style"] ?? 0
-                        let name: String = row["name"] ?? ""
-                        let desc: String? = row["description"]
-                        let themeId = "\(setId)_\(color.uppercased())_\(style)"
-                        try db.execute(sql: """
-                            INSERT INTO highlight_themes (id, set_id, color, style, name, description)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                            """, arguments: [themeId, setId, color.uppercased(), style, name, desc])
-                    }
+                    try Self.copyCompiled(
+                        "highlight_themes", of: .highlights, from: dbAlias,
+                        filling: [
+                            "id": ":set || '_' || upper(COALESCE(color, '')) || '_' || COALESCE(style, 0)",
+                            "set_id": ":set",
+                            "color": "upper(COALESCE(color, ''))",
+                            "style": "COALESCE(style, 0)",
+                            "name": "COALESCE(name, '')",
+                        ],
+                        arguments: ["set": setId], in: db
+                    )
                 }
             } else if tableNames.contains("highlight_sets") && tableNames.contains("highlights") {
                 // Full GRDB schema - copy directly. Only an import by hand
@@ -808,18 +840,10 @@ class ModuleSyncManager: ObservableObject {
 
         case .quiz:
             // Copy quiz module metadata
-            try db.execute(sql: """
-                INSERT INTO quiz_modules (id, plan_id, name, description, questions_per_reading, age_groups_json)
-                SELECT id, plan_id, name, description, questions_per_reading, age_groups_json
-                FROM \(dbAlias).quiz_modules
-                """)
+            try Self.copyCompiled("quiz_modules", of: .quiz, from: dbAlias, in: db)
 
             // Copy quiz questions
-            try db.execute(sql: """
-                INSERT INTO quiz_questions (quiz_module_id, day, sv, ev, age_group, question_index, question_json, answer_json, theme, christ_focused, references_json, cross_references_json)
-                SELECT quiz_module_id, day, sv, ev, age_group, question_index, question_json, answer_json, theme, christ_focused, references_json, cross_references_json
-                FROM \(dbAlias).quiz_questions
-                """)
+            try Self.copyCompiled("quiz_questions", of: .quiz, from: dbAlias, in: db)
 
         case .translation:
             // Check which schema the source database uses
@@ -833,46 +857,22 @@ class ModuleSyncManager: ObservableObject {
             if hasTranslationsTable {
                 // New GRDB schema - copy directly
                 // Always set is_bundled=0 since synced translations are user-imported, not bundled
-                let now = Int(Date().timeIntervalSince1970)
-                try db.execute(sql: """
-                    INSERT INTO translations (id, name, abbreviation, description, language, language_name,
-                        text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
-                        license, source_texts_json, features_json, versification, file_path, file_hash,
-                        last_synced, is_bundled, created_at, updated_at)
-                    SELECT id, name, abbreviation, description, language, language_name,
-                        text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
-                        license, source_texts_json, features_json, versification, file_path, file_hash,
-                        ?, 0, ?, ?
-                    FROM \(dbAlias).translations
-                    """, arguments: [now, now, now])
+                try Self.copyRows(
+                    from: dbAlias, table: "translations", into: "translations",
+                    filling: [
+                        "last_synced": ":now", "is_bundled": "0", "created_at": ":now", "updated_at": ":now",
+                    ],
+                    arguments: ["now": Int(Date().timeIntervalSince1970)], in: db
+                )
 
                 // Copy translation books (if table exists)
                 if tableNames.contains("translation_books") {
-                    try db.execute(sql: """
-                        INSERT INTO translation_books (id, translation_id, book_number, book_id, name, testament, chapter_count)
-                        SELECT id, translation_id, book_number, book_id, name, testament, chapter_count
-                        FROM \(dbAlias).translation_books
-                        """)
+                    try Self.copyRows(from: dbAlias, table: "translation_books", into: "translation_books", in: db)
                 }
 
-                // Copy translation verses
-                if tableNames.contains("translation_verses") {
-                    try db.execute(sql: """
-                        INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text,
-                            annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json)
-                        SELECT translation_id, ref, book, chapter, verse, text,
-                            annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json
-                        FROM \(dbAlias).translation_verses
-                        """)
-                }
-
-                // Copy translation headings (if table exists)
-                if tableNames.contains("translation_headings") {
-                    try db.execute(sql: """
-                        INSERT INTO translation_headings (translation_id, book, chapter, before_verse, level, text)
-                        SELECT translation_id, book, chapter, before_verse, level, text
-                        FROM \(dbAlias).translation_headings
-                        """)
+                // Copy translation verses and headings, numbered here
+                for table in ["translation_verses", "translation_headings"] where tableNames.contains(table) {
+                    try Self.copyRows(from: dbAlias, table: table, into: table, excluding: ["id"], in: db)
                 }
             } else if tableNames.contains("translation_meta") && hasVersesTable {
                 // Compact schema with translation_meta, books, verses, headings tables
@@ -890,53 +890,34 @@ class ModuleSyncManager: ObservableObject {
 
                 // Copy translation metadata from translation_meta
                 // Source table has content columns; we add app-specific columns ourselves
-                try db.execute(sql: """
-                    INSERT INTO translations (id, name, abbreviation, description, language, language_name,
-                        text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
-                        license, source_texts_json, features_json, versification, file_path, file_hash,
-                        last_synced, is_bundled, created_at, updated_at)
-                    SELECT id, name, abbreviation, description, language, language_name,
-                        text_direction, translation_philosophy, year, publisher, copyright, copyright_year,
-                        license, source_texts_json, features_json, versification,
-                        ?, ?, ?, 0, ?, ?
-                    FROM \(dbAlias).translation_meta
-                    """, arguments: [filePath, fileInfo.fileHash, now, now, now])
+                try Self.copyCompiled(
+                    "translation_meta", of: .translation, from: dbAlias,
+                    filling: [
+                        "file_path": ":filePath", "file_hash": ":hash", "last_synced": ":now",
+                        "is_bundled": "0", "created_at": ":now", "updated_at": ":now",
+                    ],
+                    arguments: ["filePath": filePath, "hash": fileInfo.fileHash, "now": now], in: db
+                )
 
                 // Copy books - compact schema: id=book_number, book_id=book_id string
                 if tableNames.contains("books") {
-                    try db.execute(sql: """
-                        INSERT INTO translation_books (id, translation_id, book_number, book_id, name, testament, chapter_count)
-                        SELECT ? || ':' || id, ?, id, book_id, name, testament, chapter_count
-                        FROM \(dbAlias).books
-                        """, arguments: [translationId, translationId])
+                    try Self.copyCompiled(
+                        "books", of: .translation, from: dbAlias,
+                        filling: [
+                            "id": ":translation || ':' || id", "translation_id": ":translation", "book_number": "id",
+                        ],
+                        arguments: ["translation": translationId], in: db
+                    )
                 }
 
-                // Copy verses - compact schema may not have all columns
-                // Check which columns exist
-                let versesCols = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(verses)")
-                let versesColNames = Set(versesCols.compactMap { $0["name"] as String? })
-
-                let hasFootnoteRefs = versesColNames.contains("footnote_refs_json")
-                let hasPoetry = versesColNames.contains("poetry_json")
-
-                try db.execute(sql: """
-                    INSERT INTO translation_verses (translation_id, ref, book, chapter, verse, text,
-                        annotations_json, footnotes_json, footnote_refs_json, paragraph, poetry_json)
-                    SELECT ?, ref, book, chapter, verse, text,
-                        annotations_json, footnotes_json,
-                        \(hasFootnoteRefs ? "footnote_refs_json" : "NULL"),
-                        paragraph,
-                        \(hasPoetry ? "poetry_json" : "NULL")
-                    FROM \(dbAlias).verses
-                    """, arguments: [translationId])
-
-                // Copy headings - compact schema doesn't have translation_id column
-                if tableNames.contains("headings") {
-                    try db.execute(sql: """
-                        INSERT INTO translation_headings (translation_id, book, chapter, before_verse, level, text)
-                        SELECT ?, book, chapter, before_verse, level, text
-                        FROM \(dbAlias).headings
-                        """, arguments: [translationId])
+                // Copy verses and headings - compact schema doesn't have a
+                // translation_id column
+                for table in ["verses", "headings"] where tableNames.contains(table) {
+                    try Self.copyCompiled(
+                        table, of: .translation, from: dbAlias,
+                        filling: ["translation_id": ":translation"],
+                        arguments: ["translation": translationId], in: db
+                    )
                 }
 
                 print("Imported translation from compact schema")
@@ -966,6 +947,7 @@ class ModuleSyncManager: ObservableObject {
             var keyType: String?
             var seriesFull: String?
             var seriesAbbrev: String?
+            var bibliography: [(any DatabaseValueConvertible)?] = Self.dictionaryBibliography.map { _ in nil }
             do {
                 let tables = Set(try String.fetchAll(
                     db, sql: "SELECT name FROM \(dbAlias).sqlite_master WHERE type IN ('table', 'view')"
@@ -983,6 +965,7 @@ class ModuleSyncManager: ObservableObject {
                     keyType = row["key_type"]
                     seriesFull = row["series_full"]
                     seriesAbbrev = row["series_abbrev"]
+                    bibliography = Self.dictionaryBibliography.map { row[$0] as DatabaseValue? }
                 }
             } catch {
                 print("Could not read module metadata from source database for dictionary: \(error)")
@@ -1001,6 +984,13 @@ class ModuleSyncManager: ObservableObject {
                 lastSynced: now, isEditable: false, keyType: keyType,
                 seriesFull: seriesFull, seriesAbbrev: seriesAbbrev
             ).save(db)
+            // What else the dictionary says of itself, where it says it.
+            try db.execute(
+                sql: "UPDATE modules SET "
+                    + Self.dictionaryBibliography.map { "\($0) = ?" }.joined(separator: ", ")
+                    + " WHERE id = ?",
+                arguments: StatementArguments(bibliography + [id])
+            )
 
         case .book:
             var name = id
@@ -2276,6 +2266,62 @@ class ModuleSyncManager: ObservableObject {
             }
         }
         return items
+    }
+}
+
+// MARK: - Compiled Modules
+
+/// What this database keeps of each table a compiled module holds: core's
+/// `LampModuleCompiledSchema` declares what arrives, and this where it goes.
+/// The import copies through it (`ModuleSyncManager.copyCompiled`), and
+/// `CompiledModuleLandingTests` holds it to core's declaration and to this
+/// database's tables, so a column a compiler adds fails a test here until it
+/// has somewhere to go or is left behind on purpose.
+enum CompiledModuleLanding {
+    struct Table {
+        /// The table that keeps the rows here.
+        let destination: String
+        /// Columns left behind, each with why.
+        var notKept: [String: String] = [:]
+        /// Columns whose NULL the import replaces with a value of its own,
+        /// so the column here may refuse NULL.
+        var filledWhenNull: Set<String> = []
+    }
+
+    private static let numberedHere = "This database numbers its own rows."
+
+    static func table(_ compiled: String, of kind: ModuleType) -> Table? {
+        switch (kind, compiled) {
+        case (.book, "book_modules"), (.book, "book_sections"),
+             (.commentary, "commentary_books"), (.commentary, "commentary_units"),
+             (.dictionary, "dictionary_entries"),
+             (.plan, "plans"), (.plan, "plan_days"),
+             (.quiz, "quiz_modules"):
+            return Table(destination: compiled)
+        case (.quiz, "quiz_questions"):
+            return Table(destination: compiled, notKept: ["id": numberedHere])
+        case (.dictionary, "module_metadata"):
+            // Written by `saveImportedModuleMetadata`, not copied.
+            return Table(destination: "modules", notKept: [
+                "schema_version": "The format's version, which inspecting the module has already read.",
+            ])
+        case (.translation, "translation_meta"):
+            return Table(destination: "translations")
+        case (.translation, "books"):
+            return Table(destination: "translation_books")
+        case (.translation, "verses"):
+            return Table(destination: "translation_verses", notKept: ["id": numberedHere])
+        case (.translation, "headings"):
+            return Table(destination: "translation_headings", notKept: ["id": numberedHere])
+        case (.highlights, "highlight_meta"):
+            return Table(destination: "highlight_sets", filledWhenNull: ["created", "last_modified"])
+        case (.highlights, "highlights"):
+            return Table(destination: "highlights", notKept: ["id": numberedHere])
+        case (.highlights, "highlight_themes"):
+            return Table(destination: "highlight_themes")
+        default:
+            return nil
+        }
     }
 }
 

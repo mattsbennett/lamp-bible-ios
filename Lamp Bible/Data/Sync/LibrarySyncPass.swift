@@ -399,6 +399,9 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     /// What each module path held here is, as the database knows it: a
     /// module's file may be named other than by its ID.
     private var heldModules: [String: (type: ModuleType, id: String)] = [:]
+    /// What each editable module exported as when the pass gathered it,
+    /// against which an install finds an edit made while the pass ran.
+    private var gatheredDigests: [String: String] = [:]
     /// Paths with a record before this pass: a first install is the only one
     /// that may be answered from the archive the device already installed.
     private var recordedPaths: Set<String> = []
@@ -475,8 +478,10 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             let data = try exportedBytes(module)
             let url = scratch.appendingPathComponent("\(UUID().uuidString).lamp")
             try data.write(to: url)
+            let digest = LibrarySyncPass.digest(data)
+            gatheredDigests[path] = digest
             gathered.local.append(LampSyncLocalFile(
-                path: path, kind: .module(kind), url: url, digest: LibrarySyncPass.digest(data)
+                path: path, kind: .module(kind), url: url, digest: digest
             ))
             if let saved = try savedAt(module) { gathered.savedAt[path] = saved }
             heldModules[path] = (module.type, module.id)
@@ -574,7 +579,8 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     /// Returns what this device holds at the path afterwards, as it would
     /// publish it, for an editable collection taken in whole; nil when that
     /// is the bytes that arrived. `merging` when both sides changed it;
-    /// otherwise the copy here is as last agreed, and is simply replaced.
+    /// otherwise the copy here is as last agreed, and is simply replaced,
+    /// unless it was edited while the pass ran.
     private func installModule(_ path: String, from url: URL, merging: Bool) async throws -> String? {
         guard let type = LibrarySyncPass.moduleType(of: path),
               let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
@@ -589,13 +595,21 @@ final class PhonePassLibrary: LampSyncPassLibrary {
            let installed = Self.archivedDigests()[id], installed == LibrarySyncPass.digest(data) {
             return nil
         }
+        // Edited here since the pass gathered it, which core can't see in
+        // the snapshot it planned from: both sides have changed it, so it is
+        // taken as a merge is, and recorded as the bytes that arrived, so
+        // the edit goes up next pass rather than counting as sent.
+        var editedDuringPass = false
+        if !merging, editable, let gathered = gatheredDigests[path], let module = try database.getModule(id: id) {
+            editedDuringPass = try exportDigest(module) != gathered
+        }
         let fileInfo = ModuleFileInfo(id: id, type: type, filePath: fileName, fileHash: nil, modificationDate: nil)
         try await modules.importRemoteModuleSnapshot(
             fileInfo: fileInfo, type: type,
             snapshot: LampSyncRemoteFile(data: data, revision: nil), storage: storage,
-            keepingNewerLocalHighlights: merging
+            keepingNewerLocalHighlights: merging || editedDuringPass
         )
-        guard editable, let module = try database.getModule(id: id),
+        guard editable, !editedDuringPass, let module = try database.getModule(id: id),
               !(try database.pendingModulePublications(type: type).contains(id)) else { return nil }
         // This device spells the same content its own way; recording the
         // other device's bytes as what it holds would have it send its own

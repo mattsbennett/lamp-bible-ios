@@ -2744,6 +2744,234 @@ final class QuizModulesMigrationTests: XCTestCase {
     }
 }
 
+/// Whether this database keeps what a compiled module holds, held to core's
+/// `LampModuleCompiledSchema` through `CompiledModuleLanding`. Core compiles
+/// each kind to check its declaration; this checks the other half, that
+/// each declared column has somewhere to go here, can be empty where a module
+/// may leave it empty, and arrives.
+final class CompiledModuleLandingTests: XCTestCase {
+    private let database = ModuleDatabase.shared
+
+    func testEveryColumnACompiledModuleHoldsHasSomewhereToGo() throws {
+        for kind in ModuleType.allCases {
+            for shape in LampModuleCompiledSchema.tables(for: kind) {
+                let name = "\(kind.rawValue)/\(shape.table)"
+                guard let landing = CompiledModuleLanding.table(shape.table, of: kind) else {
+                    XCTFail("\(name) has no place here: add it to CompiledModuleLanding")
+                    continue
+                }
+                let held = try database.read { try $0.columns(in: landing.destination) }
+                let byName = Dictionary(uniqueKeysWithValues: held.map { ($0.name, $0) })
+                for column in landing.notKept.keys {
+                    XCTAssertTrue(shape.columns.contains(column), "\(name): notKept names \(column), which isn't written")
+                }
+                for column in shape.columns where landing.notKept[column] == nil {
+                    guard let kept = byName[column] else {
+                        XCTFail("""
+                            \(name).\(column) has no column in \(landing.destination): add one in a \
+                            migration, or leave it behind on purpose in CompiledModuleLanding
+                            """)
+                        continue
+                    }
+                    // Left empty by a module, or absent from an older one,
+                    // it arrives as NULL, which SQLite won't swap for a DEFAULT.
+                    let mayBeEmpty = shape.mayBeNull.contains(column) || shape.mayBeAbsent.contains(column)
+                    if mayBeEmpty, !landing.filledWhenNull.contains(column) {
+                        XCTAssertFalse(kept.isNotNull, "\(name).\(column) may arrive empty, but \(landing.destination) refuses NULL")
+                    }
+                }
+            }
+        }
+    }
+
+    /// The smallest module of each kind core's own schema test compiles.
+    private static func minimalSource(_ kind: ModuleType, id: String) -> String? {
+        switch kind {
+        case .book: #"""
+            {"meta": {"schemaVersion": "1.0", "id": "\#(id)", "type": "book", "title": "B", "language": "en"},
+             "sections": [{"id": "one", "type": "chapter", "title": "One",
+               "content": [{"type": "paragraph", "content": {"text": "T."}}]}]}
+            """#
+        case .commentary: #"""
+            {"meta": {"schemaVersion": "2.2", "seriesAbbrev": "TST", "seriesFull": "Test", "title": "Genesis"},
+             "book": "Gen", "bookNumber": 1,
+             "chapters": [{"chapter": 1, "sections": [{"title": "C", "sv": 1001001, "ev": 1001002,
+               "pericopae": [{"title": "B", "sv": 1001001, "ev": 1001002,
+                 "verses": [{"sv": 1001001, "commentary": [{"type": "paragraph", "text": "A note"}]}]}]}]}]}
+            """#
+        case .dictionary: #"""
+            {"meta": {"schemaVersion": "2.1", "id": "\#(id)", "type": "dictionary", "name": "D", "keyType": "strongs"},
+             "entries": [{"key": "G1", "lemma": "alpha", "senses": [{"definition": "first"}]}]}
+            """#
+        case .translation: #"""
+            {"meta": {"schemaVersion": "1.0", "id": "\#(id)", "type": "translation",
+                      "name": "T", "abbreviation": "TST", "language": "en"},
+             "books": [{"id": "Gen", "name": "Genesis", "number": 1, "testament": "OT",
+               "chapters": [{"chapter": 1, "headings": [{"beforeVerse": 1, "level": 1, "text": "Creation"}],
+                 "verses": [{"v": 1, "ref": 1001001, "content": {"text": "In the beginning"}}]}]}]}
+            """#
+        case .plan: #"""
+            {"meta": {"schemaVersion": "1.0", "id": "\#(id)", "type": "plan", "name": "P"},
+             "days": [{"day": 1, "readings": [{"sv": 1001001, "ev": 1001999}]}]}
+            """#
+        case .quiz: #"""
+            {"meta": {"schemaVersion": "1.0", "id": "\#(id)", "type": "quiz", "planId": "shape_plan", "name": "Q",
+                      "ageGroups": [{"id": "adult", "label": "Adult", "ageRange": "18+"}]},
+             "days": [{"day": 1, "readings": [{"sv": 1001001, "ev": 1001999,
+               "quizzes": {"adult": [{"question": {"text": "Who?"}, "answer": "God.",
+                 "theme": "doctrine", "christFocused": false, "references": [1001001]}]}}]}]}
+            """#
+        case .highlights: #"""
+            {"meta": {"schemaVersion": "1.0", "id": "\#(id)", "type": "highlights", "translationId": "ESV",
+                      "themes": [{"color": "#ffcc00", "style": 0, "name": "P"}]},
+             "verses": [{"ref": 43003016, "highlights": [{"sc": 0, "ec": 3, "style": 0, "color": "#ffcc00"}]}]}
+            """#
+        case .notes, .devotional: nil
+        }
+    }
+
+    /// Each table a module's rows land in here, and the column naming it.
+    private static func landed(_ kind: ModuleType) -> [(table: String, key: String)] {
+        switch kind {
+        case .book: [("book_sections", "module_id"), ("book_modules", "id")]
+        case .commentary: [("commentary_units", "module_id"), ("commentary_books", "module_id"), ("modules", "id")]
+        case .dictionary: [("dictionary_entries", "module_id"), ("modules", "id")]
+        case .translation: [
+            ("translation_headings", "translation_id"), ("translation_verses", "translation_id"),
+            ("translation_books", "translation_id"), ("translations", "id"),
+        ]
+        case .plan: [("plan_days", "plan_id"), ("plans", "id")]
+        case .quiz: [("quiz_questions", "quiz_module_id"), ("quiz_modules", "id")]
+        case .highlights: [
+            ("highlights", "set_id"), ("highlight_themes", "set_id"), ("highlight_sets", "module_id"), ("modules", "id"),
+        ]
+        case .notes, .devotional: []
+        }
+    }
+
+    private func install(_ json: String, kind: ModuleType, id: String) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent(id).appendingPathExtension("lamp")
+        _ = try LampModuleCompiler().compile(data: Data(json.utf8), sourceFilename: "\(id).json", destinationURL: url)
+        try await ModuleSyncManager.shared.importModuleFromFile(url: url, moduleType: kind)
+    }
+
+    private func remove(_ kind: ModuleType, id: String) {
+        try? database.write { db in
+            for (table, key) in Self.landed(kind) {
+                try db.execute(sql: "DELETE FROM \(table) WHERE \(key) = ?", arguments: [id])
+            }
+            try db.execute(sql: "DELETE FROM modules WHERE id = ?", arguments: [id])
+        }
+    }
+
+    /// Every declared kind installs from its smallest module, and fills each
+    /// table it lands in: a copy naming a column the module leaves out, or
+    /// refusing an empty one, fails here.
+    func testTheSmallestModuleOfEachKindInstalls() async throws {
+        for kind in ModuleType.allCases {
+            let id = "landing-\(kind.rawValue)-\(UUID().uuidString.prefix(8).lowercased())"
+            guard let source = Self.minimalSource(kind, id: id) else { continue }
+            defer { remove(kind, id: id) }
+            do {
+                try await install(source, kind: kind, id: id)
+            } catch {
+                XCTFail("\(kind.rawValue) didn't install: \(error)")
+                continue
+            }
+            for (table, key) in Self.landed(kind) {
+                let rows = try database.read { db in
+                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table) WHERE \(key) = ?", arguments: [id]) ?? 0
+                }
+                XCTAssertGreaterThan(rows, 0, "\(kind.rawValue) left \(table) empty")
+            }
+        }
+    }
+
+    /// What an author writes beside the text arrives: a translation's
+    /// departures from its numbering, a plan's source and licence, a
+    /// dictionary's bibliography.
+    func testWhatAnAuthorWritesBesideTheTextIsKept() async throws {
+        let suffix = UUID().uuidString.prefix(8).lowercased()
+        let translation = "landing-departures-\(suffix)"
+        let plan = "landing-source-\(suffix)"
+        let dictionary = "landing-bibliography-\(suffix)"
+        defer {
+            remove(.translation, id: translation)
+            remove(.plan, id: plan)
+            remove(.dictionary, id: dictionary)
+        }
+
+        try await install(#"""
+            {"meta": {"schemaVersion": "1.0", "id": "\#(translation)", "type": "translation",
+                      "name": "T", "abbreviation": "TDP", "language": "en",
+                      "versificationMappings": ["ROM 14:24-26 = ROM 16:25-27"]},
+             "books": [{"id": "Rom", "name": "Romans", "number": 45, "testament": "NT",
+               "chapters": [{"chapter": 14, "verses": [{"v": 24, "ref": 45014024, "content": {"text": "Now to him"}}]}]}]}
+            """#, kind: .translation, id: translation)
+        try await install(#"""
+            {"meta": {"schemaVersion": "1.0", "id": "\#(plan)", "type": "plan", "name": "P",
+                      "source": "The Bible in a Year", "license": "CC BY 4.0"},
+             "days": [{"day": 1, "readings": [{"sv": 1001001, "ev": 1001999}]}]}
+            """#, kind: .plan, id: plan)
+        try await install(#"""
+            {"meta": {"schemaVersion": "2.1", "id": "\#(dictionary)", "type": "dictionary", "name": "D",
+                      "keyType": "strongs", "editor": "E. Ditor", "publisher": "P. Ublisher",
+                      "year": 1889, "isbn": "978-0-00-000000-0", "language": "en"},
+             "entries": [{"key": "G1", "lemma": "alpha", "senses": [{"definition": "first"}]}]}
+            """#, kind: .dictionary, id: dictionary)
+
+        try database.read { db in
+            let departures = try String.fetchOne(
+                db, sql: "SELECT versification_mappings FROM translations WHERE id = ?", arguments: [translation]
+            )
+            XCTAssertEqual(departures.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) },
+                           ["ROM 14:24-26 = ROM 16:25-27"])
+            let planRow = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT source, license FROM plans WHERE id = ?", arguments: [plan]))
+            XCTAssertEqual(planRow["source"] as String?, "The Bible in a Year")
+            XCTAssertEqual(planRow["license"] as String?, "CC BY 4.0")
+            let dictionaryRow = try XCTUnwrap(Row.fetchOne(
+                db, sql: "SELECT editor, publisher, year, isbn, language FROM modules WHERE id = ?", arguments: [dictionary]
+            ))
+            XCTAssertEqual(dictionaryRow["editor"] as String?, "E. Ditor")
+            XCTAssertEqual(dictionaryRow["publisher"] as String?, "P. Ublisher")
+            XCTAssertEqual(dictionaryRow["year"] as Int?, 1889)
+            XCTAssertEqual(dictionaryRow["isbn"] as String?, "978-0-00-000000-0")
+            XCTAssertEqual(dictionaryRow["language"] as String?, "en")
+        }
+    }
+}
+
+final class ModuleDatabaseWriteTests: XCTestCase {
+    /// A write here holds the write lock from its start. Another connection
+    /// writing meanwhile, as an import's word lists do, waits its turn
+    /// rather than leaving this write's read stale and the write refused
+    /// at once (SQLITE_BUSY_SNAPSHOT), as a module saved just after an
+    /// import once was.
+    func testAWriteThatReadsFirstHoldsTheLockAgainstAnotherConnection() throws {
+        let database = ModuleDatabase.shared
+        var config = Configuration()
+        config.busyMode = .immediateError
+        let other = try DatabaseQueue(path: database.fileURL.path, configuration: config)
+        defer { try? other.close() }
+        let ids = ["write-lock-\(UUID().uuidString)", "write-lock-other-\(UUID().uuidString)"]
+        defer { for id in ids { try? database.deleteModule(id: id) } }
+        let insert = "INSERT INTO modules (id, type, name, file_path, is_editable) VALUES (?, 'notes', 'Probe', 'p.lamp', 0)"
+
+        try database.write { db in
+            _ = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM modules")
+            XCTAssertThrowsError(
+                try other.write { try $0.execute(sql: insert, arguments: [ids[1]]) },
+                "the other connection wrote while this write was under way"
+            )
+            try db.execute(sql: insert, arguments: [ids[0]])
+        }
+        XCTAssertNotNil(try database.getModule(id: ids[0]))
+    }
+}
+
 final class SyncFileRecordTests: XCTestCase {
     private let database = ModuleDatabase.shared
     private let source = "webdav:https://records-\(UUID().uuidString).test/LampBible|someone"
@@ -2801,7 +3029,14 @@ private actor LibraryServer {
     private(set) var fetches: [String] = []
     func fetch(_ path: String) -> LampSyncRemoteFile? {
         fetches.append(path)
+        whileFetching.removeValue(forKey: path)?()
         return visible(path)
+    }
+
+    /// What the person does on the device while `path` downloads, once.
+    private var whileFetching: [String: @Sendable () -> Void] = [:]
+    func whileFetching(_ path: String, _ action: @escaping @Sendable () -> Void) {
+        whileFetching[path] = action
     }
 
     /// Another device's write.
@@ -3450,6 +3685,31 @@ final class LibrarySyncPassTests: XCTestCase {
         _ = try await pass().run()
 
         XCTAssertEqual(try storedHighlightRefs(), [43_003_016, 43_003_017])
+    }
+
+    /// A highlight added while the rebuilt module downloads: the pass
+    /// planned from a set as last agreed, but the set has changed since, so
+    /// it is weighed as both sides changed, kept, and sent next pass.
+    func testAHighlightAddedWhileTheModuleDownloadsIsKeptAndSent() async throws {
+        let path = "Highlights/\(moduleId!).lamp"
+        _ = try await pass().run()
+        let first = try await publishCompiledElsewhere(highlightsJSON([(43_003_016, 0, 3)]), at: path)
+        _ = try await pass().run()
+        let rebuilt = try await publishCompiledElsewhere(
+            highlightsJSON([(43_003_016, 0, 3), (43_003_017, 0, 5)]), at: path, replacing: first
+        )
+        let setId = moduleId!
+        await server.whileFetching(path) {
+            _ = try? ModuleDatabase.shared.saveHighlight(HighlightEntry(setId: setId, ref: 43_003_018, sc: 0, ec: 4))
+            try? ModuleDatabase.shared.updateHighlightSetModified(id: setId)
+        }
+
+        _ = try await pass().run()
+        XCTAssertEqual(try storedHighlightRefs(), [43_003_016, 43_003_018], "the highlight added during the download")
+
+        _ = try await pass().run()
+        let published = await server.file(path)
+        XCTAssertNotEqual(published?.revision, rebuilt, "the set here goes up next pass")
     }
 
     /// Edited here and rebuilt elsewhere: a module that gives no time can't

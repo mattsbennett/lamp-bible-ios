@@ -44,6 +44,11 @@ class ModuleDatabase {
         // `SearchIndexRepair` writes on a second connection, in short
         // transactions. Wait one out rather than failing a write outright.
         config.busyMode = .timeout(5)
+        // And take the write lock as a write begins. A write that reads
+        // first, then finds the other connection has written since, fails
+        // at once however long it would wait (SQLITE_BUSY_SNAPSHOT); an
+        // import's word lists, refreshed as it ends, set that up.
+        config.defaultTransactionKind = .immediate
 
         // Try to open the database
         do {
@@ -1516,6 +1521,24 @@ class ModuleDatabase {
         // whole install. Unknown is kept unknown rather than read as none.
         migrator.registerMigration("v34_quiz_questions_per_reading_optional") { db in
             try Self.allowUnknownQuestionsPerReading(in: db)
+        }
+
+        // Somewhere for the rest of what a compiled module carries: a
+        // translation's departures from its numbering, a plan's source and
+        // licence, a dictionary's bibliography (CompiledModuleLanding).
+        migrator.registerMigration("v35_compiled_module_columns") { db in
+            let added = [
+                ("translations", "versification_mappings", "TEXT"),
+                ("plans", "source", "TEXT"), ("plans", "license", "TEXT"),
+                ("modules", "editor", "TEXT"), ("modules", "publisher", "TEXT"),
+                ("modules", "year", "INTEGER"), ("modules", "isbn", "TEXT"), ("modules", "language", "TEXT"),
+            ]
+            for (table, column, type) in added {
+                guard try db.tableExists(table),
+                      try !db.columns(in: table).contains(where: { $0.name == column })
+                else { continue }
+                try db.execute(sql: "ALTER TABLE \(table) ADD COLUMN \(column) \(type)")
+            }
         }
 
         return migrator
