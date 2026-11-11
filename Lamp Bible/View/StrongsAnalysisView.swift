@@ -2431,42 +2431,6 @@ private struct StrongsBarTrack: View {
     }
 }
 
-/// Where the canon strip names its standout book. The name is wider than
-/// one column, so it has to clear every column it spans, not only its own:
-/// Romans, named over its own column, ran through Acts beside it.
-enum StrongsCanonStripLabel {
-    /// The name's centre, and the height of the tallest column under it.
-    ///
-    /// Tries the name centred over the book's column, then starting at its
-    /// left edge, then ending at its right edge, and keeps whichever stands
-    /// lowest, so the name stays by its column when a tall neighbour sits
-    /// on one side only; a tie keeps it centred.
-    static func place(
-        labelWidth: CGFloat,
-        over index: Int,
-        heights: [CGFloat],
-        column: CGFloat,
-        spacing: CGFloat,
-        in width: CGFloat
-    ) -> (x: CGFloat, clearing: CGFloat) {
-        let half = labelWidth / 2
-        let left = (column + spacing) * CGFloat(index)
-        let clearing = { (x: CGFloat) -> CGFloat in
-            heights.indices
-                .filter { i in
-                    let start = (column + spacing) * CGFloat(i)
-                    return start < x + half + 2 && start + column > x - half - 2
-                }
-                .map { heights[$0] }
-                .max() ?? 0
-        }
-        return [left + column / 2, left + half, left + column - half]
-            .map { min(max($0, half), width - half) }
-            .map { (x: $0, clearing: clearing($0)) }
-            .min { $0.clearing < $1.clearing }!
-    }
-}
-
 /// The key's whole spread through the canon at a glance: a column for each
 /// book in canonical order, coloured as the book list colours it, over the
 /// canon's divisions, with the tallest column's count as the scale and the
@@ -2518,10 +2482,10 @@ private struct StrongsCanonStrip: View {
             GeometryReader { proxy in
                 let column = columnWidth(in: proxy.size.width)
                 let label = standout.map {
-                    StrongsCanonStripLabel.place(
+                    LampStrongsCanonStripLabel.place(
                         labelWidth: standoutSize.width,
                         over: $0.index,
-                        heights: books.map { columnHeight($0, most: most) },
+                        heights: books.map { Double(columnHeight($0, most: most)) },
                         column: column,
                         spacing: spacing,
                         in: proxy.size.width
@@ -2588,6 +2552,8 @@ private struct StrongsCanonStrip: View {
                             .foregroundStyle(color(.more))
                             .fixedSize()
                             .onGeometryChange(for: CGSize.self) { $0.size } action: { standoutSize = $0 }
+                            // Not drawn at a guess before it's measured.
+                            .opacity(standoutSize == .zero ? 0 : 1)
                             .position(
                                 x: label.x,
                                 y: max(Self.labelBand + Self.chartHeight - label.clearing - 2 - half, half)
