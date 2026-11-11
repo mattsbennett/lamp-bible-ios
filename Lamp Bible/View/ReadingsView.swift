@@ -40,6 +40,10 @@ struct ReadingsView: View {
         return externalBibleApps.first { $0.name == name && $0.isInstalled }
     }
 
+    /// Whether the readings are read aloud in turns, as Settings sets: one
+    /// reader, the usual case, shows nothing of it.
+    private var sharesAmongReaders: Bool { readerCount > 1 }
+
     private func isRead(_ reading: ReadingMetaData) -> Bool {
         completedReadingIds.contains(reading.id)
     }
@@ -443,29 +447,33 @@ struct ReadingsView: View {
             // app's button the chip counts the readers by its figure alone,
             // on every row alike, so they keep to one line on a phone and
             // the day's readings stay on its screen.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    readingActions(reading, chip: externalApp == nil ? .chip : .shortChip)
+            if sharesAmongReaders || externalApp != nil {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        readingActions(reading, chip: externalApp == nil ? .chip : .shortChip)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        readingActions(reading, chip: .chip)
+                    }
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    readingActions(reading, chip: .chip)
-                }
+                .padding(.leading, 54)
             }
-            .padding(.leading, 54)
         }
         .padding(EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 14))
     }
 
     @ViewBuilder
     private func readingActions(_ reading: ReadingMetaData, chip: ReaderSplitControl.Style) -> some View {
-        // What the count is, and the readers it's shared among.
-        ReaderSplitControl(
-            chapterVerseCounts: reading.chapterVerseCounts,
-            isResolved: reading.isResolved,
-            readerCount: $readerCount,
-            style: chip
-        )
-        .fixedSize()
+        // How many verses each reader takes in turn.
+        if sharesAmongReaders {
+            ReaderSplitControl(
+                chapterVerseCounts: reading.chapterVerseCounts,
+                isResolved: reading.isResolved,
+                readerCount: $readerCount,
+                style: chip
+            )
+            .fixedSize()
+        }
 
         // The way out to the other app, named so it's plain where it
         // goes, beside the in-app Bible's way in: the reading itself.

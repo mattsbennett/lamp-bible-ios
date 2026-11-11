@@ -549,11 +549,14 @@ struct PlanInfoPopover: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                ReaderSplitControl(
-                    chapterVerseCounts: reading.chapterVerseCounts,
-                    isResolved: reading.isResolved,
-                    readerCount: $readerCount
-                )
+                // Only when reading aloud in turns, as Settings sets.
+                if readerCount > 1 {
+                    ReaderSplitControl(
+                        chapterVerseCounts: reading.chapterVerseCounts,
+                        isResolved: reading.isResolved,
+                        readerCount: $readerCount
+                    )
+                }
             }
             .padding()
             .onChange(of: readerCount) { _, newValue in

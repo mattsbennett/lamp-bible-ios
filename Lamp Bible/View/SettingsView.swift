@@ -493,11 +493,33 @@ struct SettingsView: View {
                             LampIconTile(systemName: "book.fill", color: .accentColor)
                         }
                     }.tint(.accentColor)
+
+                    // One reader, the usual case, shows nothing of it: the
+                    // split is only for reading aloud in turns.
+                    Stepper(value: Binding(
+                        get: { userSettings.planReaderCount },
+                        set: { newValue in
+                            try? UserDatabase.shared.updateSettings { $0.planReaderCount = newValue }
+                            userSettings = UserDatabase.shared.getSettings()
+                        }
+                    ), in: 1...20) {
+                        Label {
+                            HStack {
+                                Text("Readers")
+                                Spacer()
+                                Text("\(userSettings.planReaderCount)")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        } icon: {
+                            LampIconTile(systemName: "person.2.fill", color: .teal)
+                        }
+                    }
                 } header: {
                     Text("Reading Plans").lampSectionHeader()
                 } footer: {
                     Group {
-                    Text("Tapping a reading opens it in Lamp Bible’s reader, and Start Reading goes through the day’s readings in order.")
+                    Text("Tapping a reading opens it in Lamp Bible’s reader, and Start Reading goes through the day’s readings in order. With more than one reader, each reading shows how many verses each reads in turn.")
                     }
                     .foregroundStyle(LampTheme.caption)
                 }
