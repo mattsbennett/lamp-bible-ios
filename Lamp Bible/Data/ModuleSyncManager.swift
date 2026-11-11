@@ -354,6 +354,9 @@ class ModuleSyncManager: ObservableObject {
                 fileInfo: fileInfo,
                 tempURL: tempURL
             )
+            if let mediaStorage {
+                try await downloadNoteMedia(moduleId: fileInfo.id, from: mediaStorage)
+            }
             return
         }
         if type == .devotional {
@@ -1088,8 +1091,9 @@ class ModuleSyncManager: ObservableObject {
         tempURL: URL
     ) async throws {
         let remoteQueue = try DatabaseQueue(path: tempURL.path)
-        let remoteEntries = try await remoteQueue.read { db in
-            try NoteEntry.fetchAll(db)
+        let (remoteEntries, carriesMedia) = try await remoteQueue.read { db in
+            (try NoteEntry.fetchAll(db),
+             try db.columns(in: "note_entries").contains { $0.name == "media_json" })
         }
         let metadata = try await editableModuleMetadata(
             id: fileInfo.id, type: .notes,
@@ -1100,7 +1104,9 @@ class ModuleSyncManager: ObservableObject {
                 .filter(Column("module_id") == fileInfo.id)
                 .fetchAll(db)
             let result = mergeNoteEntries(
-                local: localEntries, cloud: remoteEntries, moduleId: fileInfo.id,
+                local: localEntries,
+                cloud: carriesMedia ? remoteEntries : Self.keepingLocalMedia(remoteEntries, from: localEntries),
+                moduleId: fileInfo.id,
                 deletions: try ModuleDatabase.personalDeletionLedger(in: db)
             )
             try saveEditableReconciliation(
@@ -1358,6 +1364,42 @@ class ModuleSyncManager: ObservableObject {
             && local.content == cloud.content
             && LampSyncJSONComparison.sameValue(local.verseRefsJson, cloud.verseRefsJson)
             && LampSyncJSONComparison.sameValue(local.footnotesJson, cloud.footnotesJson)
+            && LampSyncJSONComparison.sameValue(local.mediaJson, cloud.mediaJson)
+    }
+
+    /// Notes from a file written before notes carried pictures. Its missing
+    /// column says nothing about a note's pictures, so each note keeps the
+    /// ones it has here; taken as an empty list, a note edited on a device
+    /// that can't hold pictures would arrive without them.
+    static func keepingLocalMedia(_ incoming: [NoteEntry], from local: [NoteEntry]) -> [NoteEntry] {
+        let media = Dictionary(
+            local.compactMap { entry in entry.mediaJson.map { (entry.verseId, $0) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return incoming.map { entry in
+            var entry = entry
+            entry.mediaJson = media[entry.verseId]
+            return entry
+        }
+    }
+
+    /// Both copies' pictures, for a note that keeps both texts: the local
+    /// list first, then each of the other's it lacks. Entries are kept as
+    /// written, so a field a newer Lamp wrote survives.
+    static func combinedMedia(_ local: String?, _ cloud: String?) -> String? {
+        func entries(_ json: String?) -> [[String: Any]] {
+            guard let data = json?.data(using: .utf8),
+                  let list = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return [] }
+            return list.compactMap { $0 as? [String: Any] }
+        }
+        let ours = entries(local)
+        let seen = Set(ours.compactMap { $0["id"] as? String })
+        let theirs = entries(cloud).filter { ($0["id"] as? String).map { !seen.contains($0) } ?? false }
+        guard !theirs.isEmpty else { return local ?? cloud }
+        guard let data = try? JSONSerialization.data(withJSONObject: ours + theirs, options: [.sortedKeys]) else {
+            return local
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Whether two copies of a devotional say the same thing.
@@ -1457,7 +1499,10 @@ class ModuleSyncManager: ObservableObject {
                         + conflict.cloudEntry.content,
                     verseRefs: references,
                     lastModified: resolvedTimestamp,
-                    footnotes: localFootnotes + cloudFootnotes
+                    footnotes: localFootnotes + cloudFootnotes,
+                    mediaJson: Self.combinedMedia(
+                        conflict.localEntry.mediaJson, conflict.cloudEntry.mediaJson
+                    )
                 )
                 try database.saveNoteEntry(entry)
             }
@@ -1670,7 +1715,8 @@ class ModuleSyncManager: ObservableObject {
                     last_modified INTEGER,
                     footnotes_json TEXT,
                     search_text TEXT,
-                    record_change_tag TEXT
+                    record_change_tag TEXT,
+                    media_json TEXT
                 )
             """)
 
@@ -1697,8 +1743,8 @@ class ModuleSyncManager: ObservableObject {
                 try db.execute(
                     sql: """
                         INSERT INTO note_entries
-                        (id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified, footnotes_json, search_text, record_change_tag)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified, footnotes_json, search_text, record_change_tag, media_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     arguments: [
                         entry.id,
@@ -1713,7 +1759,8 @@ class ModuleSyncManager: ObservableObject {
                         entry.lastModified,
                         entry.footnotesJson,
                         entry.searchText,
-                        entry.recordChangeTag
+                        entry.recordChangeTag,
+                        entry.mediaJson
                     ]
                 )
             }
@@ -2144,6 +2191,41 @@ class ModuleSyncManager: ObservableObject {
         }
         return items
     }
+
+    /// Fetches the pictures a notes module's notes name that this device
+    /// lacks. They come because the notes named them, so a note attached
+    /// on another device brings its pictures with it.
+    func downloadNoteMedia(moduleId: String, from storage: ModuleStorage) async throws {
+        let items = try noteMediaItems(moduleId: moduleId)
+        try await LampSyncReferencedMedia.downloadMissing(items) { path in
+            try await storage.readFile(path: path)
+        }
+    }
+
+    /// Each picture a notes module's notes name, where it syncs and where it
+    /// is kept here. One whose name can't be a path is left out rather than
+    /// failing the rest, as one that can't be read is.
+    func noteMediaItems(moduleId: String) throws -> [LampSyncReferencedMedia.Item] {
+        guard BookMediaPath.isSafeFilename(moduleId) else { return [] }
+        let entries = try database.read { db in
+            try NoteEntry
+                .filter(Column("module_id") == moduleId)
+                .filter(Column("media_json") != nil)
+                .fetchAll(db)
+        }
+        return entries.flatMap { entry in
+            entry.media.compactMap { ref -> LampSyncReferencedMedia.Item? in
+                guard BookMediaPath.isSafeFilename(ref.filename),
+                      let remotePath = try? LampSyncFolderLayout.noteMediaPath(
+                          moduleID: moduleId, noteOwnerID: NoteMedia.owner(entry.verseId), filename: ref.filename
+                      ) else { return nil }
+                return LampSyncReferencedMedia.Item(
+                    remotePath: remotePath,
+                    localURL: NoteMedia.expectedURL(for: ref, moduleId: moduleId, verseId: entry.verseId)
+                )
+            }
+        }
+    }
 }
 
 // MARK: - Compiled Modules
@@ -2196,6 +2278,10 @@ enum CompiledModuleLanding {
             return Table(destination: "highlights", notKept: ["id": numberedHere])
         case (.highlights, "highlight_themes"):
             return Table(destination: "highlight_themes")
+        case (.notes, "note_entries"):
+            // Taken in as records by the notes merge rather than copied, but
+            // into this table, which has to keep everything the file carries.
+            return Table(destination: compiled)
         default:
             return nil
         }

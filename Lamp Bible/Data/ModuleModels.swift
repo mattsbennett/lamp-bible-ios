@@ -836,6 +836,11 @@ struct NoteEntry: Codable, FetchableRecord, PersistableRecord, Identifiable {
     var footnotesJson: String?    // JSON array of UserNotesFootnote
     var searchText: String?       // Combined text for FTS (content + footnotes)
     var recordChangeTag: String?  // CloudKit record change tag for sync
+    /// The note's pictures, as the JSON they were stored as rather than
+    /// decoded and rebuilt, so a field a newer Lamp wrote survives a save
+    /// here. Nil says nothing about them; a note whose pictures were all
+    /// taken off holds an empty list.
+    var mediaJson: String?
 
     enum CodingKeys: String, CodingKey {
         case id, book, chapter, verse, title, content
@@ -846,6 +851,7 @@ struct NoteEntry: Codable, FetchableRecord, PersistableRecord, Identifiable {
         case footnotesJson = "footnotes_json"
         case searchText = "search_text"
         case recordChangeTag = "record_change_tag"
+        case mediaJson = "media_json"
     }
 
     init(
@@ -856,7 +862,8 @@ struct NoteEntry: Codable, FetchableRecord, PersistableRecord, Identifiable {
         content: String,
         verseRefs: [Int]? = nil,
         lastModified: Int? = nil,
-        footnotes: [UserNotesFootnote]? = nil
+        footnotes: [UserNotesFootnote]? = nil,
+        mediaJson: String? = nil
     ) {
         self.id = id
         self.moduleId = moduleId
@@ -875,6 +882,13 @@ struct NoteEntry: Codable, FetchableRecord, PersistableRecord, Identifiable {
             searchParts.append(contentsOf: notes.map { $0.plainText })
         }
         self.searchText = searchParts.joined(separator: " ")
+        self.mediaJson = mediaJson
+    }
+
+    /// The note's pictures, each read on its own: one this version can't
+    /// read costs its own picture, not every one in the note.
+    var media: [DevotionalMediaReference] {
+        LampPortableBookJSON.decodeArray(mediaJson, as: DevotionalMediaReference.self).items
     }
 
     var verseRefs: [Int]? {

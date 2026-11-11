@@ -9,21 +9,29 @@ import Foundation
 import UIKit
 import AVFoundation
 import Accelerate
+import LampModuleKit
 
 /// Manages storage and retrieval of media files for devotionals
 class DevotionalMediaStorage {
-    static let shared = DevotionalMediaStorage()
+    static let shared = DevotionalMediaStorage(scope: .devotional)
+    /// A note's pictures, the same way in a folder of their own. The owner a
+    /// note's media is filed under is its verse (`NoteMedia.owner`).
+    static let notes = DevotionalMediaStorage(scope: .note)
 
     private let fileManager = FileManager.default
+    private let scope: LampMediaScope
 
-    private init() {}
+    private init(scope: LampMediaScope) {
+        self.scope = scope
+    }
 
     // MARK: - Directory Management
 
-    /// Get the base media directory in Documents
+    /// Get the base media directory in Documents: the folder the scope syncs
+    /// under, which the library pass mirrors path for path.
     private var mediaBaseDirectory: URL {
         let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docs.appendingPathComponent("DevotionalMedia")
+        return docs.appendingPathComponent(scope.remoteDirectory)
     }
 
     /// Get the media directory for a specific module

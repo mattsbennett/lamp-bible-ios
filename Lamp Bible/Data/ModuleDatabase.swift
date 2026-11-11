@@ -1549,6 +1549,14 @@ class ModuleDatabase {
             try db.execute(sql: "ALTER TABLE commentary_books ADD COLUMN description TEXT")
         }
 
+        // A note's pictures, as core keeps them from 7ccea8c.
+        migrator.registerMigration("v37_note_media") { db in
+            guard try db.tableExists("note_entries"),
+                  try !db.columns(in: "note_entries").contains(where: { $0.name == "media_json" })
+            else { return }
+            try db.execute(sql: "ALTER TABLE note_entries ADD COLUMN media_json TEXT")
+        }
+
         return migrator
     }
 
@@ -1774,8 +1782,21 @@ class ModuleDatabase {
 
     /// A save made on this device. Sync imports write rows directly and do
     /// not come through here, so they never mask a deletion made elsewhere.
+    ///
+    /// A note saved with no media says nothing about it — an import of
+    /// text, say — so it keeps the pictures the note has: saving the whole
+    /// row to change part of it must not empty the rest. The note may have
+    /// come from the Mac under its own id, so the verse finds it too.
     func saveNoteEntry(_ entry: NoteEntry) throws {
         try dbQueue.write { db in
+            var entry = entry
+            if entry.mediaJson == nil {
+                entry.mediaJson = try String.fetchOne(db, sql: """
+                    SELECT media_json FROM note_entries
+                    WHERE id = ? OR (module_id = ? AND verse_id = ?)
+                    ORDER BY id = ? DESC LIMIT 1
+                    """, arguments: [entry.id, entry.moduleId, entry.verseId, entry.id])
+            }
             try entry.save(db)
             try Self.recordPersonalPresence(db, .note, entry.id)
         }

@@ -6,6 +6,66 @@
 //
 
 import Foundation
+import LampCore
+import LampModuleKit
+
+// MARK: - Note Media
+
+/// A note's pictures. Kept as the Mac keeps them, in a folder named for the
+/// note's verse rather than its id: a module holds one note a verse, and
+/// the id's colon has no place in a path. The folder is the path the
+/// pictures sync under, NoteMedia/<module>/<verse>/<file>.
+enum NoteMedia {
+    static func owner(_ verseId: Int) -> String {
+        LampLibrary.noteMediaOwnerID(verseId)
+    }
+
+    static func url(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) -> URL? {
+        DevotionalMediaStorage.notes.getMediaURL(for: ref, devotionalId: owner(verseId), moduleId: moduleId)
+    }
+
+    static func expectedURL(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) -> URL {
+        DevotionalMediaStorage.notes.expectedMediaURL(for: ref, devotionalId: owner(verseId), moduleId: moduleId)
+    }
+
+    /// Where each of a note's pictures is, by id, for the editor and the
+    /// note as drawn. A picture not on this device yet is left out.
+    static func map(_ mediaJson: String?, moduleId: String, verseId: Int) -> [String: URL] {
+        var map: [String: URL] = [:]
+        for ref in LampPortableBookJSON.decodeArray(mediaJson, as: DevotionalMediaReference.self).items {
+            if let url = url(for: ref, moduleId: moduleId, verseId: verseId) { map[ref.id] = url }
+        }
+        return map
+    }
+
+    /// The note's list with one more picture. Every entry already there is
+    /// kept whole, including fields this version doesn't know.
+    static func appending(_ ref: DevotionalMediaReference, to mediaJson: String?) throws -> String {
+        var list = mediaJson
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [Any] } ?? []
+        list.append(try JSONSerialization.jsonObject(with: JSONEncoder().encode(ref)))
+        return String(decoding: try JSONSerialization.data(withJSONObject: list, options: [.sortedKeys]), as: UTF8.self)
+    }
+
+    /// A note moved to another verse takes its pictures with it, since the
+    /// folder is named for the verse.
+    static func move(moduleId: String, from oldVerseId: Int, to newVerseId: Int) throws {
+        guard oldVerseId != newVerseId else { return }
+        let storage = DevotionalMediaStorage.notes
+        let source = storage.mediaDirectory(devotionalId: owner(oldVerseId), moduleId: moduleId)
+        let manager = FileManager.default
+        guard let files = try? manager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return }
+        try storage.ensureMediaDirectory(devotionalId: owner(newVerseId), moduleId: moduleId)
+        let destination = storage.mediaDirectory(devotionalId: owner(newVerseId), moduleId: moduleId)
+        for file in files {
+            let target = destination.appendingPathComponent(file.lastPathComponent)
+            try? manager.removeItem(at: target)
+            try manager.moveItem(at: file, to: target)
+        }
+        try? manager.removeItem(at: source)
+    }
+}
 
 // MARK: - Note Section Model
 
@@ -16,6 +76,10 @@ struct NoteSection: Identifiable {
     let verseEnd: Int?
     var content: String
     var footnotes: [UserNotesFootnote]?  // Optional footnotes for this section
+    /// The note's pictures as stored, carried from load to save: the chapter
+    /// is saved by writing its notes again, so a note that dropped this
+    /// would lose its pictures at the next keystroke.
+    var mediaJson: String? = nil
 
     var displayTitle: String {
         if let start = verseStart {
@@ -37,16 +101,16 @@ struct NoteSection: Identifiable {
         return !notes.isEmpty
     }
 
-    static func general(content: String, footnotes: [UserNotesFootnote]? = nil) -> NoteSection {
-        NoteSection(id: "general", verseStart: nil, verseEnd: nil, content: content, footnotes: footnotes)
+    static func general(content: String, footnotes: [UserNotesFootnote]? = nil, mediaJson: String? = nil) -> NoteSection {
+        NoteSection(id: "general", verseStart: nil, verseEnd: nil, content: content, footnotes: footnotes, mediaJson: mediaJson)
     }
 
-    static func verse(_ verse: Int, content: String, footnotes: [UserNotesFootnote]? = nil) -> NoteSection {
-        NoteSection(id: "v\(verse)", verseStart: verse, verseEnd: verse, content: content, footnotes: footnotes)
+    static func verse(_ verse: Int, content: String, footnotes: [UserNotesFootnote]? = nil, mediaJson: String? = nil) -> NoteSection {
+        NoteSection(id: "v\(verse)", verseStart: verse, verseEnd: verse, content: content, footnotes: footnotes, mediaJson: mediaJson)
     }
 
-    static func verseRange(start: Int, end: Int, content: String, footnotes: [UserNotesFootnote]? = nil) -> NoteSection {
-        NoteSection(id: "v\(start)-\(end)", verseStart: start, verseEnd: end, content: content, footnotes: footnotes)
+    static func verseRange(start: Int, end: Int, content: String, footnotes: [UserNotesFootnote]? = nil, mediaJson: String? = nil) -> NoteSection {
+        NoteSection(id: "v\(start)-\(end)", verseStart: start, verseEnd: end, content: content, footnotes: footnotes, mediaJson: mediaJson)
     }
 }
 

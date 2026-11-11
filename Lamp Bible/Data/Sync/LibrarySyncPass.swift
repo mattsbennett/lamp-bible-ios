@@ -314,12 +314,11 @@ struct LibrarySyncPass {
 
     /// What this device plans: modules and their media. Decks are the Mac's
     /// to publish and mirrored here as before; workspaces stay on the Mac.
-    /// A note's pictures wait until a note here can hold them. Pruning still
-    /// sees every listed file, which core keeps to.
+    /// Pruning still sees every listed file, which core keeps to.
     static func isPlanned(_ kind: LampSyncFileKind?) -> Bool {
         switch kind {
-        case .module, .devotionalMedia, .bookMedia: true
-        case .noteMedia, .deck, .deckAsset, .workspaceFile, nil: false
+        case .module, .devotionalMedia, .noteMedia, .bookMedia: true
+        case .deck, .deckAsset, .workspaceFile, nil: false
         }
     }
 
@@ -336,6 +335,7 @@ struct LibrarySyncPass {
         guard let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
         switch LampSyncFolderLayout.kind(of: path) {
         case .devotionalMedia: return "\(LampSyncContentKind.devotionals.rawValue)/\(id).lamp"
+        case .noteMedia: return "\(LampSyncContentKind.notes.rawValue)/\(id).lamp"
         case .bookMedia: return "\(LampSyncContentKind.books.rawValue)/\(id).lamp"
         default: return nil
         }
@@ -362,17 +362,22 @@ struct LibrarySyncPass {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Attachments the writings name that neither this device nor the server
-    /// holds, by library path. Writings still go up with them: every writing
-    /// shares one file, so holding it back would stop them all, and the
-    /// reference mends itself, since an attachment never changes at its path
-    /// and goes up there the day it is back. One missing here but a member of
-    /// the library is on the server, and leaves nothing to fix. The Mac
-    /// reports by the same rule, from the same manifest.
+    /// Attachments the writings and notes name that neither this device nor
+    /// the server holds, by library path. They still go up with them: every
+    /// writing shares one file, as every note does, so holding it back would
+    /// stop them all, and the reference mends itself, since an attachment
+    /// never changes at its path and goes up there the day it is back. One
+    /// missing here but a member of the library is on the server, and leaves
+    /// nothing to fix. The Mac reports by the same rule, from the same
+    /// manifest.
     func unsuppliedAttachments(manifest: LampSyncLibraryManifest) throws -> [String] {
         try database.getAllModules()
-            .filter { $0.type == .devotional && $0.isEditable }
-            .flatMap { try modules.devotionalMediaItems(moduleId: $0.id, forExport: true) }
+            .filter { [.devotional, .notes].contains($0.type) && $0.isEditable }
+            .flatMap {
+                try $0.type == .notes
+                    ? modules.noteMediaItems(moduleId: $0.id)
+                    : modules.devotionalMediaItems(moduleId: $0.id, forExport: true)
+            }
             .filter {
                 !FileManager.default.fileExists(atPath: $0.localURL.path)
                     && manifest.entry(at: $0.remotePath)?.isMember != true
@@ -517,7 +522,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
 
     func install(_ path: String, from url: URL) async throws -> String? {
         switch LampSyncFolderLayout.kind(of: path) {
-        case .devotionalMedia, .bookMedia:
+        case .devotionalMedia, .noteMedia, .bookMedia:
             guard let local = localURL(forMedia: path) else { return nil }
             try FileManager.default.createDirectory(
                 at: local.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -551,7 +556,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     /// Deleted on another device after this copy was saved.
     func deleteLocally(_ path: String) async throws {
         switch LampSyncFolderLayout.kind(of: path) {
-        case .devotionalMedia, .bookMedia:
+        case .devotionalMedia, .noteMedia, .bookMedia:
             if let url = localURL(forMedia: path) { try? FileManager.default.removeItem(at: url) }
         case .module:
             // Core's plan never asks for a collection; refused here as well.
@@ -678,6 +683,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         var media: [String: URL] = [:]
         for (localRoot, remoteRoot) in [
             (LampSyncFolderLayout.devotionalMediaDirectory, LampSyncFolderLayout.devotionalMediaDirectory),
+            (LampSyncFolderLayout.noteMediaDirectory, LampSyncFolderLayout.noteMediaDirectory),
             ("ModuleMediaCache", LampSyncFolderLayout.bookMediaDirectory),
         ] {
             let root = documents.appendingPathComponent(localRoot, isDirectory: true)
@@ -696,7 +702,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     private func localURL(forMedia path: String) -> URL? {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         switch LampSyncFolderLayout.kind(of: path) {
-        case .devotionalMedia:
+        case .devotionalMedia, .noteMedia:
             return documents.appendingPathComponent(path)
         case .bookMedia:
             let rest = path.dropFirst(LampSyncFolderLayout.bookMediaDirectory.count + 1)

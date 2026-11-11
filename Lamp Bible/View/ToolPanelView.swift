@@ -1001,6 +1001,11 @@ struct NotesScope: Equatable {
     let moduleId: String
     let book: Int
     let chapter: Int
+
+    /// A verse of the chapter as a note names it; 0 is the chapter's own note.
+    func verseId(_ verse: Int) -> Int {
+        book * 1_000_000 + chapter * 1000 + verse
+    }
 }
 
 /// Data for a single note section in the UIKit list
@@ -2693,13 +2698,13 @@ struct ToolPanelView: View {
 
             if entry.verse == 0 {
                 // General notes (chapter-level / introduction)
-                result.insert(.general(content: entry.content, footnotes: footnotes), at: 0)
+                result.insert(.general(content: entry.content, footnotes: footnotes, mediaJson: entry.mediaJson), at: 0)
             } else if let verseRefs = entry.verseRefs, let endVerse = verseRefs.first, endVerse != entry.verse {
                 // Verse range - endVerse stored in verseRefs
-                result.append(.verseRange(start: entry.verse, end: endVerse, content: entry.content, footnotes: footnotes))
+                result.append(.verseRange(start: entry.verse, end: endVerse, content: entry.content, footnotes: footnotes, mediaJson: entry.mediaJson))
             } else {
                 // Single verse
-                result.append(.verse(entry.verse, content: entry.content, footnotes: footnotes))
+                result.append(.verse(entry.verse, content: entry.content, footnotes: footnotes, mediaJson: entry.mediaJson))
             }
         }
 
@@ -2743,7 +2748,8 @@ struct ToolPanelView: View {
                 content: content,
                 verseRefs: endVerse.map { [$0] },
                 lastModified: Int(Date().timeIntervalSince1970),
-                footnotes: section.footnotes
+                footnotes: section.footnotes,
+                mediaJson: section.mediaJson
             )
             entries.append(entry)
         }
@@ -2948,6 +2954,7 @@ struct ToolPanelView: View {
         if sections[index].isGeneral {
             sections[index].content = ""
             sections[index].footnotes = nil
+            sections[index].mediaJson = nil
         } else {
             sections.remove(at: index)
         }
@@ -3242,13 +3249,26 @@ struct ToolPanelView: View {
         let end = editVerseEnd ?? start
         let content = sections[index].content
         let footnotes = sections[index].footnotes
+        let mediaJson = sections[index].mediaJson
 
         // Create updated section
         let updatedSection: NoteSection
         if end != start && end > start {
-            updatedSection = .verseRange(start: start, end: end, content: content, footnotes: footnotes)
+            updatedSection = .verseRange(start: start, end: end, content: content, footnotes: footnotes, mediaJson: mediaJson)
         } else {
-            updatedSection = .verse(start, content: content, footnotes: footnotes)
+            updatedSection = .verse(start, content: content, footnotes: footnotes, mediaJson: mediaJson)
+        }
+
+        // Its pictures are filed under the verse it starts at.
+        if let scope = loadedNotes, let oldStart = sections[index].verseStart, oldStart != start,
+           !NoteMedia.map(mediaJson, moduleId: scope.moduleId, verseId: scope.verseId(oldStart)).isEmpty {
+            do {
+                try NoteMedia.move(
+                    moduleId: scope.moduleId, from: scope.verseId(oldStart), to: scope.verseId(start)
+                )
+            } catch {
+                print("[Notes] Failed to move a note's pictures: \(error)")
+            }
         }
 
         // Remove old section

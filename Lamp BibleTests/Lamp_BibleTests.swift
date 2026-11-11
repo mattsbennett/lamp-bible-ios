@@ -3108,6 +3108,7 @@ final class LibrarySyncPassTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        try? DevotionalMediaStorage.notes.deleteAllMedia(moduleId: moduleId)
         try? database.deleteAllEntriesForModule(moduleId: moduleId)
         try? database.deleteModule(id: moduleId)
         try? database.clearPendingModulePublication(moduleId: moduleId)
@@ -6651,5 +6652,260 @@ final class StrongsSeptuagintTests: XCTestCase {
         let psalm = try XCTUnwrap(rows.first { $0.reference == 19_109_004 })
         XCTAssertEqual(psalm.english?.reference, 19_108_004)
         XCTAssertNil(psalm.english?.snippet)
+    }
+}
+
+// MARK: - A note's pictures
+
+extension LibrarySyncPassTests {
+    private var picture: DevotionalMediaReference {
+        DevotionalMediaReference(id: "pic", type: .image, filename: "pic.jpg", mimeType: "image/jpeg")
+    }
+
+    private var picturePath: String { "NoteMedia/\(moduleId!)/43001001/pic.jpg" }
+
+    /// The notes file as another device would publish it: note "a" as given,
+    /// exported from here, then this device's own copy put back as it was.
+    private func publishNoteElsewhere(_ change: (inout NoteEntry) throws -> Void) async throws {
+        let original = try XCTUnwrap(database.getNoteEntry(id: "a"))
+        var note = original
+        try change(&note)
+        try database.write { db in try note.update(db) }
+        let module = try XCTUnwrap(database.getModule(id: moduleId))
+        let theirs = try ModuleSyncManager.shared.exportNoteModuleToSQLite(module)
+        try database.write { db in try original.update(db) }
+        try await publishElsewhere(notesPath, theirs)
+    }
+
+    private func publishElsewhere(_ path: String, _ data: Data) async throws {
+        let previous = await server.file(path)?.revision
+        let revision = await server.seed(path, data)
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.recordingWrite(
+                path, revision: revision, replacing: previous, at: ModuleDatabase.nowMilliseconds()
+            )
+        }
+    }
+
+    func testAPictureAttachedElsewhereArrivesWithItsNote() async throws {
+        try saveNotesModule(notes: ["a"])
+        _ = try await pass().run()
+
+        let bytes = Data("a picture".utf8)
+        try await publishElsewhere(picturePath, bytes)
+        try await publishNoteElsewhere { note in
+            note.content = "Note a ![](media/pic)"
+            note.mediaJson = try NoteMedia.appending(picture, to: nil)
+            note.lastModified = 1_788_132_400
+        }
+
+        _ = try await pass().run()
+
+        let note = try XCTUnwrap(database.getNoteEntry(id: "a"))
+        XCTAssertEqual(note.media.map(\.id), ["pic"], "the note names its picture")
+        let file = try XCTUnwrap(NoteMedia.url(for: picture, moduleId: moduleId, verseId: 43_001_001))
+        XCTAssertEqual(try Data(contentsOf: file), bytes, "and the picture is here")
+    }
+
+    /// A file from a device that can't hold pictures says nothing about them.
+    func testANotesFileWrittenBeforePicturesLeavesThemHere() async throws {
+        try saveNotesModule(notes: ["a"])
+        var note = try XCTUnwrap(database.getNoteEntry(id: "a"))
+        note.mediaJson = try NoteMedia.appending(picture, to: nil)
+        try database.saveNoteEntry(note)
+        try attachHere(picture, verseId: note.verseId)
+        _ = try await pass().run()
+
+        note.content = "Edited where pictures are unknown"
+        note.lastModified = 1_788_132_400
+        try await publishElsewhere(notesPath, try notesFileWithoutMedia([note]))
+
+        _ = try await pass().run()
+
+        let stored = try XCTUnwrap(database.getNoteEntry(id: "a"))
+        XCTAssertEqual(stored.content, "Edited where pictures are unknown")
+        XCTAssertEqual(stored.media.map(\.id), ["pic"], "the picture is kept")
+    }
+
+    /// One that can hold them is believed, including when it says there are none.
+    func testAPictureRemovedElsewhereIsRemovedHere() async throws {
+        try saveNotesModule(notes: ["a"])
+        var note = try XCTUnwrap(database.getNoteEntry(id: "a"))
+        note.mediaJson = try NoteMedia.appending(picture, to: nil)
+        try database.saveNoteEntry(note)
+        _ = try await pass().run()
+
+        try await publishNoteElsewhere { note in
+            note.mediaJson = "[]"
+            note.lastModified = 1_788_132_400
+        }
+
+        _ = try await pass().run()
+
+        XCTAssertEqual(try XCTUnwrap(database.getNoteEntry(id: "a")).media.count, 0)
+    }
+
+    /// A picture's file, as attaching it here leaves it.
+    private func attachHere(_ ref: DevotionalMediaReference, verseId: Int) throws {
+        try DevotionalMediaStorage.notes.ensureMediaDirectory(devotionalId: NoteMedia.owner(verseId), moduleId: moduleId)
+        try Data("a picture".utf8).write(to: NoteMedia.expectedURL(for: ref, moduleId: moduleId, verseId: verseId))
+    }
+
+    /// The notes file as a Lamp from before notes carried pictures wrote it.
+    private func notesFileWithoutMedia(_ notes: [NoteEntry]) throws -> Data {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let queue = try DatabaseQueue(path: url.path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE module_meta (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT,
+                    author TEXT, version TEXT, is_editable INTEGER DEFAULT 1
+                );
+                CREATE TABLE note_entries (
+                    id TEXT PRIMARY KEY, module_id TEXT NOT NULL, verse_id INTEGER NOT NULL,
+                    book INTEGER NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
+                    title TEXT, content TEXT NOT NULL, verse_refs_json TEXT,
+                    last_modified INTEGER, footnotes_json TEXT, search_text TEXT,
+                    record_change_tag TEXT
+                );
+                """)
+            try db.execute(
+                sql: "INSERT INTO module_meta (id, name, is_editable) VALUES (?, 'My Notes', 1)",
+                arguments: [moduleId]
+            )
+            for note in notes {
+                try db.execute(sql: """
+                    INSERT INTO note_entries (id, module_id, verse_id, book, chapter, verse, content, last_modified)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [
+                        note.id, note.moduleId, note.verseId, note.book, note.chapter, note.verse,
+                        note.content, note.lastModified,
+                    ])
+            }
+        }
+        try queue.close()
+        return try XCTUnwrap((try Data(contentsOf: url) as NSData).compressed(using: .zlib) as Data)
+    }
+}
+
+final class NoteMediaTests: XCTestCase {
+    private let database = ModuleDatabase.shared
+    private var moduleId: String!
+
+    private let picture = DevotionalMediaReference(id: "pic", type: .image, filename: "pic.jpg", mimeType: "image/jpeg")
+
+    override func setUp() async throws {
+        moduleId = "note-media-\(UUID().uuidString)"
+        try database.saveModule(Module(
+            id: moduleId, type: .notes, name: "My Notes", filePath: "\(moduleId!).lamp", isEditable: true
+        ))
+    }
+
+    override func tearDown() async throws {
+        try? DevotionalMediaStorage.notes.deleteAllMedia(moduleId: moduleId)
+        try? database.deleteAllEntriesForModule(moduleId: moduleId)
+        try? database.deleteModule(id: moduleId)
+        try? database.write { db in try db.execute(sql: "DELETE FROM personal_sync_ledger") }
+    }
+
+    /// Text saved without a word about pictures, as an import of Markdown
+    /// saves it, keeps the note's pictures — under its own id or, from the
+    /// Mac, another one for the same verse.
+    func testANoteSavedWithoutMediaKeepsItsPictures() throws {
+        let media = try NoteMedia.appending(picture, to: nil)
+        try database.saveNoteEntry(NoteEntry(
+            id: "personal-notes:43001001", moduleId: moduleId, verseId: 43_001_001,
+            content: "From the Mac", mediaJson: media
+        ))
+
+        try database.saveNoteEntry(NoteEntry(
+            id: "personal-notes:43001001", moduleId: moduleId, verseId: 43_001_001, content: "Edited"
+        ))
+        try database.saveNoteEntry(NoteEntry(
+            id: "\(moduleId!):43001001", moduleId: moduleId, verseId: 43_001_001, content: "Imported"
+        ))
+
+        XCTAssertEqual(try database.getNoteEntry(id: "personal-notes:43001001")?.media.map(\.id), ["pic"])
+        XCTAssertEqual(try database.getNoteEntry(id: "\(moduleId!):43001001")?.media.map(\.id), ["pic"])
+    }
+
+    func testANoteWhosePicturesWereRemovedSaysSo() throws {
+        try database.saveNoteEntry(NoteEntry(
+            id: "a", moduleId: moduleId, verseId: 43_001_001, content: "Note",
+            mediaJson: try NoteMedia.appending(picture, to: nil)
+        ))
+        try database.saveNoteEntry(NoteEntry(
+            id: "a", moduleId: moduleId, verseId: 43_001_001, content: "Note", mediaJson: "[]"
+        ))
+        XCTAssertEqual(try database.getNoteEntry(id: "a")?.media.count, 0)
+    }
+
+    /// A kind of media a newer Lamp knows costs its own entry, not the note's.
+    func testAPictureThisVersionCantReadCostsOnlyItself() throws {
+        let json = """
+            [{"id":"film","type":"video","filename":"film.mov","mimeType":"video/quicktime"},
+             {"id":"pic","type":"image","filename":"pic.jpg","mimeType":"image/jpeg","focus":"left"}]
+            """
+        let note = NoteEntry(moduleId: moduleId, verseId: 43_001_001, content: "Note", mediaJson: json)
+        XCTAssertEqual(note.media.map(\.id), ["pic"])
+
+        let added = try NoteMedia.appending(
+            DevotionalMediaReference(id: "new", type: .image, filename: "new.jpg", mimeType: "image/jpeg"),
+            to: json
+        )
+        XCTAssertTrue(added.contains("\"video\"") && added.contains("\"focus\""), "what isn't understood is kept")
+        XCTAssertEqual(NoteEntry(moduleId: moduleId, verseId: 1, content: "", mediaJson: added).media.map(\.id), ["pic", "new"])
+    }
+
+    /// Keep Both keeps both notes' text, so it keeps both sets of pictures.
+    func testKeepingBothNotesKeepsBothSetsOfPictures() throws {
+        let other = DevotionalMediaReference(id: "other", type: .image, filename: "other.jpg", mimeType: "image/jpeg")
+        let local = try NoteMedia.appending(picture, to: nil)
+        let cloud = try NoteMedia.appending(other, to: NoteMedia.appending(picture, to: nil))
+
+        let combined = ModuleSyncManager.combinedMedia(local, cloud)
+
+        XCTAssertEqual(NoteEntry(moduleId: moduleId, verseId: 1, content: "", mediaJson: combined).media.map(\.id), ["pic", "other"])
+        XCTAssertEqual(ModuleSyncManager.combinedMedia(nil, local), local)
+        XCTAssertNil(ModuleSyncManager.combinedMedia(nil, nil))
+    }
+
+    /// Attaching or removing a picture is an edit to the note.
+    func testNotesThatDifferOnlyInTheirPicturesDiffer() throws {
+        let plain = NoteEntry(id: "a", moduleId: moduleId, verseId: 1, content: "Note", lastModified: 1)
+        var pictured = plain
+        pictured.mediaJson = try NoteMedia.appending(picture, to: nil)
+        XCTAssertFalse(ModuleSyncManager.sameNoteContent(plain, pictured))
+    }
+
+    /// Moved to another verse, a note's pictures go to that verse's folder,
+    /// where they sync from.
+    func testANoteMovedToAnotherVerseTakesItsPictures() throws {
+        let storage = DevotionalMediaStorage.notes
+        try storage.ensureMediaDirectory(devotionalId: NoteMedia.owner(43_001_003), moduleId: moduleId)
+        try Data("a picture".utf8).write(to: NoteMedia.expectedURL(for: picture, moduleId: moduleId, verseId: 43_001_003))
+
+        try NoteMedia.move(moduleId: moduleId, from: 43_001_003, to: 43_001_005)
+
+        XCTAssertNil(NoteMedia.url(for: picture, moduleId: moduleId, verseId: 43_001_003))
+        XCTAssertNotNil(NoteMedia.url(for: picture, moduleId: moduleId, verseId: 43_001_005))
+    }
+
+    /// The notes file is written by this device and the Mac alike, so its
+    /// shape is declared in core and each side's exporter is pinned to it.
+    func testTheExportedNotesShapeMatchesTheDeclaration() throws {
+        let module = try XCTUnwrap(database.getModule(id: moduleId))
+        let compressed = try ModuleSyncManager.shared.exportNoteModuleToSQLite(module)
+        let data = try XCTUnwrap((compressed as NSData).decompressed(using: .zlib) as Data)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try data.write(to: url)
+        let columns = try DatabaseQueue(path: url.path).read { db in
+            try db.columns(in: "note_entries").map(\.name)
+        }
+
+        let declared = try XCTUnwrap(LampModuleCompiledSchema.tables(for: .notes).first { $0.table == "note_entries" })
+        XCTAssertEqual(columns, declared.columns)
     }
 }
