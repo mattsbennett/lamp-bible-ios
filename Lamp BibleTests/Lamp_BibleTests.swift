@@ -3649,6 +3649,23 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertNotEqual(published?.revision, rebuilt, "the set here goes back up")
     }
 
+    /// A set renamed here is changed as of the rename, so its name is the
+    /// newer one when the copies meet. Renamed with its old time, each
+    /// device kept its own name for good.
+    func testRenamingASetIsAnEdit() async throws {
+        let path = "Highlights/\(moduleId!).lamp"
+        _ = try await pass().run()
+        _ = try await publishCompiledElsewhere(highlightsJSON([(43_003_016, 0, 3)]), at: path)
+        _ = try await pass().run()
+        let before = try XCTUnwrap(database.getHighlightSets(forModule: moduleId).first)
+
+        try database.renameHighlightSets(forModule: moduleId, name: "Gospel of John", description: nil)
+
+        let after = try XCTUnwrap(database.getHighlightSets(forModule: moduleId).first)
+        XCTAssertEqual(after.name, "Gospel of John")
+        XCTAssertGreaterThan(after.lastModified, before.lastModified)
+    }
+
     /// What makes the union safe: a highlight deleted here is not brought
     /// back by another copy that still has it.
     func testAHighlightDeletedHereIsNotBroughtBackByAnotherCopy() async throws {

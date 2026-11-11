@@ -2921,6 +2921,22 @@ class ModuleDatabase {
         }
     }
 
+    /// Names a highlights module's set as the module is named. A rename is
+    /// an edit, so the set's time moves with it: both devices keep the name
+    /// of whichever copy changed last, and one renamed without saying when
+    /// would be kept here and passed over everywhere else.
+    func renameHighlightSets(forModule moduleId: String, name: String, description: String?) throws {
+        try dbQueue.write { db in
+            for var set in try HighlightSet.filter(Column("module_id") == moduleId).fetchAll(db)
+            where set.name != name || set.description != description {
+                set.name = name
+                set.description = description
+                set.lastModified = max(Int(Date().timeIntervalSince1970), set.lastModified + 1)
+                try set.update(db)
+            }
+        }
+    }
+
     /// Delete a highlight set by ID
     func deleteHighlightSet(id: String) throws {
         try dbQueue.write { db in

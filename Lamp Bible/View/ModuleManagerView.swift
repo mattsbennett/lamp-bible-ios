@@ -1356,13 +1356,7 @@ struct ModuleManagerView: View {
 
             // If this is a highlights module, also update the highlight set name/description
             if module.type == .highlights {
-                if let highlightSets = try? database.getHighlightSets(forModule: module.id) {
-                    for var set in highlightSets {
-                        set.name = module.name
-                        set.description = module.description
-                        try database.saveHighlightSet(set)
-                    }
-                }
+                try database.renameHighlightSets(forModule: module.id, name: module.name, description: module.description)
             }
 
             // Verify save
