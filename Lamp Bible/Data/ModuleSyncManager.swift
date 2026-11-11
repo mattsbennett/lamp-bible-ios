@@ -651,76 +651,12 @@ class ModuleSyncManager: ObservableObject {
                 filter: "module_id = :module", order: "rowid", arguments: ["module": fileInfo.id], in: db
             )
 
-        case .devotional:
-            // Check which schema the source database uses
-            let devCols = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(devotional_entries)")
-            let devColNames = Set(devCols.compactMap { $0["name"] as String? })
-
-            if devColNames.contains("content_json") {
-                // New schema with full devotional structure
-                // Check if optional columns exist
-                let hasRecordChangeTag = devColNames.contains("record_change_tag")
-                let hasMediaJson = devColNames.contains("media_json")
-
-                let recordChangeTagInsert = hasRecordChangeTag ? ", record_change_tag" : ""
-                let recordChangeTagSelect = hasRecordChangeTag ? ", record_change_tag" : ""
-                let mediaJsonInsert = hasMediaJson ? ", media_json" : ""
-                let mediaJsonSelect = hasMediaJson ? ", media_json" : ""
-
-                try db.execute(sql: """
-                    INSERT OR REPLACE INTO devotional_entries
-                    (id, module_id, title, subtitle, author, date, tags, category,
-                     series_id, series_name, series_order, key_scriptures_json,
-                     summary_json, content_json, footnotes_json, related_ids,
-                     created, last_modified, search_text\(recordChangeTagInsert)\(mediaJsonInsert))
-                    SELECT id, module_id, title, subtitle, author, date, tags, category,
-                           series_id, series_name, series_order, key_scriptures_json,
-                           summary_json, content_json, footnotes_json, related_ids,
-                           created, last_modified, search_text\(recordChangeTagSelect)\(mediaJsonSelect)
-                    FROM \(dbAlias).devotional_entries
-                    """)
-            } else {
-                // Legacy schema - copy with mapping
-                try db.execute(sql: """
-                    INSERT OR REPLACE INTO devotional_entries
-                    (id, module_id, title, date, tags, content_json, last_modified, search_text)
-                    SELECT id, module_id, title, month_day, tags, content, last_modified, content
-                    FROM \(dbAlias).devotional_entries
-                    """)
-            }
-
-        case .notes:
-            // Check which columns exist in the source database
-            let noteCols = try Row.fetchAll(db, sql: "PRAGMA \(dbAlias).table_info(note_entries)")
-            let noteColNames = Set(noteCols.compactMap { $0["name"] as String? })
-
-            // Build dynamic column lists based on source schema
-            var insertCols = ["id", "module_id", "verse_id", "title", "content", "last_modified"]
-            var selectCols = ["id", "module_id", "verse_id", "title", "content", "last_modified"]
-
-            // Handle verse_refs vs verse_refs_json naming
-            if noteColNames.contains("verse_refs_json") {
-                insertCols.append("verse_refs_json")
-                selectCols.append("verse_refs_json")
-            } else if noteColNames.contains("verse_refs") {
-                insertCols.append("verse_refs_json")
-                selectCols.append("verse_refs")
-            }
-
-            // Add optional columns if they exist in source
-            for col in ["book", "chapter", "verse", "footnotes_json", "search_text", "record_change_tag"] {
-                if noteColNames.contains(col) {
-                    insertCols.append(col)
-                    selectCols.append(col)
-                }
-            }
-
-            try db.execute(sql: """
-                INSERT OR REPLACE INTO note_entries
-                (\(insertCols.joined(separator: ", ")))
-                SELECT \(selectCols.joined(separator: ", "))
-                FROM \(dbAlias).note_entries
-                """)
+        case .notes, .devotional:
+            // Taken in as records and reconciled with what is here
+            // (`importNoteModuleFromSQLite`, `importDevotionalModuleFromSQLite`),
+            // never copied: a copy naming its own columns is how a column
+            // nobody listed goes missing.
+            throw ModuleSyncError.importFailed("Editable modules require reconciliation")
 
         case .plan:
             // Check if this is a plan database with plan_meta and days tables
