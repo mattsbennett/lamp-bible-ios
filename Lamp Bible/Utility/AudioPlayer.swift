@@ -409,18 +409,30 @@ enum SpeechVoiceCatalog {
 /// voice, since core keeps the IPA to sounds an English voice has; a word
 /// read the modern Greek way, by their Greek voice reading the word itself.
 @MainActor
-final class WordSpeaker {
+final class WordSpeaker: NSObject {
     static let shared = WordSpeaker()
     private let synthesizer = AVSpeechSynthesizer()
+    /// Whether the word took the audio session, and so gives it back.
+    private var holdsSession = false
+
+    private override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
 
     /// Whether Modern Greek can be offered: it needs a Greek voice.
     nonisolated static var hasGreekVoice: Bool { SpeechVoiceCatalog.hasVoice(for: "el") }
 
     func say(_ word: LampPronunciation.Utterance) {
         synthesizer.stopSpeaking(at: .immediate)
-        // Heard with the ringer off, as a word asked for should be.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Heard with the ringer off, as a word asked for should be, and over
+        // whatever else is playing, lowered for the word rather than stopped.
+        // While read aloud holds the session the word joins it as it is.
+        if !TextSpeechController.holdsAudioSession {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
+            try? AVAudioSession.sharedInstance().setActive(true)
+            holdsSession = true
+        }
         let utterance = AVSpeechUtterance(attributedString: word.text)
         utterance.voice = word.ipa != nil
             ? SpeechVoiceCatalog.preferredVoice(for: "en")
@@ -428,6 +440,30 @@ final class WordSpeaker {
             : SpeechVoiceCatalog.preferredVoice(for: "el")
                 ?? AVSpeechSynthesisVoice(language: word.voiceLanguage)
         synthesizer.speak(utterance)
+    }
+
+    /// Gives the session back once the word is said, so the lowered audio
+    /// comes back up. Deactivating from the delegate itself fails while the
+    /// synthesizer winds down, hence the wait; and it can take most of a
+    /// second, hence off the main thread.
+    private func finished() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            guard holdsSession, !synthesizer.isSpeaking, !TextSpeechController.holdsAudioSession else { return }
+            holdsSession = false
+            DispatchQueue.global(qos: .utility).async {
+                try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+            }
+        }
+    }
+}
+
+extension WordSpeaker: AVSpeechSynthesizerDelegate {
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in finished() }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in finished() }
     }
 }
 
@@ -485,6 +521,13 @@ final class TextSpeechController: NSObject {
     private var activeWordsPerMinute = TextSpeechController.referenceWordsPerMinute
     private var interruptionObserver: NSObjectProtocol?
     private var hasRemoteCommands = false
+    private var holdsSession = false
+    /// Controllers holding the audio session, reading or paused.
+    nonisolated(unsafe) private static var sessionHolders = 0
+
+    /// Whether read aloud has the audio session, so a word said meanwhile
+    /// leaves it be rather than reconfigure it or give it up mid-passage.
+    static var holdsAudioSession: Bool { sessionHolders > 0 }
 
     override init() {
         super.init()
@@ -492,6 +535,9 @@ final class TextSpeechController: NSObject {
     }
 
     deinit {
+        if holdsSession {
+            Self.sessionHolders -= 1
+        }
         synthesizer.stopSpeaking(at: .immediate)
         if let interruptionObserver {
             NotificationCenter.default.removeObserver(interruptionObserver)
@@ -846,6 +892,10 @@ final class TextSpeechController: NSObject {
     /// what lets the Lock Screen and headphone controls reach read aloud; a
     /// session that mixes can't be the Now Playing app.
     private func configureAudioSession() {
+        if !holdsSession {
+            holdsSession = true
+            Self.sessionHolders += 1
+        }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
             try AVAudioSession.sharedInstance().setActive(true)
@@ -855,6 +905,10 @@ final class TextSpeechController: NSObject {
     }
 
     private func deactivateAudioSession() {
+        if holdsSession {
+            holdsSession = false
+            Self.sessionHolders -= 1
+        }
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         } catch {
