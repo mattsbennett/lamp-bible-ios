@@ -4546,6 +4546,35 @@ final class NoteMarkdownTests: XCTestCase {
         XCTAssertTrue(text.string.hasPrefix("Before\n") && text.string.hasSuffix("\nAfter"))
     }
 
+    /// A notes module marks a span of a sentence with its picture: the span
+    /// stays in the sentence, and the picture follows the line, captioned
+    /// with it. A recording, which can't be played here, is its words.
+    func testAPictureWithinASentenceFollowsTheLine() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 20)).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 20))
+        }
+        try XCTUnwrap(image.pngData()).write(to: url)
+
+        let text = NoteMarkdown.render(
+            "He wept at the ![tomb](media/TOMB), and then called him out.\n[Hear](media/READ) it read.",
+            fontSize: 16, media: ["TOMB": url]
+        ).text
+
+        let lines = text.string.components(separatedBy: "\n")
+        XCTAssertTrue(lines[0].hasPrefix("He wept at the tomb") && lines[0].hasSuffix(", and then called him out."))
+        var pictureAt: Int?
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if value is NotePictureAttachment { pictureAt = range.location }
+        }
+        let sentenceEnd = (text.string as NSString).range(of: "called him out.").upperBound
+        XCTAssertGreaterThan(try XCTUnwrap(pictureAt, "the picture is drawn"), sentenceEnd, "after the line")
+        XCTAssertTrue(lines.contains("Hear it read."), "the recording's words, as words")
+        XCTAssertFalse(text.string.contains("media/"))
+    }
+
     /// One not on this device yet is named where it will be.
     func testAPictureNotHereYetIsNamed() {
         let text = render("![](media/pic)")

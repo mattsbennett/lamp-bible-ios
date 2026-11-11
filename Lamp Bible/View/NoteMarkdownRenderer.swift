@@ -13,7 +13,10 @@ import UIKit
 /// would run them together. Each line may open a heading, a list item, a
 /// quote or a rule; within it, emphasis, code, links and escapes are read by
 /// Foundation's own inline Markdown. A line that is only a picture, as the
-/// editor writes one (`![caption](media/<id>)`), is drawn as the picture.
+/// editor writes one (`![caption](media/<id>)`), is drawn as the picture. A
+/// picture within a line, as a notes module marks a span of its sentence
+/// with one, leaves the span in the sentence, marked, and is drawn after
+/// the line with the span as its caption.
 enum NoteMarkdown {
     /// An app link to a verse, `lampbible://verse/<start>[/<end>]`, and where
     /// its text ended up.
@@ -66,6 +69,10 @@ enum NoteMarkdown {
                 ))
             }
             out.append(line.text)
+            for picture in line.pictures {
+                out.append(NSAttributedString(string: "\n", attributes: baseAttributes(fontSize: fontSize)))
+                out.append(self.picture(media[picture.id], caption: picture.caption, fontSize: fontSize))
+            }
         }
         return Rendered(text: out, verseLinks: links)
     }
@@ -195,17 +202,18 @@ enum NoteMarkdown {
 
     private static func inline(
         _ text: String, attributes: [NSAttributedString.Key: Any], fontSize: CGFloat, bold: Bool
-    ) -> (text: NSAttributedString, links: [InlineLink]) {
-        guard !text.isEmpty else { return (NSAttributedString(), []) }
+    ) -> (text: NSAttributedString, links: [InlineLink], pictures: [(id: String, caption: String)]) {
+        guard !text.isEmpty else { return (NSAttributedString(), [], []) }
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
         guard let parsed = try? AttributedString(markdown: text, options: options) else {
-            return (NSAttributedString(string: text, attributes: attributes), [])
+            return (NSAttributedString(string: text, attributes: attributes), [], [])
         }
         let out = NSMutableAttributedString()
         var links: [InlineLink] = []
+        var pictures: [(id: String, caption: String)] = []
         for run in parsed.runs {
             let piece = String(parsed[run.range].characters)
             var runAttributes = attributes
@@ -219,6 +227,22 @@ enum NoteMarkdown {
             if intent.contains(.strikethrough) {
                 runAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             }
+            if let id = mediaID(run.imageURL) {
+                // The span stays in its sentence, marked as having a picture.
+                out.append(NSAttributedString(string: piece, attributes: runAttributes))
+                let symbol = NSTextAttachment()
+                symbol.image = UIImage(systemName: "photo", withConfiguration: UIImage.SymbolConfiguration(pointSize: fontSize * 0.7))?
+                    .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
+                out.append(NSAttributedString(string: "\u{2009}", attributes: runAttributes))
+                out.append(NSAttributedString(attachment: symbol))
+                pictures.append((id, piece))
+                continue
+            }
+            if mediaID(run.link) != nil {
+                // A recording, which a note here can't play: its words, as words.
+                out.append(NSAttributedString(string: piece, attributes: runAttributes))
+                continue
+            }
             if let url = run.link {
                 runAttributes[.foregroundColor] = UIColor.lampLink
                 if let verse = verseLink(url) {
@@ -230,7 +254,14 @@ enum NoteMarkdown {
             }
             out.append(NSAttributedString(string: piece, attributes: runAttributes))
         }
-        return (out, links)
+        return (out, links, pictures)
+    }
+
+    /// The id a `media/<id>` link names, as a note's Markdown links its media.
+    private static func mediaID(_ url: URL?) -> String? {
+        guard let path = url?.relativeString, path.hasPrefix("media/") else { return nil }
+        let id = String(path.dropFirst("media/".count))
+        return id.isEmpty ? nil : id
     }
 
     /// `lampbible://verse/<start>[/<end>]`, the app's link to a passage.
