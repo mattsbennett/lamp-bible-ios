@@ -5265,6 +5265,22 @@ final class CoreModuleSearchTests: XCTestCase {
         XCTAssertEqual(together.map(\.id), ["mere:hope"])
         XCTAssertEqual(together.first?.holdsPhrase, true)
         XCTAssertEqual(hits.first?.holdsPhrase, false, "one word is no phrase")
+
+        // Found without its snippet, a section carries a stand-in to rank
+        // by, and has the snippet it would have had cut once it's kept.
+        let unsnipped = try queue.read { db in
+            try ModuleSearch.bookResults(
+                in: db, query: LampSearchQuery("aim at heaven"), filter: ModuleSearchFilter(), limit: 10, snippets: false
+            )
+        }
+        XCTAssertNotEqual(unsnipped.first?.snippet, together.first?.snippet)
+        let hit = try XCTUnwrap(unsnipped.first?.unsnipped)
+        XCTAssertFalse(hit.bundled)
+        let filled = try queue.read { db in
+            try ModuleSearch.snippets(for: [hit.hit], in: db, query: LampSearchQuery("aim at heaven"))
+        }
+        XCTAssertEqual(filled.map(\.snippet), together.map(\.snippet))
+        XCTAssertNil(together.first?.unsnipped, "a result found with its snippet has none to cut")
     }
 
     func testNotesAreSearchedByCoreInThePhonesDatabase() throws {
@@ -5410,6 +5426,10 @@ final class SearchAuditFixTests: XCTestCase {
         filter.types = [.commentary]
         let results = try ModuleSearch.shared.search(query: "love", filter: filter, limit: 20)
         XCTAssertTrue(results.contains { $0.moduleId == "tske" || $0.moduleId == "crossrefs" })
+        // Found without their snippets, the kept ones have them cut from the
+        // database they came from, not the stand-in they were ranked by.
+        let standIn = LampModuleSearch.rankingSnippet(for: LampSearchQuery("love"))
+        XCTAssertTrue(results.allSatisfy { $0.unsnipped == nil && $0.snippet != standIn })
         XCTAssertTrue(ModuleSearch.shared.getSearchableModules().contains { $0.id == "tske" && $0.type == .commentary })
     }
 

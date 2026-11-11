@@ -17,7 +17,7 @@ struct ModuleSearchResult: Identifiable {
     let moduleName: String
     let moduleType: ModuleType
     let title: String
-    let snippet: String
+    var snippet: String
     let verseId: Int?
     let rank: Double
 
@@ -32,6 +32,10 @@ struct ModuleSearchResult: Identifiable {
     /// Whether the result's text holds the query's words together, which
     /// core's merge ranks it by after its title.
     var holdsPhrase = false
+    /// A result found without its snippet, which carries a stand-in to rank
+    /// by: core's result, for `fillSnippets` to cut one for once the merge
+    /// has kept it, and whether it came from the bundled database.
+    var unsnipped: (hit: LampModuleSearchResult, bundled: Bool)? = nil
 
     // For navigation
     var book: Int? { verseId.map { $0 / 1000000 } }
@@ -344,6 +348,10 @@ class ModuleSearch {
             }
         }
 
+        // Commentaries, books, writings and notes are found without their
+        // snippets, which are cut for the results the merge keeps: cutting
+        // one for every result each database offered, most of them then
+        // dropped, was most of a search's time.
         if filter.types.contains(.commentary) && hasTextQuery {
             results.append(contentsOf: try searchCommentaries(query: LampSearchQuery(query), filter: filter, limit: limit))
         }
@@ -386,18 +394,58 @@ class ModuleSearch {
         // modules taking turns among equals: the kinds' own ranks are not on
         // one scale. A search by key or colour alone has no words to rank by.
         if hasTextQuery {
-            return LampModuleSearch.ranked(
-                results, by: LampSearchQuery(query), limit: limit,
+            return try fillSnippets(LampModuleSearch.ranked(
+                results, by: parsedQuery, limit: limit,
                 // A quiz result's title is its question, which shows it
                 // rather than names it.
                 named: { $0.moduleType == .quiz ? [] : [$0.title] },
                 shown: { $0.moduleType == .quiz ? [$0.title, $0.snippet] : [$0.snippet] },
                 holdingPhrase: { $0.holdsPhrase },
                 from: { ($0.moduleType.rawValue, $0.moduleId) }
-            )
+            ), query: parsedQuery)
         }
         results.sort { $0.rank > $1.rank }
         return Array(results.prefix(limit))
+    }
+
+    /// The results with the snippets they were found without, cut now that
+    /// the merge has chosen them, each in the database it came from, as the
+    /// Mac cuts its own.
+    private func fillSnippets(_ results: [ModuleSearchResult], query: LampSearchQuery) throws -> [ModuleSearchResult] {
+        var snippets: [String: String] = [:]
+        for bundled in [false, true] {
+            let hits = results.compactMap(\.unsnipped).filter { $0.bundled == bundled }.map(\.hit)
+            guard !hits.isEmpty else { continue }
+            let filled = bundled
+                ? try BundledModuleDatabase.shared.read { try Self.snippets(for: hits, in: $0, query: query) }
+                : try database.read { try Self.snippets(for: hits, in: $0, query: query) }
+            for hit in filled { snippets[hit.id] = hit.snippet }
+        }
+        return results.map { result in
+            guard let unsnipped = result.unsnipped else { return result }
+            var result = result
+            result.snippet = snippets[unsnipped.hit.id] ?? unsnipped.hit.snippet
+            result.unsnipped = nil
+            return result
+        }
+    }
+
+    /// Core's results found without their snippets, with them, cut by each
+    /// kind's own reader from one database.
+    static func snippets(
+        for hits: [LampModuleSearchResult],
+        in db: Database,
+        query: LampSearchQuery
+    ) throws -> [LampModuleSearchResult] {
+        try Dictionary(grouping: hits, by: \.kind).flatMap { kind, hits in
+            switch kind {
+            case .commentary: try LampModuleSearch.commentarySnippets(for: hits, in: db, query: query)
+            case .book: try LampModuleSearch.bookSnippets(for: hits, in: db, query: query)
+            case .notes: try LampModuleSearch.noteSnippets(for: hits, in: db, query: query)
+            case .devotional: try LampModuleSearch.devotionalSnippets(for: hits, in: db, query: query)
+            default: hits
+            }
+        }
     }
 
 
@@ -406,12 +454,12 @@ class ModuleSearch {
     /// The user's books and the bundled ones.
     private func searchBooks(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         var results = try database.read { db in
-            try Self.bookResults(in: db, query: query, filter: filter, limit: limit)
+            try Self.bookResults(in: db, query: query, filter: filter, limit: limit, snippets: false)
         }
 
         if BundledModuleDatabase.shared.hasBookModulesTable() {
             results.append(contentsOf: try BundledModuleDatabase.shared.read { db in
-                try Self.bookResults(in: db, query: query, filter: filter, limit: limit)
+                try Self.bookResults(in: db, query: query, filter: filter, limit: limit, snippets: false, bundled: true)
             })
         }
 
@@ -423,13 +471,15 @@ class ModuleSearch {
         in db: Database,
         query: LampSearchQuery,
         filter: ModuleSearchFilter,
-        limit: Int
+        limit: Int,
+        snippets: Bool = true,
+        bundled: Bool = false
     ) throws -> [ModuleSearchResult] {
         guard try db.tableExists("book_modules") else { return [] }
         let modules = try Row.fetchAll(db, sql: "SELECT id, title FROM book_modules ORDER BY title")
             .map { LampSearchedModule(id: $0["id"], name: $0["title"]) }
             .filter { filter.moduleIds?.contains($0.id) ?? true }
-        return try LampModuleSearch.books(in: db, modules: modules, query: query, limit: limit).map { hit in
+        return try LampModuleSearch.books(in: db, modules: modules, query: query, limit: limit, snippets: snippets).map { hit in
             ModuleSearchResult(
                 // The section, as the book opens at it.
                 id: String(hit.id.dropFirst("book:\(hit.moduleID):".count)),
@@ -440,7 +490,8 @@ class ModuleSearch {
                 snippet: hit.snippet,
                 verseId: hit.startReference,
                 rank: 0,
-                holdsPhrase: hit.holdsPhrase
+                holdsPhrase: hit.holdsPhrase,
+                unsnipped: snippets ? nil : (hit, bundled)
             )
         }
     }
@@ -705,11 +756,11 @@ class ModuleSearch {
     /// cross-references, whose units and index are in the bundled database.
     private func searchCommentaries(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         var results = try database.read { db in
-            try Self.commentaryResults(in: db, query: query, filter: filter, limit: limit)
+            try Self.commentaryResults(in: db, query: query, filter: filter, limit: limit, snippets: false)
         }
         if BundledModuleDatabase.shared.available {
             results += try BundledModuleDatabase.shared.read { db in
-                try Self.commentaryResults(in: db, query: query, filter: filter, limit: limit)
+                try Self.commentaryResults(in: db, query: query, filter: filter, limit: limit, snippets: false, bundled: true)
             }
         }
         return results
@@ -721,12 +772,14 @@ class ModuleSearch {
         in db: Database,
         query: LampSearchQuery,
         filter: ModuleSearchFilter,
-        limit: Int
+        limit: Int,
+        snippets: Bool = true,
+        bundled: Bool = false
     ) throws -> [ModuleSearchResult] {
         let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'commentary' ORDER BY name")
             .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
             .filter { filter.moduleIds?.contains($0.id) ?? true }
-        return try LampModuleSearch.commentary(in: db, modules: modules, query: query, limit: limit).map { hit in
+        return try LampModuleSearch.commentary(in: db, modules: modules, query: query, limit: limit, snippets: snippets).map { hit in
             ModuleSearchResult(
                 // The unit, as the commentary sheet opens it.
                 id: String(hit.id.dropFirst("commentary:\(hit.moduleID):".count)),
@@ -737,14 +790,15 @@ class ModuleSearch {
                 snippet: hit.snippet,
                 verseId: hit.startReference,
                 rank: 0,
-                holdsPhrase: hit.holdsPhrase
+                holdsPhrase: hit.holdsPhrase,
+                unsnipped: snippets ? nil : (hit, bundled)
             )
         }
     }
 
     private func searchDevotionals(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         try database.read { db in
-            try Self.devotionalResults(in: db, query: query, filter: filter, limit: limit)
+            try Self.devotionalResults(in: db, query: query, filter: filter, limit: limit, snippets: false)
         }
     }
 
@@ -754,7 +808,8 @@ class ModuleSearch {
         in db: Database,
         query: LampSearchQuery,
         filter: ModuleSearchFilter,
-        limit: Int
+        limit: Int,
+        snippets: Bool = true
     ) throws -> [ModuleSearchResult] {
         let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'devotional' ORDER BY name")
             .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
@@ -765,7 +820,9 @@ class ModuleSearch {
             tags: filter.tags,
             categories: filter.categories
         )
-        let hits = try LampModuleSearch.devotionals(in: db, modules: modules, query: query, criteria: criteria, limit: limit)
+        let hits = try LampModuleSearch.devotionals(
+            in: db, modules: modules, query: query, criteria: criteria, limit: limit, snippets: snippets
+        )
         guard !hits.isEmpty else { return [] }
         // The subtitle, date and tags the list shows, which core's results
         // don't carry.
@@ -791,14 +848,15 @@ class ModuleSearch {
                 rank: 0,
                 monthDay: details[id]?["date"],
                 tags: tags?.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) },
-                holdsPhrase: hit.holdsPhrase
+                holdsPhrase: hit.holdsPhrase,
+                unsnipped: snippets ? nil : (hit, false)
             )
         }
     }
 
     private func searchNotes(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
         try database.read { db in
-            try Self.noteResults(in: db, query: query, filter: filter, limit: limit)
+            try Self.noteResults(in: db, query: query, filter: filter, limit: limit, snippets: false)
         }
     }
 
@@ -807,12 +865,13 @@ class ModuleSearch {
         in db: Database,
         query: LampSearchQuery,
         filter: ModuleSearchFilter,
-        limit: Int
+        limit: Int,
+        snippets: Bool = true
     ) throws -> [ModuleSearchResult] {
         let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'notes' ORDER BY name")
             .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
             .filter { filter.moduleIds?.contains($0.id) ?? true }
-        return try LampModuleSearch.notes(in: db, modules: modules, query: query, limit: limit).map { hit in
+        return try LampModuleSearch.notes(in: db, modules: modules, query: query, limit: limit, snippets: snippets).map { hit in
             ModuleSearchResult(
                 // The note, as its sheet opens it.
                 id: String(hit.id.dropFirst("notes:\(hit.moduleID):".count)),
@@ -823,7 +882,8 @@ class ModuleSearch {
                 snippet: hit.snippet,
                 verseId: hit.startReference,
                 rank: 0,
-                holdsPhrase: hit.holdsPhrase
+                holdsPhrase: hit.holdsPhrase,
+                unsnipped: snippets ? nil : (hit, false)
             )
         }
     }
