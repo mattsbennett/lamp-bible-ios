@@ -841,9 +841,13 @@ final class TextSpeechController: NSObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
+    /// Doesn't mix: reading pauses whatever else is playing, as starting a
+    /// podcast would, rather than talking over it lowered. Not mixing is also
+    /// what lets the Lock Screen and headphone controls reach read aloud; a
+    /// session that mixes can't be the Now Playing app.
     private func configureAudioSession() {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             print("[TextSpeechController] Audio session error: \(error.localizedDescription)")
