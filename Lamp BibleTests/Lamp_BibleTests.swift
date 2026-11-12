@@ -7454,3 +7454,51 @@ final class NotesCollectionFileTests: XCTestCase {
     }
 }
 
+/// The reader's writings as core writes them: each as the row it's stored
+/// as, so what the Mac's model of a writing can't hold still travels
+/// between the reader's own iPhone and iPad.
+final class WritingsFileTests: XCTestCase {
+    func testAWritingTravelsAsItIsStored() throws {
+        let database = ModuleDatabase.shared
+        let module = Module(
+            id: "writings-file-\(UUID().uuidString)", type: .devotional, name: "Psalms Study",
+            description: "Weekly", filePath: "psalms.lamp", isEditable: true
+        )
+        try database.saveModule(module)
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: module.id)
+            try? database.deleteModule(id: module.id)
+        }
+        let summary = #"{"annotations":[{"type":"scripture","start":0,"end":7}],"text":"Psalm 1"}"#
+        let footnotes = #"[{"content":{"annotations":[],"text":"See Psalm 2"},"id":"1"}]"#
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO devotional_entries (
+                    id, module_id, title, series_id, series_name, series_order, summary_json, content_json,
+                    footnotes_json, related_ids, created, last_modified, subscription_id, is_read_only, media_json
+                ) VALUES ('w', ?, 'Blessed', 'series-1', 'Psalms', 1, ?, '# Blessed', ?, 'w2,w3', 1700000000,
+                          1700000001, 'sub-9', 1, '[]')
+                """, arguments: [module.id, summary, footnotes])
+        }
+
+        let compressed = try ModuleSyncManager.shared.exportDevotionalModuleToSQLite(module)
+
+        let data = try XCTUnwrap((compressed as NSData).decompressed(using: .zlib) as Data)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try data.write(to: url)
+        try DatabaseQueue(path: url.path).read { db in
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM devotional_entries"))
+            XCTAssertEqual(row["summary_json"], summary)
+            XCTAssertEqual(row["footnotes_json"], footnotes)
+            XCTAssertEqual(row["related_ids"], "w2,w3")
+            XCTAssertEqual(row["series_id"], "series-1")
+            XCTAssertEqual(row["subscription_id"], "sub-9")
+            XCTAssertEqual(row["is_read_only"], 1)
+            XCTAssertEqual(row["module_id"], module.id)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT name FROM module_meta"), "Psalms Study")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT description FROM module_meta"), "Weekly")
+        }
+    }
+}
+

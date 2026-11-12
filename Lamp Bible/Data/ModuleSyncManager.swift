@@ -1765,117 +1765,53 @@ class ModuleSyncManager: ObservableObject {
         let entries = try database.read { db in
             try DevotionalEntry
                 .filter(Column("module_id") == module.id)
-                .order(Column("id"))
                 .fetchAll(db)
         }
+        // Written by core, as the Mac writes it: the reader's collection
+        // under its name on the server and the collection's own, a module of
+        // their own making under its own name and description.
+        let isCollection = module.id == LampSyncLocalDeletion.writingCollectionID
+        return try Self.writingsArchive(
+            entries, moduleID: module.id,
+            name: isCollection ? LampPersonalModule.writing.name : module.name,
+            description: isCollection ? nil : module.description
+        )
+    }
 
-        // Create temporary database file
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("db")
-
-        defer {
-            try? FileManager.default.removeItem(at: tempURL)
+    /// The writings file as core writes it, each writing as the row it is
+    /// stored as, so nothing this device keeps is flattened on the way out,
+    /// and in the order the Mac hands writings over.
+    static func writingsArchive(
+        _ entries: [DevotionalEntry], moduleID: String, name: String, description: String?
+    ) throws -> Data {
+        // As SQLite orders them, byte by byte, which is how the Mac reads them:
+        // series, its order, the date, the title, the id.
+        func key(_ entry: DevotionalEntry) -> [String] {
+            [entry.seriesName ?? "", String(format: "%020d", entry.seriesOrder ?? 0), entry.date ?? "", entry.title, entry.id]
         }
-
-        // Create and populate the SQLite database
-        let exportQueue = try DatabaseQueue(path: tempURL.path)
-        try exportQueue.write { db in
-            // Create devotional_entries table with full schema
-            try db.execute(sql: """
-                CREATE TABLE devotional_entries (
-                    id TEXT PRIMARY KEY,
-                    module_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    subtitle TEXT,
-                    author TEXT,
-                    date TEXT,
-                    tags TEXT,
-                    category TEXT,
-                    series_id TEXT,
-                    series_name TEXT,
-                    series_order INTEGER,
-                    key_scriptures_json TEXT,
-                    summary_json TEXT,
-                    content_json TEXT NOT NULL,
-                    footnotes_json TEXT,
-                    related_ids TEXT,
-                    created INTEGER NOT NULL,
-                    last_modified INTEGER,
-                    search_text TEXT,
-                    record_change_tag TEXT,
-                    subscription_id TEXT,
-                    is_read_only INTEGER,
-                    media_json TEXT
-                )
-            """)
-
-            // Create module_meta table for module info
-            try db.execute(sql: """
-                CREATE TABLE module_meta (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    author TEXT,
-                    version TEXT,
-                    is_editable INTEGER DEFAULT 1
-                )
-            """)
-
-            // Insert module metadata
-            try db.execute(
-                sql: "INSERT INTO module_meta (id, name, description, author, version, is_editable) VALUES (?, ?, ?, ?, ?, ?)",
-                arguments: [module.id, module.name, module.description, module.author, module.version, module.isEditable ? 1 : 0]
-            )
-
-            // Insert all devotional entries
-            for entry in entries {
-                try db.execute(
-                    sql: """
-                        INSERT INTO devotional_entries
-                        (id, module_id, title, subtitle, author, date, tags, category, series_id, series_name, series_order,
-                         key_scriptures_json, summary_json, content_json, footnotes_json, related_ids, created, last_modified, search_text, record_change_tag,
-                         subscription_id, is_read_only, media_json)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    arguments: [
-                        entry.id,
-                        entry.moduleId,
-                        entry.title,
-                        entry.subtitle,
-                        entry.author,
-                        entry.date,
-                        entry.tags,
-                        entry.category,
-                        entry.seriesId,
-                        entry.seriesName,
-                        entry.seriesOrder,
-                        entry.keyScripturesJson,
-                        entry.summaryJson,
-                        entry.contentJson,
-                        entry.footnotesJson,
-                        entry.relatedIds,
-                        entry.created,
-                        entry.lastModified,
-                        entry.searchText,
-                        entry.recordChangeTag,
-                        // A writing from a subscription stays one, and stays
-                        // read-only, wherever this copy is taken in.
-                        entry.subscriptionId,
-                        entry.isReadOnly,
-                        entry.mediaJson
-                    ]
-                )
+        let ordered = entries.sorted { lhs, rhs in
+            for (left, right) in zip(key(lhs), key(rhs)) where left != right {
+                return left.utf8.lexicographicallyPrecedes(right.utf8)
             }
+            return false
         }
-
-        // Read the SQLite file and compress with zlib
-        let sqliteData = try Data(contentsOf: tempURL)
-        guard let compressedData = try? (sqliteData as NSData).compressed(using: .zlib) as Data else {
-            throw ModuleSyncError.exportFailed("Failed to compress SQLite data")
-        }
-
-        return compressedData
+        return try LampPersonalWritingFile.archive(
+            rows: ordered.map { entry in
+                LampPersonalWritingFile.Row(
+                    id: entry.id, moduleID: moduleID, title: entry.title,
+                    subtitle: entry.subtitle, author: entry.author, date: entry.date,
+                    tags: entry.tags, category: entry.category,
+                    seriesID: entry.seriesId, seriesName: entry.seriesName, seriesOrder: entry.seriesOrder,
+                    keyScripturesJSON: entry.keyScripturesJson, summaryJSON: entry.summaryJson,
+                    contentJSON: entry.contentJson, footnotesJSON: entry.footnotesJson,
+                    relatedIDs: entry.relatedIds, created: entry.created, lastModified: entry.lastModified,
+                    searchText: entry.searchText, recordChangeTag: entry.recordChangeTag,
+                    subscriptionID: entry.subscriptionId, isReadOnly: entry.isReadOnly,
+                    mediaJSON: entry.mediaJson
+                )
+            },
+            moduleID: moduleID, name: name, description: description
+        )
     }
 
     /// Export highlights module to SQLite+zlib format
