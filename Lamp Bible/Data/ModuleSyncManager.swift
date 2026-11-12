@@ -726,9 +726,12 @@ class ModuleSyncManager: ObservableObject {
                     throw ModuleSyncError.importFailed("Could not read highlight metadata")
                 }
                 // The set the file says it is. One written before sets said
-                // so carries the module's id instead, and the Mac's default
-                // set is read back as the Mac reads it, colon and all.
-                let setId = LampLibrary.canonicalHighlightSetID(fileSetId, translationID: translationId)
+                // so carries the module's id instead, and only then is the
+                // Mac's default set read back as the Mac reads it, colon and
+                // all: a set named otherwise than its module was named so.
+                let setId = fileSetId == fileInfo.id
+                    ? LampLibrary.canonicalHighlightSetID(fileSetId, translationID: translationId)
+                    : fileSetId
 
                 // Create module if not exists
                 try db.execute(sql: """
@@ -1042,9 +1045,14 @@ class ModuleSyncManager: ObservableObject {
         }
         // Searched as a note here is searched, footnotes and all: a file's
         // search text is its writer's, and core's leaves footnotes out.
+        let isCollection = fileInfo.id == LampSyncLocalDeletion.notesCollectionID
         let remoteEntries = fetched.map { entry in
             var entry = entry
             entry.searchText = NoteEntry.searchText(content: entry.content, footnotes: entry.footnotes)
+            // Named as a note here is named, as the Mac names it: a note that
+            // won the merge would otherwise keep the name an older device
+            // gave it, and match nothing in the ledger.
+            if isCollection { entry.id = NoteEntry.panelID(moduleId: fileInfo.id, verseId: entry.verseId) }
             return entry
         }
         let metadata = try await editableModuleMetadata(
@@ -1052,9 +1060,11 @@ class ModuleSyncManager: ObservableObject {
             hash: fileInfo.fileHash, tempURL: tempURL
         )
         let mergeResult = try database.write { db in
-            let localEntries = try NoteEntry
-                .filter(Column("module_id") == fileInfo.id)
-                .fetchAll(db)
+            // One note a verse: one twice under two names keeps its newest,
+            // where the merge, keying by verse, would keep whichever came first.
+            let localEntries = Dictionary(
+                grouping: try NoteEntry.filter(Column("module_id") == fileInfo.id).fetchAll(db), by: \.verseId
+            ).values.compactMap { copies in copies.max { ($0.lastModified ?? 0) < ($1.lastModified ?? 0) } }
             let result = mergeNoteEntries(
                 local: localEntries,
                 cloud: carriesMedia ? remoteEntries : Self.keepingLocalMedia(remoteEntries, from: localEntries),
@@ -1751,7 +1761,8 @@ class ModuleSyncManager: ObservableObject {
                     // No list is written as the Mac writes an empty one.
                     verseReferencesJSON: entry.verseRefsJson ?? "[]",
                     footnotesJSON: entry.footnotesJson ?? "[]",
-                    mediaJSON: entry.mediaJson, lastModified: entry.lastModified
+                    mediaJSON: entry.mediaJson, lastModified: entry.lastModified,
+                    recordChangeTag: entry.recordChangeTag
                 )
             },
             moduleID: moduleID, name: name, description: description, author: author, version: version
@@ -1785,13 +1796,15 @@ class ModuleSyncManager: ObservableObject {
         _ entries: [DevotionalEntry], moduleID: String, name: String,
         description: String? = nil, author: String? = nil, version: String? = nil
     ) throws -> Data {
-        // As SQLite orders them, byte by byte, which is how the Mac reads them:
-        // series, its order, the date, the title, the id.
-        func key(_ entry: DevotionalEntry) -> [String] {
-            [entry.seriesName ?? "", String(format: "%020d", entry.seriesOrder ?? 0), entry.date ?? "", entry.title, entry.id]
-        }
+        // As SQLite orders them, which is how the Mac reads them: series by
+        // its bytes, its order as a number, then the date, the title and the
+        // id by their bytes.
         let ordered = entries.sorted { lhs, rhs in
-            for (left, right) in zip(key(lhs), key(rhs)) where left != right {
+            let (left, right) = (lhs.seriesName ?? "", rhs.seriesName ?? "")
+            if left != right { return left.utf8.lexicographicallyPrecedes(right.utf8) }
+            if (lhs.seriesOrder ?? 0) != (rhs.seriesOrder ?? 0) { return (lhs.seriesOrder ?? 0) < (rhs.seriesOrder ?? 0) }
+            for (left, right) in [(lhs.date ?? "", rhs.date ?? ""), (lhs.title, rhs.title), (lhs.id, rhs.id)]
+            where left != right {
                 return left.utf8.lexicographicallyPrecedes(right.utf8)
             }
             return false
@@ -1806,6 +1819,7 @@ class ModuleSyncManager: ObservableObject {
                     keyScripturesJSON: entry.keyScripturesJson, summaryJSON: entry.summaryJson,
                     contentJSON: entry.contentJson, footnotesJSON: entry.footnotesJson,
                     relatedIDs: entry.relatedIds, created: entry.created, lastModified: entry.lastModified,
+                    recordChangeTag: entry.recordChangeTag,
                     subscriptionID: entry.subscriptionId, isReadOnly: entry.isReadOnly,
                     mediaJSON: entry.mediaJson
                 )

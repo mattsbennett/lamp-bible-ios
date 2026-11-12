@@ -1577,6 +1577,18 @@ class ModuleDatabase {
             try ModuleDatabase.nameRemainingCollectionNotesAsTheMacDoes(in: db)
         }
 
+        // What v40 and v41 left: a verse with a note under both names, the
+        // ledger entries of notes with no row left to carry their name, and
+        // a set whose Mac name was here already.
+        migrator.registerMigration("v42_names_settled") { db in
+            try ModuleDatabase.settleCollectionNoteNames(in: db)
+            let renamed = try ModuleDatabase.nameHighlightSetsAsTheMacDoes(in: db)
+            let activeKey = "highlight_active_set_id"
+            if let active = UserDefaults.standard.string(forKey: activeKey), let canonical = renamed[active] {
+                UserDefaults.standard.set(canonical, forKey: activeKey)
+            }
+        }
+
         return migrator
     }
 
@@ -1641,6 +1653,64 @@ class ModuleDatabase {
         }
     }
 
+    /// Finishes moving the reader's notes to the Mac's names.
+    ///
+    /// A verse with a note under both names holds one note twice, which the
+    /// merge, keying notes by verse, would settle by whichever came first:
+    /// the later text stays, under the Mac's name, and the other row goes
+    /// without a deletion, since nothing was deleted. Then every ledger entry
+    /// still under the old name moves to the new one, deletions as well as
+    /// saves, joining whatever is there and keeping the later of each: a note
+    /// deleted here before its rename has no row to carry its name, and its
+    /// deletion has to reach the Mac's copy all the same.
+    static func settleCollectionNoteNames(in db: Database) throws {
+        guard try db.tableExists("note_entries"), try db.tableExists("personal_sync_ledger") else { return }
+        let notes = LampSyncLocalDeletion.notesCollectionID
+        let mac = LampPersonalModule.notes.id
+        let pairs = try Row.fetchAll(db, sql: """
+            SELECT old.id AS old, new.id AS new,
+                   COALESCE(old.last_modified, 0) > COALESCE(new.last_modified, 0) AS older_is_newer
+            FROM note_entries old JOIN note_entries new ON new.id = ? || ':' || old.verse_id
+            WHERE old.module_id = ? AND old.id = ? || ':' || old.verse_id
+            """, arguments: [mac, notes, notes])
+        for pair in pairs {
+            let old: String = pair["old"]
+            let new: String = pair["new"]
+            if pair["older_is_newer"] as Bool {
+                try db.execute(sql: """
+                    UPDATE note_entries
+                    SET (title, content, verse_refs_json, last_modified, footnotes_json, search_text, media_json) = (
+                        SELECT title, content, verse_refs_json, last_modified, footnotes_json, search_text, media_json
+                        FROM note_entries WHERE id = ?
+                    )
+                    WHERE id = ?
+                    """, arguments: [old, new])
+            }
+            try db.execute(sql: "DELETE FROM note_entries WHERE id = ?", arguments: [old])
+        }
+        let arguments: StatementArguments = [
+            "kind": LampPersonalItemKind.note.rawValue, "notes": notes, "mac": mac,
+        ]
+        let match = "kind = :kind AND item_key GLOB :notes || ':[0-9]*'"
+        try db.execute(sql: """
+            INSERT INTO personal_sync_ledger (kind, item_key, present_since, deleted_at)
+            SELECT kind, :mac || substr(item_key, length(:notes) + 1), present_since, deleted_at
+            FROM personal_sync_ledger WHERE \(match)
+            ON CONFLICT(kind, item_key) DO UPDATE SET
+                present_since = CASE
+                    WHEN present_since IS NULL THEN excluded.present_since
+                    WHEN excluded.present_since IS NULL THEN present_since
+                    ELSE MAX(present_since, excluded.present_since)
+                END,
+                deleted_at = CASE
+                    WHEN deleted_at IS NULL THEN excluded.deleted_at
+                    WHEN excluded.deleted_at IS NULL THEN deleted_at
+                    ELSE MAX(deleted_at, excluded.deleted_at)
+                END
+            """, arguments: arguments)
+        try db.execute(sql: "DELETE FROM personal_sync_ledger WHERE \(match)", arguments: arguments)
+    }
+
     /// Moves each renamed note's recorded save time to its new name, which
     /// v38 left under the old one.
     ///
@@ -1684,17 +1754,46 @@ class ModuleDatabase {
     static func nameHighlightSetsAsTheMacDoes(in db: Database) throws -> [String: String] {
         guard try db.tableExists("highlight_sets") else { return [:] }
         var renamed: [String: String] = [:]
-        for row in try Row.fetchAll(db, sql: "SELECT id, translation_id FROM highlight_sets") {
+        // Only a set named for its module, which is how a file that didn't
+        // say which set it was left it; a set named otherwise was named so.
+        for row in try Row.fetchAll(db, sql: "SELECT id, translation_id FROM highlight_sets WHERE id = module_id") {
             let id: String = row["id"]
             let canonical = LampLibrary.canonicalHighlightSetID(id, translationID: row["translation_id"])
-            guard canonical != id,
-                  try !Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM highlight_sets WHERE id = ?)", arguments: [canonical])!
-            else { continue }
-            renamed[id] = canonical
+            if canonical != id { renamed[id] = canonical }
+        }
+        for (old, new) in renamed {
+            let modules = try String.fetchAll(db, sql: """
+                SELECT module_id FROM highlight_sets WHERE id IN (?, ?) ORDER BY id = ?
+                """, arguments: [old, new, new])
+            if modules.count == 2 {
+                // The Mac's name is here already: the two are one set. What
+                // the old name held joins it, a highlight or theme both have
+                // kept once, as the new name has it, and the old set goes
+                // without a deletion, since nothing was deleted. Only within
+                // one module: emptying another would take its file.
+                guard modules[0] == modules[1] else { renamed[old] = nil; continue }
+                let arguments: StatementArguments = ["old": old, "new": new]
+                try db.execute(sql: """
+                    DELETE FROM highlights WHERE set_id = :old AND EXISTS (
+                        SELECT 1 FROM highlights kept
+                        WHERE kept.set_id = :new AND kept.ref = highlights.ref AND kept.sc = highlights.sc
+                          AND kept.ec = highlights.ec AND kept.style = highlights.style
+                          AND COALESCE(kept.color, '') = COALESCE(highlights.color, '')
+                    )
+                    """, arguments: arguments)
+                try db.execute(sql: """
+                    DELETE FROM highlight_themes WHERE set_id = :old AND EXISTS (
+                        SELECT 1 FROM highlight_themes kept
+                        WHERE kept.set_id = :new AND kept.color = highlight_themes.color AND kept.style = highlight_themes.style
+                    )
+                    """, arguments: arguments)
+                try db.execute(sql: "DELETE FROM highlight_sets WHERE id = :old", arguments: arguments)
+            } else {
+                try db.execute(sql: "UPDATE highlight_sets SET id = ? WHERE id = ?", arguments: [new, old])
+            }
         }
         let hasLedger = try db.tableExists("personal_sync_ledger")
         for (old, new) in renamed {
-            try db.execute(sql: "UPDATE highlight_sets SET id = ? WHERE id = ?", arguments: [new, old])
             try db.execute(sql: "UPDATE highlights SET set_id = ? WHERE set_id = ?", arguments: [new, old])
             try db.execute(sql: """
                 UPDATE highlight_themes SET id = ? || substr(id, length(?) + 1), set_id = ? WHERE set_id = ?
@@ -2045,10 +2144,12 @@ class ModuleDatabase {
                     try Self.recordPersonalPresence(db, .note, note.id)
                     continue
                 }
-                let current = rows.removeFirst()
-                // The same note again under a second id, from before notes
-                // kept theirs: removed, but not deleted, so not recorded.
-                for duplicate in rows { _ = try duplicate.delete(db) }
+                // The row the panel names, or failing that the newest. The same
+                // note again under a second id, from before notes kept theirs,
+                // is removed, but not deleted, so not recorded.
+                let current = rows.first { $0.id == note.id }
+                    ?? rows.max { ($0.lastModified ?? 0) < ($1.lastModified ?? 0) }!
+                for duplicate in rows where duplicate.id != current.id { _ = try duplicate.delete(db) }
                 note.id = current.id
                 if note.mediaJson == nil { note.mediaJson = current.mediaJson }
                 // The panel names a note by its verses; a title another app
