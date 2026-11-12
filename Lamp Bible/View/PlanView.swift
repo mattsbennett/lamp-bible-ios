@@ -73,6 +73,15 @@ struct PlanView: View {
                     .onChange(of: date) {
                         refreshMetaData()
                     }
+                    // The counts come from the reader's translation, which can
+                    // arrive after the plan was built, or change under the
+                    // same id; the inputs alone can't see either.
+                    .onReceive(NotificationCenter.default.publisher(for: .translationsDidChange)) { _ in
+                        metaDataInputs = nil
+                        buildingMetaDataInputs = nil
+                        metaDataRetryCount = 0
+                        refreshMetaData()
+                    }
                     .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSCalendarDayChanged)) { _ in
                         date = Date()
                     }

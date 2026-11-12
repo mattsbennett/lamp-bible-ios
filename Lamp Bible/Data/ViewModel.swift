@@ -221,10 +221,22 @@ final class PlanMetaDataCache {
 
     /// Drop everything. Needed when the underlying module data changes (a
     /// translation is imported or removed), which the key can't see.
+    /// Called whenever a translation is installed, replaced or removed, so
+    /// it also says so: a plan built before a translation arrived, as on a
+    /// first sync, which brings the reader's translation after the setting
+    /// naming it, shows no counts until it is rebuilt.
     func invalidate() {
         lock.lock()
         entries.removeAll()
         insertionOrder.removeAll()
         lock.unlock()
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .translationsDidChange, object: nil)
+        }
     }
+}
+
+extension Notification.Name {
+    /// A translation was installed, replaced or removed.
+    static let translationsDidChange = Notification.Name("translationsDidChange")
 }
