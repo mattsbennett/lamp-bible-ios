@@ -6825,6 +6825,42 @@ extension LibrarySyncPassTests {
         XCTAssertEqual(try Data(contentsOf: file), bytes, "and the picture is here")
     }
 
+    /// Changed on both devices at the same moment, a note is set aside for
+    /// the reader to choose, and the other device's copy keeps its pictures:
+    /// choosing it must not write its text with an empty list of what its
+    /// `media/` links name.
+    func testANoteSetAsideAsAConflictKeepsTheOtherCopysPictures() async throws {
+        try saveNotesModule(notes: ["a"])
+        _ = try await pass().run()
+        defer {
+            try? database.write { db in
+                try db.execute(sql: "DELETE FROM sync_pending_module_conflicts WHERE module_id = ?", arguments: [self.moduleId])
+            }
+        }
+        try await publishNoteElsewhere { note in
+            note.content = "There ![](media/pic)"
+            note.mediaJson = try NoteMedia.appending(picture, to: nil)
+            note.lastModified = 1_788_132_400
+        }
+        // Edited here at the same moment, so neither copy is newer.
+        try database.write { db in
+            try db.execute(sql: """
+                UPDATE note_entries SET content = 'Here', last_modified = 1788132400 WHERE id = 'a' AND module_id = ?
+                """, arguments: [moduleId])
+        }
+
+        _ = try? await pass().run()
+
+        let payloads = try database.read { db in
+            try Data.fetchAll(db, sql: """
+                SELECT payload FROM sync_pending_module_conflicts WHERE module_id = ? AND type = 'notes'
+                """, arguments: [self.moduleId])
+        }
+        let conflict = try JSONDecoder().decode(NoteConflict.self, from: XCTUnwrap(payloads.first))
+        XCTAssertEqual(conflict.cloudEntry.content, "There ![](media/pic)")
+        XCTAssertEqual(conflict.cloudEntry.media.map(\.id), ["pic"])
+    }
+
     /// A file from a device that can't hold pictures says nothing about them.
     func testANotesFileWrittenBeforePicturesLeavesThemHere() async throws {
         try saveNotesModule(notes: ["a"])
@@ -6976,6 +7012,41 @@ final class NoteMediaTests: XCTestCase {
         )
         XCTAssertTrue(added.contains("\"video\"") && added.contains("\"focus\""), "what isn't understood is kept")
         XCTAssertEqual(NoteEntry(moduleId: moduleId, verseId: 1, content: "", mediaJson: added).media.map(\.id), ["pic", "new"])
+    }
+
+    /// Media of a kind this version has no name for is still carried: the
+    /// files are asked for by name, not by reading each entry.
+    func testAPictureOfAKindThisVersionCantNameStillHasItsFileCarried() throws {
+        let json = """
+            [{"id":"film","type":"video","filename":"film.mov","mimeType":"video/quicktime"},
+             {"id":"pic","type":"image","filename":"pic.jpg","mimeType":"image/jpeg"}]
+            """
+        try database.saveNoteEntry(NoteEntry(
+            id: "a", moduleId: moduleId, verseId: 43_001_001, content: "Note", mediaJson: json
+        ))
+        XCTAssertEqual(
+            try ModuleSyncManager.shared.noteMediaItems(moduleId: moduleId).map(\.remotePath).sorted(),
+            ["NoteMedia/\(moduleId!)/film.mov", "NoteMedia/\(moduleId!)/pic.jpg"]
+        )
+
+        let writings = "\(moduleId!)-writings"
+        try database.saveModule(Module(
+            id: writings, type: .devotional, name: "Writings", filePath: "\(writings).lamp", isEditable: true
+        ))
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: writings)
+            try? database.deleteModule(id: writings)
+        }
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO devotional_entries (id, module_id, title, content_json, created, media_json)
+                VALUES ('w', ?, 'Writing', '[]', 0, ?)
+                """, arguments: [writings, json])
+        }
+        XCTAssertEqual(
+            try ModuleSyncManager.shared.devotionalMediaItems(moduleId: writings, forExport: true).map(\.remotePath).sorted(),
+            ["DevotionalMedia/\(writings)/w/film.mov", "DevotionalMedia/\(writings)/w/pic.jpg"]
+        )
     }
 
     /// Keep Both keeps both notes' text, so it keeps both sets of pictures.

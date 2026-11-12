@@ -35,14 +35,22 @@ enum NoteMedia {
     }
 
     /// Where a note's picture syncs.
-    static func remotePath(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) throws -> String {
+    static func remotePath(filename: String, moduleId: String, verseId: Int) throws -> String {
         isKeptByVerse(moduleId)
-            ? try LampSyncFolderLayout.noteMediaPath(moduleID: moduleId, noteOwnerID: owner(verseId), filename: ref.filename)
-            : try LampSyncFolderLayout.noteModuleMediaPath(moduleID: moduleId, filename: ref.filename)
+            ? try LampSyncFolderLayout.noteMediaPath(moduleID: moduleId, noteOwnerID: owner(verseId), filename: filename)
+            : try LampSyncFolderLayout.noteModuleMediaPath(moduleID: moduleId, filename: filename)
+    }
+
+    static func remotePath(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) throws -> String {
+        try remotePath(filename: ref.filename, moduleId: moduleId, verseId: verseId)
+    }
+
+    static func expectedURL(filename: String, moduleId: String, verseId: Int) -> URL {
+        folder(moduleId: moduleId, verseId: verseId).appendingPathComponent(filename)
     }
 
     static func expectedURL(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) -> URL {
-        folder(moduleId: moduleId, verseId: verseId).appendingPathComponent(ref.filename)
+        expectedURL(filename: ref.filename, moduleId: moduleId, verseId: verseId)
     }
 
     static func url(for ref: DevotionalMediaReference, moduleId: String, verseId: Int) -> URL? {

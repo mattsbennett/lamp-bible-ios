@@ -2172,29 +2172,26 @@ class ModuleSyncManager: ObservableObject {
                     ? ModuleSyncError.exportFailed("Invalid media entry ID: \(entry.id)")
                     : ModuleSyncError.importFailed("Invalid media entry ID: \(entry.id)")
             }
-            guard let mediaJson = entry.mediaJson else { continue }
-            let mediaRefs = try JSONDecoder().decode(
-                [DevotionalMediaReference].self, from: Data(mediaJson.utf8)
-            )
-            for mediaRef in mediaRefs {
-                guard BookMediaPath.isSafeFilename(mediaRef.filename) else {
-                    throw forExport
-                        ? ModuleSyncError.exportFailed(
-                            "Invalid devotional media filename: \(mediaRef.filename)"
-                        )
-                        : ModuleSyncError.importFailed(
-                            "Invalid devotional media filename: \(mediaRef.filename)"
-                        )
-                }
+            // By filename, not by reading each entry: one of a media type
+            // this version has no name for still has its file carried.
+            let filenames: [String]
+            do {
+                filenames = try LampPortableDevotionalMedia.filenames(in: entry.mediaJson)
+            } catch {
+                throw forExport
+                    ? ModuleSyncError.exportFailed("Invalid devotional media in \(entry.id): \(error)")
+                    : ModuleSyncError.importFailed("Invalid devotional media in \(entry.id): \(error)")
+            }
+            for filename in filenames {
                 items.append(LampSyncReferencedMedia.Item(
                     remotePath: try LampPortableDevotionalMedia.iOSRemotePath(
                         moduleID: moduleId,
                         devotionalID: entry.id,
-                        filename: mediaRef.filename
+                        filename: filename
                     ),
-                    localURL: DevotionalMediaStorage.shared.expectedMediaURL(
-                        for: mediaRef, devotionalId: entry.id, moduleId: moduleId
-                    )
+                    localURL: DevotionalMediaStorage.shared
+                        .mediaDirectory(devotionalId: entry.id, moduleId: moduleId)
+                        .appendingPathComponent(filename)
                 ))
             }
         }
@@ -2212,8 +2209,10 @@ class ModuleSyncManager: ObservableObject {
     }
 
     /// Each picture a notes module's notes name, where it syncs and where it
-    /// is kept here. One whose name can't be a path is left out rather than
-    /// failing the rest, as one that can't be read is.
+    /// is kept here. Asked by filename rather than by reading each entry, so
+    /// one of a media type this version has no name for still has its file
+    /// carried. A note whose list can't be read, or names a file that can't
+    /// be a path, costs its own pictures and no other note's.
     func noteMediaItems(moduleId: String) throws -> [LampSyncReferencedMedia.Item] {
         guard BookMediaPath.isSafeFilename(moduleId) else { return [] }
         let entries = try database.read { db in
@@ -2223,13 +2222,13 @@ class ModuleSyncManager: ObservableObject {
                 .fetchAll(db)
         }
         return entries.flatMap { entry in
-            entry.media.compactMap { ref -> LampSyncReferencedMedia.Item? in
-                guard BookMediaPath.isSafeFilename(ref.filename),
-                      let remotePath = try? NoteMedia.remotePath(for: ref, moduleId: moduleId, verseId: entry.verseId)
-                else { return nil }
+            ((try? LampPortableDevotionalMedia.filenames(in: entry.mediaJson)) ?? []).compactMap { filename in
+                guard let remotePath = try? NoteMedia.remotePath(
+                    filename: filename, moduleId: moduleId, verseId: entry.verseId
+                ) else { return nil }
                 return LampSyncReferencedMedia.Item(
                     remotePath: remotePath,
-                    localURL: NoteMedia.expectedURL(for: ref, moduleId: moduleId, verseId: entry.verseId)
+                    localURL: NoteMedia.expectedURL(filename: filename, moduleId: moduleId, verseId: entry.verseId)
                 )
             }
         }
