@@ -32,9 +32,10 @@ struct ModuleSearchResult: Identifiable {
     /// Whether the result's text holds the query's words together, which
     /// core's merge ranks it by after its title.
     var holdsPhrase = false
-    /// A result found without its snippet, which carries a stand-in to rank
-    /// by: core's result, for `fillSnippets` to cut one for once the merge
-    /// has kept it, and whether it came from the bundled database.
+    /// A result one kind's search found without its snippet, which carries
+    /// a stand-in to rank by: core's result, to cut one for once kept
+    /// (`ModuleSearch.snippets`), and whether it came from the bundled
+    /// database. A search of every kind has core cut them.
     var unsnipped: (hit: LampModuleSearchResult, bundled: Bool)? = nil
 
     // For navigation
@@ -374,149 +375,179 @@ class ModuleSearch {
     }
 
     /// The search's `limit` results shared among the kinds that matched, as
-    /// core shares the Mac's (`LampModuleSearch.sharedByKind`): each kind's
-    /// best, so a common word's verses can't take every place, and the kinds
-    /// that had more than they kept.
+    /// core gathers and shares the Mac's (`LampModuleSearch.gather`): each
+    /// kind's best, so a common word's verses can't take every place, and the
+    /// kinds that had more than they kept.
     func searchByKind(query: String, filter: ModuleSearchFilter = .default, limit: Int = 50) throws -> ModuleSearchPage {
-        var results: [ModuleSearchResult] = []
+        let request = LampModuleSearchRequest(
+            query: query,
+            kinds: filter.types,
+            moduleIDs: filter.moduleIds,
+            bookRange: filter.bookRange,
+            strongsKey: filter.strongsKey,
+            highlightColors: filter.highlightColors,
+            devotionalCriteria: LampDevotionalSearchCriteria(
+                date: filter.devotionalDate,
+                monthDay: filter.monthDay,
+                tags: filter.tags,
+                categories: filter.categories
+            ),
+            // The translations named are searched together.
+            preferredTranslationID: filter.translationIds == nil ? filter.preferredTranslationId : nil
+        )
+        // The translations searched, read once.
+        var listed: [String]?
+        let translations = { () throws -> [String] in
+            if let listed { return listed }
+            let ids = try self.searchedTranslations(filter: filter, byKey: !request.hasWords)
+            listed = ids
+            return ids
+        }
         // One more from each kind than the page holds, so that a kind with
         // more than it keeps says so even when it is the only one to match.
-        let perKind = limit + 1
-
-        // Words to find, even where an index can't ask for them by itself,
-        // as `*faith`, whose FTS query is empty. A query without any allows a
-        // dictionary key search or a highlight colour search.
-        let parsedQuery = LampSearchQuery(query)
-        let hasTextQuery = !parsedQuery.isEmpty && !parsedQuery.plainText.isEmpty
-        let hasKeyFilter = filter.strongsKey != nil
-        let hasColorFilter = filter.highlightColorOnly && filter.highlightColors != nil
-
-        guard hasTextQuery || hasKeyFilter || hasColorFilter else { return ModuleSearchPage(results: [], moreIn: []) }
-
-        if filter.types.contains(.dictionary) {
-            // User dictionaries (SQLite)
-            if hasTextQuery {
-                results.append(contentsOf: try searchDictionaries(query: parsedQuery, filter: filter, limit: perKind))
-            } else if hasKeyFilter {
-                // Key-only search for user dictionaries
-                results.append(contentsOf: try searchDictionariesByKey(filter: filter, limit: perKind))
-            }
-
-            // Bundled dictionaries (Realm)
-            if filter.includeBundledDictionaries {
-                results.append(contentsOf: searchBundledDictionaries(query: query, filter: filter, limit: perKind))
-            }
-        }
-
-        // Commentaries, books, writings and notes are found without their
-        // snippets, which are cut for the results the merge keeps: cutting
-        // one for every result each database offered, most of them then
-        // dropped, was most of a search's time.
-        if filter.types.contains(.commentary) && hasTextQuery {
-            results.append(contentsOf: try searchCommentaries(query: LampSearchQuery(query), filter: filter, limit: perKind))
-        }
-
-        if filter.types.contains(.book) && hasTextQuery {
-            results.append(contentsOf: try searchBooks(query: LampSearchQuery(query), filter: filter, limit: perKind))
-        }
-
-        if filter.types.contains(.devotional) && hasTextQuery {
-            results.append(contentsOf: try searchDevotionals(query: LampSearchQuery(query), filter: filter, limit: perKind))
-        }
-
-        if filter.types.contains(.notes) && hasTextQuery {
-            results.append(contentsOf: try searchNotes(query: LampSearchQuery(query), filter: filter, limit: perKind))
-        }
-
-        var scripture: SearchScripture?
-        if filter.types.contains(.translation), (hasTextQuery || hasKeyFilter),
-           let preferred = filter.preferredTranslationId, filter.translationIds == nil {
-            // One translation's verses, in the order the phone lists them,
-            // as the Mac's page of every kind takes them.
-            let order = try TranslationDatabase.shared.getAllTranslations()
-                .filter { hasTextQuery || $0.features?.strongs == true }
-                .map(\.id)
-                .filter { filter.moduleIds?.contains($0) ?? true }
-            let found = try LampScriptureChoice.choose(preferred: preferred, order: order, limit: perKind) { id, limit in
-                var one = filter
-                if hasTextQuery {
-                    one.translationIds = [id]
-                    return try searchTranslations(query: query, filter: one, limit: limit)
-                }
-                one.moduleIds = [id]
-                return try searchTranslationsByStrongs(filter: one, limit: limit)
-            }
-            if let found {
-                results.append(contentsOf: found.matches)
-                scripture = SearchScripture(preferred: order.contains(preferred) ? preferred : nil, choice: found.choice)
-            }
-        } else if filter.types.contains(.translation) {
-            if hasTextQuery {
-                results.append(contentsOf: try searchTranslations(query: query, filter: filter, limit: perKind))
-            } else if hasKeyFilter {
-                // Strong's key search for translations with Strong's support
-                results.append(contentsOf: try searchTranslationsByStrongs(filter: filter, limit: perKind))
-            }
-        }
-
-        if filter.types.contains(.plan) && hasTextQuery {
-            results.append(contentsOf: try searchPlans(query: query, filter: filter, limit: perKind))
-        }
-
-        if filter.types.contains(.quiz) && hasTextQuery {
-            results.append(contentsOf: try searchQuizzes(query: query, filter: filter, limit: perKind))
-        }
-
-        if filter.types.contains(.highlights) && (hasTextQuery || hasColorFilter) {
-            results.append(contentsOf: try searchHighlights(query: query, filter: filter, limit: perKind))
-        }
-
-        // A text search is merged as core merges the Mac's, by what names
-        // and shows each result and whether it holds the words together, the
-        // modules taking turns among equals: the kinds' own ranks are not on
-        // one scale. A search by key or colour alone has no words to rank by,
-        // and each kind keeps its own best.
-        let share: LampModuleSearch.KindShare<ModuleSearchResult>
-        if hasTextQuery {
-            share = LampModuleSearch.rankedByKind(
-                results, by: parsedQuery, limit: limit,
-                // A quiz result's title is its question, which shows it
-                // rather than names it.
-                named: { $0.moduleType == .quiz ? [] : [$0.title] },
-                shown: { $0.moduleType == .quiz ? [$0.title, $0.snippet] : [$0.snippet] },
-                holdingPhrase: { $0.holdsPhrase },
-                from: { ($0.moduleType.rawValue, $0.moduleId) }
-            )
-        } else {
-            results.sort { $0.rank > $1.rank }
-            share = LampModuleSearch.sharedByKind(results, limit: limit, kind: \.moduleType.rawValue)
-        }
+        guard let found = try LampModuleSearch.gather(
+            request, perKind: limit + 1,
+            from: sources(query: query, request: request, filter: filter, translations: translations)
+        ) else { return ModuleSearchPage(results: [], moreIn: []) }
+        let page = try found.rankedByKind(limit: limit)
         return ModuleSearchPage(
-            results: try fillSnippets(share.results, query: parsedQuery),
-            moreIn: Set(share.moreIn.compactMap(ModuleType.init(rawValue:))),
-            scripture: scripture
+            results: page.results,
+            moreIn: page.moreIn,
+            scripture: try page.scripture.map { choice in
+                // The reading translation is said to have none only where
+                // the filter left it among those searched.
+                let searched = try translations().filter { filter.moduleIds?.contains($0) ?? true }
+                return SearchScripture(
+                    preferred: request.preferredTranslationID.flatMap { searched.contains($0) ? $0 : nil },
+                    choice: choice
+                )
+            }
         )
     }
 
-    /// The results with the snippets they were found without, cut now that
-    /// the merge has chosen them, each in the database it came from, as the
-    /// Mac cuts its own.
-    private func fillSnippets(_ results: [ModuleSearchResult], query: LampSearchQuery) throws -> [ModuleSearchResult] {
-        var snippets: [String: String] = [:]
-        for bundled in [false, true] {
-            let hits = results.compactMap(\.unsnipped).filter { $0.bundled == bundled }.map(\.hit)
-            guard !hits.isEmpty else { continue }
-            let filled = bundled
-                ? try BundledModuleDatabase.shared.read { try Self.snippets(for: hits, in: $0, query: query) }
-                : try database.read { try Self.snippets(for: hits, in: $0, query: query) }
-            for hit in filled { snippets[hit.id] = hit.snippet }
+    /// The phone's modules as core's search reads them: the user's database
+    /// and the bundled one, each with its modules of a kind, and the phone's
+    /// own searches of verses, dictionaries, plans and highlights. `query`
+    /// is as typed.
+    private func sources(
+        query: String,
+        request: LampModuleSearchRequest,
+        filter: ModuleSearchFilter,
+        translations: @escaping () throws -> [String]
+    ) -> LampModuleSearchSources<ModuleSearchResult> {
+        let bundled = BundledModuleDatabase.shared
+        func database(_ id: String, of kind: ModuleType) -> LampModuleSearchDatabase {
+            LampModuleSearchDatabase(
+                id: id,
+                modules: { db in try Self.searchedModules(of: kind, in: db, filter: filter) },
+                read: { body in try id == "bundled" ? bundled.read(body) : self.database.read(body) }
+            )
         }
-        return results.map { result in
-            guard let unsnipped = result.unsnipped else { return result }
-            var result = result
-            result.snippet = snippets[unsnipped.hit.id] ?? unsnipped.hit.snippet
-            result.unsnipped = nil
-            return result
+        return LampModuleSearchSources(
+            shape: Self.resultShape,
+            databases: { kind in
+                // The user's, then the bundled one where it holds the kind.
+                var databases = [database("user", of: kind)]
+                let inBundle = switch kind {
+                case .commentary, .quiz: bundled.available
+                case .book: bundled.hasBookModulesTable()
+                default: false
+                }
+                if inBundle { databases.append(database("bundled", of: kind)) }
+                return databases
+            },
+            results: { hits, kind, database, db in
+                try Self.results(from: hits, kind: kind, in: db, source: database.id)
+            },
+            translations: translations,
+            verses: { ids, limit in
+                var named = filter
+                if request.hasWords {
+                    if let ids { named.translationIds = Set(ids) }
+                    return try self.searchTranslations(query: query, filter: named, limit: limit)
+                }
+                if let ids { named.moduleIds = Set(ids) }
+                return try self.searchTranslationsByStrongs(filter: named, limit: limit)
+            },
+            dictionaries: { limit in
+                var results: [ModuleSearchResult] = []
+                // The user's dictionaries (SQLite), by the words, else the key.
+                if request.hasWords {
+                    results += try self.searchDictionaries(query: LampSearchQuery(query), filter: filter, limit: limit)
+                } else if filter.strongsKey != nil {
+                    results += try self.searchDictionariesByKey(filter: filter, limit: limit)
+                }
+                if filter.includeBundledDictionaries {
+                    results += self.searchBundledDictionaries(query: query, filter: filter, limit: limit)
+                }
+                return results
+            },
+            plans: { limit in try self.searchPlans(query: query, filter: filter, limit: limit) },
+            highlights: { limit in try self.searchHighlights(query: query, filter: filter, limit: limit) }
+        )
+    }
+
+    /// The translations a search covers, in the order the phone lists them:
+    /// for a Strong's key, those tagged with Strong's numbers.
+    private func searchedTranslations(filter: ModuleSearchFilter, byKey: Bool) throws -> [String] {
+        try TranslationDatabase.shared.getAllTranslations()
+            .filter { !byKey || $0.features?.strongs == true }
+            .map(\.id)
+            .filter { filter.translationIds?.contains($0) ?? true }
+    }
+
+    /// What core's search needs of the phone's results, ranked as they were
+    /// before core gathered them.
+    static var resultShape: LampModuleSearchResultShape<ModuleSearchResult> {
+        LampModuleSearchResultShape(
+            kind: \.moduleType,
+            module: \.moduleId,
+            // A quiz result's title is its question, which shows it rather
+            // than names it.
+            named: { $0.moduleType == .quiz ? [] : [$0.title] },
+            shown: { $0.moduleType == .quiz ? [$0.title, $0.snippet] : [$0.snippet] },
+            holdsPhrase: \.holdsPhrase,
+            withSnippet: { result, snippet in
+                var result = result
+                result.snippet = snippet
+                return result
+            }
+        )
+    }
+
+    /// The modules of `kind` in one of the phone's databases a search covers.
+    static func searchedModules(of kind: ModuleType, in db: Database, filter: ModuleSearchFilter) throws -> [LampSearchedModule] {
+        let rows: [Row]
+        switch kind {
+        case .book:
+            guard try db.tableExists("book_modules") else { return [] }
+            rows = try Row.fetchAll(db, sql: "SELECT id, title AS name FROM book_modules ORDER BY title")
+        case .quiz:
+            guard try db.tableExists("quiz_modules") else { return [] }
+            rows = try Row.fetchAll(db, sql: "SELECT id, name FROM quiz_modules ORDER BY name")
+        default:
+            rows = try Row.fetchAll(
+                db, sql: "SELECT id, name FROM modules WHERE type = ? ORDER BY name", arguments: [kind.rawValue]
+            )
+        }
+        return rows.map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
+            .filter { filter.moduleIds?.contains($0.id) ?? true }
+    }
+
+    /// Core's results from one of the phone's databases as the phone shows
+    /// them, read while it is open.
+    static func results(
+        from hits: [LampModuleSearchResult],
+        kind: ModuleType,
+        in db: Database,
+        source: String
+    ) throws -> [ModuleSearchResult] {
+        switch kind {
+        case .commentary: hits.map { commentaryResult($0) }
+        case .book: hits.map { bookResult($0) }
+        case .notes: hits.map { noteResult($0) }
+        case .devotional: try devotionalResults(from: hits, in: db)
+        default: hits.map { quizResult($0, source: source) }
         }
     }
 
@@ -541,21 +572,6 @@ class ModuleSearch {
 
     // MARK: - Type-Specific Search
 
-    /// The user's books and the bundled ones.
-    private func searchBooks(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
-        var results = try database.read { db in
-            try Self.bookResults(in: db, query: query, filter: filter, limit: limit, snippets: false)
-        }
-
-        if BundledModuleDatabase.shared.hasBookModulesTable() {
-            results.append(contentsOf: try BundledModuleDatabase.shared.read { db in
-                try Self.bookResults(in: db, query: query, filter: filter, limit: limit, snippets: false, bundled: true)
-            })
-        }
-
-        return results
-    }
-
     /// One database's books searched by core, as the Mac searches its own.
     static func bookResults(
         in db: Database,
@@ -565,25 +581,27 @@ class ModuleSearch {
         snippets: Bool = true,
         bundled: Bool = false
     ) throws -> [ModuleSearchResult] {
-        guard try db.tableExists("book_modules") else { return [] }
-        let modules = try Row.fetchAll(db, sql: "SELECT id, title FROM book_modules ORDER BY title")
-            .map { LampSearchedModule(id: $0["id"], name: $0["title"]) }
-            .filter { filter.moduleIds?.contains($0.id) ?? true }
+        let modules = try searchedModules(of: .book, in: db, filter: filter)
         return try LampModuleSearch.books(in: db, modules: modules, query: query, limit: limit, snippets: snippets).map { hit in
-            ModuleSearchResult(
-                // The section, as the book opens at it.
-                id: String(hit.id.dropFirst("book:\(hit.moduleID):".count)),
-                moduleId: hit.moduleID,
-                moduleName: hit.moduleName,
-                moduleType: .book,
-                title: hit.subtitle.map { "\(hit.title): \($0)" } ?? hit.title,
-                snippet: hit.snippet,
-                verseId: hit.startReference,
-                rank: 0,
-                holdsPhrase: hit.holdsPhrase,
-                unsnipped: snippets ? nil : (hit, bundled)
-            )
+            var result = bookResult(hit)
+            result.unsnipped = snippets ? nil : (hit, bundled)
+            return result
         }
+    }
+
+    static func bookResult(_ hit: LampModuleSearchResult) -> ModuleSearchResult {
+        ModuleSearchResult(
+            // The section, as the book opens at it.
+            id: String(hit.id.dropFirst("book:\(hit.moduleID):".count)),
+            moduleId: hit.moduleID,
+            moduleName: hit.moduleName,
+            moduleType: .book,
+            title: hit.subtitle.map { "\(hit.title): \($0)" } ?? hit.title,
+            snippet: hit.snippet,
+            verseId: hit.startReference,
+            rank: 0,
+            holdsPhrase: hit.holdsPhrase
+        )
     }
 
     /// The user's dictionaries, searched as core searches the Mac's and the
@@ -842,20 +860,6 @@ class ModuleSearch {
         return String(text[start..<end])
     }
 
-    /// The user's commentaries and the bundled ones, the Treasury and the
-    /// cross-references, whose units and index are in the bundled database.
-    private func searchCommentaries(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
-        var results = try database.read { db in
-            try Self.commentaryResults(in: db, query: query, filter: filter, limit: limit, snippets: false)
-        }
-        if BundledModuleDatabase.shared.available {
-            results += try BundledModuleDatabase.shared.read { db in
-                try Self.commentaryResults(in: db, query: query, filter: filter, limit: limit, snippets: false, bundled: true)
-            }
-        }
-        return results
-    }
-
     /// One database's commentaries searched by core, as the Mac searches its
     /// own: which units match, which come first and what their snippets show.
     static func commentaryResults(
@@ -866,30 +870,27 @@ class ModuleSearch {
         snippets: Bool = true,
         bundled: Bool = false
     ) throws -> [ModuleSearchResult] {
-        let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'commentary' ORDER BY name")
-            .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
-            .filter { filter.moduleIds?.contains($0.id) ?? true }
+        let modules = try searchedModules(of: .commentary, in: db, filter: filter)
         return try LampModuleSearch.commentary(in: db, modules: modules, query: query, limit: limit, snippets: snippets).map { hit in
-            ModuleSearchResult(
-                // The unit, as the commentary sheet opens it.
-                id: String(hit.id.dropFirst("commentary:\(hit.moduleID):".count)),
-                moduleId: hit.moduleID,
-                moduleName: hit.moduleName,
-                moduleType: .commentary,
-                title: hit.title,
-                snippet: hit.snippet,
-                verseId: hit.startReference,
-                rank: 0,
-                holdsPhrase: hit.holdsPhrase,
-                unsnipped: snippets ? nil : (hit, bundled)
-            )
+            var result = commentaryResult(hit)
+            result.unsnipped = snippets ? nil : (hit, bundled)
+            return result
         }
     }
 
-    private func searchDevotionals(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
-        try database.read { db in
-            try Self.devotionalResults(in: db, query: query, filter: filter, limit: limit, snippets: false)
-        }
+    static func commentaryResult(_ hit: LampModuleSearchResult) -> ModuleSearchResult {
+        ModuleSearchResult(
+            // The unit, as the commentary sheet opens it.
+            id: String(hit.id.dropFirst("commentary:\(hit.moduleID):".count)),
+            moduleId: hit.moduleID,
+            moduleName: hit.moduleName,
+            moduleType: .commentary,
+            title: hit.title,
+            snippet: hit.snippet,
+            verseId: hit.startReference,
+            rank: 0,
+            holdsPhrase: hit.holdsPhrase
+        )
     }
 
     /// The phone's writings searched by core, as the Mac searches its own,
@@ -901,9 +902,7 @@ class ModuleSearch {
         limit: Int,
         snippets: Bool = true
     ) throws -> [ModuleSearchResult] {
-        let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'devotional' ORDER BY name")
-            .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
-            .filter { filter.moduleIds?.contains($0.id) ?? true }
+        let modules = try searchedModules(of: .devotional, in: db, filter: filter)
         let criteria = LampDevotionalSearchCriteria(
             date: filter.devotionalDate,
             monthDay: filter.monthDay,
@@ -913,9 +912,18 @@ class ModuleSearch {
         let hits = try LampModuleSearch.devotionals(
             in: db, modules: modules, query: query, criteria: criteria, limit: limit, snippets: snippets
         )
+        // One for each hit, in its order.
+        return zip(try devotionalResults(from: hits, in: db), hits).map { result, hit in
+            var result = result
+            result.unsnipped = snippets ? nil : (hit, false)
+            return result
+        }
+    }
+
+    /// Core's writings with the subtitle, date and tags the list shows,
+    /// which core's results don't carry, read from `db`.
+    static func devotionalResults(from hits: [LampModuleSearchResult], in db: Database) throws -> [ModuleSearchResult] {
         guard !hits.isEmpty else { return [] }
-        // The subtitle, date and tags the list shows, which core's results
-        // don't carry.
         let ids = hits.map { String($0.id.dropFirst("devotional:\($0.moduleID):".count)) }
         let details = Dictionary(
             try Row.fetchAll(db, sql: """
@@ -938,15 +946,8 @@ class ModuleSearch {
                 rank: 0,
                 monthDay: details[id]?["date"],
                 tags: tags?.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) },
-                holdsPhrase: hit.holdsPhrase,
-                unsnipped: snippets ? nil : (hit, false)
+                holdsPhrase: hit.holdsPhrase
             )
-        }
-    }
-
-    private func searchNotes(query: LampSearchQuery, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
-        try database.read { db in
-            try Self.noteResults(in: db, query: query, filter: filter, limit: limit, snippets: false)
         }
     }
 
@@ -958,24 +959,27 @@ class ModuleSearch {
         limit: Int,
         snippets: Bool = true
     ) throws -> [ModuleSearchResult] {
-        let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM modules WHERE type = 'notes' ORDER BY name")
-            .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
-            .filter { filter.moduleIds?.contains($0.id) ?? true }
+        let modules = try searchedModules(of: .notes, in: db, filter: filter)
         return try LampModuleSearch.notes(in: db, modules: modules, query: query, limit: limit, snippets: snippets).map { hit in
-            ModuleSearchResult(
-                // The note, as its sheet opens it.
-                id: String(hit.id.dropFirst("notes:\(hit.moduleID):".count)),
-                moduleId: hit.moduleID,
-                moduleName: hit.moduleName,
-                moduleType: .notes,
-                title: hit.title,
-                snippet: hit.snippet,
-                verseId: hit.startReference,
-                rank: 0,
-                holdsPhrase: hit.holdsPhrase,
-                unsnipped: snippets ? nil : (hit, false)
-            )
+            var result = noteResult(hit)
+            result.unsnipped = snippets ? nil : (hit, false)
+            return result
         }
+    }
+
+    static func noteResult(_ hit: LampModuleSearchResult) -> ModuleSearchResult {
+        ModuleSearchResult(
+            // The note, as its sheet opens it.
+            id: String(hit.id.dropFirst("notes:\(hit.moduleID):".count)),
+            moduleId: hit.moduleID,
+            moduleName: hit.moduleName,
+            moduleType: .notes,
+            title: hit.title,
+            snippet: hit.snippet,
+            verseId: hit.startReference,
+            rank: 0,
+            holdsPhrase: hit.holdsPhrase
+        )
     }
 
     /// Takes the query as typed, not the prepared FTS one: the translation
@@ -1117,22 +1121,9 @@ class ModuleSearch {
         }
     }
 
-    /// Quiz questions, the user's and the bundled ones, searched by core as
+    /// Quiz questions in one of the phone's databases, searched by core as
     /// the Mac searches its own. A result's ID names the database it came
-    /// from, since each numbers its questions from 1.
-    private func searchQuizzes(query: String, filter: ModuleSearchFilter, limit: Int) throws -> [ModuleSearchResult] {
-        let parsed = LampSearchQuery(query)
-        var results = try database.read { db in
-            try Self.quizResults(in: db, source: "user", query: parsed, filter: filter, limit: limit)
-        }
-        if BundledModuleDatabase.shared.available {
-            results += try BundledModuleDatabase.shared.read { db in
-                try Self.quizResults(in: db, source: "bundled", query: parsed, filter: filter, limit: limit)
-            }
-        }
-        return results
-    }
-
+    /// from, "user" or "bundled", since each numbers its questions from 1.
     static func quizResults(
         in db: Database,
         source: String,
@@ -1140,24 +1131,25 @@ class ModuleSearch {
         filter: ModuleSearchFilter,
         limit: Int
     ) throws -> [ModuleSearchResult] {
-        guard try db.tableExists("quiz_modules") else { return [] }
-        let modules = try Row.fetchAll(db, sql: "SELECT id, name FROM quiz_modules ORDER BY name")
-            .map { LampSearchedModule(id: $0["id"], name: $0["name"]) }
-            .filter { filter.moduleIds?.contains($0.id) ?? true }
-        return try LampModuleSearch.quizzes(in: db, modules: modules, query: query, limit: limit).map { hit in
-            ModuleSearchResult(
-                // The question, in the database its sheet reads it from.
-                id: "quiz:\(source):" + hit.id.dropFirst("quiz:\(hit.moduleID):".count),
-                moduleId: hit.moduleID,
-                moduleName: hit.moduleName,
-                moduleType: .quiz,
-                title: hit.title,
-                snippet: hit.snippet,
-                verseId: hit.startReference,
-                rank: 0,
-                holdsPhrase: hit.holdsPhrase
-            )
+        let modules = try searchedModules(of: .quiz, in: db, filter: filter)
+        return try LampModuleSearch.quizzes(in: db, modules: modules, query: query, limit: limit).map {
+            quizResult($0, source: source)
         }
+    }
+
+    static func quizResult(_ hit: LampModuleSearchResult, source: String) -> ModuleSearchResult {
+        ModuleSearchResult(
+            // The question, in the database its sheet reads it from.
+            id: "quiz:\(source):" + hit.id.dropFirst("quiz:\(hit.moduleID):".count),
+            moduleId: hit.moduleID,
+            moduleName: hit.moduleName,
+            moduleType: .quiz,
+            title: hit.title,
+            snippet: hit.snippet,
+            verseId: hit.startReference,
+            rank: 0,
+            holdsPhrase: hit.holdsPhrase
+        )
     }
 
     // MARK: - Highlight Search
@@ -1225,7 +1217,7 @@ class ModuleSearch {
                     text: hit.text, startOffset: highlight.startOffset, endOffset: highlight.endOffset
                 ),
                 verseId: highlight.reference,
-                // Core's order, the best highest, as the results sort.
+                // Core's order, the best highest.
                 rank: -Double(place)
             )
             result.highlightColor = LampHighlightSearch.normalizedColor(highlight.color)

@@ -5951,6 +5951,23 @@ final class SearchAuditFixTests: XCTestCase {
         XCTAssertEqual(alone.moreIn, [.commentary])
     }
 
+    /// A search by key alone has no words to rank by: the translations take
+    /// turns, each in its own order, as the Mac's do, rather than one's
+    /// verses coming in a block before the next's.
+    func testTheTranslationsOfAKeySearchTakeTurns() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.translation]
+        filter.strongsKey = "G26"
+        let page = try ModuleSearch.shared.searchByKind(query: "", filter: filter, limit: 30)
+        let translations = Set(page.results.map(\.moduleId))
+        XCTAssertGreaterThan(translations.count, 1)
+        XCTAssertEqual(
+            Set(page.results.prefix(translations.count).map(\.moduleId)), translations,
+            "a verse from each before a second from any"
+        )
+    }
+
     func testABibleRowMarksEveryWordTheSearchMatched() {
         let marked = LampSearchQuery("faith works").markedSnippet("Faith without works is dead", limit: 120)
         XCTAssertEqual(marked, "<mark>Faith</mark> without <mark>works</mark> is dead")
