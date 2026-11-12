@@ -1653,6 +1653,17 @@ class ModuleDatabase {
         }
     }
 
+    /// A note's ledger key as the Mac names the note. An entry for the
+    /// reader's collection under its old name, `notes:<verse>`, can still
+    /// arrive from the server after this device moved to the new one, and
+    /// would match nothing: a note deleted under the old name would come
+    /// back. v42 moved the entries already here; this moves those arriving.
+    static func canonicalNoteKey(_ key: String) -> String {
+        let prefix = "\(LampSyncLocalDeletion.notesCollectionID):"
+        guard key.hasPrefix(prefix), let verse = Int(key.dropFirst(prefix.count)) else { return key }
+        return NoteEntry.panelID(moduleId: LampSyncLocalDeletion.notesCollectionID, verseId: verse)
+    }
+
     /// Finishes moving the reader's notes to the Mac's names.
     ///
     /// A verse with a note under both names holds one note twice, which the
@@ -1667,12 +1678,18 @@ class ModuleDatabase {
         guard try db.tableExists("note_entries"), try db.tableExists("personal_sync_ledger") else { return }
         let notes = LampSyncLocalDeletion.notesCollectionID
         let mac = LampPersonalModule.notes.id
+        // Later by the note's time, and within one second by the exact time
+        // the ledger has for each save: a note's own time is whole seconds.
         let pairs = try Row.fetchAll(db, sql: """
             SELECT old.id AS old, new.id AS new,
-                   COALESCE(old.last_modified, 0) > COALESCE(new.last_modified, 0) AS older_is_newer
-            FROM note_entries old JOIN note_entries new ON new.id = ? || ':' || old.verse_id
+                   (COALESCE(old.last_modified, 0), COALESCE(old_save.present_since, 0))
+                       > (COALESCE(new.last_modified, 0), COALESCE(new_save.present_since, 0)) AS older_is_newer
+            FROM note_entries old
+            JOIN note_entries new ON new.id = ? || ':' || old.verse_id
+            LEFT JOIN personal_sync_ledger old_save ON old_save.kind = ? AND old_save.item_key = old.id
+            LEFT JOIN personal_sync_ledger new_save ON new_save.kind = ? AND new_save.item_key = new.id
             WHERE old.module_id = ? AND old.id = ? || ':' || old.verse_id
-            """, arguments: [mac, notes, notes])
+            """, arguments: [mac, LampPersonalItemKind.note.rawValue, LampPersonalItemKind.note.rawValue, notes, notes])
         for pair in pairs {
             let old: String = pair["old"]
             let new: String = pair["new"]
@@ -1773,6 +1790,33 @@ class ModuleDatabase {
                 // one module: emptying another would take its file.
                 guard modules[0] == modules[1] else { renamed[old] = nil; continue }
                 let arguments: StatementArguments = ["old": old, "new": new]
+                // Where the old set was changed last, its words stand: its
+                // name and description, and its text for a theme both have.
+                let oldIsNewer = try Bool.fetchOne(db, sql: """
+                    SELECT (SELECT COALESCE(last_modified, 0) FROM highlight_sets WHERE id = :old)
+                         > (SELECT COALESCE(last_modified, 0) FROM highlight_sets WHERE id = :new)
+                    """, arguments: arguments) ?? false
+                if oldIsNewer {
+                    try db.execute(sql: """
+                        UPDATE highlight_sets SET
+                            (name, description, last_modified) = (
+                                SELECT name, description, last_modified FROM highlight_sets WHERE id = :old
+                            )
+                        WHERE id = :new
+                        """, arguments: arguments)
+                    try db.execute(sql: """
+                        UPDATE highlight_themes SET (name, description) = (
+                            SELECT older.name, older.description FROM highlight_themes older
+                            WHERE older.set_id = :old AND older.color = highlight_themes.color
+                              AND older.style = highlight_themes.style
+                        )
+                        WHERE set_id = :new AND EXISTS (
+                            SELECT 1 FROM highlight_themes older
+                            WHERE older.set_id = :old AND older.color = highlight_themes.color
+                              AND older.style = highlight_themes.style
+                        )
+                        """, arguments: arguments)
+                }
                 try db.execute(sql: """
                     DELETE FROM highlights WHERE set_id = :old AND EXISTS (
                         SELECT 1 FROM highlights kept
@@ -3917,10 +3961,16 @@ extension ModuleDatabase {
         _ db: Database, _ kind: LampPersonalItemKind, _ key: String,
         at time: Int64 = nowMilliseconds()
     ) throws {
+        // Stamped now, but never at or before the deletion it undoes, as
+        // core stamps it (`stampSet`): a device whose clock is behind the one
+        // that recorded the deletion would otherwise write the item again
+        // and see it taken away at the next pass, everywhere.
         try db.execute(sql: """
             INSERT INTO personal_sync_ledger (kind, item_key, present_since) VALUES (?, ?, ?)
             ON CONFLICT(kind, item_key) DO UPDATE SET
-                present_since = MAX(COALESCE(present_since, 0), excluded.present_since)
+                present_since = MAX(
+                    COALESCE(present_since, 0), excluded.present_since, COALESCE(deleted_at, 0) + 1
+                )
             """, arguments: [kind.rawValue, key, time])
     }
 
@@ -3928,10 +3978,13 @@ extension ModuleDatabase {
         _ db: Database, _ kind: LampPersonalItemKind, _ key: String,
         at time: Int64 = nowMilliseconds()
     ) throws {
+        // And never at or before the save it undoes (`stampCleared`).
         try db.execute(sql: """
             INSERT INTO personal_sync_ledger (kind, item_key, deleted_at) VALUES (?, ?, ?)
             ON CONFLICT(kind, item_key) DO UPDATE SET
-                deleted_at = MAX(COALESCE(deleted_at, 0), excluded.deleted_at)
+                deleted_at = MAX(
+                    COALESCE(deleted_at, 0), excluded.deleted_at, COALESCE(present_since, 0) + 1
+                )
             """, arguments: [kind.rawValue, key, time])
     }
 
@@ -3958,7 +4011,8 @@ extension ModuleDatabase {
     func mergePersonalDeletionLedger(_ incoming: LampPersonalDeletionLedger) throws {
         try write { db in
             for (kind, entries) in incoming.entries {
-                for (key, entry) in entries {
+                for (stated, entry) in entries {
+                    let key = kind == .note ? Self.canonicalNoteKey(stated) : stated
                     try db.execute(sql: """
                         INSERT INTO personal_sync_ledger (kind, item_key, present_since, deleted_at)
                         VALUES (?, ?, ?, ?)

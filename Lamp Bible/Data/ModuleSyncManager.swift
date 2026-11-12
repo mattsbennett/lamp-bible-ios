@@ -1061,10 +1061,19 @@ class ModuleSyncManager: ObservableObject {
         )
         let mergeResult = try database.write { db in
             // One note a verse: one twice under two names keeps its newest,
-            // where the merge, keying by verse, would keep whichever came first.
+            // where the merge, keying by verse, would keep whichever came
+            // first; within one second, by the exact time each was saved.
+            let saved = Dictionary(try Row.fetchAll(db, sql: """
+                SELECT item_key, present_since FROM personal_sync_ledger
+                WHERE kind = ? AND present_since IS NOT NULL
+                """, arguments: [LampPersonalItemKind.note.rawValue]).map {
+                    ($0["item_key"] as String, $0["present_since"] as Int64)
+                }, uniquingKeysWith: max)
             let localEntries = Dictionary(
                 grouping: try NoteEntry.filter(Column("module_id") == fileInfo.id).fetchAll(db), by: \.verseId
-            ).values.compactMap { copies in copies.max { ($0.lastModified ?? 0) < ($1.lastModified ?? 0) } }
+            ).values.compactMap { copies in
+                copies.max { ($0.lastModified ?? 0, saved[$0.id] ?? 0) < ($1.lastModified ?? 0, saved[$1.id] ?? 0) }
+            }
             let result = mergeNoteEntries(
                 local: localEntries,
                 cloud: carriesMedia ? remoteEntries : Self.keepingLocalMedia(remoteEntries, from: localEntries),
@@ -1741,6 +1750,14 @@ class ModuleSyncManager: ObservableObject {
         )
     }
 
+    /// Two texts in the order SQLite's BINARY collation puts them, by their
+    /// bytes, as the Mac reads them; nil where they are the same bytes.
+    /// Swift's own comparison takes "Café" and "Cafe\u{301}" for one text,
+    /// which SQLite does not, and the two files would differ.
+    static func byteOrder(_ lhs: String, _ rhs: String) -> Bool? {
+        lhs.utf8.elementsEqual(rhs.utf8) ? nil : lhs.utf8.lexicographicallyPrecedes(rhs.utf8)
+    }
+
     /// The notes file as core writes it, each note as the row it's stored
     /// as, so nothing this device keeps is flattened on the way out (a
     /// footnote's annotations, its kind), and in the order the Mac hands
@@ -1749,9 +1766,11 @@ class ModuleSyncManager: ObservableObject {
         _ entries: [NoteEntry], moduleID: String, name: String = LampPersonalModule.notes.name,
         description: String? = nil, author: String? = nil, version: String? = nil
     ) throws -> Data {
-        let ordered = entries.sorted {
-            ($0.book, $0.chapter, $0.verse, $0.lastModified ?? 0, $0.id)
-                < ($1.book, $1.chapter, $1.verse, $1.lastModified ?? 0, $1.id)
+        let ordered = entries.sorted { lhs, rhs in
+            if (lhs.book, lhs.chapter, lhs.verse, lhs.lastModified ?? 0) != (rhs.book, rhs.chapter, rhs.verse, rhs.lastModified ?? 0) {
+                return (lhs.book, lhs.chapter, lhs.verse, lhs.lastModified ?? 0) < (rhs.book, rhs.chapter, rhs.verse, rhs.lastModified ?? 0)
+            }
+            return Self.byteOrder(lhs.id, rhs.id) ?? false
         }
         return try LampPersonalNotesFile.archive(
             rows: ordered.map { entry in
@@ -1800,14 +1819,12 @@ class ModuleSyncManager: ObservableObject {
         // its bytes, its order as a number, then the date, the title and the
         // id by their bytes.
         let ordered = entries.sorted { lhs, rhs in
-            let (left, right) = (lhs.seriesName ?? "", rhs.seriesName ?? "")
-            if left != right { return left.utf8.lexicographicallyPrecedes(right.utf8) }
+            if let order = Self.byteOrder(lhs.seriesName ?? "", rhs.seriesName ?? "") { return order }
             if (lhs.seriesOrder ?? 0) != (rhs.seriesOrder ?? 0) { return (lhs.seriesOrder ?? 0) < (rhs.seriesOrder ?? 0) }
-            for (left, right) in [(lhs.date ?? "", rhs.date ?? ""), (lhs.title, rhs.title), (lhs.id, rhs.id)]
-            where left != right {
-                return left.utf8.lexicographicallyPrecedes(right.utf8)
-            }
-            return false
+            return Self.byteOrder(lhs.date ?? "", rhs.date ?? "")
+                ?? Self.byteOrder(lhs.title, rhs.title)
+                ?? Self.byteOrder(lhs.id, rhs.id)
+                ?? false
         }
         return try LampPersonalWritingFile.archive(
             rows: ordered.map { entry in
@@ -1855,7 +1872,9 @@ class ModuleSyncManager: ObservableObject {
             )
         }
         let named = themes
-            .sorted { ($0.name, $0.color, $0.style) < ($1.name, $1.color, $1.style) }
+            .sorted { lhs, rhs in
+                Self.byteOrder(lhs.name, rhs.name) ?? Self.byteOrder(lhs.color, rhs.color) ?? (lhs.style < rhs.style)
+            }
             .map { theme in
                 LampHighlightTheme(
                     setID: set.id, color: theme.color,

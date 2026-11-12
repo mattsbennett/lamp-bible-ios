@@ -7508,6 +7508,36 @@ final class NotesCollectionFileTests: XCTestCase {
         )
     }
 
+    /// A save stamped after the deletion it undoes, and a deletion after the
+    /// save, whatever this device's clock says: written again here after a
+    /// deletion from a device whose clock runs ahead, a note must stand.
+    func testAChangeIsStampedPastTheOneItUndoes() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE personal_sync_ledger (
+                    kind TEXT NOT NULL, item_key TEXT NOT NULL, present_since INTEGER, deleted_at INTEGER,
+                    PRIMARY KEY (kind, item_key)
+                );
+                INSERT INTO personal_sync_ledger VALUES ('note', 'a', NULL, 5000), ('note', 'b', 5000, NULL);
+                """)
+            try ModuleDatabase.recordPersonalPresence(db, .note, "a", at: 4000)
+            try ModuleDatabase.recordPersonalDeletion(db, .note, "b", at: 4000)
+            let rows = try Row.fetchAll(db, sql: "SELECT item_key, present_since, deleted_at FROM personal_sync_ledger ORDER BY item_key")
+                .map { "\($0["item_key"] as String) \($0["present_since"] as Int64? ?? -1) \($0["deleted_at"] as Int64? ?? -1)" }
+            XCTAssertEqual(rows, ["a 5001 5000", "b 5000 5001"])
+        }
+    }
+
+    /// An entry under a note's old name arriving from the server after the
+    /// rename is taken under the new one, where it matches the note.
+    func testAnOldNameArrivingIsTakenUnderTheNewOne() {
+        XCTAssertEqual(ModuleDatabase.canonicalNoteKey("notes:43003016"), "personal-notes:43003016")
+        XCTAssertEqual(ModuleDatabase.canonicalNoteKey("personal-notes:43003016"), "personal-notes:43003016")
+        XCTAssertEqual(ModuleDatabase.canonicalNoteKey("grandads-notes:43003016"), "grandads-notes:43003016")
+        XCTAssertEqual(ModuleDatabase.canonicalNoteKey("notes:introduction"), "notes:introduction")
+    }
+
     /// v42: a verse with its note under both names keeps the later text under
     /// the Mac's name, the other going without a deletion; and every ledger
     /// entry under the old name moves, a deletion with no row left to carry
@@ -7528,25 +7558,31 @@ final class NotesCollectionFileTests: XCTestCase {
                     ('notes:43003016', 'notes', 43003016, 'Older name, newer text', 2000),
                     ('personal-notes:43003016', 'notes', 43003016, 'Newer name, older text', 1000),
                     ('notes:43003017', 'notes', 43003017, 'Older name, older text', 1000),
-                    ('personal-notes:43003017', 'notes', 43003017, 'Newer name, newer text', 2000);
+                    ('personal-notes:43003017', 'notes', 43003017, 'Newer name, newer text', 2000),
+                    ('notes:43003020', 'notes', 43003020, 'Saved second, same second', 3000),
+                    ('personal-notes:43003020', 'notes', 43003020, 'Saved first, same second', 3000);
                 INSERT INTO personal_sync_ledger VALUES
                     ('note', 'notes:43003018', 1700000000100, 1700000000900),
                     ('note', 'notes:43003016', 1700000002000, NULL),
                     ('note', 'personal-notes:43003016', 1700000001000, 1700000000500),
-                    ('note', 'mine:43003019', 1, 2);
+                    ('note', 'mine:43003019', 1, 2),
+                    ('note', 'notes:43003020', 3000900, NULL),
+                    ('note', 'personal-notes:43003020', 3000100, NULL);
                 """)
             try ModuleDatabase.settleCollectionNoteNames(in: db)
 
             XCTAssertEqual(try Row.fetchAll(db, sql: "SELECT id, content FROM note_entries ORDER BY verse_id").map { "\($0["id"] as String) \($0["content"] as String)" }, [
                 "personal-notes:43003016 Older name, newer text",
                 "personal-notes:43003017 Newer name, newer text",
-            ])
+                "personal-notes:43003020 Saved second, same second",
+            ], "the same second is settled by the exact times saved")
             let entries = try Row.fetchAll(db, sql: "SELECT item_key, present_since, deleted_at FROM personal_sync_ledger ORDER BY item_key")
                 .map { "\($0["item_key"] as String) \($0["present_since"] as Int64? ?? -1) \($0["deleted_at"] as Int64? ?? -1)" }
             XCTAssertEqual(entries, [
                 "mine:43003019 1 2",
                 "personal-notes:43003016 1700000002000 1700000000500",
                 "personal-notes:43003018 1700000000100 1700000000900",
+                "personal-notes:43003020 3000900 -1",
             ])
         }
     }
@@ -7655,6 +7691,16 @@ final class WritingsOrderTests: XCTestCase {
         // their bytes, so Z (5A) before É (C3 89).
         XCTAssertEqual(ids, ["a", "b", "c", "d", "e"])
     }
+
+    /// Two titles Swift takes for one text but whose bytes differ are put in
+    /// byte order, as SQLite puts them, not taken as a tie.
+    func testTitlesThatLookTheSameGoInByteOrder() throws {
+        let decomposed = "Cafe\u{301}", precomposed = "Caf\u{E9}"
+        XCTAssertEqual(decomposed, precomposed, "one text to Swift")
+        XCTAssertEqual(ModuleSyncManager.byteOrder(decomposed, precomposed), true, "e (65) before \u{E9} (C3 A9)")
+        XCTAssertEqual(ModuleSyncManager.byteOrder(precomposed, decomposed), false)
+        XCTAssertNil(ModuleSyncManager.byteOrder(precomposed, precomposed))
+    }
 }
 
 /// A highlight set's file, built from core's document as the Mac builds it,
@@ -7746,11 +7792,16 @@ final class HighlightSetFileTests: XCTestCase {
 
     private func highlightTables(_ db: Database) throws {
         try db.execute(sql: """
-            CREATE TABLE highlight_sets (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, translation_id TEXT NOT NULL);
+            CREATE TABLE highlight_sets (
+                id TEXT PRIMARY KEY, module_id TEXT NOT NULL, translation_id TEXT NOT NULL,
+                name TEXT, description TEXT, last_modified INTEGER
+            );
             CREATE TABLE highlights (
                 id INTEGER PRIMARY KEY, set_id TEXT NOT NULL, ref INTEGER, sc INTEGER, ec INTEGER, style INTEGER, color TEXT
             );
-            CREATE TABLE highlight_themes (id TEXT PRIMARY KEY, set_id TEXT NOT NULL, color TEXT, style INTEGER);
+            CREATE TABLE highlight_themes (
+                id TEXT PRIMARY KEY, set_id TEXT NOT NULL, color TEXT, style INTEGER, name TEXT, description TEXT
+            );
             CREATE TABLE personal_sync_ledger (
                 kind TEXT NOT NULL, item_key TEXT NOT NULL, present_since INTEGER, deleted_at INTEGER,
                 PRIMARY KEY (kind, item_key)
@@ -7772,13 +7823,14 @@ final class HighlightSetFileTests: XCTestCase {
         try queue.write { db in
             try highlightTables(db)
             try db.execute(sql: """
-                INSERT INTO highlight_sets VALUES
+                INSERT INTO highlight_sets (id, module_id, translation_id) VALUES
                     ('personal-highlights-ESV', 'personal-highlights-ESV', 'ESV'),
                     ('3F2A-set', 'mine', 'ESV'),
                     ('personal-highlights-KJV', 'my-kjv', 'KJV');
                 INSERT INTO highlights VALUES
                     (1, 'personal-highlights-ESV', 43003016, 0, 3, 0, 'FFCC00'), (2, '3F2A-set', 43003016, 0, 3, 0, NULL);
-                INSERT INTO highlight_themes VALUES ('personal-highlights-ESV_FFCC00_0', 'personal-highlights-ESV', 'FFCC00', 0);
+                INSERT INTO highlight_themes (id, set_id, color, style) VALUES
+                    ('personal-highlights-ESV_FFCC00_0', 'personal-highlights-ESV', 'FFCC00', 0);
                 """)
             let old = LampPersonalDeletionLedger.highlightKey(setID: "personal-highlights-ESV", reference: 43_003_016, start: 0, end: 3, style: 0, color: "FFCC00")
             let new = LampPersonalDeletionLedger.highlightKey(setID: "personal-highlights:ESV", reference: 43_003_016, start: 0, end: 3, style: 0, color: "FFCC00")
@@ -7810,16 +7862,16 @@ final class HighlightSetFileTests: XCTestCase {
             try highlightTables(db)
             try db.execute(sql: """
                 INSERT INTO highlight_sets VALUES
-                    ('personal-highlights-ESV', 'personal-highlights-ESV', 'ESV'),
-                    ('personal-highlights:ESV', 'personal-highlights-ESV', 'ESV');
+                    ('personal-highlights-ESV', 'personal-highlights-ESV', 'ESV', 'Renamed here', 'Newer', 2000),
+                    ('personal-highlights:ESV', 'personal-highlights-ESV', 'ESV', 'Mine', NULL, 1000);
                 INSERT INTO highlights VALUES
                     (1, 'personal-highlights-ESV', 43003016, 0, 3, 0, 'FFCC00'),
                     (2, 'personal-highlights-ESV', 43003017, 0, 5, 0, NULL),
                     (3, 'personal-highlights:ESV', 43003016, 0, 3, 0, 'FFCC00');
                 INSERT INTO highlight_themes VALUES
-                    ('personal-highlights-ESV_FFCC00_0', 'personal-highlights-ESV', 'FFCC00', 0),
-                    ('personal-highlights-ESV_00AAFF_1', 'personal-highlights-ESV', '00AAFF', 1),
-                    ('personal-highlights:ESV_FFCC00_0', 'personal-highlights:ESV', 'FFCC00', 0);
+                    ('personal-highlights-ESV_FFCC00_0', 'personal-highlights-ESV', 'FFCC00', 0, 'Promises kept', NULL),
+                    ('personal-highlights-ESV_00AAFF_1', 'personal-highlights-ESV', '00AAFF', 1, 'Commands', NULL),
+                    ('personal-highlights:ESV_FFCC00_0', 'personal-highlights:ESV', 'FFCC00', 0, 'Promise', NULL);
                 INSERT INTO personal_sync_ledger VALUES ('highlightSet', 'personal-highlights-ESV', 50, NULL);
                 """)
 
@@ -7827,9 +7879,13 @@ final class HighlightSetFileTests: XCTestCase {
 
             XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_sets"), ["personal-highlights:ESV"])
             XCTAssertEqual(try Int.fetchAll(db, sql: "SELECT id FROM highlights WHERE set_id = 'personal-highlights:ESV' ORDER BY id"), [2, 3])
-            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_themes ORDER BY id"), [
-                "personal-highlights:ESV_00AAFF_1", "personal-highlights:ESV_FFCC00_0",
-            ])
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id || ' ' || name FROM highlight_themes ORDER BY id"), [
+                "personal-highlights:ESV_00AAFF_1 Commands", "personal-highlights:ESV_FFCC00_0 Promises kept",
+            ], "the old set was changed last, so its words for the theme both have stand")
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT name || ' ' || description || ' ' || last_modified FROM highlight_sets"),
+                "Renamed here Newer 2000"
+            )
             XCTAssertEqual(try ledger(db), ["highlightSet personal-highlights:ESV 50 -1"])
         }
     }
