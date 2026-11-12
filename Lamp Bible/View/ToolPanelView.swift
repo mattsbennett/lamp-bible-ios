@@ -1848,11 +1848,11 @@ struct ToolPanelView: View {
                 // Sync is off by choice: notes are safe on the device, which
                 // is no error, so it isn't drawn as one. Named in words, as
                 // Settings names it; a phone symbol alone was unclear.
-                Label("Local Only", systemImage: "iphone")
+                Label("Local Only", systemImage: UIDevice.current.kindSymbol)
                     .labelStyle(.titleAndIcon)
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel("Notes saved on this iPhone, sync is off")
+                    .accessibilityLabel("Notes saved on this \(UIDevice.current.kindName), sync is off")
             } else {
             switch syncStatus {
             case .synced:
@@ -1920,9 +1920,9 @@ struct ToolPanelView: View {
         HStack {
             let backendName = SyncCoordinator.shared.settings.backend.displayName
             if isLocalOnly {
-                Image(systemName: "iphone")
+                Image(systemName: UIDevice.current.kindSymbol)
                     .foregroundStyle(.secondary)
-                Text("Saved on this iPhone. Sync is off.")
+                Text("Saved on this \(UIDevice.current.kindName). Sync is off.")
             } else {
             switch syncStatus {
             case .synced:
@@ -1963,9 +1963,9 @@ struct ToolPanelView: View {
                             } label: {
                                 // Sync status icon
                                 if isLocalOnly {
-                                    Image(systemName: "iphone")
+                                    Image(systemName: UIDevice.current.kindSymbol)
                                         .foregroundStyle(.secondary)
-                                        .accessibilityLabel("Saved on This iPhone")
+                                        .accessibilityLabel("Saved on This \(UIDevice.current.kindName)")
                                 } else {
                                 switch syncStatus {
                                 case .synced:

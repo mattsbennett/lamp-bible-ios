@@ -41,7 +41,7 @@ struct NoteConflictView: View {
                         Button {
                             syncManager.resolveAllConflicts(resolution: .keepLocal)
                         } label: {
-                            Label("Keep All Local", systemImage: "iphone")
+                            Label("Keep All Local", systemImage: UIDevice.current.kindSymbol)
                         }
 
                         Button {
@@ -90,7 +90,7 @@ struct ConflictRowView: View {
 
                 HStack(spacing: 16) {
                     if let localDate = conflict.localDate {
-                        Label(localDate.formatted(date: .abbreviated, time: .shortened), systemImage: "iphone")
+                        Label(localDate.formatted(date: .abbreviated, time: .shortened), systemImage: UIDevice.current.kindSymbol)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -130,7 +130,7 @@ struct ConflictDetailView: View {
                     // Local version
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Image(systemName: "iphone")
+                            Image(systemName: UIDevice.current.kindSymbol)
                                 .foregroundColor(.blue)
                             Text("This Device")
                                 .font(.headline)

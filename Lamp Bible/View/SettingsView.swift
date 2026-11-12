@@ -48,6 +48,13 @@ struct SettingsView: View {
     @State private var showingWebDAVConfig: Bool = false
     @State private var hasLoadedSettings: Bool = false
     @State private var showingWipeConfirmation: Bool = false
+    /// What the WebDAV setup sheet chose, acted on once the sheet is gone:
+    /// true to keep this device's library, false to wipe it.
+    @State private var webDAVSetupMigrates: Bool? = nil
+    /// The backend being switched to, and whether the switch wipes this
+    /// device's library, for the progress sheet.
+    @State private var switchTarget: SyncBackend = .none
+    @State private var switchWipesLocal: Bool = false
     @ObservedObject private var syncCoordinator = SyncCoordinator.shared
     @ObservedObject private var moduleSyncManager = ModuleSyncManager.shared
     @ObservedObject private var aiFeatures = AIFeatures.shared
@@ -174,7 +181,7 @@ struct SettingsView: View {
                 Section {
                     SettingsIdentityCard(
                         moduleCount: moduleCount,
-                        syncSummary: syncBackend == .none ? "On this iPhone" : "Syncs with \(syncBackend.displayName)"
+                        syncSummary: syncBackend == .none ? "On this \(UIDevice.current.kindName)" : "Syncs with \(syncBackend.displayName)"
                     )
                 }
 
@@ -220,9 +227,17 @@ struct SettingsView: View {
                             LampIconTile(systemName: "arrow.triangle.2.circlepath", color: .blue)
                         }
                     }
+                    // One switch at a time: a second pick while the first
+                    // still syncs would skip its setup and show a provider
+                    // that isn't in use.
+                    .disabled(pendingBackendChange != nil)
                     .onChange(of: syncBackend) { oldValue, newValue in
-                        // Ignore initial load and changes while handling a pending switch
-                        guard hasLoadedSettings, pendingBackendChange == nil else { return }
+                        // Ignore initial load, changes while handling a
+                        // pending switch, and the picker being set to the
+                        // provider already in use.
+                        guard hasLoadedSettings, pendingBackendChange == nil,
+                              newValue != SyncCoordinator.shared.settings.backend
+                        else { return }
 
                         // Any backend change should offer migrate/wipe options
                         if oldValue != newValue {
@@ -280,7 +295,7 @@ struct SettingsView: View {
                             Label {
                                 Text("Status")
                             } icon: {
-                                LampIconTile(systemName: "iphone", color: .gray)
+                                LampIconTile(systemName: UIDevice.current.kindSymbol, color: .gray)
                             }
                             Spacer()
                             // The state, not the method again: the row above
@@ -337,6 +352,8 @@ struct SettingsView: View {
                                 moduleSyncInProgress = true
                                 do {
                                     try await syncCoordinator.syncAll()
+                                    // A sync that went through means the server answers.
+                                    iCloudAvailable = await syncCoordinator.isAvailable
                                     let modules = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
                                     let translations = (try? TranslationDatabase.shared.getAllTranslations().count) ?? 0
                                     moduleCount = modules + translations
@@ -554,7 +571,7 @@ struct SettingsView: View {
                     }
                     if !uninstalled.isEmpty {
                         Label {
-                            Text("Also works with \(ListFormatter.localizedString(byJoining: uninstalled.map(\.name))), once installed on this iPhone.")
+                            Text("Also works with \(ListFormatter.localizedString(byJoining: uninstalled.map(\.name))), once installed on this \(UIDevice.current.kindName).")
                                 .font(.footnote)
                                 .foregroundStyle(LampTheme.caption)
                         } icon: {
@@ -752,7 +769,7 @@ struct SettingsView: View {
             .alert("Migrate Data?", isPresented: $showingMigrationDialog) {
                 Button("Migrate") {
                     Task {
-                        await performMigration()
+                        await performSwitch(migrateData: true)
                     }
                 }
                 Button("Switch Only", role: .destructive) {
@@ -777,17 +794,7 @@ struct SettingsView: View {
             .alert("Wipe Local Data?", isPresented: $showingWipeConfirmation) {
                 Button("Wipe & Switch", role: .destructive) {
                     Task {
-                        if let newBackend = pendingBackendChange {
-                            do {
-                                try await SyncCoordinator.shared.switchBackend(to: newBackend, migrateData: false)
-                                syncBackend = newBackend
-                                previousBackend = newBackend
-                                iCloudAvailable = await SyncCoordinator.shared.isAvailable
-                            } catch {
-                                print("[SettingsView] Failed to switch backend: \(error)")
-                            }
-                        }
-                        pendingBackendChange = nil
+                        await performSwitch(migrateData: false)
                     }
                 }
                 Button("Cancel", role: .cancel) {
@@ -801,7 +808,9 @@ struct SettingsView: View {
                 MigrationProgressView(
                     progress: nil,
                     result: migrationResult,
-                    destination: syncBackend,
+                    destination: switchTarget,
+                    wipedLocal: switchWipesLocal,
+                    switched: syncBackend == switchTarget,
                     onDismiss: {
                         isMigrating = false
                         migrationResult = nil
@@ -810,7 +819,16 @@ struct SettingsView: View {
                 .interactiveDismissDisabled(migrationResult == nil)
             }
             // WebDAV setup sheet
-            .sheet(isPresented: $showingWebDAVSetup) {
+            .sheet(isPresented: $showingWebDAVSetup, onDismiss: {
+                // The switch starts once the sheet is gone, so its progress
+                // sheet can show. Swiped away with no choice is a cancel.
+                if let migrates = webDAVSetupMigrates {
+                    webDAVSetupMigrates = nil
+                    Task { await performSwitch(migrateData: migrates) }
+                } else {
+                    pendingBackendChange = nil
+                }
+            }) {
                 WebDAVSetupSheet(
                     sourceBackend: syncBackend,
                     webdavURL: $webdavURL,
@@ -821,25 +839,13 @@ struct SettingsView: View {
                         pendingBackendChange = nil
                     },
                     onSwitchOnly: {
+                        // Wipe confirmed in the sheet.
+                        webDAVSetupMigrates = false
                         showingWebDAVSetup = false
-                        Task {
-                            do {
-                                // Wipe data and switch (user already confirmed in WebDAVSetupSheet)
-                                try await SyncCoordinator.shared.switchBackend(to: .webdav, migrateData: false)
-                                syncBackend = .webdav
-                                previousBackend = .webdav
-                                iCloudAvailable = await SyncCoordinator.shared.isAvailable
-                            } catch {
-                                print("[SettingsView] Failed to switch to WebDAV: \(error)")
-                            }
-                            pendingBackendChange = nil
-                        }
                     },
                     onMigrate: {
+                        webDAVSetupMigrates = true
                         showingWebDAVSetup = false
-                        Task {
-                            await performMigration()
-                        }
                     }
                 )
             }
@@ -928,24 +934,19 @@ struct SettingsView: View {
         .accessibilityHint("Those \(kind)s sync once you choose which version to keep")
     }
 
-    private func performMigration() async {
+    /// Switch to the pending backend, keeping or wiping this device's
+    /// library, with the progress sheet up until the first sync there ends.
+    private func performSwitch(migrateData: Bool) async {
         guard let newBackend = pendingBackendChange else { return }
 
-        isMigrating = true
+        switchTarget = newBackend
+        switchWipesLocal = !migrateData
         migrationResult = nil
+        isMigrating = true
 
         do {
-            // Use switchBackend with migrateData: true
-            // This handles the migration and switches to the new backend
-            try await SyncCoordinator.shared.switchBackend(to: newBackend, migrateData: true)
-
-            // The coordinator commits the backend only after all stages succeed.
+            try await SyncCoordinator.shared.switchBackend(to: newBackend, migrateData: migrateData)
             migrationResult = MigrationResult(successCount: 1, failedFiles: [])
-
-            syncBackend = newBackend
-            previousBackend = newBackend
-            iCloudAvailable = await SyncCoordinator.shared.isAvailable
-
         } catch MigrationError.incomplete(let result) {
             migrationResult = result
         } catch {
@@ -953,12 +954,21 @@ struct SettingsView: View {
                 successCount: 0,
                 failedFiles: [MigrationFailure(
                     type: .notes,
-                    fileName: "Migration",
+                    fileName: "Sync",
                     error: error.localizedDescription
                 )]
             )
         }
 
+        // Show the provider actually in use, whatever happened: the switch
+        // commits before the first sync there, which can still fail.
+        let current = SyncCoordinator.shared.settings.backend
+        syncBackend = current
+        previousBackend = current
+        iCloudAvailable = await SyncCoordinator.shared.isAvailable
+        let modules = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
+        let translations = (try? TranslationDatabase.shared.getAllTranslations().count) ?? 0
+        moduleCount = modules + translations
         pendingBackendChange = nil
     }
 }
@@ -968,8 +978,12 @@ struct SettingsView: View {
 struct MigrationProgressView: View {
     let progress: MigrationProgress?
     let result: MigrationResult?
-    /// Where the library syncs now, once the switch has been made.
+    /// The provider being switched to.
     let destination: SyncBackend
+    /// Whether this device's library was wiped for the one there.
+    var wipedLocal: Bool = false
+    /// Whether the switch took effect, even if its first sync then failed.
+    var switched: Bool = false
     let onDismiss: () -> Void
 
     var body: some View {
@@ -984,24 +998,36 @@ struct MigrationProgressView: View {
                         Text("Switched to \(destination.displayName)")
                             .font(.title2)
                             .fontWeight(.semibold)
-                        Text(destination.usesRemoteStorage
-                             ? "This device's library goes up with the next sync, merged with any library already there."
-                             : "Your library stays on this device and no longer syncs.")
+                        Text(!destination.usesRemoteStorage
+                             ? "Your library stays on this device and no longer syncs."
+                             : wipedLocal
+                             ? "This device now has the library from \(destination.displayName)."
+                             : "This device's library is synced there, merged with any library already there.")
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     } else {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 60))
                             .foregroundStyle(.orange)
-                        Text("Switch Didn't Finish")
-                            .font(.title2)
-                            .fontWeight(.semibold)
-                        Text("\(result.successCount) succeeded, \(result.failedFiles.count) failed")
-                            .foregroundStyle(.secondary)
+                        if switched {
+                            Text("Switched to \(destination.displayName)")
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                            Text("The first sync there didn't finish. It runs again with the next sync, or tap Sync Now in Settings.")
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        } else {
+                            Text("Switch Didn't Finish")
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                            Text("Sync still uses the provider it did before.")
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
 
                         if !result.failedFiles.isEmpty {
                             List {
-                                Section("Failed Files") {
+                                Section(result.failedFiles.count == 1 ? "Error" : "Failed Files") {
                                     ForEach(result.failedFiles, id: \.fileName) { failure in
                                         VStack(alignment: .leading) {
                                             Text("\(failure.type.rawValue)/\(failure.fileName)")
@@ -1045,14 +1071,14 @@ struct MigrationProgressView: View {
                 } else {
                     // Initial state
                     ProgressView()
-                    Text("Syncing to the new location...")
+                    Text("Syncing with \(destination.displayName)…")
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
             }
             .padding(.top, 60)
-            .navigationTitle("Data Migration")
+            .navigationTitle("Switching Sync")
             .navigationBarTitleDisplayMode(.inline)
         }
     }
@@ -1727,5 +1753,19 @@ struct LampIconTile: View {
             .frame(width: size, height: size)
             .background(color.gradient, in: RoundedRectangle(cornerRadius: size * 0.27, style: .continuous))
             .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Device Kind
+
+extension UIDevice {
+    /// What the user calls this device in a sentence: "iPad" or "iPhone".
+    var kindName: String {
+        userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+    }
+
+    /// The SF Symbol drawn for this device.
+    var kindSymbol: String {
+        userInterfaceIdiom == .pad ? "ipad" : "iphone"
     }
 }
