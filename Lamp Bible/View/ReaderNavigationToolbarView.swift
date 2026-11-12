@@ -196,93 +196,48 @@ struct ReaderNavigationToolbarView: View {
         let place = (book?.name ?? "") + " \(currentChapter)"
 
         if isHorizontalSplit && !isCompact {
-            // Menu with Bible and Tool selection
-            Menu {
-                // Bible section
-                Section("Bible") {
-                    if readingMetaData == nil {
-                        Button {
-                            showingBookPicker = true
-                        } label: {
-                            Label("Change Book/Chapter", systemImage: "book")
-                        }
-                    }
-                }
-
-                // Tool section
-                Section("Tools") {
-                    // Notes modules
-                    if !notesModules.isEmpty {
-                        ForEach(notesModules, id: \.id) { module in
-                            Button {
-                                notesModuleId = module.id
-                                toolPanelMode = .notes
-                            } label: {
-                                if toolPanelMode == .notes && notesModuleId == module.id {
-                                    Label(module.name, systemImage: "checkmark")
-                                } else {
-                                    Text(module.name)
-                                }
-                            }
-                        }
-                    }
-
-                    // Commentary series
-                    if !commentarySeries.isEmpty {
-                        Divider()
-                        ForEach(commentarySeries, id: \.self) { series in
-                            Button {
-                                selectedCommentarySeries = series
-                                toolPanelMode = .commentary
-                            } label: {
-                                if toolPanelMode == .commentary && selectedCommentarySeries == series {
-                                    Label(series, systemImage: "checkmark")
-                                } else {
-                                    Text(series)
-                                }
-                            }
-                        }
-                    }
-
-                    // Devotionals modules
-                    if !devotionalsModules.isEmpty {
-                        Divider()
-                        ForEach(devotionalsModules, id: \.id) { module in
-                            Button {
-                                devotionalsModuleId = module.id
-                                toolPanelMode = .devotionals
-                            } label: {
-                                if toolPanelMode == .devotionals && devotionalsModuleId == module.id {
-                                    Label(module.name, systemImage: "checkmark")
-                                } else {
-                                    Text(module.name)
-                                }
-                            }
-                        }
-                    }
-                }
-            } label: {
-                // Combined view: Translation + Book | Tool
-                HStack(spacing: 8) {
+            // The passage and the tool, in one capsule. The passage opens the
+            // book picker straight away, as it does in one column; the tool
+            // is the menu of tools.
+            HStack(spacing: 0) {
+                Button {
+                    showingBookPicker = true
+                } label: {
                     VStack(spacing: 0) {
                         Text(translationAbbreviation).bold().font(.system(size: 14))
                         Text(place).font(.caption2)
                     }
-                    Rectangle()
-                        .fill(Color.secondary.opacity(0.3))
-                        .frame(width: 1, height: 24)
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 8)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // A reading plan's passage is set by the plan.
+                .disabled(readingMetaData != nil)
+
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.3))
+                    .frame(width: 1, height: 24)
+
+                Menu {
+                    toolMenuContent
+                } label: {
                     VStack(spacing: 0) {
                         Text(toolPanelMode.rawValue).bold().font(.system(size: 14))
                         Text(toolDisplayName).font(.caption2).lineLimit(1)
                     }
+                    .foregroundStyle(Color.primary)
+                    .padding(.leading, 8)
+                    .padding(.trailing, 16)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
                 }
-                .foregroundStyle(Color.primary)
-                .padding(.horizontal, 16)
-                .frame(height: 44)
-                .contentShape(Capsule())
+                .menuStyle(.button)
+                .buttonStyle(.plain)
             }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
             .modifier(HeaderGlass(shape: Capsule()))
         } else {
             // Translation + Book - opens the book picker. Collapsed, the same
@@ -301,6 +256,10 @@ struct ReaderNavigationToolbarView: View {
                         HStack(spacing: 4) {
                             Text(translationAbbreviation).bold()
                             Text("· " + place)
+                            // Beside a tool panel, what it shows too.
+                            if isHorizontalSplit {
+                                Text("· " + toolDisplayName)
+                            }
                         }
                         .font(.caption)
                     } else {
@@ -320,6 +279,63 @@ struct ReaderNavigationToolbarView: View {
             .disabled(!isCompact && readingMetaData != nil)
             .modifier(HeaderGlass(shape: Capsule()))
             .accessibilityHint(isCompact ? "Shows the toolbars" : "")
+        }
+    }
+
+    /// The tools a panel beside the reader can show, for the title's menu.
+    @ViewBuilder
+    private var toolMenuContent: some View {
+        // Tool section
+        Section("Tools") {
+            // Notes modules
+            if !notesModules.isEmpty {
+                ForEach(notesModules, id: \.id) { module in
+                    Button {
+                        notesModuleId = module.id
+                        toolPanelMode = .notes
+                    } label: {
+                        if toolPanelMode == .notes && notesModuleId == module.id {
+                            Label(module.name, systemImage: "checkmark")
+                        } else {
+                            Text(module.name)
+                        }
+                    }
+                }
+            }
+
+            // Commentary series
+            if !commentarySeries.isEmpty {
+                Divider()
+                ForEach(commentarySeries, id: \.self) { series in
+                    Button {
+                        selectedCommentarySeries = series
+                        toolPanelMode = .commentary
+                    } label: {
+                        if toolPanelMode == .commentary && selectedCommentarySeries == series {
+                            Label(series, systemImage: "checkmark")
+                        } else {
+                            Text(series)
+                        }
+                    }
+                }
+            }
+
+            // Devotionals modules
+            if !devotionalsModules.isEmpty {
+                Divider()
+                ForEach(devotionalsModules, id: \.id) { module in
+                    Button {
+                        devotionalsModuleId = module.id
+                        toolPanelMode = .devotionals
+                    } label: {
+                        if toolPanelMode == .devotionals && devotionalsModuleId == module.id {
+                            Label(module.name, systemImage: "checkmark")
+                        } else {
+                            Text(module.name)
+                        }
+                    }
+                }
+            }
         }
     }
 

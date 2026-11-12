@@ -204,9 +204,9 @@ struct SplitReaderView: View {
                 if effectiveOrientation == "right" {
                     // Use ZStack overlay approach so tool panel can independently extend to top
                     ZStack(alignment: .trailing) {
-                        // Reader takes available width minus tool panel
+                        // The reader keeps its passage clear of the panel
+                        // itself, so its header can span both.
                         readerContent
-                            .padding(.trailing, rightPanelWidth + 12)
 
                         // Tool panel + divider overlaid on right
                         HStack(spacing: 0) {
@@ -234,7 +234,9 @@ struct SplitReaderView: View {
                                 .frame(width: rightPanelWidth)
                         }
                         .frame(maxHeight: .infinity)
-                        .ignoresSafeArea(edges: .top)
+                        // Below the reader's header, which spans the window.
+                        .padding(.top, readerHeaderHeight)
+                        .animation(.easeInOut(duration: 0.2), value: readerHeaderHeight)
                     }
                 } else {
                     VStack(spacing: 0) {
@@ -287,6 +289,10 @@ struct SplitReaderView: View {
                         isVertical: true,
                         panelSize: $rightPanelWidth,
                         containerSize: geometry.size,
+                        // The divider's length: from under the header to the
+                        // window's bottom edge.
+                        spanTop: readerHeaderHeight,
+                        spanBottomOverhang: geometry.safeAreaInsets.bottom,
                         minPanelSize: minPanelSize,
                         maxPanelRatio: maxPanelRatio,
                         dividerY: dividerY,
@@ -328,56 +334,17 @@ struct SplitReaderView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .top) {
-                // Full-width collapsed header for horizontal split mode. The
-                // reader and the tool panel both drop their own collapsed
-                // headers in this layout, so this is the only thing to tap to
-                // bring the toolbars back — scrolling never does.
-                if (toolbarsHidden && effectiveOrientation == "right")
-                    || (toolbarsCollapsed && isHorizontalSplit) {
-                    horizontalSplitCollapsedHeader
-                }
-            }
         }
         // Laid out around the keyboard by hand while the notes take the space.
         .ignoresSafeArea(notesTakeTheSpace ? .keyboard : [], edges: .bottom)
     }
 
-    /// Full-width collapsed header for horizontal split mode
-    @ViewBuilder
-    private var horizontalSplitCollapsedHeader: some View {
-        let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
-        let translation = try? TranslationDatabase.shared.getTranslation(id: currentTranslationId)
-        let abbreviation = translation?.abbreviation ?? ""
-
-        VStack(spacing: 0) {
-            HStack(spacing: 4) {
-                Text("\(abbreviation) · \(book?.name ?? "") \(currentChapter)")
-                Text("· \(currentToolDisplayName)")
-            }
-            // As legible as the reader's own collapsed header: it is the only
-            // way back to the toolbars in this layout.
-            .font(.caption)
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(LampTheme.readerBackground.ignoresSafeArea(edges: .top))
-
-            // Gradient fade below the text
-            LinearGradient(
-                colors: [LampTheme.readerBackground, LampTheme.readerBackground.opacity(0)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 30)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                toolbarsHidden = false
-                toolbarsCollapsed = false
-            }
-        }
+    /// The height of the reader's header, which a right-hand panel starts
+    /// below.
+    private var readerHeaderHeight: CGFloat {
+        toolbarsHidden || toolbarsCollapsed
+            ? ReaderNavigationToolbarView.compactHeight
+            : ReaderNavigationToolbarView.expandedHeight
     }
 
     @ViewBuilder
@@ -412,7 +379,8 @@ struct SplitReaderView: View {
             },
             notesModules: notesModules,
             commentarySeries: commentarySeries,
-            devotionalsModules: devotionalsModules
+            devotionalsModules: devotionalsModules,
+            trailingPanelWidth: isHorizontalSplit ? rightPanelWidth + 12 : 0
         )
         .onAppear {
             // Enable scroll linking after initial load completes
@@ -595,6 +563,10 @@ struct SplitDragOverlay: View {
     let isVertical: Bool
     @Binding var panelSize: CGFloat
     let containerSize: CGSize
+    /// Where a vertical handle's span starts, and how far it runs past the
+    /// container's bottom, into the bottom safe area.
+    var spanTop: CGFloat = 0
+    var spanBottomOverhang: CGFloat = 0
     let minPanelSize: CGFloat
     let maxPanelRatio: CGFloat
     let dividerY: CGFloat  // Y position of actual divider in splitContainer coordinate space
@@ -675,7 +647,7 @@ struct SplitDragOverlay: View {
             let currentBaseSize = initialPanelSize ?? panelSize
             let visualPanelSize = calculateNewSize(baseSize: currentBaseSize, translation: dragOffset)
             let x = containerSize.width - visualPanelSize - (handleThickness / 2)
-            return CGPoint(x: x, y: containerSize.height / 2)
+            return CGPoint(x: x, y: spanTop + verticalSpan / 2)
         } else {
             // For horizontal split (bottom panel):
             // - During drag: calculate from drag offset for smooth feedback
@@ -696,6 +668,12 @@ struct SplitDragOverlay: View {
         }
     }
 
+    /// The full length of a vertical divider, so the handle and its hit
+    /// area run with it rather than stopping short at either end.
+    private var verticalSpan: CGFloat {
+        max(0, containerSize.height + spanBottomOverhang - spanTop)
+    }
+
     private var handleVisual: some View {
         Group {
             if isVertical {
@@ -708,8 +686,7 @@ struct SplitDragOverlay: View {
                         .fill(Color(UIColor.systemGray3))
                         .frame(width: 4, height: 40)
                 }
-                .frame(width: handleThickness)
-                .frame(maxHeight: .infinity)
+                .frame(width: handleThickness, height: verticalSpan)
                 .contentShape(Rectangle())
             } else {
                 ZStack {

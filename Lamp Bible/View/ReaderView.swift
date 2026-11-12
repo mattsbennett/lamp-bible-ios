@@ -1992,6 +1992,9 @@ struct ReaderView: View {
     private let notesModules: [Module]
     private let commentarySeries: [String]
     private let devotionalsModules: [Module]
+    /// The width of a tool panel laid beside the reader, over its trailing
+    /// side: the passage keeps clear of it, and the header spans both.
+    private let trailingPanelWidth: CGFloat
 
     init(
         date: Binding<Date>,
@@ -2017,9 +2020,11 @@ struct ReaderView: View {
         onToggleSplitOrientation: (() -> Void)? = nil,
         notesModules: [Module] = [],
         commentarySeries: [String] = [],
-        devotionalsModules: [Module] = []
+        devotionalsModules: [Module] = [],
+        trailingPanelWidth: CGFloat = 0
     ) {
         self.isHorizontalSplit = isHorizontalSplit
+        self.trailingPanelWidth = trailingPanelWidth
         _toolPanelMode = toolPanelMode
         self.toolDisplayName = toolDisplayName
         _isScrollLinked = isScrollLinked
@@ -2119,10 +2124,10 @@ struct ReaderView: View {
         )
     }
 
-    /// The toolbars are collapsed down to the title alone. Horizontal split
-    /// hides the header instead, behind the parent's full-width one.
+    /// The toolbars are collapsed down to the title alone, in a split as in
+    /// one column.
     private var isNavigationBarCompact: Bool {
-        (toolbarsHidden || toolbarsCollapsed) && !isHorizontalSplit
+        toolbarsHidden || toolbarsCollapsed
     }
 
     private var readerHeader: some View {
@@ -3239,12 +3244,14 @@ struct ReaderView: View {
             // header is the reader's own, in place of the navigation bar.
             .toolbar(toolbarsHidden || toolbarsCollapsed ? .hidden : .visible, for: .bottomBar)
             .toolbar(.hidden, for: .navigationBar)
+            // Clear of a tool panel beside it, which lies over this side.
+            // The header, attached after, keeps the full width, so it spans
+            // the passage and the panel alike, expanded and collapsed; the
+            // panel starts below it. A header drawn past the reader's own
+            // edge instead took no taps there.
+            .padding(.trailing, trailingPanelWidth)
             .readerHeaderBar {
-                // Horizontal split hides it behind the parent's full-width
-                // collapsed header.
-                if !(isHorizontalSplit && (toolbarsHidden || toolbarsCollapsed)) {
-                    readerHeader
-                }
+                readerHeader
             }
             .statusBarHidden(toolbarsHidden)
             .onChange(of: showingOptionsMenu) { _, isShowing in
