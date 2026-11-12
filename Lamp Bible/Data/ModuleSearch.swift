@@ -120,7 +120,9 @@ struct ModuleSearchFilter {
 
     // Highlight filters
     var highlightColors: Set<String>? = nil  // Filter by highlight color hex values
-    var highlightColorOnly: Bool = false     // Search by color only (no text query required)
+    /// Whether the colours alone search highlights, without words. Otherwise
+    /// they narrow the highlights a search by words finds.
+    var highlightColorOnly: Bool = false
 
     static var `default`: ModuleSearchFilter { ModuleSearchFilter() }
 }
@@ -379,22 +381,7 @@ class ModuleSearch {
     /// kind's best, so a common word's verses can't take every place, and the
     /// kinds that had more than they kept.
     func searchByKind(query: String, filter: ModuleSearchFilter = .default, limit: Int = 50) throws -> ModuleSearchPage {
-        let request = LampModuleSearchRequest(
-            query: query,
-            kinds: filter.types,
-            moduleIDs: filter.moduleIds,
-            bookRange: filter.bookRange,
-            strongsKey: filter.strongsKey,
-            highlightColors: filter.highlightColors,
-            devotionalCriteria: LampDevotionalSearchCriteria(
-                date: filter.devotionalDate,
-                monthDay: filter.monthDay,
-                tags: filter.tags,
-                categories: filter.categories
-            ),
-            // The translations named are searched together.
-            preferredTranslationID: filter.translationIds == nil ? filter.preferredTranslationId : nil
-        )
+        let request = Self.request(query: query, filter: filter)
         // The translations searched, read once.
         var listed: [String]?
         let translations = { () throws -> [String] in
@@ -416,12 +403,45 @@ class ModuleSearch {
             scripture: try page.scripture.map { choice in
                 // The reading translation is said to have none only where
                 // the filter left it among those searched.
-                let searched = try translations().filter { filter.moduleIds?.contains($0) ?? true }
+                let searched = try translations().filter(request.includes(moduleID:))
                 return SearchScripture(
                     preferred: request.preferredTranslationID.flatMap { searched.contains($0) ? $0 : nil },
                     choice: choice
                 )
             }
+        )
+    }
+
+    /// What core's search is asked for `filter`. The phone's own searches
+    /// take the modules chosen and the colours from the filter; the request
+    /// says what core decides by.
+    static func request(query: String, filter: ModuleSearchFilter) -> LampModuleSearchRequest {
+        let words = LampSearchQuery(query)
+        let hasWords = !words.isEmpty && !words.plainText.isEmpty
+        return LampModuleSearchRequest(
+            query: query,
+            kinds: filter.types,
+            // A search by words takes the translations named ahead of the
+            // modules chosen, as the phone always has: the request's modules
+            // are only what core narrows Scripture by, and the translations
+            // listed are already the named ones (`searchedTranslations`).
+            moduleIDs: hasWords && filter.translationIds != nil
+                ? filter.moduleIds.map { $0.union(filter.translationIds ?? []) }
+                : filter.moduleIds,
+            bookRange: filter.bookRange,
+            strongsKey: filter.strongsKey,
+            // Colours alone search highlights only where the filter asks for
+            // that. With words, they narrow the highlights found, which the
+            // highlight search reads from the filter itself.
+            highlightColors: filter.highlightColorOnly ? filter.highlightColors : nil,
+            devotionalCriteria: LampDevotionalSearchCriteria(
+                date: filter.devotionalDate,
+                monthDay: filter.monthDay,
+                tags: filter.tags,
+                categories: filter.categories
+            ),
+            // The translations named are searched together.
+            preferredTranslationID: filter.translationIds == nil ? filter.preferredTranslationId : nil
         )
     }
 
@@ -488,12 +508,12 @@ class ModuleSearch {
     }
 
     /// The translations a search covers, in the order the phone lists them:
-    /// for a Strong's key, those tagged with Strong's numbers.
+    /// for words, the ones the filter names, if it names any; for a Strong's
+    /// key, those tagged with Strong's numbers.
     private func searchedTranslations(filter: ModuleSearchFilter, byKey: Bool) throws -> [String] {
         try TranslationDatabase.shared.getAllTranslations()
-            .filter { !byKey || $0.features?.strongs == true }
+            .filter { byKey ? $0.features?.strongs == true : filter.translationIds?.contains($0.id) ?? true }
             .map(\.id)
-            .filter { filter.translationIds?.contains($0) ?? true }
     }
 
     /// What core's search needs of the phone's results, ranked as they were

@@ -5968,6 +5968,38 @@ final class SearchAuditFixTests: XCTestCase {
         )
     }
 
+    /// What core is asked: the translations named ahead of the modules
+    /// chosen for words, and colours alone only where the filter says so.
+    func testTheRequestKeepsThePhonesFilterRules() {
+        var filter = ModuleSearchFilter()
+        filter.translationIds = ["KJVs"]
+        filter.moduleIds = ["tske"]
+        XCTAssertEqual(ModuleSearch.request(query: "love", filter: filter).moduleIDs, ["tske", "KJVs"])
+        XCTAssertEqual(ModuleSearch.request(query: "", filter: filter).moduleIDs, ["tske"], "a key search never took them")
+        filter.moduleIds = nil
+        XCTAssertNil(ModuleSearch.request(query: "love", filter: filter).moduleIDs)
+
+        filter.highlightColors = ["#FFEB3B"]
+        XCTAssertNil(ModuleSearch.request(query: "", filter: filter).highlightColors)
+        filter.highlightColorOnly = true
+        XCTAssertEqual(ModuleSearch.request(query: "", filter: filter).highlightColors, ["#FFEB3B"])
+    }
+
+    /// Translations the filter names are searched for words even where the
+    /// modules chosen leave them out, as before core gathered the search.
+    func testNamedTranslationsAreSearchedAheadOfTheModulesChosen() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.translation]
+        filter.translationIds = ["KJVs", "ASVs"]
+        filter.moduleIds = ["KJVs"]
+        let overlapping = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 50)
+        XCTAssertEqual(Set(overlapping.results.map(\.moduleId)), ["KJVs", "ASVs"])
+        filter.moduleIds = ["tske"]
+        let apart = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 50)
+        XCTAssertEqual(Set(apart.results.map(\.moduleId)), ["KJVs", "ASVs"])
+    }
+
     func testABibleRowMarksEveryWordTheSearchMatched() {
         let marked = LampSearchQuery("faith works").markedSnippet("Faith without works is dead", limit: 120)
         XCTAssertEqual(marked, "<mark>Faith</mark> without <mark>works</mark> is dead")
