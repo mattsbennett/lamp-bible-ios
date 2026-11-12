@@ -68,7 +68,6 @@
 		B85B89B72F1F2A20004B4F61 /* AudioBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89B42F1F2A20004B4F61 /* AudioBlockView.swift */; };
 		B85B89C02F21E000004B4F61 /* HighlightModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89BF2F21E000004B4F61 /* HighlightModels.swift */; };
 		B85B89C22F21E000004B4F61 /* HighlightManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C12F21E000004B4F61 /* HighlightManager.swift */; };
-		B85B89C42F21E000004B4F61 /* HighlightImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */; };
 		B85B89C62F21E000004B4F61 /* HighlightControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */; };
 		B85B89C82F21E000004B4F61 /* HighlightSetPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */; };
 		B85B89CF2F1C73D7004B4F61 /* UserSettingsSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */; };
@@ -250,7 +249,6 @@
 		B85B89B52F1F2A20004B4F61 /* AudioRecorderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderSheet.swift; sourceTree = "<group>"; };
 		B85B89BF2F21E000004B4F61 /* HighlightModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightModels.swift; sourceTree = "<group>"; };
 		B85B89C12F21E000004B4F61 /* HighlightManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightManager.swift; sourceTree = "<group>"; };
-		B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightImportExportManager.swift; sourceTree = "<group>"; };
 		B85B89C52F21E000004B4F61 /* HighlightControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightControlsView.swift; sourceTree = "<group>"; };
 		B85B89C72F21E000004B4F61 /* HighlightSetPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightSetPickerView.swift; sourceTree = "<group>"; };
 		B85B89CE2F1C73D7004B4F61 /* UserSettingsSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettingsSyncManager.swift; sourceTree = "<group>"; };
@@ -413,7 +411,6 @@
 				B89229942F12032700A58F81 /* NotesImportExportManager.swift */,
 				B85B89BF2F21E000004B4F61 /* HighlightModels.swift */,
 				B85B89C12F21E000004B4F61 /* HighlightManager.swift */,
-				B85B89C32F21E000004B4F61 /* HighlightImportExportManager.swift */,
 				B87B2ADA2F022F00006DC53D /* SearchResult.swift */,
 				B88432412F4A814A00A699B9 /* WidgetDataService.swift */,
 				B85B89972F1C73D7004B4F61 /* Sync */,
@@ -876,7 +873,6 @@
 				B89229952F12032700A58F81 /* NotesImportExportManager.swift in Sources */,
 				B85B89C02F21E000004B4F61 /* HighlightModels.swift in Sources */,
 				B85B89C22F21E000004B4F61 /* HighlightManager.swift in Sources */,
-				B85B89C42F21E000004B4F61 /* HighlightImportExportManager.swift in Sources */,
 				B85B89C62F21E000004B4F61 /* HighlightControlsView.swift in Sources */,
 				B85B89C82F21E000004B4F61 /* HighlightSetPickerView.swift in Sources */,
 				B89229972F16A00000A58F81 /* NoteConflictView.swift in Sources */,
