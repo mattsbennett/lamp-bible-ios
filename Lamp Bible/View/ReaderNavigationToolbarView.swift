@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 import LampModuleKit
 
 struct ReaderNavigationToolbarView: View {
@@ -13,6 +14,9 @@ struct ReaderNavigationToolbarView: View {
     @Environment(\.colorScheme) private var colorScheme
     /// The More menu is showing its view settings page.
     @State private var showingViewOptions = false
+    /// Room the window's own controls take at the bar's ends, in an iPad
+    /// window that has them.
+    @State private var windowControls = WindowControlsInsets()
     @Binding var userSettings: UserSettings
     @Binding var readingMetaData: [ReadingMetaData]?
     @Binding var translationId: String
@@ -162,12 +166,19 @@ struct ReaderNavigationToolbarView: View {
                     }
                 }
             }
+            // The back button, first in the bar, sat under the window's
+            // close, minimise and resize buttons; they keep their corner.
+            .padding(.leading, windowControls.leading)
+            .padding(.trailing, windowControls.trailing)
             title
-                // Clear of the buttons either side.
+                // Clear of the buttons either side, and of the window's
+                // controls, by the same each side so it stays centred.
                 .padding(.horizontal, isCompact ? 0 : (trailingAccessory == nil ? 52 : 104))
+                .padding(.horizontal, windowControls.widest)
         }
         .padding(.horizontal, 16)
         .frame(height: isCompact ? Self.compactHeight : Self.expandedHeight)
+        .background(WindowControlsInsetReader(insets: $windowControls))
     }
 
     private func headerIcon(_ systemName: String) -> some View {
@@ -725,3 +736,64 @@ extension View {
     }
 }
 
+
+// MARK: - Window Controls
+
+/// How far an iPad window's close, minimise and resize buttons reach into a
+/// view, at each end, beyond the safe area it already keeps to.
+struct WindowControlsInsets: Equatable {
+    var leading: CGFloat = 0
+    var trailing: CGFloat = 0
+    var widest: CGFloat { max(leading, trailing) }
+}
+
+/// Reads `WindowControlsInsets` for the view it is the background of. SwiftUI
+/// has no say in this; UIKit's safe area with corner adaptation does, from
+/// iOS 26. Zero before that and wherever a window has no controls.
+struct WindowControlsInsetReader: UIViewRepresentable {
+    @Binding var insets: WindowControlsInsets
+
+    func makeUIView(context: Context) -> Probe {
+        let probe = Probe()
+        probe.isUserInteractionEnabled = false
+        probe.onChange = { value in
+            // Out of the layout pass that measured it.
+            DispatchQueue.main.async {
+                if insets != value { insets = value }
+            }
+        }
+        return probe
+    }
+
+    func updateUIView(_ probe: Probe, context: Context) {}
+
+    final class Probe: UIView {
+        var onChange: ((WindowControlsInsets) -> Void)?
+        private var reported: WindowControlsInsets?
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            report()
+        }
+
+        override func safeAreaInsetsDidChange() {
+            super.safeAreaInsetsDidChange()
+            report()
+        }
+
+        private func report() {
+            var value = WindowControlsInsets()
+            if #available(iOS 26.0, *) {
+                let adapted = edgeInsets(for: .safeArea(cornerAdaptation: .horizontal))
+                let left = max(0, adapted.left - safeAreaInsets.left)
+                let right = max(0, adapted.right - safeAreaInsets.right)
+                let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
+                value.leading = rightToLeft ? right : left
+                value.trailing = rightToLeft ? left : right
+            }
+            guard value != reported else { return }
+            reported = value
+            onChange?(value)
+        }
+    }
+}
