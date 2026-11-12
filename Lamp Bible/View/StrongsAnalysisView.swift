@@ -2022,7 +2022,7 @@ private struct StrongsDefinitionPage: View {
                     ContentUnavailableView(
                         "Not in Any Dictionary",
                         systemImage: "character.book.closed",
-                        description: Text("No dictionary on this iPhone has an entry for \(key).")
+                        description: Text("No dictionary on this \(UIDevice.current.kindName) has an entry for \(key).")
                     )
                 }
             } else {
