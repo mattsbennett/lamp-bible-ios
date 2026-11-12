@@ -1232,9 +1232,13 @@ struct UserNotesMeta: Codable {
 /// byte for byte with this device's last upload, so a note saved again
 /// unchanged read as edited.
 enum StoredJSON {
+    /// Spelled as core spells the JSON it writes into a file
+    /// (`LampPersonalFile.jsonFragment`): keys sorted, slashes as they are.
+    /// What is stored here goes out as it is stored, so the same value has
+    /// to be the same text on either device.
     static func string<T: Encodable>(_ value: T) -> String? {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) }
     }
 }

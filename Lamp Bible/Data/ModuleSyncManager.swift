@@ -720,11 +720,15 @@ class ModuleSyncManager: ObservableObject {
 
                 // Gethighlight set metadata
                 guard let metaRow = try Row.fetchOne(db, sql: "SELECT * FROM \(dbAlias).highlight_meta LIMIT 1"),
-                      let setId: String = metaRow["id"],
+                      let fileSetId: String = metaRow["id"],
                       let setName: String = metaRow["name"],
-                      metaRow["translation_id"] as String? != nil else {
+                      let translationId: String = metaRow["translation_id"] else {
                     throw ModuleSyncError.importFailed("Could not read highlight metadata")
                 }
+                // The set the file says it is. One written before sets said
+                // so carries the module's id instead, and the Mac's default
+                // set is read back as the Mac reads it, colon and all.
+                let setId = LampLibrary.canonicalHighlightSetID(fileSetId, translationID: translationId)
 
                 // Create module if not exists
                 try db.execute(sql: """
@@ -738,11 +742,12 @@ class ModuleSyncManager: ObservableObject {
                 try Self.copyCompiled(
                     "highlight_meta", of: .highlights, from: dbAlias,
                     filling: [
+                        "id": ":set",
                         "module_id": ":module",
                         "created": "COALESCE(created, :now)",
                         "last_modified": "COALESCE(last_modified, :now)",
                     ],
-                    arguments: ["module": fileInfo.id, "now": now], in: db
+                    arguments: ["set": setId, "module": fileInfo.id, "now": now], in: db
                 )
 
                 // Copy highlights
@@ -1076,8 +1081,15 @@ class ModuleSyncManager: ObservableObject {
         tempURL: URL
     ) async throws {
         let remoteQueue = try DatabaseQueue(path: tempURL.path)
-        let remoteEntries = try await remoteQueue.read { db in
+        let fetched = try await remoteQueue.read { db in
             try DevotionalEntry.fetchAll(db)
+        }
+        // Searched as a writing here is searched: a file's search text is
+        // its writer's, and core's is built differently.
+        let remoteEntries = fetched.map { entry in
+            var entry = entry
+            if let devotional = entry.toDevotional() { entry.searchText = devotional.searchText }
+            return entry
         }
         let metadata = try await editableModuleMetadata(
             id: fileInfo.id, type: .devotional,
@@ -1711,52 +1723,38 @@ class ModuleSyncManager: ObservableObject {
         // module of their own making under its own.
         let isCollection = module.id == LampSyncLocalDeletion.notesCollectionID
         return try Self.notesArchive(
-            entries, moduleID: module.id, name: isCollection ? LampPersonalModule.notes.name : module.name
+            entries, moduleID: module.id,
+            name: isCollection ? LampPersonalModule.notes.name : module.name,
+            description: isCollection ? nil : module.description,
+            author: isCollection ? nil : module.author,
+            version: isCollection ? nil : module.version
         )
     }
 
-    /// The notes file as core writes it, in the order the Mac hands notes
-    /// over, so its bytes are the Mac's for the same notes.
+    /// The notes file as core writes it, each note as the row it's stored
+    /// as, so nothing this device keeps is flattened on the way out (a
+    /// footnote's annotations, its kind), and in the order the Mac hands
+    /// notes over, so the same notes are the Mac's bytes.
     static func notesArchive(
-        _ entries: [NoteEntry], moduleID: String, name: String = LampPersonalModule.notes.name
+        _ entries: [NoteEntry], moduleID: String, name: String = LampPersonalModule.notes.name,
+        description: String? = nil, author: String? = nil, version: String? = nil
     ) throws -> Data {
         let ordered = entries.sorted {
             ($0.book, $0.chapter, $0.verse, $0.lastModified ?? 0, $0.id)
                 < ($1.book, $1.chapter, $1.verse, $1.lastModified ?? 0, $1.id)
         }
-        return try LampPersonalNotesFile.archive(ordered.map(verseNote), moduleID: moduleID, name: name)
-    }
-
-    /// A note as core's record of it. Footnotes are read from the list as
-    /// stored, so a kind another app gave one is kept.
-    static func verseNote(_ entry: NoteEntry) -> LampVerseNote {
-        let stored = entry.footnotesJson
-            .flatMap { $0.data(using: .utf8) }
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
-        let footnotes = stored.compactMap { value -> LampVerseFootnote? in
-            guard let id = value["id"] as? String else { return nil }
-            let content: String
-            if let text = value["content"] as? String {
-                content = text
-            } else if let object = value["content"],
-                      let data = try? JSONSerialization.data(withJSONObject: object),
-                      let annotated = try? JSONDecoder().decode(AnnotatedTextField.self, from: data) {
-                content = annotated.plainText
-            } else {
-                return nil
-            }
-            return LampVerseFootnote(id: id, kind: value["type"] as? String, content: content)
-        }
-        return LampVerseNote(
-            id: entry.id,
-            moduleID: entry.moduleId,
-            reference: entry.verseId,
-            title: entry.title,
-            content: entry.content,
-            verseReferences: entry.verseRefs ?? [],
-            footnotes: footnotes,
-            mediaJSON: entry.mediaJson,
-            lastModified: Date(timeIntervalSince1970: TimeInterval(entry.lastModified ?? 0))
+        return try LampPersonalNotesFile.archive(
+            rows: ordered.map { entry in
+                LampPersonalNotesFile.Row(
+                    id: entry.id, moduleID: moduleID, reference: entry.verseId,
+                    title: entry.title, content: entry.content,
+                    // No list is written as the Mac writes an empty one.
+                    verseReferencesJSON: entry.verseRefsJson ?? "[]",
+                    footnotesJSON: entry.footnotesJson ?? "[]",
+                    mediaJSON: entry.mediaJson, lastModified: entry.lastModified
+                )
+            },
+            moduleID: moduleID, name: name, description: description, author: author, version: version
         )
     }
 
@@ -1774,7 +1772,9 @@ class ModuleSyncManager: ObservableObject {
         return try Self.writingsArchive(
             entries, moduleID: module.id,
             name: isCollection ? LampPersonalModule.writing.name : module.name,
-            description: isCollection ? nil : module.description
+            description: isCollection ? nil : module.description,
+            author: isCollection ? nil : module.author,
+            version: isCollection ? nil : module.version
         )
     }
 
@@ -1782,7 +1782,8 @@ class ModuleSyncManager: ObservableObject {
     /// stored as, so nothing this device keeps is flattened on the way out,
     /// and in the order the Mac hands writings over.
     static func writingsArchive(
-        _ entries: [DevotionalEntry], moduleID: String, name: String, description: String?
+        _ entries: [DevotionalEntry], moduleID: String, name: String,
+        description: String? = nil, author: String? = nil, version: String? = nil
     ) throws -> Data {
         // As SQLite orders them, byte by byte, which is how the Mac reads them:
         // series, its order, the date, the title, the id.
@@ -1805,112 +1806,64 @@ class ModuleSyncManager: ObservableObject {
                     keyScripturesJSON: entry.keyScripturesJson, summaryJSON: entry.summaryJson,
                     contentJSON: entry.contentJson, footnotesJSON: entry.footnotesJson,
                     relatedIDs: entry.relatedIds, created: entry.created, lastModified: entry.lastModified,
-                    searchText: entry.searchText, recordChangeTag: entry.recordChangeTag,
                     subscriptionID: entry.subscriptionId, isReadOnly: entry.isReadOnly,
                     mediaJSON: entry.mediaJson
                 )
             },
-            moduleID: moduleID, name: name, description: description
+            moduleID: moduleID, name: name, description: description, author: author, version: version
         )
     }
 
     /// Export highlights module to SQLite+zlib format
     func exportHighlightModuleToSQLite(_ module: Module) throws -> Data {
-        // Get highlight sets for this module
-        let sets = try database.getHighlightSets(forModule: module.id)
-
-        guard let set = sets.first else {
+        guard let set = try database.getHighlightSets(forModule: module.id).first else {
             throw ModuleSyncError.exportFailed("No highlight set found for module")
         }
+        return try Self.highlightsArchive(
+            set, moduleID: module.id,
+            highlights: database.getAllHighlights(setId: set.id),
+            themes: database.getHighlightThemes(setId: set.id)
+        )
+    }
 
-        // Get all highlights for the set
-        let highlights = try database.getAllHighlights(setId: set.id)
-
-        // Get all themes for the set
-        let themes = try database.getHighlightThemes(setId: set.id)
-
-        // Create temporary database file
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("db")
-
-        defer {
-            try? FileManager.default.removeItem(at: tempURL)
+    /// A highlight set's file as the Mac makes it: core's document for the
+    /// set, saying which set it is apart from the module it travels as,
+    /// compiled by core's compiler. The same set is the same file on either
+    /// device. Core orders a verse's spans; the themes go in the Mac's order.
+    static func highlightsArchive(
+        _ set: HighlightSet, moduleID: String, highlights: [HighlightEntry], themes: [HighlightTheme]
+    ) throws -> Data {
+        let spans = highlights.map { highlight in
+            LampVerseHighlight(
+                id: highlight.id ?? 0, setID: set.id, translationID: set.translationId,
+                reference: highlight.ref, startOffset: highlight.sc, endOffset: highlight.ec,
+                style: LampHighlightStyle(rawValue: highlight.style) ?? .highlight, color: highlight.color
+            )
         }
-
-        // Create and populate the SQLite database
-        let exportQueue = try DatabaseQueue(path: tempURL.path)
-        try exportQueue.write { db in
-            try db.execute(sql: "CREATE TABLE module_format (module_id TEXT, module_type TEXT)")
-            try db.execute(
-                sql: "INSERT INTO module_format VALUES (?, 'highlights')",
-                arguments: [module.id]
-            )
-            // Create highlight_meta table (compact export format)
-            try db.execute(sql: """
-                CREATE TABLE highlight_meta (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    translation_id TEXT NOT NULL,
-                    created INTEGER,
-                    last_modified INTEGER
-                )
-            """)
-
-            // Create highlights table
-            try db.execute(sql: """
-                CREATE TABLE highlights (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ref INTEGER NOT NULL,
-                    sc INTEGER NOT NULL,
-                    ec INTEGER NOT NULL,
-                    style INTEGER DEFAULT 0,
-                    color TEXT
-                )
-            """)
-
-            // Create highlight_themes table
-            try db.execute(sql: """
-                CREATE TABLE highlight_themes (
-                    color TEXT NOT NULL,
-                    style INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    PRIMARY KEY (color, style)
-                )
-            """)
-
-            // Insert highlight set metadata
-            try db.execute(
-                sql: "INSERT INTO highlight_meta (id, name, description, translation_id, created, last_modified) VALUES (?, ?, ?, ?, ?, ?)",
-                arguments: [set.id, set.name, set.description, set.translationId, set.created, set.lastModified]
-            )
-
-            // Insert all highlights
-            for highlight in highlights {
-                try db.execute(
-                    sql: "INSERT INTO highlights (ref, sc, ec, style, color) VALUES (?, ?, ?, ?, ?)",
-                    arguments: [highlight.ref, highlight.sc, highlight.ec, highlight.style, highlight.color]
+        let named = themes
+            .sorted { ($0.name, $0.color, $0.style) < ($1.name, $1.color, $1.style) }
+            .map { theme in
+                LampHighlightTheme(
+                    setID: set.id, color: theme.color,
+                    style: LampHighlightStyle(rawValue: theme.style) ?? .highlight,
+                    name: theme.name, description: theme.themeDescription
                 )
             }
-
-            // Insert all themes
-            for theme in themes {
-                try db.execute(
-                    sql: "INSERT INTO highlight_themes (color, style, name, description) VALUES (?, ?, ?, ?)",
-                    arguments: [theme.color, theme.style, theme.name, theme.themeDescription]
-                )
-            }
-        }
-
-        // Read the SQLite file and compress with zlib
-        let sqliteData = try Data(contentsOf: tempURL)
-        guard let compressedData = try? (sqliteData as NSData).compressed(using: .zlib) as Data else {
-            throw ModuleSyncError.exportFailed("Failed to compress SQLite data")
-        }
-
-        return compressedData
+        let document = try LampPersonalHighlightsFile.document(for: .init(
+            id: set.id, moduleID: moduleID, name: set.name, translationID: set.translationId,
+            description: set.description, created: set.created, lastModified: set.lastModified,
+            highlights: spans, themes: named
+        ))
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lamp-highlights-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let compiled = try LampModuleCompiler().compile(
+            data: JSONSerialization.data(withJSONObject: document, options: [.sortedKeys, .withoutEscapingSlashes]),
+            sourceFilename: "\(moduleID).json",
+            destinationURL: folder.appendingPathComponent("\(moduleID).lamp")
+        )
+        return try Data(contentsOf: compiled.outputURL)
     }
 
     // MARK: - Create Default Notes Module

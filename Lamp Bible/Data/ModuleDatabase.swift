@@ -1565,6 +1565,14 @@ class ModuleDatabase {
             try ModuleDatabase.carryPresenceToCollectionNames(in: db)
         }
 
+        migrator.registerMigration("v40_highlight_sets_named_as_the_mac_names_them") { db in
+            let renamed = try ModuleDatabase.nameHighlightSetsAsTheMacDoes(in: db)
+            let activeKey = "highlight_active_set_id"
+            if let active = UserDefaults.standard.string(forKey: activeKey), let canonical = renamed[active] {
+                UserDefaults.standard.set(canonical, forKey: activeKey)
+            }
+        }
+
         return migrator
     }
 
@@ -1626,6 +1634,67 @@ class ModuleDatabase {
                 LampPersonalItemKind.note.rawValue, LampSyncLocalDeletion.notesCollectionID,
                 LampSyncLocalDeletion.notesCollectionID, LampPersonalModule.notes.id,
             ])
+    }
+
+    /// Renames the sets this device holds under a module's id where the Mac
+    /// names the set otherwise (`LampLibrary.canonicalHighlightSetID`): its
+    /// default set for a translation travels as `personal-highlights-ESV`
+    /// but is `personal-highlights:ESV`, and the deletion ledger keys a
+    /// highlight by its set. Read back unchanged here, a highlight deleted
+    /// on one device was never matched on the other. The set's highlights
+    /// and themes go with it, and so do its ledger entries, so a deletion
+    /// recorded here before is the Mac's deletion now. Returns what was
+    /// renamed, old to new.
+    @discardableResult
+    static func nameHighlightSetsAsTheMacDoes(in db: Database) throws -> [String: String] {
+        guard try db.tableExists("highlight_sets") else { return [:] }
+        var renamed: [String: String] = [:]
+        for row in try Row.fetchAll(db, sql: "SELECT id, translation_id FROM highlight_sets") {
+            let id: String = row["id"]
+            let canonical = LampLibrary.canonicalHighlightSetID(id, translationID: row["translation_id"])
+            guard canonical != id,
+                  try !Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM highlight_sets WHERE id = ?)", arguments: [canonical])!
+            else { continue }
+            renamed[id] = canonical
+        }
+        let hasLedger = try db.tableExists("personal_sync_ledger")
+        for (old, new) in renamed {
+            try db.execute(sql: "UPDATE highlight_sets SET id = ? WHERE id = ?", arguments: [new, old])
+            try db.execute(sql: "UPDATE highlights SET set_id = ? WHERE set_id = ?", arguments: [new, old])
+            try db.execute(sql: """
+                UPDATE highlight_themes SET id = ? || substr(id, length(?) + 1), set_id = ? WHERE set_id = ?
+                """, arguments: [new, old, new, old])
+            guard hasLedger else { continue }
+            // The set's own entry, then its highlights' and themes', whose
+            // keys begin with the set's id; each joined with any entry the
+            // new name already has, the later time of each kind kept.
+            let moves: [(kind: LampPersonalItemKind, match: String)] = [
+                (.highlightSet, "item_key = :old"),
+                (.highlight, "substr(item_key, 1, length(:old) + 1) = :old || char(31)"),
+                (.highlightTheme, "substr(item_key, 1, length(:old) + 1) = :old || char(31)"),
+            ]
+            for move in moves {
+                let arguments: StatementArguments = ["kind": move.kind.rawValue, "old": old, "new": new]
+                try db.execute(sql: """
+                    INSERT INTO personal_sync_ledger (kind, item_key, present_since, deleted_at)
+                    SELECT kind, :new || substr(item_key, length(:old) + 1), present_since, deleted_at
+                    FROM personal_sync_ledger WHERE kind = :kind AND \(move.match)
+                    ON CONFLICT(kind, item_key) DO UPDATE SET
+                        present_since = CASE
+                            WHEN present_since IS NULL THEN excluded.present_since
+                            WHEN excluded.present_since IS NULL THEN present_since
+                            ELSE MAX(present_since, excluded.present_since)
+                        END,
+                        deleted_at = CASE
+                            WHEN deleted_at IS NULL THEN excluded.deleted_at
+                            WHEN excluded.deleted_at IS NULL THEN deleted_at
+                            ELSE MAX(deleted_at, excluded.deleted_at)
+                        END
+                    """, arguments: arguments)
+                try db.execute(sql: "DELETE FROM personal_sync_ledger WHERE kind = :kind AND \(move.match)", arguments: arguments)
+            }
+        }
+        return renamed
     }
 
     /// Rebuilds `quiz_modules` without the NOT NULL on

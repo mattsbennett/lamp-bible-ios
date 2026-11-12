@@ -7372,7 +7372,7 @@ final class NotesCollectionFileTests: XCTestCase {
         let file = try ModuleSyncManager.notesArchive(notes, moduleID: "notes")
 
         XCTAssertEqual(
-            LibrarySyncPass.digest(file), "2a07a6f0b2ebbe8ab26134f7e605289969e5a935a562eb98f55f0a0d675f8c32"
+            LibrarySyncPass.digest(file), "b0d90830bec81bed381cc023b22b3d6e07471f892630ca7f9628e7a286f58358"
         )
     }
 
@@ -7413,14 +7413,25 @@ final class NotesCollectionFileTests: XCTestCase {
         XCTAssertEqual(NoteEntry.panelID(moduleId: "grandads-notes", verseId: 43_003_016), "grandads-notes:43003016")
     }
 
-    /// A footnote's kind, which this device doesn't use, is kept through a save.
-    func testAFootnotesKindIsKept() throws {
-        let note = NoteEntry(
-            moduleId: "notes", verseId: 43_003_016, content: "Note",
-            footnotes: [UserNotesFootnote(id: "a", content: .text("Chrysostom."), type: "note")]
-        )
+    /// A footnote goes out as it is stored: its kind, which this device
+    /// doesn't use, and its annotations, which a plain-text copy would lose
+    /// for good once another device saved it back.
+    func testAFootnoteTravelsAsItIsStored() throws {
+        let footnotes = #"[{"content":{"annotations":[{"end":7,"start":0,"type":"scripture"}],"text":"Psalm 2"},"id":"a","type":"note"}]"#
+        var note = NoteEntry(moduleId: "notes", verseId: 43_003_016, content: "Note")
+        note.footnotesJson = footnotes
         XCTAssertEqual(note.footnotes?.first?.type, "note")
-        XCTAssertEqual(ModuleSyncManager.verseNote(note).footnotes.first?.kind, "note")
+
+        let compressed = try ModuleSyncManager.notesArchive([note], moduleID: "notes")
+
+        let data = try XCTUnwrap((compressed as NSData).decompressed(using: .zlib) as Data)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try data.write(to: url)
+        XCTAssertEqual(
+            try DatabaseQueue(path: url.path).read { try String.fetchOne($0, sql: "SELECT footnotes_json FROM note_entries") },
+            footnotes
+        )
     }
 
     /// Existing notes are renamed once, but not onto a name the ledger
@@ -7498,6 +7509,101 @@ final class WritingsFileTests: XCTestCase {
             XCTAssertEqual(row["module_id"], module.id)
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT name FROM module_meta"), "Psalms Study")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT description FROM module_meta"), "Weekly")
+        }
+    }
+}
+
+/// A highlight set's file, built from core's document as the Mac builds it,
+/// and the set's id, the same on both apps.
+final class HighlightSetFileTests: XCTestCase {
+    private let set = HighlightSet(
+        id: "3F2A-set", moduleId: "esvs-highlights", name: "Mine",
+        description: "A set", translationId: "ESV", created: 1_700_000_000, lastModified: 1_700_000_001
+    )
+
+    private func compiled(_ document: [String: Any], moduleID: String = "esvs-highlights") throws -> Data {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let result = try LampModuleCompiler().compile(
+            data: JSONSerialization.data(withJSONObject: document), sourceFilename: "\(moduleID).json",
+            destinationURL: folder.appendingPathComponent("\(moduleID).lamp")
+        )
+        return try Data(contentsOf: result.outputURL)
+    }
+
+    /// The set's file is the one core's document gives for it: the set's own
+    /// id beside the module's, themes in the Mac's order.
+    func testASetsFileIsTheMacsFileForTheSameSet() throws {
+        let highlights = [
+            HighlightEntry(id: 3, setId: set.id, ref: 43_003_016, sc: 4, ec: 9, style: .highlight, color: nil),
+            HighlightEntry(id: 1, setId: set.id, ref: 43_001_001, sc: 0, ec: 3, style: .highlight, color: HighlightColor(hex: "FFCC00")),
+            HighlightEntry(id: 2, setId: set.id, ref: 43_003_016, sc: 0, ec: 3, style: .underlineSolid, color: HighlightColor(hex: "00AAFF")),
+        ]
+        let themes = [
+            HighlightTheme(setId: set.id, color: "FFCC00", style: 0, name: "Promise"),
+            HighlightTheme(setId: set.id, color: "00AAFF", style: 1, name: "Command", description: "What to do"),
+        ]
+
+        let file = try ModuleSyncManager.highlightsArchive(set, moduleID: "esvs-highlights", highlights: highlights, themes: themes)
+
+        let expected = try compiled(LampPersonalHighlightsFile.document(for: .init(
+            id: set.id, moduleID: "esvs-highlights", name: "Mine", translationID: "ESV",
+            description: "A set", created: 1_700_000_000, lastModified: 1_700_000_001,
+            highlights: [
+                LampVerseHighlight(id: 1, setID: set.id, translationID: "ESV", reference: 43_001_001, startOffset: 0, endOffset: 3, color: "FFCC00"),
+                LampVerseHighlight(id: 2, setID: set.id, translationID: "ESV", reference: 43_003_016, startOffset: 0, endOffset: 3, style: .underlineSolid, color: "00AAFF"),
+                LampVerseHighlight(id: 3, setID: set.id, translationID: "ESV", reference: 43_003_016, startOffset: 4, endOffset: 9),
+            ],
+            themes: [
+                LampHighlightTheme(setID: set.id, color: "00AAFF", style: .underlineSolid, name: "Command", description: "What to do"),
+                LampHighlightTheme(setID: set.id, color: "FFCC00", style: .highlight, name: "Promise"),
+            ]
+        )))
+        XCTAssertEqual(file, expected)
+        XCTAssertEqual(try LampWebDAVPersonalArchiveAdapter.highlightSetID(in: file), "3F2A-set", "the set, apart from the module")
+    }
+
+    func testASetWithNoHighlightsStillHasAFile() throws {
+        XCTAssertNoThrow(try ModuleSyncManager.highlightsArchive(set, moduleID: "esvs-highlights", highlights: [], themes: []))
+    }
+
+    /// The Mac's default set, held here under the module id it travels as,
+    /// takes the Mac's name for it, and its highlights, themes and ledger
+    /// entries go with it, joining any the new name already had.
+    func testTheMacsDefaultSetTakesTheMacsName() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE highlight_sets (id TEXT PRIMARY KEY, translation_id TEXT NOT NULL);
+                CREATE TABLE highlights (id INTEGER PRIMARY KEY, set_id TEXT NOT NULL, ref INTEGER);
+                CREATE TABLE highlight_themes (id TEXT PRIMARY KEY, set_id TEXT NOT NULL);
+                CREATE TABLE personal_sync_ledger (
+                    kind TEXT NOT NULL, item_key TEXT NOT NULL, present_since INTEGER, deleted_at INTEGER,
+                    PRIMARY KEY (kind, item_key)
+                );
+                INSERT INTO highlight_sets VALUES ('personal-highlights-ESV', 'ESV'), ('3F2A-set', 'ESV');
+                INSERT INTO highlights VALUES (1, 'personal-highlights-ESV', 43003016), (2, '3F2A-set', 43003016);
+                INSERT INTO highlight_themes VALUES ('personal-highlights-ESV_FFCC00_0', 'personal-highlights-ESV');
+                """)
+            let old = LampPersonalDeletionLedger.highlightKey(setID: "personal-highlights-ESV", reference: 43_003_016, start: 0, end: 3, style: 0, color: "FFCC00")
+            let new = LampPersonalDeletionLedger.highlightKey(setID: "personal-highlights:ESV", reference: 43_003_016, start: 0, end: 3, style: 0, color: "FFCC00")
+            try db.execute(sql: """
+                INSERT INTO personal_sync_ledger VALUES
+                    ('highlight', ?, 100, 900), ('highlight', ?, 500, NULL), ('highlightSet', 'personal-highlights-ESV', 50, NULL)
+                """, arguments: [old, new])
+
+            XCTAssertEqual(try ModuleDatabase.nameHighlightSetsAsTheMacDoes(in: db), ["personal-highlights-ESV": "personal-highlights:ESV"])
+
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_sets ORDER BY id"), ["3F2A-set", "personal-highlights:ESV"])
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT set_id FROM highlights ORDER BY id"), ["personal-highlights:ESV", "3F2A-set"])
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_themes"), ["personal-highlights:ESV_FFCC00_0"])
+            let ledger = try Row.fetchAll(db, sql: "SELECT kind, item_key, present_since, deleted_at FROM personal_sync_ledger ORDER BY kind, item_key")
+                .map { "\($0["kind"] as String) \($0["item_key"] as String) \($0["present_since"] as Int64? ?? -1) \($0["deleted_at"] as Int64? ?? -1)" }
+            XCTAssertEqual(ledger, [
+                "highlight \(new) 500 900",
+                "highlightSet personal-highlights:ESV 50 -1",
+            ])
         }
     }
 }
