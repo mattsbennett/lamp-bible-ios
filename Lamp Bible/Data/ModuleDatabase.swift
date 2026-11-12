@@ -1557,7 +1557,40 @@ class ModuleDatabase {
             try db.execute(sql: "ALTER TABLE note_entries ADD COLUMN media_json TEXT")
         }
 
+        migrator.registerMigration("v38_notes_collection_ids") { db in
+            try ModuleDatabase.nameCollectionNotesAsTheMacDoes(in: db)
+        }
+
         return migrator
+    }
+
+    /// Renames the reader's own notes from `notes:<verse>` to the Mac's
+    /// `personal-notes:<verse>` (`NoteEntry.panelID`), so a deletion made on
+    /// either device names the same note on both.
+    ///
+    /// Not where a deletion is already recorded under the new name: the
+    /// panel's old save recorded `personal-notes:<verse>` as deleted when it
+    /// rewrote a Mac note as `notes:<verse>`, and a note renamed onto that
+    /// would be deleted here at the next sync. Those keep their name until
+    /// whether to clear such deletions is decided.
+    static func nameCollectionNotesAsTheMacDoes(in db: Database) throws {
+        guard try db.tableExists("note_entries"), try db.tableExists("personal_sync_ledger") else { return }
+        try db.execute(sql: """
+            UPDATE note_entries SET id = ? || ':' || verse_id
+            WHERE module_id = ? AND id = ? || ':' || verse_id
+              AND NOT EXISTS (
+                  SELECT 1 FROM note_entries other WHERE other.id = ? || ':' || note_entries.verse_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM personal_sync_ledger
+                  WHERE kind = ? AND item_key = ? || ':' || note_entries.verse_id AND deleted_at IS NOT NULL
+              )
+            """, arguments: [
+                LampPersonalModule.notes.id,
+                LampSyncLocalDeletion.notesCollectionID, LampSyncLocalDeletion.notesCollectionID,
+                LampPersonalModule.notes.id,
+                LampPersonalItemKind.note.rawValue, LampPersonalModule.notes.id,
+            ])
     }
 
     /// Rebuilds `quiz_modules` without the NOT NULL on

@@ -2760,7 +2760,7 @@ struct ToolPanelView: View {
             let verseId = scope.book * 1000000 + scope.chapter * 1000 + verse
 
             // Generate stable ID based on module + verse
-            let entryId = "\(scope.moduleId):\(verseId)"
+            let entryId = NoteEntry.panelID(moduleId: scope.moduleId, verseId: verseId)
 
             let entry = NoteEntry(
                 id: entryId,
@@ -3540,7 +3540,7 @@ struct ToolPanelView: View {
         var renumbered: [UserNotesFootnote] = []
         for (i, footnote) in footnotes.enumerated() {
             let newId = String(i + 1)
-            renumbered.append(UserNotesFootnote(id: newId, content: footnote.content))
+            renumbered.append(UserNotesFootnote(id: newId, content: footnote.content, type: footnote.type))
         }
 
         sections[index].footnotes = renumbered.isEmpty ? nil : renumbered
@@ -3567,7 +3567,7 @@ struct ToolPanelView: View {
         if let existingId = editingFootnoteId {
             // Update existing footnote
             if let idx = footnotes.firstIndex(where: { $0.id == existingId }) {
-                footnotes[idx] = UserNotesFootnote(id: existingId, content: .text(trimmedContent))
+                footnotes[idx] = UserNotesFootnote(id: existingId, content: .text(trimmedContent), type: footnotes[idx].type)
             }
         } else {
             // Add new footnote

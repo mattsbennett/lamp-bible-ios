@@ -885,6 +885,16 @@ struct NoteEntry: Codable, FetchableRecord, PersistableRecord, Identifiable {
         self.mediaJson = mediaJson
     }
 
+    /// The id a note saved here is given. The reader's own collection names
+    /// a note as the Mac does, `personal-notes:<verse>`, so a deletion made
+    /// on either device names the same note on both; a module of the
+    /// reader's own making keeps `<module>:<verse>`.
+    static func panelID(moduleId: String, verseId: Int) -> String {
+        moduleId == LampSyncLocalDeletion.notesCollectionID
+            ? "\(LampPersonalModule.notes.id):\(verseId)"
+            : "\(moduleId):\(verseId)"
+    }
+
     /// The note's pictures, each read on its own: one this version can't
     /// read costs its own picture, not every one in the note.
     var media: [DevotionalMediaReference] {
@@ -1233,6 +1243,9 @@ enum StoredJSON {
 struct UserNotesFootnote: Codable, Identifiable {
     var id: String
     var content: AnnotatedTextField
+    /// What kind of footnote another app says it is. Kept as it came, so a
+    /// note edited here doesn't lose it on the way back.
+    var type: String?
 
     /// Get plain text content for searching
     var plainText: String {

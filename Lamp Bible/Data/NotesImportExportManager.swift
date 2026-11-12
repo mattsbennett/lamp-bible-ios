@@ -371,7 +371,7 @@ class NotesImportExportManager {
                     introFootnotes = chapterFootnotes
                 }
                 let entry = NoteEntry(
-                    id: "\(targetModuleId):\(verseId)",
+                    id: NoteEntry.panelID(moduleId: targetModuleId, verseId: verseId),
                     moduleId: targetModuleId,
                     verseId: verseId,
                     title: "Introduction",
@@ -397,7 +397,7 @@ class NotesImportExportManager {
                     }
 
                     let entry = NoteEntry(
-                        id: "\(targetModuleId):\(verse.sv)",
+                        id: NoteEntry.panelID(moduleId: targetModuleId, verseId: verse.sv),
                         moduleId: targetModuleId,
                         verseId: verse.sv,
                         title: nil,

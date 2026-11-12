@@ -1463,15 +1463,24 @@ class ModuleSyncManager: ObservableObject {
                 incomingModified: conflict.cloudEntry.lastModified,
                 now: Int(Date().timeIntervalSince1970)
             ) else { throw SyncError.conflictDetected }
+            // The note's id as it is now, which may have changed since the
+            // conflict was set aside (`nameCollectionNotesAsTheMacDoes`):
+            // saved under the old one, the choice would add a second note.
+            let currentID = try database.read { db in
+                try String.fetchOne(db, sql: """
+                    SELECT id FROM note_entries WHERE module_id = ? AND verse_id = ? ORDER BY id LIMIT 1
+                    """, arguments: [moduleId, conflict.verseId])
+            } ?? conflict.localEntry.id
             switch resolution {
             case .keepLocal:
                 var entry = conflict.localEntry
+                entry.id = currentID
                 entry.lastModified = resolvedTimestamp
                 try database.saveNoteEntry(entry)
 
             case .keepCloud:
                 var entry = conflict.cloudEntry
-                entry.id = conflict.localEntry.id
+                entry.id = currentID
                 entry.lastModified = resolvedTimestamp
                 try database.saveNoteEntry(entry)
 
@@ -1492,7 +1501,7 @@ class ModuleSyncManager: ObservableObject {
                         + (conflict.cloudEntry.verseRefs ?? [])
                 )).sorted()
                 let entry = NoteEntry(
-                    id: conflict.localEntry.id,
+                    id: currentID,
                     moduleId: moduleId,
                     verseId: conflict.verseId,
                     title: conflict.localEntry.title ?? conflict.cloudEntry.title,
@@ -1689,6 +1698,11 @@ class ModuleSyncManager: ObservableObject {
                 .order(Column("id"))
                 .fetchAll(db)
         }
+        // The reader's collection is written by core, as the Mac writes it,
+        // so the same notes are the same file on either device.
+        if module.id == LampSyncLocalDeletion.notesCollectionID {
+            return try Self.notesArchive(entries, moduleID: module.id)
+        }
 
         // Create temporary database file
         let tempURL = FileManager.default.temporaryDirectory
@@ -1775,6 +1789,49 @@ class ModuleSyncManager: ObservableObject {
         }
 
         return compressedData
+    }
+
+    /// The notes file as core writes it, in the order the Mac hands notes
+    /// over, so its bytes are the Mac's for the same notes.
+    static func notesArchive(_ entries: [NoteEntry], moduleID: String) throws -> Data {
+        let ordered = entries.sorted {
+            ($0.book, $0.chapter, $0.verse, $0.lastModified ?? 0, $0.id)
+                < ($1.book, $1.chapter, $1.verse, $1.lastModified ?? 0, $1.id)
+        }
+        return try LampPersonalNotesFile.archive(ordered.map(verseNote), moduleID: moduleID)
+    }
+
+    /// A note as core's record of it. Footnotes are read from the list as
+    /// stored, so a kind another app gave one is kept.
+    static func verseNote(_ entry: NoteEntry) -> LampVerseNote {
+        let stored = entry.footnotesJson
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []
+        let footnotes = stored.compactMap { value -> LampVerseFootnote? in
+            guard let id = value["id"] as? String else { return nil }
+            let content: String
+            if let text = value["content"] as? String {
+                content = text
+            } else if let object = value["content"],
+                      let data = try? JSONSerialization.data(withJSONObject: object),
+                      let annotated = try? JSONDecoder().decode(AnnotatedTextField.self, from: data) {
+                content = annotated.plainText
+            } else {
+                return nil
+            }
+            return LampVerseFootnote(id: id, kind: value["type"] as? String, content: content)
+        }
+        return LampVerseNote(
+            id: entry.id,
+            moduleID: entry.moduleId,
+            reference: entry.verseId,
+            title: entry.title,
+            content: entry.content,
+            verseReferences: entry.verseRefs ?? [],
+            footnotes: footnotes,
+            mediaJSON: entry.mediaJson,
+            lastModified: Date(timeIntervalSince1970: TimeInterval(entry.lastModified ?? 0))
+        )
     }
 
     /// Export devotionals module to SQLite+zlib format

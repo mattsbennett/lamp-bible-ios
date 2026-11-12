@@ -7266,3 +7266,80 @@ final class ChapterNotesSaveTests: XCTestCase {
     }
 }
 
+/// The reader's own notes as core writes them, and named as the Mac names
+/// them, so the same notes are the same file, and the same note the same
+/// item in the deletion ledger, on either device.
+final class NotesCollectionFileTests: XCTestCase {
+    /// Core's own fixture (`LampPersonalNotesFileTests`): a title,
+    /// references, a footnote with a kind, a slash in the text, a picture.
+    /// This device must give the bytes the Mac gives for it, which is what
+    /// keeps either from taking the other's file as new.
+    func testTheCollectionsFileIsTheMacsFileForTheSameNotes() throws {
+        let moment = 1_700_000_000
+        let notes = [
+            NoteEntry(
+                id: "personal-notes:43011035", moduleId: "notes", verseId: 43_011_035,
+                content: "He wept at the ![](media/8A1F) tomb.", lastModified: moment,
+                mediaJson: #"[{"id":"8A1F","type":"image","filename":"tomb.png","mimeType":"image/png"}]"#
+            ),
+            NoteEntry(
+                id: "personal-notes:43003016", moduleId: "notes", verseId: 43_003_016,
+                title: "Loved", content: "The whole world, and a / slash.",
+                verseRefs: [43_003_017], lastModified: moment,
+                footnotes: [UserNotesFootnote(id: "a", content: .text("Chrysostom."), type: "note")]
+            ),
+        ]
+
+        let file = try ModuleSyncManager.notesArchive(notes, moduleID: "notes")
+
+        XCTAssertEqual(
+            LibrarySyncPass.digest(file), "2a07a6f0b2ebbe8ab26134f7e605289969e5a935a562eb98f55f0a0d675f8c32"
+        )
+    }
+
+    func testTheCollectionNamesANoteAsTheMacDoes() {
+        XCTAssertEqual(NoteEntry.panelID(moduleId: "notes", verseId: 43_003_016), "personal-notes:43003016")
+        XCTAssertEqual(NoteEntry.panelID(moduleId: "grandads-notes", verseId: 43_003_016), "grandads-notes:43003016")
+    }
+
+    /// A footnote's kind, which this device doesn't use, is kept through a save.
+    func testAFootnotesKindIsKept() throws {
+        let note = NoteEntry(
+            moduleId: "notes", verseId: 43_003_016, content: "Note",
+            footnotes: [UserNotesFootnote(id: "a", content: .text("Chrysostom."), type: "note")]
+        )
+        XCTAssertEqual(note.footnotes?.first?.type, "note")
+        XCTAssertEqual(ModuleSyncManager.verseNote(note).footnotes.first?.kind, "note")
+    }
+
+    /// Existing notes are renamed once, but not onto a name the ledger
+    /// already records as deleted, which would delete the note at the next
+    /// sync, nor onto one another row has.
+    func testTheRenameStaysClearOfDeletionsAndOtherNotes() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE note_entries (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, verse_id INTEGER NOT NULL);
+                CREATE TABLE personal_sync_ledger (
+                    kind TEXT NOT NULL, item_key TEXT NOT NULL, present_since INTEGER, deleted_at INTEGER,
+                    PRIMARY KEY (kind, item_key)
+                );
+                INSERT INTO note_entries VALUES
+                    ('notes:43003016', 'notes', 43003016),
+                    ('notes:43003017', 'notes', 43003017),
+                    ('notes:43003018', 'notes', 43003018),
+                    ('personal-notes:43003018', 'notes', 43003018),
+                    ('mine:43003019', 'mine', 43003019);
+                INSERT INTO personal_sync_ledger VALUES ('note', 'personal-notes:43003017', NULL, 1700000000000);
+                """)
+            try ModuleDatabase.nameCollectionNotesAsTheMacDoes(in: db)
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM note_entries ORDER BY verse_id, id"), [
+                "personal-notes:43003016",
+                "notes:43003017",
+                "notes:43003018", "personal-notes:43003018",
+                "mine:43003019",
+            ])
+        }
+    }
+}
+
