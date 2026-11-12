@@ -1561,6 +1561,10 @@ class ModuleDatabase {
             try ModuleDatabase.nameCollectionNotesAsTheMacDoes(in: db)
         }
 
+        migrator.registerMigration("v39_note_presence_follows_its_name") { db in
+            try ModuleDatabase.carryPresenceToCollectionNames(in: db)
+        }
+
         return migrator
     }
 
@@ -1591,6 +1595,36 @@ class ModuleDatabase {
                 LampSyncLocalDeletion.notesCollectionID, LampSyncLocalDeletion.notesCollectionID,
                 LampPersonalModule.notes.id,
                 LampPersonalItemKind.note.rawValue, LampPersonalModule.notes.id,
+            ])
+    }
+
+    /// Moves each renamed note's recorded save time to its new name, which
+    /// v38 left under the old one.
+    ///
+    /// A note's presence in the ledger is when it was last saved here, to
+    /// the millisecond, and is what lets a save beat a deletion made earlier
+    /// in the same second: the note's own time is only whole seconds. Left
+    /// under `notes:<verse>`, a deletion of `personal-notes:<verse>` made a
+    /// moment before an edit here would win over the edit. Only presence is
+    /// carried, only to a note that exists under the new name, and the later
+    /// of the two times kept, so nothing is invented and a deletion made
+    /// after the save still wins.
+    static func carryPresenceToCollectionNames(in db: Database) throws {
+        guard try db.tableExists("note_entries"), try db.tableExists("personal_sync_ledger") else { return }
+        try db.execute(sql: """
+            INSERT INTO personal_sync_ledger (kind, item_key, present_since)
+            SELECT ?, n.id, old.present_since
+            FROM note_entries n
+            JOIN personal_sync_ledger old
+              ON old.kind = ? AND old.item_key = ? || ':' || n.verse_id
+            WHERE n.module_id = ? AND n.id = ? || ':' || n.verse_id
+              AND old.present_since IS NOT NULL
+            ON CONFLICT(kind, item_key) DO UPDATE SET
+                present_since = MAX(COALESCE(present_since, 0), excluded.present_since)
+            """, arguments: [
+                LampPersonalItemKind.note.rawValue,
+                LampPersonalItemKind.note.rawValue, LampSyncLocalDeletion.notesCollectionID,
+                LampSyncLocalDeletion.notesCollectionID, LampPersonalModule.notes.id,
             ])
     }
 
@@ -1867,18 +1901,31 @@ class ModuleDatabase {
     }
 
     /// Saves a chapter's notes as the notes panel holds them, in one
-    /// transaction, changing only what changed.
+    /// transaction, changing only what the person changed.
     ///
-    /// A note still in the chapter keeps its id, whichever app named it, and
-    /// is written again, with the time it was given, only where what it says
-    /// changed; a note taken out of the chapter is deleted, and only that is
-    /// recorded as a deletion. The panel used to delete every note in the
-    /// chapter and write them all back under ids of its own, so each save told
-    /// the other devices that every note in the chapter had been deleted, the
-    /// Mac's own among them, which the Mac then carried out; and it dated
-    /// every note in the chapter as just edited, so an untouched one beat
-    /// another device's real edit of it.
-    func saveChapterNotes(_ notes: [NoteEntry], moduleId: String, book: Int, chapter: Int) throws {
+    /// `base` is the chapter as the panel last loaded or saved it, so what
+    /// the person did is the difference between it and `notes`, never
+    /// between `notes` and the chapter as it now stands: a sync may have
+    /// brought a note, or changed one, while the panel was open, and neither
+    /// is the person's doing.
+    ///
+    /// - A note that differs from its base is written: under the id it
+    ///   already has, whichever app named it, keeping a title another app
+    ///   gave it, newly dated, and recorded as present.
+    /// - A note in the base that the person took out, or emptied, is
+    ///   deleted, and only that is recorded as a deletion.
+    /// - Anything else is left as it is, including a note with no text of
+    ///   its own, only a title or footnotes, that nobody touched.
+    ///
+    /// The panel once deleted every note in the chapter and wrote them all
+    /// back under ids of its own, so each save told the other devices that
+    /// every note in the chapter had been deleted, the Mac's own among them,
+    /// which the Mac then carried out.
+    func saveChapterNotes(
+        _ notes: [NoteEntry], base: [NoteEntry], moduleId: String, book: Int, chapter: Int
+    ) throws {
+        let before = Dictionary(base.map { ($0.verseId, $0) }, uniquingKeysWith: { first, _ in first })
+        let after = Dictionary(notes.map { ($0.verseId, $0) }, uniquingKeysWith: { first, _ in first })
         try dbQueue.write { db in
             var here = Dictionary(grouping: try NoteEntry
                 .filter(Column("module_id") == moduleId)
@@ -1886,7 +1933,8 @@ class ModuleDatabase {
                 .filter(Column("chapter") == chapter)
                 .order(Column("id"))
                 .fetchAll(db), by: \.verseId)
-            for var note in notes where !note.content.isEmpty {
+            for var note in notes where !Self.isBlank(note) {
+                if let was = before[note.verseId], !Self.noteChanged(from: was, to: note) { continue }
                 var rows = here.removeValue(forKey: note.verseId) ?? []
                 guard !rows.isEmpty else {
                     try note.insert(db)
@@ -1897,7 +1945,6 @@ class ModuleDatabase {
                 // The same note again under a second id, from before notes
                 // kept theirs: removed, but not deleted, so not recorded.
                 for duplicate in rows { _ = try duplicate.delete(db) }
-                guard Self.noteChanged(from: current, to: note) else { continue }
                 note.id = current.id
                 if note.mediaJson == nil { note.mediaJson = current.mediaJson }
                 // The panel names a note by its verses; a title another app
@@ -1906,12 +1953,21 @@ class ModuleDatabase {
                 try note.save(db)
                 try Self.recordPersonalPresence(db, .note, note.id)
             }
-            // What is left was taken out of the chapter.
-            for row in here.values.joined() {
-                _ = try row.delete(db)
-                try Self.recordPersonalDeletion(db, .note, row.id)
+            for (verse, was) in before {
+                // Taken out of the chapter, or emptied of what it had.
+                let removed = after[verse].map { Self.isBlank($0) && !Self.isBlank(was) } ?? true
+                guard removed else { continue }
+                for row in here.removeValue(forKey: verse) ?? [] {
+                    _ = try row.delete(db)
+                    try Self.recordPersonalDeletion(db, .note, row.id)
+                }
             }
         }
+    }
+
+    /// A note with nothing in it, which the panel holds for a note taken out.
+    static func isBlank(_ note: NoteEntry) -> Bool {
+        note.content.isEmpty && (note.footnotes ?? []).isEmpty
     }
 
     /// Whether a note says something different. Not its title, which the

@@ -7177,10 +7177,12 @@ final class PersonalExportShapeTests: XCTestCase {
     }
 }
 
-/// The notes panel's save of a chapter, which writes only what changed. It
-/// once deleted every note in the chapter and wrote each back under an id of
-/// its own, which recorded a deletion of each, the Mac's own notes among
-/// them, and dated every note as just edited.
+/// The notes panel's save of a chapter, which writes only what the person
+/// changed since the panel loaded it. It once deleted every note in the
+/// chapter and wrote each back under an id of its own, which recorded a
+/// deletion of each, the Mac's own notes among them, and dated every note as
+/// just edited; and comparing with the chapter as it now stands, rather than
+/// as loaded, took what a sync had brought meanwhile for something removed.
 final class ChapterNotesSaveTests: XCTestCase {
     private let database = ModuleDatabase.shared
     private var moduleId: String!
@@ -7205,15 +7207,21 @@ final class ChapterNotesSaveTests: XCTestCase {
 
     /// As the panel hands a chapter over: every note given its verses as its
     /// title, an id of the panel's own, and the time of the save.
-    private func panelNote(_ verse: Int, _ content: String, at time: Int) -> NoteEntry {
+    private func panelNote(
+        _ verse: Int, _ content: String, at time: Int = 2_000, footnotes: [UserNotesFootnote]? = nil
+    ) -> NoteEntry {
         NoteEntry(
             id: "\(moduleId!):\(43_003_000 + verse)", moduleId: moduleId, verseId: 43_003_000 + verse,
-            title: "v.\(verse)", content: content, lastModified: time
+            title: "v.\(verse)", content: content, lastModified: time, footnotes: footnotes
         )
     }
 
-    private func save(_ notes: [NoteEntry]) throws {
-        try database.saveChapterNotes(notes, moduleId: moduleId, book: 43, chapter: 3)
+    private func save(_ notes: [NoteEntry], base: [NoteEntry]) throws {
+        try database.saveChapterNotes(notes, base: base, moduleId: moduleId, book: 43, chapter: 3)
+    }
+
+    private func stored() throws -> [NoteEntry] {
+        try database.getNotesForChapter(moduleId: moduleId, book: 43, chapter: 3)
     }
 
     func testANoteFromTheMacEditedHereKeepsItsIdAndTitleAndIsNotDeleted() throws {
@@ -7222,9 +7230,9 @@ final class ChapterNotesSaveTests: XCTestCase {
             title: "Loved", content: "The whole world.", lastModified: 1_000
         ))
 
-        try save([panelNote(16, "The whole world, and more.", at: 2_000)])
+        try save([panelNote(16, "The whole world, and more.")], base: [panelNote(16, "The whole world.")])
 
-        let notes = try database.getNotesForChapter(moduleId: moduleId, book: 43, chapter: 3)
+        let notes = try stored()
         XCTAssertEqual(notes.map(\.id), ["personal-notes:43003016"])
         XCTAssertEqual(notes.first?.content, "The whole world, and more.")
         XCTAssertEqual(notes.first?.title, "Loved")
@@ -7233,16 +7241,18 @@ final class ChapterNotesSaveTests: XCTestCase {
         XCTAssertFalse(ledger.isDeleted(.note, "personal-notes:43003016", itemModified: 2_000), "no deletion for the other devices to carry out")
     }
 
-    /// A note the save didn't change keeps its time, so it can't beat another
-    /// device's real edit of it.
+    /// A note the person didn't change keeps its time, so it can't beat
+    /// another device's real edit of it.
     func testANoteLeftAsItWasKeepsItsTime() throws {
         try takeIn(NoteEntry(id: "a", moduleId: moduleId, verseId: 43_003_016, content: "Sixteen", lastModified: 1_000))
         try takeIn(NoteEntry(id: "b", moduleId: moduleId, verseId: 43_003_017, content: "Seventeen", lastModified: 1_000))
 
-        try save([panelNote(16, "Sixteen, edited", at: 2_000), panelNote(17, "Seventeen", at: 2_000)])
+        try save(
+            [panelNote(16, "Sixteen, edited"), panelNote(17, "Seventeen")],
+            base: [panelNote(16, "Sixteen"), panelNote(17, "Seventeen")]
+        )
 
-        let notes = try database.getNotesForChapter(moduleId: moduleId, book: 43, chapter: 3)
-        XCTAssertEqual(notes.map(\.lastModified), [2_000, 1_000])
+        XCTAssertEqual(try stored().map(\.lastModified), [2_000, 1_000])
     }
 
     /// A note taken out of the chapter is deleted, and only it is recorded so.
@@ -7250,19 +7260,88 @@ final class ChapterNotesSaveTests: XCTestCase {
         try takeIn(NoteEntry(id: "a", moduleId: moduleId, verseId: 43_003_016, content: "Sixteen", lastModified: 1_000))
         try takeIn(NoteEntry(id: "b", moduleId: moduleId, verseId: 43_003_017, content: "Seventeen", lastModified: 1_000))
 
-        try save([panelNote(16, "Sixteen", at: 2_000), panelNote(17, "", at: 2_000)])
+        try save([panelNote(16, "Sixteen"), panelNote(17, "")], base: [panelNote(16, "Sixteen"), panelNote(17, "Seventeen")])
 
-        let notes = try database.getNotesForChapter(moduleId: moduleId, book: 43, chapter: 3)
-        XCTAssertEqual(notes.map(\.id), ["a"])
+        XCTAssertEqual(try stored().map(\.id), ["a"])
         let ledger = try database.personalDeletionLedger()
         XCTAssertTrue(ledger.isDeleted(.note, "b", itemModified: 1_000))
         XCTAssertFalse(ledger.isDeleted(.note, "a", itemModified: 1_000))
     }
 
-    /// A new note is added under the panel's id.
     func testANewNoteIsAdded() throws {
-        try save([panelNote(18, "Eighteen", at: 2_000)])
-        XCTAssertEqual(try database.getNotesForChapter(moduleId: moduleId, book: 43, chapter: 3).map(\.id), ["\(moduleId!):43003018"])
+        try save([panelNote(18, "Eighteen")], base: [])
+        XCTAssertEqual(try stored().map(\.id), ["\(moduleId!):43003018"])
+    }
+
+    /// A note a sync brought while the panel was open is not the person's
+    /// to have removed: an edit to another note leaves it, unrecorded.
+    func testANoteThatArrivedSinceThePanelLoadedIsLeftAlone() throws {
+        try takeIn(NoteEntry(id: "a", moduleId: moduleId, verseId: 43_003_016, content: "Sixteen", lastModified: 1_000))
+        try takeIn(NoteEntry(id: "personal-notes:43003020", moduleId: moduleId, verseId: 43_003_020, content: "From the Mac", lastModified: 1_500))
+
+        try save([panelNote(16, "Sixteen, edited")], base: [panelNote(16, "Sixteen")])
+
+        XCTAssertEqual(try stored().map(\.id), ["a", "personal-notes:43003020"])
+        XCTAssertFalse(try database.personalDeletionLedger().isDeleted(.note, "personal-notes:43003020", itemModified: 1_500))
+    }
+
+    /// A note another device changed while the panel was open keeps that
+    /// change: the panel's copy of it, unchanged by the person, isn't written.
+    func testAnEditFromElsewhereSinceThePanelLoadedStands() throws {
+        try takeIn(NoteEntry(id: "b", moduleId: moduleId, verseId: 43_003_017, content: "Changed elsewhere", lastModified: 1_500))
+
+        try save([panelNote(17, "Seventeen")], base: [panelNote(17, "Seventeen")])
+
+        XCTAssertEqual(try stored().first?.content, "Changed elsewhere")
+    }
+
+    /// A note with only footnotes, as the Mac allows, is left alone when
+    /// nobody touched it, and deleted when the person takes it out.
+    func testANoteWithNoTextOfItsOwnIsKeptUntilTakenOut() throws {
+        let footnotes = [UserNotesFootnote(id: "1", content: .text("Chrysostom."))]
+        try takeIn(NoteEntry(id: "c", moduleId: moduleId, verseId: 43_003_018, content: "", lastModified: 1_000, footnotes: footnotes))
+        let loaded = panelNote(18, "", footnotes: footnotes)
+
+        try save([panelNote(16, "New"), loaded], base: [loaded])
+        XCTAssertEqual(try stored().map(\.id), ["\(moduleId!):43003016", "c"])
+
+        try save([], base: [loaded])
+        XCTAssertEqual(try stored().map(\.id), ["\(moduleId!):43003016"])
+    }
+
+    /// v39: a note v38 renamed takes its recorded save time with it, so a
+    /// deletion made earlier in the same second doesn't win over the save.
+    func testARenamedNotesSaveTimeFollowsItsName() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE note_entries (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, verse_id INTEGER NOT NULL);
+                CREATE TABLE personal_sync_ledger (
+                    kind TEXT NOT NULL, item_key TEXT NOT NULL, present_since INTEGER, deleted_at INTEGER,
+                    PRIMARY KEY (kind, item_key)
+                );
+                INSERT INTO note_entries VALUES
+                    ('personal-notes:43003016', 'notes', 43003016),
+                    ('personal-notes:43003017', 'notes', 43003017),
+                    ('mine:43003018', 'mine', 43003018);
+                INSERT INTO personal_sync_ledger VALUES
+                    ('note', 'notes:43003016', 1700000000900, NULL),
+                    ('note', 'notes:43003017', 1700000000500, NULL),
+                    ('note', 'personal-notes:43003017', 1700000001000, NULL),
+                    ('note', 'mine:43003018', 1700000000700, NULL);
+                """)
+            try ModuleDatabase.carryPresenceToCollectionNames(in: db)
+            let presence = try Row.fetchAll(db, sql: """
+                SELECT item_key, present_since FROM personal_sync_ledger ORDER BY item_key
+                """).map { "\($0["item_key"] as String)=\($0["present_since"] as Int64)" }
+            XCTAssertEqual(presence, [
+                "mine:43003018=1700000000700",
+                "notes:43003016=1700000000900",
+                "notes:43003017=1700000000500",
+                "personal-notes:43003016=1700000000900",
+                "personal-notes:43003017=1700000001000",
+            ])
+        }
     }
 }
 

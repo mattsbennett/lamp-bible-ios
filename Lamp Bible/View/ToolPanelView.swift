@@ -1236,6 +1236,10 @@ struct ToolPanelView: View {
     /// Last verse we reported to prevent duplicate callbacks
     @State private var lastReportedVerse: Int = 0
     @State private var sections: [NoteSection] = []
+    /// The chapter's notes as last loaded or saved: a save writes what the
+    /// person changed since, which is the difference from this, not from
+    /// the chapter as a sync may since have left it.
+    @State private var savedSections: [NoteSection] = []
     @State private var isLoading: Bool = true
     @State private var saveState: SaveState = .idle
     @State private var showingAddVerseSheet: Bool = false
@@ -1718,7 +1722,8 @@ struct ToolPanelView: View {
             saveTask?.cancel()
             hasUnsavedNotes = false
             let sections = sections
-            UIApplication.shared.finishing("SaveNotes") { await save(sections, in: scope) }
+            let base = savedSections
+            UIApplication.shared.finishing("SaveNotes") { await save(sections, base: base, in: scope) }
         }
         .task {
             // Periodically check sync status while panel is visible
@@ -2668,7 +2673,7 @@ struct ToolPanelView: View {
         if hasUnsavedNotes, let scope = loadedNotes {
             saveTask?.cancel()
             hasUnsavedNotes = false
-            await save(sections, in: scope)
+            await save(sections, base: savedSections, in: scope)
         }
         editingNoteSectionId = nil
 
@@ -2686,6 +2691,7 @@ struct ToolPanelView: View {
 
             // Convert NoteEntry records to NoteSection for UI
             sections = convertEntriesToSections(entries)
+            savedSections = sections
 
             // If no entries, start with empty general section
             if sections.isEmpty {
@@ -2694,6 +2700,7 @@ struct ToolPanelView: View {
         } catch {
             print("[Notes] Failed to load notes: \(error)")
             sections = [.general(content: "")]
+            savedSections = []
         }
         loadedNotes = NotesScope(moduleId: notesModuleId, book: book, chapter: chapter)
         isLoading = false
@@ -2809,19 +2816,23 @@ struct ToolPanelView: View {
     private func saveNote() async {
         guard let scope = loadedNotes else { return }
         hasUnsavedNotes = false
-        await save(sections, in: scope)
+        await save(sections, base: savedSections, in: scope)
     }
 
-    private func save(_ sections: [NoteSection], in scope: NotesScope) async {
+    /// Saves what changed between `base`, the chapter as last loaded or
+    /// saved, and `sections`.
+    private func save(_ sections: [NoteSection], base: [NoteSection], in scope: NotesScope) async {
         saveState = .saving
 
         do {
-            // Only what changed: a note left as it was keeps its id and time,
-            // and only one taken out is recorded as deleted.
+            // Only what the person changed: a note left as it was keeps its
+            // id and time, and only one taken out is recorded as deleted.
             try moduleDatabase.saveChapterNotes(
                 convertSectionsToEntries(sections, in: scope),
+                base: convertSectionsToEntries(base, in: scope),
                 moduleId: scope.moduleId, book: scope.book, chapter: scope.chapter
             )
+            if scope == loadedNotes { savedSections = sections }
 
             // Export to cloud storage
             try await moduleSyncManager.exportModule(id: scope.moduleId)
@@ -3031,7 +3042,8 @@ struct ToolPanelView: View {
             let entries = try moduleDatabase.getNotesForChapter(
                 moduleId: scope.moduleId, book: scope.book, chapter: scope.chapter
             )
-            var stored = convertEntriesToSections(entries)
+            let base = convertEntriesToSections(entries)
+            var stored = base
             if let index = stored.firstIndex(where: { $0.id == sectionId }) {
                 guard stored[index].content != content else { return }
                 stored[index].content = content
@@ -3042,7 +3054,7 @@ struct ToolPanelView: View {
             } else {
                 return
             }
-            await save(stored, in: scope)
+            await save(stored, base: base, in: scope)
         } catch {
             print("[Notes] Failed to save a late edit: \(error)")
         }
