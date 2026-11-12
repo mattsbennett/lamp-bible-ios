@@ -97,6 +97,8 @@ struct SplitReaderView: View {
 
     // Divider position tracking for overlay alignment
     @State private var dividerY: CGFloat = 0
+    /// The divider is dragged far enough that letting go closes the panel.
+    @State private var panelDragWouldClose = false
     /// While a note is being typed with the keyboard up, the space above the
     /// keyboard is too little for both panes, and the notes take it.
     @ObservedObject private var noteEditorFocus = NoteEditorFocus.shared
@@ -263,9 +265,11 @@ struct SplitReaderView: View {
                                     containerHeight: geometry.size.height,
                                     minPanelSize: minPanelSize,
                                     maxPanelRatio: maxPanelRatio,
+                                    isClosing: $panelDragWouldClose,
                                     onDragEnd: {
                                         storedBottomPanelHeight = Double(bottomPanelHeight)
-                                    }
+                                    },
+                                    onClose: closePanelFromDivider
                                 )
                             }
 
@@ -291,7 +295,6 @@ struct SplitReaderView: View {
                 // Layer 2: Interactive Drag Overlay (only for right panel - bottom uses inline handle)
                 if effectiveOrientation == "right" {
                     SplitDragOverlay(
-                        isVertical: true,
                         panelSize: $rightPanelWidth,
                         containerSize: geometry.size,
                         // The divider's length: from under the header to the
@@ -300,10 +303,11 @@ struct SplitReaderView: View {
                         spanBottomOverhang: geometry.safeAreaInsets.bottom,
                         minPanelSize: minPanelSize,
                         maxPanelRatio: maxPanelRatio,
-                        dividerY: dividerY,
+                        isClosing: $panelDragWouldClose,
                         onDragEnd: { newSize in
                             storedRightPanelWidth = Double(newSize)
-                        }
+                        },
+                        onClose: closePanelFromDivider
                     )
                 }
             }
@@ -346,6 +350,13 @@ struct SplitReaderView: View {
 
     /// The height of the reader's header, which a right-hand panel starts
     /// below.
+    /// The divider was let go well past the panel's smallest size.
+    private func closePanelFromDivider() {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            notesPanelVisible = false
+        }
+    }
+
     private var readerHeaderHeight: CGFloat {
         toolbarsHidden || toolbarsCollapsed
             ? ReaderNavigationToolbarView.compactHeight
@@ -414,6 +425,9 @@ struct SplitReaderView: View {
             sharedHeaderHeight: isHorizontalSplit ? readerHeaderHeight : 0,
             requestAddNoteForVerse: $pendingAddNoteVerse
         )
+        // Fades while letting go of the divider would close it.
+        .opacity(panelDragWouldClose ? 0.4 : 1)
+        .animation(.easeOut(duration: 0.15), value: panelDragWouldClose)
     }
 
     private func handleVerseAction(verse: Int, action: VerseAction) {
@@ -520,196 +534,233 @@ struct DraggableDivider: View {
 }
 
 /// Inline divider with integrated drag handle for bottom panel
+// MARK: - Split Divider
+
+/// What the divider between the passage and a tool panel does in hand, in
+/// both orientations, after the iPad's own split between two apps: the
+/// panel follows the finger, gives with resistance past its limits, and
+/// closes when dragged well past its smallest size.
+enum SplitDividerDrag {
+    /// How far past the smallest size a release closes the panel.
+    static let closeDistance: CGFloat = 72
+
+    /// The size shown for a drag that would make it `raw`: past a limit it
+    /// gives less and less, as a scroll view does at its ends.
+    static func size(for raw: CGFloat, min lo: CGFloat, max hi: CGFloat) -> CGFloat {
+        if raw < lo { return lo - band(lo - raw) }
+        if raw > hi { return hi + band(raw - hi) }
+        return raw
+    }
+
+    static func closes(raw: CGFloat, min lo: CGFloat) -> Bool {
+        raw < lo - closeDistance
+    }
+
+    private static func band(_ over: CGFloat) -> CGFloat {
+        let reach: CGFloat = 120
+        return (1 - 1 / (over * 0.55 / reach + 1)) * reach
+    }
+}
+
+/// The grabber across a split's divider, as a sheet's: a short capsule in
+/// the system's quiet grey. Held, it grows and darkens, rather than the
+/// band around it taking a tint.
+struct SplitDividerGrabber: View {
+    /// The divider runs top to bottom, beside a right-hand panel.
+    let isVertical: Bool
+    let isActive: Bool
+
+    var body: some View {
+        let long: CGFloat = isActive ? 56 : 36
+        let thick: CGFloat = isActive ? 6 : 5
+        Capsule()
+            .fill(isActive ? Color.primary.opacity(0.55) : Color(UIColor.tertiaryLabel))
+            .frame(width: isVertical ? thick : long, height: isVertical ? long : thick)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isActive)
+            // A trackpad's pointer takes the grabber's shape.
+            .contentShape(.hoverEffect, Capsule().inset(by: -6))
+            .hoverEffect(.highlight)
+    }
+}
+
+private extension View {
+    /// A tap when the divider is taken up, a firmer one at a limit, and the
+    /// firmest when letting go would close the panel.
+    func splitDividerFeedback(isDragging: Bool, atLimit: Bool, isClosing: Bool) -> some View {
+        self
+            .sensoryFeedback(.impact(weight: .light), trigger: isDragging) { _, new in new }
+            .sensoryFeedback(.impact(weight: .medium), trigger: atLimit) { _, new in new }
+            .sensoryFeedback(.impact(weight: .heavy), trigger: isClosing) { _, new in new }
+    }
+}
+
 struct BottomPanelDivider: View {
     @Binding var panelHeight: CGFloat
     let containerHeight: CGFloat
     let minPanelSize: CGFloat
     let maxPanelRatio: CGFloat
+    /// Letting go now would close the panel; the panel dims to say so.
+    @Binding var isClosing: Bool
     let onDragEnd: () -> Void
+    let onClose: () -> Void
 
-    @State private var isDragging: Bool = false
+    @State private var initialHeight: CGFloat?
+    @State private var atLimit = false
+
+    private var isDragging: Bool { initialHeight != nil }
+    private var maxHeight: CGFloat { containerHeight * maxPanelRatio }
 
     var body: some View {
-        // The hairline where the page meets the panel's ground, and the pill
-        // that says it moves.
+        // The hairline where the page meets the panel's ground, and the
+        // grabber that says it moves.
         ZStack(alignment: .top) {
             Rectangle()
-                .fill(Color(UIColor.separator))
+                .fill(isDragging ? Color.primary.opacity(0.35) : Color(UIColor.separator))
                 .frame(height: 1)
 
-            // Drag handle pill
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color(UIColor.systemGray3))
-                .frame(width: 40, height: 4)
+            SplitDividerGrabber(isVertical: false, isActive: isDragging)
                 .frame(maxHeight: .infinity)
         }
         .frame(height: 12)
         .frame(maxWidth: .infinity)
-        .background(isDragging ? Color.accentColor.opacity(0.1) : Color.clear)
-        .contentShape(Rectangle())
+        // Easier to take than the 12 points it lays out in: it reaches up
+        // over the passage's last lines too.
+        .contentShape(Rectangle().inset(by: -8))
         .gesture(
-            DragGesture()
+            // In the window's space: the divider moves with the drag, so its
+            // own space would move under the finger.
+            DragGesture(coordinateSpace: .global)
                 .onChanged { value in
-                    if !isDragging {
-                        isDragging = true
-                    }
-                    let translation = value.translation.height
-                    let newHeight = max(minPanelSize, min(panelHeight - translation, containerHeight * maxPanelRatio))
-                    panelHeight = newHeight
+                    if initialHeight == nil { initialHeight = panelHeight }
+                    let raw = (initialHeight ?? panelHeight) - value.translation.height
+                    let limit = raw < minPanelSize || raw > maxHeight
+                    if limit != atLimit { atLimit = limit }
+                    let closing = SplitDividerDrag.closes(raw: raw, min: minPanelSize)
+                    if closing != isClosing { isClosing = closing }
+                    panelHeight = SplitDividerDrag.size(for: raw, min: minPanelSize, max: maxHeight)
                 }
-                .onEnded { _ in
-                    isDragging = false
-                    onDragEnd()
+                .onEnded { value in
+                    let base = initialHeight ?? panelHeight
+                    let raw = base - value.translation.height
+                    if SplitDividerDrag.closes(raw: raw, min: minPanelSize) {
+                        // Opened again, it comes back at the size it had.
+                        panelHeight = base
+                        onClose()
+                    } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            panelHeight = min(max(raw, minPanelSize), maxHeight)
+                        }
+                        onDragEnd()
+                    }
+                    initialHeight = nil
+                    atLimit = false
+                    isClosing = false
                 }
         )
+        .splitDividerFeedback(isDragging: isDragging, atLimit: atLimit, isClosing: isClosing)
+        .accessibilityElement()
+        .accessibilityLabel("Panel divider")
+        .accessibilityHint("Drag to resize the panel")
     }
 }
 
+/// The divider beside a right-hand panel, laid over the split so it can
+/// follow the finger ahead of the passage, which reflows at a gentler rate.
 struct SplitDragOverlay: View {
-    let isVertical: Bool
     @Binding var panelSize: CGFloat
     let containerSize: CGSize
-    /// Where a vertical handle's span starts, and how far it runs past the
+    /// Where the handle's span starts, and how far it runs past the
     /// container's bottom, into the bottom safe area.
     var spanTop: CGFloat = 0
     var spanBottomOverhang: CGFloat = 0
     let minPanelSize: CGFloat
     let maxPanelRatio: CGFloat
-    let dividerY: CGFloat  // Y position of actual divider in splitContainer coordinate space
+    /// Letting go now would close the panel; the panel dims to say so.
+    @Binding var isClosing: Bool
     let onDragEnd: (CGFloat) -> Void
+    let onClose: () -> Void
 
     @State private var dragOffset: CGFloat = 0
-    @State private var isDragging: Bool = false
-    @State private var initialPanelSize: CGFloat? = nil
-    @State private var lastUpdate: Date = Date.distantPast
-    @State private var keyboardHeight: CGFloat = 0
+    @State private var initialPanelSize: CGFloat?
+    @State private var lastUpdate = Date.distantPast
+    @State private var atLimit = false
 
-    // Constants matching the main view
-    private let handleThickness: CGFloat = 12
-    private let throttleInterval: TimeInterval = 0.032 // ~30fps
+    /// The divider's column in the split's layout.
+    private let columnWidth: CGFloat = 12
+    /// What a finger can take: wider than the column, centred on its line.
+    private let hitWidth: CGFloat = 28
+    /// The passage reflows as the panel resizes, which is too much to do on
+    /// every frame of a drag; the handle itself follows every frame.
+    private let throttleInterval: TimeInterval = 0.032
 
-    var body: some View {
-        ZStack {
-            // The Hit Area & Visual Handle
-            handleVisual
-                .position(handlePosition)
-                .gesture(
-                    DragGesture()
-                        .onChanged { value in
-                            if !isDragging {
-                                isDragging = true
-                                initialPanelSize = panelSize
-                            }
-
-                            let translation = isVertical ? value.translation.width : value.translation.height
-                            dragOffset = translation
-
-                            // Throttled update of the actual panel size
-                            let now = Date()
-                            if now.timeIntervalSince(lastUpdate) > throttleInterval {
-                                updatePanelSize(translation: translation)
-                                lastUpdate = now
-                            }
-                        }
-                        .onEnded { value in
-                            let translation = isVertical ? value.translation.width : value.translation.height
-                            updatePanelSize(translation: translation)
-
-                            // Persist final size
-                            if let finalSize = initialPanelSize {
-                                let newSize = calculateNewSize(baseSize: finalSize, translation: translation)
-                                onDragEnd(newSize)
-                            }
-
-                            isDragging = false
-                            dragOffset = 0
-                            initialPanelSize = nil
-                        }
-                )
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
-            if let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
-                keyboardHeight = keyboardFrame.height
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardHeight = 0
-        }
+    private var isDragging: Bool { initialPanelSize != nil }
+    private var maxSize: CGFloat { containerSize.width * maxPanelRatio }
+    private var rawSize: CGFloat { (initialPanelSize ?? panelSize) - dragOffset }
+    private var shownSize: CGFloat {
+        SplitDividerDrag.size(for: rawSize, min: minPanelSize, max: maxSize)
     }
 
-    private func calculateNewSize(baseSize: CGFloat, translation: CGFloat) -> CGFloat {
-        // Dragging left/up increases panel size (for right/bottom panels)
-        let newSize = baseSize - translation
-        return min(max(newSize, minPanelSize), (isVertical ? containerSize.width : containerSize.height) * maxPanelRatio)
-    }
-
-    private func updatePanelSize(translation: CGFloat) {
-        guard let baseSize = initialPanelSize else { return }
-        panelSize = calculateNewSize(baseSize: baseSize, translation: translation)
-    }
-
-    private var handlePosition: CGPoint {
-        if isVertical {
-            let currentBaseSize = initialPanelSize ?? panelSize
-            let visualPanelSize = calculateNewSize(baseSize: currentBaseSize, translation: dragOffset)
-            let x = containerSize.width - visualPanelSize - (handleThickness / 2)
-            return CGPoint(x: x, y: spanTop + verticalSpan / 2)
-        } else {
-            // For horizontal split (bottom panel):
-            // - During drag: calculate from drag offset for smooth feedback
-            // - Otherwise: use actual divider Y position (handles keyboard push-up)
-            // Minimum Y to keep handle below top header area
-            let minY: CGFloat = handleThickness
-
-            if isDragging {
-                let currentBaseSize = initialPanelSize ?? panelSize
-                let visualPanelSize = calculateNewSize(baseSize: currentBaseSize, translation: dragOffset)
-                let y = containerSize.height - visualPanelSize - (handleThickness / 2)
-                return CGPoint(x: containerSize.width / 2, y: max(y, minY))
-            } else {
-                // Use dividerY directly - it tracks the actual divider position
-                let y = dividerY > 0 ? dividerY : containerSize.height - panelSize - (handleThickness / 2)
-                return CGPoint(x: containerSize.width / 2, y: max(y, minY))
-            }
-        }
-    }
-
-    /// The full length of a vertical divider, so the handle and its hit
-    /// area run with it rather than stopping short at either end.
-    private var verticalSpan: CGFloat {
+    /// The full length of the divider, so the handle and its hit area run
+    /// with it rather than stopping short at either end.
+    private var span: CGFloat {
         max(0, containerSize.height + spanBottomOverhang - spanTop)
     }
 
-    private var handleVisual: some View {
-        Group {
-            if isVertical {
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear) // Transparent hit area
-                        .frame(width: handleThickness)
-
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color(UIColor.systemGray3))
-                        .frame(width: 4, height: 40)
-                }
-                .frame(width: handleThickness, height: verticalSpan)
-                .contentShape(Rectangle())
-            } else {
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear) // Transparent hit area
-                        .frame(height: handleThickness)
-
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color(UIColor.systemGray3))
-                        .frame(width: 40, height: 4)
-                }
-                .frame(height: handleThickness)
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
+    var body: some View {
+        ZStack {
+            // The line goes with the finger, so the grabber is never seen
+            // apart from it while the panel catches up.
+            if isDragging {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.35))
+                    .frame(width: 1)
             }
+            SplitDividerGrabber(isVertical: true, isActive: isDragging)
         }
-        .background(isDragging ? Color.accentColor.opacity(0.1) : Color.clear)
+        .frame(width: hitWidth, height: span)
+        .contentShape(Rectangle())
+        .position(x: containerSize.width - shownSize - columnWidth / 2, y: spanTop + span / 2)
+        .gesture(
+            // In the window's space: the handle moves with the drag, so its
+            // own space would move under the finger.
+            DragGesture(coordinateSpace: .global)
+                .onChanged { value in
+                    if initialPanelSize == nil { initialPanelSize = panelSize }
+                    dragOffset = value.translation.width
+                    let limit = rawSize < minPanelSize || rawSize > maxSize
+                    if limit != atLimit { atLimit = limit }
+                    let closing = SplitDividerDrag.closes(raw: rawSize, min: minPanelSize)
+                    if closing != isClosing { isClosing = closing }
+                    let now = Date()
+                    if now.timeIntervalSince(lastUpdate) > throttleInterval {
+                        panelSize = shownSize
+                        lastUpdate = now
+                    }
+                }
+                .onEnded { value in
+                    let base = initialPanelSize ?? panelSize
+                    let raw = base - value.translation.width
+                    if SplitDividerDrag.closes(raw: raw, min: minPanelSize) {
+                        // Opened again, it comes back at the size it had.
+                        panelSize = base
+                        onClose()
+                    } else {
+                        let settled = min(max(raw, minPanelSize), maxSize)
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            panelSize = settled
+                        }
+                        onDragEnd(settled)
+                    }
+                    initialPanelSize = nil
+                    dragOffset = 0
+                    atLimit = false
+                    isClosing = false
+                }
+        )
+        .splitDividerFeedback(isDragging: isDragging, atLimit: atLimit, isClosing: isClosing)
+        .accessibilityElement()
+        .accessibilityLabel("Panel divider")
+        .accessibilityHint("Drag to resize the panel")
     }
 }
 
