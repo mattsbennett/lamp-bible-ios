@@ -204,11 +204,8 @@ struct SplitReaderView: View {
                 if effectiveOrientation == "right" {
                     // Use ZStack overlay approach so tool panel can independently extend to top
                     ZStack(alignment: .trailing) {
-                        // The reader keeps its passage clear of the panel
-                        // itself, so its header can span both.
-                        readerContent
-
-                        // Tool panel + divider overlaid on right
+                        // Tool panel + divider on the right, to the top of the
+                        // window, as the passage runs under the header too.
                         HStack(spacing: 0) {
                             // Divider with gradient fade at edges to match toolbar blur effect
                             Rectangle()
@@ -230,13 +227,21 @@ struct SplitReaderView: View {
                                 .frame(width: 12)
                                 .contentShape(Rectangle())
 
+                            // Its content starts below the reader's header
+                            // and scrolls up under it, as the passage's does
+                            // (`sharedHeaderHeight`). Stopping the panel at
+                            // the header left a dead band once it collapsed.
                             toolPanelContent
                                 .frame(width: rightPanelWidth)
                         }
                         .frame(maxHeight: .infinity)
-                        // Below the reader's header, which spans the window.
-                        .padding(.top, readerHeaderHeight)
-                        .animation(.easeInOut(duration: 0.2), value: readerHeaderHeight)
+                        .ignoresSafeArea(edges: .top)
+
+                        // Over the panel: the reader keeps its passage clear
+                        // of it, and its header spans both, so the header's
+                        // buttons above the panel take the taps there. The
+                        // rest of the reader's width is empty and lets them by.
+                        readerContent
                     }
                 } else {
                     VStack(spacing: 0) {
@@ -406,6 +411,7 @@ struct SplitReaderView: View {
             toolbarsHidden: $toolbarsHidden,
             toolbarsCollapsed: $toolbarsCollapsed,
             hideHeader: isHorizontalSplit,
+            sharedHeaderHeight: isHorizontalSplit ? readerHeaderHeight : 0,
             requestAddNoteForVerse: $pendingAddNoteVerse
         )
     }

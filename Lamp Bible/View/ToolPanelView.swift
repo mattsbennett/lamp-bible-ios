@@ -1215,6 +1215,10 @@ struct ToolPanelView: View {
     /// collapse together.
     @Binding var toolbarsCollapsed: Bool
     var hideHeader: Bool = false  // Hide header when in horizontal split mode
+    /// With the header hidden, the height of the reader's header, which
+    /// spans this panel too: its content starts below it at rest and scrolls
+    /// up under it.
+    var sharedHeaderHeight: CGFloat = 0
     @Binding var requestAddNoteForVerse: Int?  // External trigger to add note for a specific verse
 
     // User settings for translation ID
@@ -1387,7 +1391,7 @@ struct ToolPanelView: View {
                 }
             }
             // In horizontal split, add content margins so content starts below toolbar but scrolls under it
-            .contentMargins(.top, hideHeader ? (isHeaderCollapsed ? 24 : 56) : 0, for: .scrollContent)
+            .contentMargins(.top, hideHeader ? sharedHeaderHeight : 0, for: .scrollContent)
             .environment(\.panelObscuredBottom, bottomObscuredHeight)
             // The header is a bar the content runs on beneath, as the reader's
             // is: a list starts below it at rest and scrolls up under its
@@ -2083,8 +2087,8 @@ struct ToolPanelView: View {
                         items: items,
                         cellContent: { data in noteSectionCell(data) },
                         listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(sections.count)",
-                        additionalTopOffset: hideHeader && isHeaderCollapsed ? 36 : 0,
-                        topInset: hideHeader ? 0 : headerBarHeight,
+                        additionalTopOffset: 0,
+                        topInset: hideHeader ? sharedHeaderHeight : headerBarHeight,
                         // Notes are written here: scrolling them keeps the
                         // headers, as scrolling the passage does not.
                         onToolbarCollapseChange: nil,
@@ -2252,8 +2256,8 @@ struct ToolPanelView: View {
                 .padding(.bottom, data.unit.isTitleOnly ? 0 : 10)
             },
             listId: "commentary_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)_\(selectedCommentarySeries)_\(toolFontSize)",
-            additionalTopOffset: hideHeader && isHeaderCollapsed ? 36 : 0,
-                        topInset: hideHeader ? 0 : headerBarHeight,
+            additionalTopOffset: 0,
+                        topInset: hideHeader ? sharedHeaderHeight : headerBarHeight,
                         onToolbarCollapseChange: { collapsed in
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 toolbarsCollapsed = collapsed
