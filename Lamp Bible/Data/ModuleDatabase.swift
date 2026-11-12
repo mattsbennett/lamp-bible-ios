@@ -1571,8 +1571,9 @@ class ModuleDatabase {
     /// Not where a deletion is already recorded under the new name: the
     /// panel's old save recorded `personal-notes:<verse>` as deleted when it
     /// rewrote a Mac note as `notes:<verse>`, and a note renamed onto that
-    /// would be deleted here at the next sync. Those keep their name until
-    /// whether to clear such deletions is decided.
+    /// would be deleted here at the next sync. Those keep `notes:<verse>`
+    /// for good: the owner ruled (2026-11-11) that such deletions are not
+    /// cleared, so this is not waiting on anything.
     static func nameCollectionNotesAsTheMacDoes(in db: Database) throws {
         guard try db.tableExists("note_entries"), try db.tableExists("personal_sync_ledger") else { return }
         try db.execute(sql: """

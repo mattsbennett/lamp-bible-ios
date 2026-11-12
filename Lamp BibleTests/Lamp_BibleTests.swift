@@ -7297,6 +7297,38 @@ final class NotesCollectionFileTests: XCTestCase {
         )
     }
 
+    /// A notes module of the reader's own making travels under its own id
+    /// and name, every row with it, which another device takes as the
+    /// module's name.
+    func testAModuleOfTheReadersOwnTravelsUnderItsOwnName() throws {
+        let database = ModuleDatabase.shared
+        let module = Module(
+            id: "grandads-notes-\(UUID().uuidString)", type: .notes, name: "Grandad's Notes",
+            filePath: "grandads.lamp", isEditable: true
+        )
+        try database.saveModule(module)
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: module.id)
+            try? database.deleteModule(id: module.id)
+        }
+        try database.write { db in
+            try NoteEntry(id: "\(module.id):43003016", moduleId: module.id, verseId: 43_003_016, content: "Note").insert(db)
+        }
+
+        let compressed = try ModuleSyncManager.shared.exportNoteModuleToSQLite(module)
+
+        let data = try XCTUnwrap((compressed as NSData).decompressed(using: .zlib) as Data)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try data.write(to: url)
+        try DatabaseQueue(path: url.path).read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT name FROM module_meta"), "Grandad's Notes")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT id FROM module_meta"), module.id)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT module_id FROM module_format"), module.id)
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT DISTINCT module_id FROM note_entries"), [module.id])
+        }
+    }
+
     func testTheCollectionNamesANoteAsTheMacDoes() {
         XCTAssertEqual(NoteEntry.panelID(moduleId: "notes", verseId: 43_003_016), "personal-notes:43003016")
         XCTAssertEqual(NoteEntry.panelID(moduleId: "grandads-notes", verseId: 43_003_016), "grandads-notes:43003016")

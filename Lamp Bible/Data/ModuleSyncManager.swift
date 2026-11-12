@@ -1031,9 +1031,16 @@ class ModuleSyncManager: ObservableObject {
         tempURL: URL
     ) async throws {
         let remoteQueue = try DatabaseQueue(path: tempURL.path)
-        let (remoteEntries, carriesMedia) = try await remoteQueue.read { db in
+        let (fetched, carriesMedia) = try await remoteQueue.read { db in
             (try NoteEntry.fetchAll(db),
              try db.columns(in: "note_entries").contains { $0.name == "media_json" })
+        }
+        // Searched as a note here is searched, footnotes and all: a file's
+        // search text is its writer's, and core's leaves footnotes out.
+        let remoteEntries = fetched.map { entry in
+            var entry = entry
+            entry.searchText = NoteEntry.searchText(content: entry.content, footnotes: entry.footnotes)
+            return entry
         }
         let metadata = try await editableModuleMetadata(
             id: fileInfo.id, type: .notes,
@@ -1698,107 +1705,26 @@ class ModuleSyncManager: ObservableObject {
                 .order(Column("id"))
                 .fetchAll(db)
         }
-        // The reader's collection is written by core, as the Mac writes it,
-        // so the same notes are the same file on either device.
-        if module.id == LampSyncLocalDeletion.notesCollectionID {
-            return try Self.notesArchive(entries, moduleID: module.id)
-        }
-
-        // Create temporary database file
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("db")
-
-        defer {
-            try? FileManager.default.removeItem(at: tempURL)
-        }
-
-        // Create and populate the SQLite database
-        let exportQueue = try DatabaseQueue(path: tempURL.path)
-        try exportQueue.write { db in
-            // Create note_entries table with full schema
-            try db.execute(sql: """
-                CREATE TABLE note_entries (
-                    id TEXT PRIMARY KEY,
-                    module_id TEXT NOT NULL,
-                    verse_id INTEGER NOT NULL,
-                    book INTEGER NOT NULL,
-                    chapter INTEGER NOT NULL,
-                    verse INTEGER NOT NULL,
-                    title TEXT,
-                    content TEXT NOT NULL,
-                    verse_refs_json TEXT,
-                    last_modified INTEGER,
-                    footnotes_json TEXT,
-                    search_text TEXT,
-                    record_change_tag TEXT,
-                    media_json TEXT
-                )
-            """)
-
-            // Create module_meta table for module info
-            try db.execute(sql: """
-                CREATE TABLE module_meta (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    author TEXT,
-                    version TEXT,
-                    is_editable INTEGER DEFAULT 1
-                )
-            """)
-
-            // Insert module metadata
-            try db.execute(
-                sql: "INSERT INTO module_meta (id, name, description, author, version, is_editable) VALUES (?, ?, ?, ?, ?, ?)",
-                arguments: [module.id, module.name, module.description, module.author, module.version, module.isEditable ? 1 : 0]
-            )
-
-            // Insert all note entries
-            for entry in entries {
-                try db.execute(
-                    sql: """
-                        INSERT INTO note_entries
-                        (id, module_id, verse_id, book, chapter, verse, title, content, verse_refs_json, last_modified, footnotes_json, search_text, record_change_tag, media_json)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    arguments: [
-                        entry.id,
-                        entry.moduleId,
-                        entry.verseId,
-                        entry.book,
-                        entry.chapter,
-                        entry.verse,
-                        entry.title,
-                        entry.content,
-                        entry.verseRefsJson,
-                        entry.lastModified,
-                        entry.footnotesJson,
-                        entry.searchText,
-                        entry.recordChangeTag,
-                        entry.mediaJson
-                    ]
-                )
-            }
-        }
-
-        // Read the SQLite file and compress with zlib
-        let sqliteData = try Data(contentsOf: tempURL)
-        guard let compressedData = try? (sqliteData as NSData).compressed(using: .zlib) as Data else {
-            throw ModuleSyncError.exportFailed("Failed to compress SQLite data")
-        }
-
-        return compressedData
+        // Written by core, as the Mac writes it, so the same notes are the
+        // same file on either device: the reader's collection under its name
+        // on the server and the collection's own, as the Mac names it, a
+        // module of their own making under its own.
+        let isCollection = module.id == LampSyncLocalDeletion.notesCollectionID
+        return try Self.notesArchive(
+            entries, moduleID: module.id, name: isCollection ? LampPersonalModule.notes.name : module.name
+        )
     }
 
     /// The notes file as core writes it, in the order the Mac hands notes
     /// over, so its bytes are the Mac's for the same notes.
-    static func notesArchive(_ entries: [NoteEntry], moduleID: String) throws -> Data {
+    static func notesArchive(
+        _ entries: [NoteEntry], moduleID: String, name: String = LampPersonalModule.notes.name
+    ) throws -> Data {
         let ordered = entries.sorted {
             ($0.book, $0.chapter, $0.verse, $0.lastModified ?? 0, $0.id)
                 < ($1.book, $1.chapter, $1.verse, $1.lastModified ?? 0, $1.id)
         }
-        return try LampPersonalNotesFile.archive(ordered.map(verseNote), moduleID: moduleID)
+        return try LampPersonalNotesFile.archive(ordered.map(verseNote), moduleID: moduleID, name: name)
     }
 
     /// A note as core's record of it. Footnotes are read from the list as

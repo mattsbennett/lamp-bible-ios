@@ -876,13 +876,13 @@ struct NoteEntry: Codable, FetchableRecord, PersistableRecord, Identifiable {
         self.verseRefsJson = verseRefs.flatMap { StoredJSON.string($0) }
         self.lastModified = lastModified ?? Int(Date().timeIntervalSince1970)
         self.footnotesJson = footnotes.flatMap { StoredJSON.string($0) }
-        // Build search text from content + footnotes
-        var searchParts = [content]
-        if let notes = footnotes {
-            searchParts.append(contentsOf: notes.map { $0.plainText })
-        }
-        self.searchText = searchParts.joined(separator: " ")
+        self.searchText = Self.searchText(content: content, footnotes: footnotes)
         self.mediaJson = mediaJson
+    }
+
+    /// What a search here matches a note on: its text and its footnotes'.
+    static func searchText(content: String, footnotes: [UserNotesFootnote]?) -> String {
+        ([content] + (footnotes ?? []).map(\.plainText)).joined(separator: " ")
     }
 
     /// The id a note saved here is given. The reader's own collection names
