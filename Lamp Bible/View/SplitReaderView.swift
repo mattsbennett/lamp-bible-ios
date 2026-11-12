@@ -213,18 +213,7 @@ struct SplitReaderView: View {
                             Rectangle()
                                 .fill(Color(UIColor.separator))
                                 .frame(width: 1)
-                                .mask(
-                                    LinearGradient(
-                                        stops: [
-                                            .init(color: .clear, location: 0),
-                                            .init(color: .black, location: 0.08),
-                                            .init(color: .black, location: 0.92),
-                                            .init(color: .clear, location: 1)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
+                                .mask(SplitDividerDrag.lineFade)
                                 .padding(.horizontal, 5.5)
                                 .frame(width: 12)
                                 .contentShape(Rectangle())
@@ -301,6 +290,7 @@ struct SplitReaderView: View {
                         // window's bottom edge.
                         spanTop: readerHeaderHeight,
                         spanBottomOverhang: geometry.safeAreaInsets.bottom,
+                        lineTopOverhang: geometry.safeAreaInsets.top,
                         minPanelSize: minPanelSize,
                         maxPanelRatio: maxPanelRatio,
                         isClosing: $panelDragWouldClose,
@@ -552,6 +542,18 @@ enum SplitDividerDrag {
         return raw
     }
 
+    /// The divider's line fades at its ends, at rest and in hand alike.
+    static let lineFade = LinearGradient(
+        stops: [
+            .init(color: .clear, location: 0),
+            .init(color: .black, location: 0.08),
+            .init(color: .black, location: 0.92),
+            .init(color: .clear, location: 1)
+        ],
+        startPoint: .top,
+        endPoint: .bottom
+    )
+
     static func closes(raw: CGFloat, min lo: CGFloat) -> Bool {
         raw < lo - closeDistance
     }
@@ -573,9 +575,19 @@ struct SplitDividerGrabber: View {
     var body: some View {
         let long: CGFloat = isActive ? 56 : 36
         let thick: CGFloat = isActive ? 6 : 5
+        // Opaque greys: a translucent one let the hairline show through.
         Capsule()
-            .fill(isActive ? Color.primary.opacity(0.55) : Color(UIColor.tertiaryLabel))
+            .fill(isActive ? Color(UIColor.systemGray) : Color(UIColor.systemGray3))
             .frame(width: isVertical ? thick : long, height: isVertical ? long : thick)
+            // Across a vertical divider's line, the line stops short of it
+            // rather than running under it. A bottom divider's line runs
+            // above its grabber, clear of it.
+            .padding(isVertical ? 2 : 0)
+            .background {
+                if isVertical {
+                    Capsule().fill(LampTheme.readerBackground)
+                }
+            }
             .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isActive)
             // A trackpad's pointer takes the grabber's shape.
             .contentShape(.hoverEffect, Capsule().inset(by: -6))
@@ -673,6 +685,9 @@ struct SplitDragOverlay: View {
     /// container's bottom, into the bottom safe area.
     var spanTop: CGFloat = 0
     var spanBottomOverhang: CGFloat = 0
+    /// How far the divider's line runs above the container, into the top
+    /// safe area, as the line at rest does.
+    var lineTopOverhang: CGFloat = 0
     let minPanelSize: CGFloat
     let maxPanelRatio: CGFloat
     /// Letting go now would close the panel; the panel dims to say so.
@@ -709,14 +724,24 @@ struct SplitDragOverlay: View {
     var body: some View {
         ZStack {
             // The line goes with the finger, so the grabber is never seen
-            // apart from it while the panel catches up.
+            // apart from it while the panel catches up. It runs the whole
+            // height, under both bars, as the line at rest does.
             if isDragging {
+                let lineHeight = lineTopOverhang + containerSize.height + spanBottomOverhang
                 Rectangle()
                     .fill(Color.primary.opacity(0.35))
-                    .frame(width: 1)
+                    .frame(width: 1, height: lineHeight)
+                    .mask(SplitDividerDrag.lineFade)
+                    .position(x: containerSize.width - shownSize - columnWidth / 2,
+                              y: -lineTopOverhang + lineHeight / 2)
+                    .allowsHitTesting(false)
             }
-            SplitDividerGrabber(isVertical: true, isActive: isDragging)
+            handle
         }
+    }
+
+    private var handle: some View {
+        SplitDividerGrabber(isVertical: true, isActive: isDragging)
         .frame(width: hitWidth, height: span)
         .contentShape(Rectangle())
         .position(x: containerSize.width - shownSize - columnWidth / 2, y: spanTop + span / 2)
