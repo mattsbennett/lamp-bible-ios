@@ -1758,6 +1758,63 @@ class ModuleDatabase {
             ])
     }
 
+    /// Moves a highlight set's ledger entries from one name to another: the
+    /// set's own entry, and its highlights' and themes', whose keys begin
+    /// with the set's id. Each joins any entry the new name already has, the
+    /// later time of each kind kept.
+    static func moveHighlightLedgerKeys(_ db: Database, from old: String, to new: String) throws {
+        let moves: [(kind: LampPersonalItemKind, match: String)] = [
+            (.highlightSet, "item_key = :old"),
+            (.highlight, "substr(item_key, 1, length(:old) + 1) = :old || char(31)"),
+            (.highlightTheme, "substr(item_key, 1, length(:old) + 1) = :old || char(31)"),
+        ]
+        for move in moves {
+            let arguments: StatementArguments = ["kind": move.kind.rawValue, "old": old, "new": new]
+            try db.execute(sql: """
+                INSERT INTO personal_sync_ledger (kind, item_key, present_since, deleted_at)
+                SELECT kind, :new || substr(item_key, length(:old) + 1), present_since, deleted_at
+                FROM personal_sync_ledger WHERE kind = :kind AND \(move.match)
+                ON CONFLICT(kind, item_key) DO UPDATE SET
+                    present_since = CASE
+                        WHEN present_since IS NULL THEN excluded.present_since
+                        WHEN excluded.present_since IS NULL THEN present_since
+                        ELSE MAX(present_since, excluded.present_since)
+                    END,
+                    deleted_at = CASE
+                        WHEN deleted_at IS NULL THEN excluded.deleted_at
+                        WHEN excluded.deleted_at IS NULL THEN deleted_at
+                        ELSE MAX(deleted_at, excluded.deleted_at)
+                    END
+                """, arguments: arguments)
+            try db.execute(sql: "DELETE FROM personal_sync_ledger WHERE kind = :kind AND \(move.match)", arguments: arguments)
+        }
+    }
+
+    /// The flattened names an older file gave the Mac's default sets that,
+    /// here, can mean only one set: `personal-highlights-<translation>`
+    /// where this device holds `personal-highlights:<translation>` and
+    /// nothing by the flattened name. A ledger key names a set and no
+    /// module, so on its own it can't tell the Mac's default set from one
+    /// the reader called that; the sets held here can. Flattened to the
+    /// Mac's name. Read as core reads them (5a9ff64).
+    static func flattenedHighlightSetNames(in db: Database) throws -> [String: String] {
+        guard try db.tableExists("highlight_sets") else { return [:] }
+        let held = Set(try String.fetchAll(db, sql: "SELECT id FROM highlight_sets"))
+        let prefix = "personal-highlights:"
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        var names: [String: String] = [:]
+        for id in held where id.hasPrefix(prefix) {
+            let translation = String(id.dropFirst(prefix.count))
+            let safe = String(translation.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "-" })
+            let flattened = "personal-highlights-\(safe.isEmpty ? "study-data" : safe)"
+            // Core's own guess confirms the pairing, so the two can't drift.
+            guard LampLibrary.canonicalHighlightSetID(flattened, translationID: translation) == id,
+                  !held.contains(flattened) else { continue }
+            names[flattened] = id
+        }
+        return names
+    }
+
     /// Renames the sets this device holds under a module's id where the Mac
     /// names the set otherwise (`LampLibrary.canonicalHighlightSetID`): its
     /// default set for a translation travels as `personal-highlights-ESV`
@@ -1843,34 +1900,7 @@ class ModuleDatabase {
                 UPDATE highlight_themes SET id = ? || substr(id, length(?) + 1), set_id = ? WHERE set_id = ?
                 """, arguments: [new, old, new, old])
             guard hasLedger else { continue }
-            // The set's own entry, then its highlights' and themes', whose
-            // keys begin with the set's id; each joined with any entry the
-            // new name already has, the later time of each kind kept.
-            let moves: [(kind: LampPersonalItemKind, match: String)] = [
-                (.highlightSet, "item_key = :old"),
-                (.highlight, "substr(item_key, 1, length(:old) + 1) = :old || char(31)"),
-                (.highlightTheme, "substr(item_key, 1, length(:old) + 1) = :old || char(31)"),
-            ]
-            for move in moves {
-                let arguments: StatementArguments = ["kind": move.kind.rawValue, "old": old, "new": new]
-                try db.execute(sql: """
-                    INSERT INTO personal_sync_ledger (kind, item_key, present_since, deleted_at)
-                    SELECT kind, :new || substr(item_key, length(:old) + 1), present_since, deleted_at
-                    FROM personal_sync_ledger WHERE kind = :kind AND \(move.match)
-                    ON CONFLICT(kind, item_key) DO UPDATE SET
-                        present_since = CASE
-                            WHEN present_since IS NULL THEN excluded.present_since
-                            WHEN excluded.present_since IS NULL THEN present_since
-                            ELSE MAX(present_since, excluded.present_since)
-                        END,
-                        deleted_at = CASE
-                            WHEN deleted_at IS NULL THEN excluded.deleted_at
-                            WHEN excluded.deleted_at IS NULL THEN deleted_at
-                            ELSE MAX(deleted_at, excluded.deleted_at)
-                        END
-                    """, arguments: arguments)
-                try db.execute(sql: "DELETE FROM personal_sync_ledger WHERE kind = :kind AND \(move.match)", arguments: arguments)
-            }
+            try moveHighlightLedgerKeys(db, from: old, to: new)
         }
         return renamed
     }
@@ -4027,6 +4057,12 @@ extension ModuleDatabase {
                                 ELSE MAX(deleted_at, excluded.deleted_at) END
                         """, arguments: [kind.rawValue, key, entry.presentSince, entry.deletedAt])
                 }
+            }
+            // Entries under a flattened set name, which the server still
+            // holds from devices that didn't know the set's own, taken under
+            // the set's name where only one set here can be meant.
+            for (flattened, name) in try Self.flattenedHighlightSetNames(in: db) {
+                try Self.moveHighlightLedgerKeys(db, from: flattened, to: name)
             }
         }
     }

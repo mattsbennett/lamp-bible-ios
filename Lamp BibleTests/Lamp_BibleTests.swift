@@ -7853,6 +7853,43 @@ final class HighlightSetFileTests: XCTestCase {
         }
     }
 
+    /// A key under a flattened set name, still on the server from devices
+    /// that didn't know the set's own, is read as the Mac's set where this
+    /// device holds that set and nothing by the flattened name; where it
+    /// holds both, or neither, the key is left as it came.
+    func testAFlattenedSetNameIsReadWhereOnlyOneSetCanBeMeant() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try highlightTables(db)
+            try db.execute(sql: """
+                INSERT INTO highlight_sets (id, module_id, translation_id) VALUES
+                    ('personal-highlights:ESV', 'personal-highlights-ESV', 'ESV'),
+                    ('personal-highlights:KJV', 'personal-highlights-KJV', 'KJV'),
+                    ('personal-highlights-KJV', 'my-kjv', 'KJV');
+                """)
+            let flat = { (set: String) in
+                LampPersonalDeletionLedger.highlightKey(setID: set, reference: 43_003_016, start: 0, end: 3, style: 0, color: nil)
+            }
+            try db.execute(sql: """
+                INSERT INTO personal_sync_ledger VALUES
+                    ('highlight', ?, NULL, 900), ('highlight', ?, NULL, 900), ('highlight', ?, NULL, 900),
+                    ('highlightSet', 'personal-highlights-ESV', 50, NULL)
+                """, arguments: [flat("personal-highlights-ESV"), flat("personal-highlights-KJV"), flat("personal-highlights-NIV")])
+
+            XCTAssertEqual(try ModuleDatabase.flattenedHighlightSetNames(in: db), ["personal-highlights-ESV": "personal-highlights:ESV"])
+            for (flattened, name) in try ModuleDatabase.flattenedHighlightSetNames(in: db) {
+                try ModuleDatabase.moveHighlightLedgerKeys(db, from: flattened, to: name)
+            }
+
+            XCTAssertEqual(try ledger(db), [
+                "highlight \(flat("personal-highlights-KJV")) -1 900",
+                "highlight \(flat("personal-highlights-NIV")) -1 900",
+                "highlight \(flat("personal-highlights:ESV")) -1 900",
+                "highlightSet personal-highlights:ESV 50 -1",
+            ])
+        }
+    }
+
     /// Where the Mac's name is here already, in the same module, the two are
     /// one set: the old one's highlights and themes join it, those both have
     /// kept once, and the old set goes, with nothing recorded deleted.
