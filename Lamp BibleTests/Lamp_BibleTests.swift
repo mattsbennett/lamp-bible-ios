@@ -7309,6 +7309,44 @@ final class ChapterNotesSaveTests: XCTestCase {
         XCTAssertEqual(try stored().map(\.id), ["\(moduleId!):43003016"])
     }
 
+    /// v41: the notes v38 left under their old name, because the old save
+    /// had recorded the Mac's name for them as deleted, take the Mac's name
+    /// with their own save time, which is later than that deletion, so they
+    /// stand and the Mac takes them back. A deletion made after the save
+    /// still wins.
+    func testTheRemainingNotesTakeTheMacsNameAndStand() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE note_entries (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, verse_id INTEGER NOT NULL);
+                CREATE TABLE personal_sync_ledger (
+                    kind TEXT NOT NULL, item_key TEXT NOT NULL, present_since INTEGER, deleted_at INTEGER,
+                    PRIMARY KEY (kind, item_key)
+                );
+                INSERT INTO note_entries VALUES
+                    ('notes:43003016', 'notes', 43003016),
+                    ('notes:43003017', 'notes', 43003017),
+                    ('personal-notes:43003017', 'notes', 43003017);
+                INSERT INTO personal_sync_ledger VALUES
+                    ('note', 'personal-notes:43003016', NULL, 1700000000100),
+                    ('note', 'notes:43003016', 1700000000105, NULL);
+                """)
+            try ModuleDatabase.nameRemainingCollectionNotesAsTheMacDoes(in: db)
+
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM note_entries ORDER BY verse_id, id"), [
+                "personal-notes:43003016", "notes:43003017", "personal-notes:43003017",
+            ])
+            var ledger = LampPersonalDeletionLedger()
+            for row in try Row.fetchAll(db, sql: "SELECT * FROM personal_sync_ledger") {
+                ledger.set(
+                    LampPersonalDeletionLedger.Entry(presentSince: row["present_since"], deletedAt: row["deleted_at"]),
+                    kind: .note, key: row["item_key"]
+                )
+            }
+            XCTAssertFalse(ledger.isDeleted(.note, "personal-notes:43003016", itemModified: 1_700_000_000), "the note stands")
+        }
+    }
+
     /// v39: a note v38 renamed takes its recorded save time with it, so a
     /// deletion made earlier in the same second doesn't win over the save.
     func testARenamedNotesSaveTimeFollowsItsName() throws {

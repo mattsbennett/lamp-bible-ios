@@ -1573,6 +1573,10 @@ class ModuleDatabase {
             }
         }
 
+        migrator.registerMigration("v41_remaining_collection_notes_named_as_the_mac_does") { db in
+            try ModuleDatabase.nameRemainingCollectionNotesAsTheMacDoes(in: db)
+        }
+
         return migrator
     }
 
@@ -1583,9 +1587,8 @@ class ModuleDatabase {
     /// Not where a deletion is already recorded under the new name: the
     /// panel's old save recorded `personal-notes:<verse>` as deleted when it
     /// rewrote a Mac note as `notes:<verse>`, and a note renamed onto that
-    /// would be deleted here at the next sync. Those keep `notes:<verse>`
-    /// for good: the owner ruled (2026-11-11) that such deletions are not
-    /// cleared, so this is not waiting on anything.
+    /// would be deleted here at the next sync. Those are renamed by v41,
+    /// which carries each one's save time with it.
     static func nameCollectionNotesAsTheMacDoes(in db: Database) throws {
         guard try db.tableExists("note_entries"), try db.tableExists("personal_sync_ledger") else { return }
         try db.execute(sql: """
@@ -1604,6 +1607,38 @@ class ModuleDatabase {
                 LampPersonalModule.notes.id,
                 LampPersonalItemKind.note.rawValue, LampPersonalModule.notes.id,
             ])
+    }
+
+    /// Renames the reader's own notes that v38 left as `notes:<verse>`
+    /// because the panel's old save had recorded the Mac's name for them as
+    /// deleted. The owner chose (2026-11-11) to rename them and so take back
+    /// the notes that save took from the Mac. Each note's own save time goes
+    /// with it first: it is later than that deletion, the deletion having
+    /// been made by the very save that wrote the note, so the note stands
+    /// and the Mac takes it again. A deletion made after the save still
+    /// wins. Not where a note already has the new name.
+    static func nameRemainingCollectionNotesAsTheMacDoes(in db: Database) throws {
+        guard try db.tableExists("note_entries"), try db.tableExists("personal_sync_ledger") else { return }
+        let notes = LampSyncLocalDeletion.notesCollectionID
+        let mac = LampPersonalModule.notes.id
+        let kind = LampPersonalItemKind.note.rawValue
+        let remaining = try Row.fetchAll(db, sql: """
+            SELECT id, verse_id FROM note_entries n
+            WHERE module_id = ? AND id = ? || ':' || verse_id
+              AND NOT EXISTS (SELECT 1 FROM note_entries other WHERE other.id = ? || ':' || n.verse_id)
+            """, arguments: [notes, notes, mac])
+        for row in remaining {
+            let old: String = row["id"]
+            let new = "\(mac):\(row["verse_id"] as Int)"
+            try db.execute(sql: """
+                INSERT INTO personal_sync_ledger (kind, item_key, present_since)
+                SELECT kind, ?, present_since FROM personal_sync_ledger
+                WHERE kind = ? AND item_key = ? AND present_since IS NOT NULL
+                ON CONFLICT(kind, item_key) DO UPDATE SET
+                    present_since = MAX(COALESCE(present_since, 0), excluded.present_since)
+                """, arguments: [new, kind, old])
+            try db.execute(sql: "UPDATE note_entries SET id = ? WHERE id = ?", arguments: [new, old])
+        }
     }
 
     /// Moves each renamed note's recorded save time to its new name, which
