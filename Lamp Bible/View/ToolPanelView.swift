@@ -2816,19 +2816,12 @@ struct ToolPanelView: View {
         saveState = .saving
 
         do {
-            // Convert sections to NoteEntry records
-            let entries = convertSectionsToEntries(sections, in: scope)
-
-            // Delete existing entries for this chapter first
-            let existingEntries = try moduleDatabase.getNotesForChapter(moduleId: scope.moduleId, book: scope.book, chapter: scope.chapter)
-            for entry in existingEntries {
-                try moduleDatabase.deleteNoteEntry(id: entry.id)
-            }
-
-            // Save new entries (skip empty ones)
-            for entry in entries where !entry.content.isEmpty {
-                try moduleDatabase.saveNoteEntry(entry)
-            }
+            // Only what changed: a note left as it was keeps its id and time,
+            // and only one taken out is recorded as deleted.
+            try moduleDatabase.saveChapterNotes(
+                convertSectionsToEntries(sections, in: scope),
+                moduleId: scope.moduleId, book: scope.book, chapter: scope.chapter
+            )
 
             // Export to cloud storage
             try await moduleSyncManager.exportModule(id: scope.moduleId)

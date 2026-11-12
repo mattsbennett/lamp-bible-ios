@@ -1832,6 +1832,69 @@ class ModuleDatabase {
         }
     }
 
+    /// Saves a chapter's notes as the notes panel holds them, in one
+    /// transaction, changing only what changed.
+    ///
+    /// A note still in the chapter keeps its id, whichever app named it, and
+    /// is written again, with the time it was given, only where what it says
+    /// changed; a note taken out of the chapter is deleted, and only that is
+    /// recorded as a deletion. The panel used to delete every note in the
+    /// chapter and write them all back under ids of its own, so each save told
+    /// the other devices that every note in the chapter had been deleted, the
+    /// Mac's own among them, which the Mac then carried out; and it dated
+    /// every note in the chapter as just edited, so an untouched one beat
+    /// another device's real edit of it.
+    func saveChapterNotes(_ notes: [NoteEntry], moduleId: String, book: Int, chapter: Int) throws {
+        try dbQueue.write { db in
+            var here = Dictionary(grouping: try NoteEntry
+                .filter(Column("module_id") == moduleId)
+                .filter(Column("book") == book)
+                .filter(Column("chapter") == chapter)
+                .order(Column("id"))
+                .fetchAll(db), by: \.verseId)
+            for var note in notes where !note.content.isEmpty {
+                var rows = here.removeValue(forKey: note.verseId) ?? []
+                guard !rows.isEmpty else {
+                    try note.insert(db)
+                    try Self.recordPersonalPresence(db, .note, note.id)
+                    continue
+                }
+                let current = rows.removeFirst()
+                // The same note again under a second id, from before notes
+                // kept theirs: removed, but not deleted, so not recorded.
+                for duplicate in rows { _ = try duplicate.delete(db) }
+                guard Self.noteChanged(from: current, to: note) else { continue }
+                note.id = current.id
+                if note.mediaJson == nil { note.mediaJson = current.mediaJson }
+                // The panel names a note by its verses; a title another app
+                // gave it stays.
+                if let title = current.title, !Self.isVerseLabel(title) { note.title = title }
+                try note.save(db)
+                try Self.recordPersonalPresence(db, .note, note.id)
+            }
+            // What is left was taken out of the chapter.
+            for row in here.values.joined() {
+                _ = try row.delete(db)
+                try Self.recordPersonalDeletion(db, .note, row.id)
+            }
+        }
+    }
+
+    /// Whether a note says something different. Not its title, which the
+    /// panel only ever sets to its verses.
+    static func noteChanged(from current: NoteEntry, to note: NoteEntry) -> Bool {
+        let footnotes = { (entry: NoteEntry) in (entry.footnotes ?? []).map { [$0.id, $0.plainText] } }
+        return current.content != note.content
+            || (current.verseRefs ?? []) != (note.verseRefs ?? [])
+            || footnotes(current) != footnotes(note)
+            || (note.mediaJson != nil && !LampSyncJSONComparison.sameValue(current.mediaJson, note.mediaJson))
+    }
+
+    /// A title the notes panel made from a note's verses.
+    static func isVerseLabel(_ title: String) -> Bool {
+        title == "General Notes" || title.wholeMatch(of: #/vv?\.\d+(-\d+)?/#) != nil
+    }
+
     func getNotesForChapter(moduleId: String, book: Int, chapter: Int) throws -> [NoteEntry] {
         try dbQueue.read { db in
             try NoteEntry
