@@ -48,6 +48,44 @@ struct ModuleSearchResult: Identifiable {
 struct ModuleSearchPage {
     var results: [ModuleSearchResult]
     var moreIn: Set<ModuleType>
+    /// Where Scripture came from, where the search preferred a translation.
+    /// `moreIn` stays about that translation's own verses.
+    var scripture: SearchScripture? = nil
+}
+
+/// Where a search took Scripture from: the translation it preferred where
+/// that had any match, else the one with the most (core's
+/// `LampScriptureChoice`), and the others that matched too.
+struct SearchScripture: Equatable {
+    /// The translation preferred, where it was among those searched.
+    let preferred: String?
+    let choice: LampScriptureChoice
+
+    /// Whether the verses came from another translation, the preferred one
+    /// having none.
+    var fellBack: Bool { preferred.map { $0 != choice.translationID } ?? false }
+
+    /// For a heading: "None in BSB" where the verses came from another
+    /// translation, and "also in KJV", or "also in 3 other translations",
+    /// as the Mac's page of every kind says it. Nil where there is neither.
+    func note(shortName: (String) -> String, includingAlsoIn: Bool = true) -> String? {
+        var parts: [String] = []
+        if fellBack, let preferred { parts.append("None in \(shortName(preferred))") }
+        if includingAlsoIn {
+            switch choice.alsoIn.count {
+            case 0: break
+            case 1: parts.append("\(parts.isEmpty ? "Also" : "also") in \(shortName(choice.alsoIn[0]))")
+            case let count: parts.append("\(parts.isEmpty ? "Also" : "also") in \(count) other translations")
+            }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// A translation's abbreviation where it has one, else its name.
+    static func shortName(of id: String) -> String {
+        guard let translation = try? TranslationDatabase.shared.getTranslation(id: id) else { return id }
+        return translation.abbreviation.isEmpty ? translation.name : translation.abbreviation
+    }
 }
 
 // MARK: - Search Filter
@@ -74,6 +112,10 @@ struct ModuleSearchFilter {
     // Translation filters
     var translationIds: Set<String>? = nil  // Specific translations to search
     var bookRange: ClosedRange<Int>? = nil  // Book range (1-39 OT, 40-66 NT)
+    /// Scripture from this translation, or from the one with the most
+    /// matches where it has none, the same verse not put on the page once
+    /// per translation. Not where `translationIds` names those searched.
+    var preferredTranslationId: String? = nil
 
     // Highlight filters
     var highlightColors: Set<String>? = nil  // Filter by highlight color hex values
@@ -386,7 +428,29 @@ class ModuleSearch {
             results.append(contentsOf: try searchNotes(query: LampSearchQuery(query), filter: filter, limit: perKind))
         }
 
-        if filter.types.contains(.translation) {
+        var scripture: SearchScripture?
+        if filter.types.contains(.translation), (hasTextQuery || hasKeyFilter),
+           let preferred = filter.preferredTranslationId, filter.translationIds == nil {
+            // One translation's verses, in the order the phone lists them,
+            // as the Mac's page of every kind takes them.
+            let order = try TranslationDatabase.shared.getAllTranslations()
+                .filter { hasTextQuery || $0.features?.strongs == true }
+                .map(\.id)
+                .filter { filter.moduleIds?.contains($0) ?? true }
+            let found = try LampScriptureChoice.choose(preferred: preferred, order: order, limit: perKind) { id, limit in
+                var one = filter
+                if hasTextQuery {
+                    one.translationIds = [id]
+                    return try searchTranslations(query: query, filter: one, limit: limit)
+                }
+                one.moduleIds = [id]
+                return try searchTranslationsByStrongs(filter: one, limit: limit)
+            }
+            if let found {
+                results.append(contentsOf: found.matches)
+                scripture = SearchScripture(preferred: order.contains(preferred) ? preferred : nil, choice: found.choice)
+            }
+        } else if filter.types.contains(.translation) {
             if hasTextQuery {
                 results.append(contentsOf: try searchTranslations(query: query, filter: filter, limit: perKind))
             } else if hasKeyFilter {
@@ -429,7 +493,8 @@ class ModuleSearch {
         }
         return ModuleSearchPage(
             results: try fillSnippets(share.results, query: parsedQuery),
-            moreIn: Set(share.moreIn.compactMap(ModuleType.init(rawValue:)))
+            moreIn: Set(share.moreIn.compactMap(ModuleType.init(rawValue:))),
+            scripture: scripture
         )
     }
 

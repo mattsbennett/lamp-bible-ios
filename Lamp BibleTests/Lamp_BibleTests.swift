@@ -6036,6 +6036,92 @@ final class SearchFeatureTests: XCTestCase {
     }
 }
 
+/// Scripture from one translation, or from the one with the most matches
+/// where it has none, by core's `LampScriptureChoice`. "Lovingkindness" is
+/// the bundled ASV's (165 verses) and KJV's (26), not BSB's.
+final class ScriptureFallbackTests: XCTestCase {
+    func testTheBibleSearchFallsBackToTheTranslationWithTheMostMatches() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let found = BibleSearch.run(query: "LOVINGKINDNESS", strongs: false, translationId: "BSBs", bookRange: nil, shown: 10)
+        let scripture = try XCTUnwrap(found.scripture)
+        XCTAssertEqual(scripture.choice.translationID, "ASVs")
+        XCTAssertTrue(scripture.fellBack)
+        XCTAssertTrue(scripture.choice.alsoIn.contains("KJVs"))
+        XCTAssertFalse(scripture.choice.alsoIn.contains("BSBs"))
+        XCTAssertEqual(found.results.count, 10)
+        XCTAssertTrue(found.results.allSatisfy { $0.text.localizedCaseInsensitiveContains("lovingkindness") })
+
+        // Its own verses where the translation has the word, and nothing said.
+        let own = BibleSearch.run(query: "LOVINGKINDNESS", strongs: false, translationId: "KJVs", bookRange: nil, shown: 100)
+        XCTAssertNil(own.scripture)
+        XCTAssertGreaterThan(own.total, 0)
+        XCTAssertLessThan(own.total, found.total, "KJV's own, not ASV's")
+
+        // Where no translation has it, nothing, and none named.
+        let none = BibleSearch.run(query: "QZXWVJ", strongs: false, translationId: "BSBs", bookRange: nil, shown: 10)
+        XCTAssertNil(none.scripture)
+        XCTAssertEqual(none.total, 0)
+    }
+
+    func testAKeySearchFallsBackAmongTheTaggedTranslations() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        // The Hebrew Old Testament has no G26: a tagged translation's verses.
+        let found = BibleSearch.run(query: "G26", strongs: true, translationId: "TAHOT", bookRange: nil, shown: 5)
+        let scripture = try XCTUnwrap(found.scripture)
+        XCTAssertTrue(["BSBs", "KJVs", "TAGNT"].contains(scripture.choice.translationID))
+        XCTAssertFalse(scripture.choice.alsoIn.contains("ASVs"), "only tagged translations are searched by key")
+        XCTAssertGreaterThan(found.total, 0)
+        XCTAssertEqual(found.results.count, 5)
+    }
+
+    func testThePageOfEveryKindTakesScriptureFromTheReadingTranslation() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.translation, .commentary]
+        filter.preferredTranslationId = "KJVs"
+        let page = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 10)
+        let verses = page.results.filter { $0.moduleType == .translation }
+        XCTAssertFalse(verses.isEmpty)
+        XCTAssertTrue(verses.allSatisfy { $0.moduleId == "KJVs" }, "each verse once, from the reading translation")
+        let scripture = try XCTUnwrap(page.scripture)
+        XCTAssertFalse(scripture.fellBack)
+        XCTAssertTrue(scripture.choice.alsoIn.contains("ASVs"))
+
+        // BSB has none: ASV's verses, and the heading says so.
+        filter.preferredTranslationId = "BSBs"
+        let fallen = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 10)
+        let fallenVerses = fallen.results.filter { $0.moduleType == .translation }
+        XCTAssertFalse(fallenVerses.isEmpty)
+        XCTAssertTrue(fallenVerses.allSatisfy { $0.moduleId == "ASVs" })
+        let note = try XCTUnwrap(fallen.scripture?.note(shortName: SearchScripture.shortName(of:)))
+        XCTAssertTrue(note.hasPrefix("None in BSB · also in "), note)
+
+        // Scripture's own page, from its More: every translation's verses.
+        filter.types = [.translation]
+        filter.preferredTranslationId = nil
+        let all = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 300)
+        XCTAssertNil(all.scripture)
+        XCTAssertTrue(Set(all.results.map(\.moduleId)).isSuperset(of: ["ASVs", "KJVs"]))
+    }
+
+    func testTheHeadingSaysWhereScriptureCameFrom() {
+        let names = ["BSBs": "BSB", "KJVs": "KJV", "ASVs": "ASV", "WEBs": "WEB"]
+        let short = { (id: String) in names[id] ?? id }
+        func note(_ preferred: String?, _ shown: String, _ alsoIn: [String], alsoInToo: Bool = true) -> String? {
+            SearchScripture(preferred: preferred, choice: LampScriptureChoice(translationID: shown, alsoIn: alsoIn))
+                .note(shortName: short, includingAlsoIn: alsoInToo)
+        }
+        XCTAssertNil(note("BSBs", "BSBs", []))
+        XCTAssertEqual(note("BSBs", "BSBs", ["KJVs"]), "Also in KJV")
+        XCTAssertEqual(note("BSBs", "BSBs", ["KJVs", "WEBs"]), "Also in 2 other translations")
+        XCTAssertEqual(note("BSBs", "ASVs", ["KJVs"]), "None in BSB · also in KJV")
+        XCTAssertEqual(note("BSBs", "ASVs", ["KJVs"], alsoInToo: false), "None in BSB")
+        // A preferred translation the filter left out was not searched, and
+        // so is not said to have none.
+        XCTAssertNil(note(nil, "KJVs", []))
+    }
+}
+
 final class SearchSpeedTests: XCTestCase {
     func testAKeyIsFoundPaddedOrNotButNotThroughItsDigitsElsewhere() throws {
         let queue = try DatabaseQueue()

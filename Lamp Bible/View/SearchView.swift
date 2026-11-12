@@ -102,6 +102,9 @@ class SearchStateManager: ObservableObject {
     @Published var bibleSearchResults: [SearchResult] = []
     @Published var bibleResultLimit: Int = 100
     @Published var bibleTotalResultCount: Int = 0
+    /// Where the verses came from when the translation searched had none:
+    /// the translation with the most matches. Nil for its own.
+    @Published var bibleScripture: SearchScripture? = nil
     @Published var bibleResultsVisible: Bool = false
     var bibleScrollToId: Int? = nil  // Not @Published - only read on appear
 
@@ -114,6 +117,9 @@ class SearchStateManager: ObservableObject {
     @Published var moduleMoreIn: Set<ModuleType> = []
     /// The one type shown, from its header's More, until the next search.
     @Published var moduleTypeFocus: ModuleType? = nil
+    /// Where the page of every kind took Scripture from: the reading
+    /// translation, or the one with the most matches where it had none.
+    @Published var moduleScripture: SearchScripture? = nil
     @Published var moduleResultsVisible: Bool = false
     var moduleScrollToId: String? = nil  // Not @Published - only read on appear
 
@@ -126,6 +132,7 @@ class SearchStateManager: ObservableObject {
     func clearBibleResults() {
         bibleSearchResults = []
         bibleTotalResultCount = 0
+        bibleScripture = nil
         bibleResultsVisible = false
         bibleScrollToId = nil
     }
@@ -141,6 +148,7 @@ class SearchStateManager: ObservableObject {
         moduleTotalResultCount = 0
         moduleMoreIn = []
         moduleTypeFocus = nil
+        moduleScripture = nil
         moduleResultLimit = Self.modulePage
         moduleResultsVisible = false
         moduleScrollToId = nil
@@ -1370,24 +1378,33 @@ struct SearchView: View {
                         .listRowSeparator(isLast ? .hidden : .visible, edges: .bottom)
                     }
                 } header: {
-                    HStack {
-                        Text(group.type.displayName)
-                        Spacer()
-                        // A type cut to its share counts only what's shown.
-                        if !moduleMoreIn.contains(group.type) {
-                            Text("\(group.results.count)")
-                                .foregroundStyle(.secondary)
-                        } else if offersMoreByType {
-                            Button {
-                                showModuleType(group.type)
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Text("More")
-                                    Image(systemName: "chevron.right")
-                                        .imageScale(.small)
-                                }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(group.type.displayName)
+                            Spacer()
+                            // A type cut to its share counts only what's shown.
+                            if !moduleMoreIn.contains(group.type) {
+                                Text("\(group.results.count)")
+                                    .foregroundStyle(.secondary)
                             }
-                            .accessibilityLabel("More \(group.type.displayName)")
+                            if offersMore(of: group.type) {
+                                Button {
+                                    showModuleType(group.type)
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Text("More")
+                                        Image(systemName: "chevron.right")
+                                            .imageScale(.small)
+                                    }
+                                }
+                                .accessibilityLabel("More \(group.type.displayName)")
+                            }
+                        }
+                        if group.type == .translation, let note = scriptureNote {
+                            Text(note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textCase(nil)
                         }
                     }
                 }
@@ -1545,16 +1562,26 @@ struct SearchView: View {
     }
 
     private var resultsList: some View {
-        BibleResultsListView(
+        // Another translation's verses where this one had none, shown and
+        // opened in it.
+        let scripture = stateManager.bibleScripture
+        return BibleResultsListView(
             searchResults: searchResults,
             currentSearchText: currentSearchText,
             searchMode: searchMode,
             fontSize: fontSize,
-            translationId: translationId,
+            translationId: scripture?.choice.translationID ?? translationId,
+            scripture: scripture,
             totalResultCount: totalResultCount,
             resultLimit: resultLimit,
             stateManager: stateManager,
-            onNavigate: navigateToVerse,
+            onNavigate: { result in
+                if let shown = scripture?.choice.translationID {
+                    navigateToVerse(result.id, translationId: shown)
+                } else {
+                    navigateToVerse(result)
+                }
+            },
             onLoadMore: loadMoreResults,
             onAnalyze: searchMode == .strongs && !searchResults.isEmpty
                 ? { analysisItem = StrongsAnalysisItem(key: LampStrongsKey.normalized(currentSearchText)) }
@@ -1647,12 +1674,14 @@ struct SearchView: View {
             guard isValidStrongsQuery(query) else {
                 searchResults = []
                 totalResultCount = 0
+                stateManager.bibleScripture = nil
                 return
             }
         } else {
             guard query.count >= 2 else {
                 searchResults = []
                 totalResultCount = 0
+                stateManager.bibleScripture = nil
                 return
             }
         }
@@ -1667,41 +1696,15 @@ struct SearchView: View {
         let translationId = translationId
         let bookRange = bookRange
         let shown = resultLimit
-        let found = await Task.detached(priority: .userInitiated) { () -> (total: Int, results: [SearchResult]) in
-            if isStrongs {
-                // Counted apart from the verses listed: each listed verse is
-                // marked, and a common key tags thousands.
-                let key = LampStrongsKey.typedKey(query) ?? LampStrongsKey.normalized(query)
-                let total = (try? TranslationDatabase.shared.countStrongsOccurrences(
-                    translationId: translationId, strongsNum: key, bookRange: bookRange
-                )) ?? 0
-                let verses = (try? TranslationDatabase.shared.searchVersesByStrongs(
-                    translationId: translationId,
-                    strongsNum: key,
-                    bookRange: bookRange,
-                    limit: shown
-                )) ?? []
-                return (total, verses.map { result in
-                    SearchResult(searchResult: result, bookName: BookOsisCache.shared.displayName(for: result.book))
-                })
-            }
-            // Text search using GRDB FTS5. The query goes in as typed: the
-            // searcher applies the shared grammar, and stripping its quotes
-            // first would lose the phrases they mark.
-            let results = (try? TranslationDatabase.shared.searchAllTranslations(
-                query: query,
-                translationIds: [translationId],
-                bookRange: bookRange,
-                limit: 10000  // High limit to get total count
-            )) ?? []
-            let shownResults = results.prefix(shown).map { result in
-                SearchResult(searchResult: result, bookName: BookOsisCache.shared.displayName(for: result.book))
-            }
-            return (results.count, Array(shownResults))
+        let found = await Task.detached(priority: .userInitiated) {
+            BibleSearch.run(
+                query: query, strongs: isStrongs, translationId: translationId, bookRange: bookRange, shown: shown
+            )
         }.value
         guard !Task.isCancelled else { return }
         totalResultCount = found.total
         searchResults = found.results
+        stateManager.bibleScripture = found.scripture
 
         if showLoadingState {
             isSearching = false
@@ -1758,6 +1761,11 @@ struct SearchView: View {
         if let moduleTypeFocus {
             filter.types.formIntersection([moduleTypeFocus])
         }
+        // Scripture from the reading translation, as the Mac's page of every
+        // kind takes it; Scripture's own page, from its More, has them all.
+        if moduleTypeFocus != .translation {
+            filter.preferredTranslationId = translationId
+        }
 
         // Validation
         let hasQuery = query.count >= 2
@@ -1766,6 +1774,7 @@ struct SearchView: View {
 
         guard hasQuery || hasKeyFilter || hasColorSearch else {
             moduleSearchResults = []
+            stateManager.moduleScripture = nil
             totalResultCount = 0
             return
         }
@@ -1789,12 +1798,14 @@ struct SearchView: View {
             totalResultCount = page.moreIn.isEmpty ? page.results.count : -page.results.count
             moduleSearchResults = page.results
             moduleMoreIn = page.moreIn
+            stateManager.moduleScripture = page.scripture
 
             recordSearch(resultCount: page.results.count)
         } catch {
             print("Module search failed: \(error)")
             moduleSearchResults = []
             moduleMoreIn = []
+            stateManager.moduleScripture = nil
             totalResultCount = 0
         }
 
@@ -1854,6 +1865,24 @@ struct SearchView: View {
     /// types, each cut to its share. One type, alone or chosen, pages instead.
     private var offersMoreByType: Bool {
         moduleTypeFocus == nil && groupedModuleResults.count > 1
+    }
+
+    /// Whether a type's header offers More: a type cut to its share, and
+    /// Scripture from one translation where others matched too, whose own
+    /// page has every translation's verses.
+    private func offersMore(of type: ModuleType) -> Bool {
+        if moduleMoreIn.contains(type) && offersMoreByType { return true }
+        return type == .translation && moduleTypeFocus == nil
+            && stateManager.moduleScripture?.choice.alsoIn.isEmpty == false
+    }
+
+    /// Under Scripture's heading on the page of every kind, where its verses
+    /// came from one translation: "None in BSB" where that is not the
+    /// reading translation, and "also in KJV" or "also in 3 other
+    /// translations".
+    private var scriptureNote: String? {
+        guard moduleTypeFocus == nil else { return nil }
+        return stateManager.moduleScripture?.note(shortName: SearchScripture.shortName(of:))
     }
 
     /// Shows one type's results alone, a page of them, from its header's
@@ -3412,6 +3441,85 @@ private struct CommentaryScrollViewFinder: UIViewRepresentable {
     }
 }
 
+/// The Bible scope's search, off the main thread: one translation's verses,
+/// or another's where it has none.
+enum BibleSearch {
+    /// The verses found, as many as `shown`, and how many there are in all:
+    /// verses for a text search, occurrences for a key. Where the
+    /// translation has no match, the translation with the most matches, ties
+    /// going to the one listed first, so a word it lacks ("lovingkindness"
+    /// in BSB) still finds its verses.
+    static func run(
+        query: String,
+        strongs isStrongs: Bool,
+        translationId: String,
+        bookRange: ClosedRange<Int>?,
+        shown: Int
+    ) -> (total: Int, results: [SearchResult], scripture: SearchScripture?) {
+        let database = TranslationDatabase.shared
+        func listed(_ results: some Sequence<TranslationSearchResult>) -> [SearchResult] {
+            results.map { SearchResult(searchResult: $0, bookName: BookOsisCache.shared.displayName(for: $0.book)) }
+        }
+        // Another translation's choice and matches, by core's rule, where
+        // this one has none; nil where none has any either.
+        func fallback<Match>(
+            among translations: [TranslationModule], limit: Int,
+            verses: (String, Int) throws -> [Match]
+        ) -> (scripture: SearchScripture, matches: [Match])? {
+            guard let found = try? LampScriptureChoice.choose(
+                preferred: translationId, order: translations.map(\.id), limit: limit, verses: verses
+            ), found.choice.translationID != translationId else { return nil }
+            return (SearchScripture(preferred: translationId, choice: found.choice), found.matches)
+        }
+        let translations = (try? database.getAllTranslations()) ?? []
+        if isStrongs {
+            // Counted apart from the verses listed: each listed verse is
+            // marked, and a common key tags thousands.
+            let key = LampStrongsKey.typedKey(query) ?? LampStrongsKey.normalized(query)
+            var shownId = translationId
+            var scripture: SearchScripture?
+            var total = (try? database.countStrongsOccurrences(
+                translationId: translationId, strongsNum: key, bookRange: bookRange
+            )) ?? 0
+            if total == 0, let found = fallback(
+                among: translations.filter { $0.features?.strongs == true }, limit: 10000,
+                verses: { id, limit in
+                    try database.strongsReferences(translationId: id, key: key, bookRange: bookRange, limit: limit)
+                }
+            ) {
+                shownId = found.scripture.choice.translationID
+                scripture = found.scripture
+                total = (try? database.countStrongsOccurrences(
+                    translationId: shownId, strongsNum: key, bookRange: bookRange
+                )) ?? 0
+            }
+            let verses = (try? database.searchVersesByStrongs(
+                translationId: shownId,
+                strongsNum: key,
+                bookRange: bookRange,
+                limit: shown
+            )) ?? []
+            return (total, listed(verses), scripture)
+        }
+        // Text search using GRDB FTS5. The query goes in as typed: the
+        // searcher applies the shared grammar, and stripping its quotes
+        // first would lose the phrases they mark.
+        let search = { (id: String, limit: Int) throws -> [TranslationSearchResult] in
+            try database.searchAllTranslations(
+                query: query, translationIds: [id], bookRange: bookRange, limit: limit
+            )
+        }
+        // A high limit, to get the total count.
+        var results = (try? search(translationId, 10000)) ?? []
+        var scripture: SearchScripture?
+        if results.isEmpty, let found = fallback(among: translations, limit: 10000, verses: search) {
+            results = found.matches
+            scripture = found.scripture
+        }
+        return (results.count, listed(results.prefix(shown)), scripture)
+    }
+}
+
 // MARK: - Bible Results List with Scroll Position Tracking
 
 private struct BibleResultsListView: View {
@@ -3420,6 +3528,8 @@ private struct BibleResultsListView: View {
     let searchMode: SearchMode
     let fontSize: Int
     let translationId: String
+    /// Where the verses came from when the translation searched had none.
+    var scripture: SearchScripture? = nil
     let totalResultCount: Int
     let resultLimit: Int
     let stateManager: SearchStateManager
@@ -3467,7 +3577,16 @@ private struct BibleResultsListView: View {
                 } header: {
                     HStack {
                         Group {
-                            if totalResultCount > resultLimit {
+                            if let scripture, scripture.fellBack,
+                               let none = scripture.note(shortName: SearchScripture.shortName(of:), includingAlsoIn: false) {
+                                // "None in BSB · 12 results in KJV"
+                                let shown = SearchScripture.shortName(of: scripture.choice.translationID)
+                                if totalResultCount > resultLimit {
+                                    Text("\(none) · showing \(searchResults.count) of \(totalResultCount) in \(shown)")
+                                } else {
+                                    Text("\(none) · \(searchResults.count) results in \(shown)")
+                                }
+                            } else if totalResultCount > resultLimit {
                                 Text("Showing \(searchResults.count) of \(totalResultCount) results")
                             } else {
                                 Text("\(searchResults.count) results")

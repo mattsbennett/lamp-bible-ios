@@ -1846,16 +1846,24 @@ class TranslationDatabase {
         }
     }
 
-    /// Every verse of the translation tagging `key`, in order: from the
-    /// Strong's index, or, while the translation has none, by reading the
-    /// verses that may tag it.
-    func strongsReferences(translationId: String, key: String) throws -> [Int] {
+    /// Every verse of the translation tagging `key` in range, in order, up
+    /// to `limit`: from the Strong's index, or, while the translation has
+    /// none, by reading the verses that may tag it.
+    func strongsReferences(
+        translationId: String,
+        key: String,
+        bookRange: ClosedRange<Int>? = nil,
+        limit: Int? = nil
+    ) throws -> [Int] {
         if let refs = StrongsIndex.shared.refs(
-            translationId: translationId, key: key, source: try verseSource(for: translationId)
+            translationId: translationId, key: key, bookRange: bookRange, limit: limit,
+            source: try verseSource(for: translationId)
         ) {
             return refs
         }
-        return try searchVersesByStrongs(translationId: translationId, strongsNum: key, limit: 100_000).map(\.ref)
+        return try searchVersesByStrongs(
+            translationId: translationId, strongsNum: key, bookRange: bookRange, limit: limit ?? 100_000
+        ).map(\.ref)
     }
 
     /// How the translation numbers its verses: the scheme it declares, with
