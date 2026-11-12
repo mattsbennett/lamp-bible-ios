@@ -507,6 +507,17 @@ class UserDatabase {
 
     // MARK: - Sync Support
 
+    /// The settings row a new installation starts with, as the migrations
+    /// write it: what a device holds before anyone changes a setting on it.
+    func factorySettings() throws -> UserSettings {
+        let queue = try DatabaseQueue()
+        try migrator.migrate(queue)
+        guard let settings = try queue.read({ try UserSettings.fetchOne($0, key: 1) }) else {
+            throw DatabaseError(message: "Migrations wrote no settings row")
+        }
+        return settings
+    }
+
     func syncSnapshot() throws -> (settings: UserSettings, readings: [CompletedReading]) {
         guard let dbQueue else { throw DatabaseError(message: "Database not initialized") }
         return try dbQueue.read { db in

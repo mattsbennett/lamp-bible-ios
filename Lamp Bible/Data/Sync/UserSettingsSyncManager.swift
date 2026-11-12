@@ -124,6 +124,15 @@ class UserSettingsSyncManager {
 
     private init() {}
 
+    /// A new installation's settings, the base of a merge with no shared
+    /// history. Nil only if the migrations fail, as they would at launch.
+    private lazy var factorySettings: UserSettings? = {
+        do { return try UserDatabase.shared.factorySettings() } catch {
+            print("[UserSettingsSync] No factory settings: \(error)")
+            return nil
+        }
+    }()
+
     // MARK: - Lifecycle
 
     /// Start the debounce observer and poll timer. Call when the app becomes active.
@@ -328,6 +337,17 @@ class UserSettingsSyncManager {
         // library pass, and every pass after, as nothing moved the base. The
         // merge is then this device's edit to the row the remote holds.
         var merged: UserSettings?
+        // With no shared history, this device is joining a library. A
+        // setting it holds as installed is nobody's choice, so it never
+        // stands against one the library holds: taking the newer row whole
+        // let a fresh install, its row stamped at install, reset every
+        // other device's settings. Each setting is merged against the
+        // installed value instead, and one both changed goes to the later.
+        if base == nil, let factorySettings {
+            merged = Self.mergingFields(
+                base: factorySettings, local: localSettings, remote: remoteSettings
+            )
+        }
         if let base, LampSyncThreeWayValue.decide(
             base: comparableSettings(base.settings),
             local: comparableSettings(localSettings),
@@ -353,8 +373,11 @@ class UserSettingsSyncManager {
                     revision: \.completedAt
                 )
             } else {
+                // Settings are already merged above; the planner joins the
+                // readings, so it sees the settings as agreeing.
+                let settingsForReadings = merged == nil ? localSettings : remoteSettings
                 corePlan = try LampSyncSettingsPlanner.planWithoutBase(
-                    localSettings: comparableSettings(localSettings),
+                    localSettings: comparableSettings(settingsForReadings),
                     localRevision: localSettings.updatedAt,
                     localReadings: Dictionary(uniqueKeysWithValues:
                         localReadings.map { ($0.id, $0) }
@@ -376,11 +399,15 @@ class UserSettingsSyncManager {
         } else {
             settings = corePlan.settingsDecision == .remote ? remoteSettings : nil
         }
+        // A merge with no base publishes whatever it keeps of this device's.
+        let keepsLocalSettings = base == nil && merged.map {
+            comparableSettings($0) != comparableSettings(remoteSettings)
+        } ?? false
         return SettingsMergePlan(
             settings: settings,
             readings: corePlan.readingIDs.sorted().compactMap { corePlan.readings[$0] },
             readingIDs: corePlan.readingIDs,
-            needsPublish: corePlan.needsPublish
+            needsPublish: corePlan.needsPublish || keepsLocalSettings
         )
     }
 
@@ -424,8 +451,10 @@ class UserSettingsSyncManager {
         // and would make the local always look newer than remote.
         let settingsUpdated: Bool
         if let settings = plan.settings {
+            // The plan has already chosen field by field; a merge keeps the
+            // later row's time, which need not be newer than this device's.
             settingsUpdated = try UserDatabase.shared.mergeSettings(
-                from: settings, force: base != nil
+                from: settings, force: true
             )
         } else {
             settingsUpdated = false

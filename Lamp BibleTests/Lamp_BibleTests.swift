@@ -1272,6 +1272,42 @@ final class Lamp_BibleTests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsPlanWithoutBaseKeepsTheLibrarysSettingsOverAFreshInstall() throws {
+        // A fresh install's row is stamped at install, so it is newer than
+        // the library's. Its untouched settings must not reset the library's.
+        var fresh = try UserDatabase.shared.factorySettings()
+        fresh.updatedAt = Date(timeIntervalSince1970: 300)
+        var library = fresh
+        library.updatedAt = Date(timeIntervalSince1970: 100)
+        library.planReaderCount = 3
+        library.planExternalBible = "Logos"
+        library.planWpm = 220
+
+        let joined = try UserSettingsSyncManager.shared.planSettingsMerge(
+            localSettings: fresh, localReadings: [],
+            remoteSettings: library, remoteReadings: [], base: nil
+        )
+        XCTAssertEqual(joined.settings?.planReaderCount, 3)
+        XCTAssertEqual(joined.settings?.planExternalBible, "Logos")
+        XCTAssertEqual(joined.settings?.planWpm, 220)
+        XCTAssertFalse(joined.needsPublish, "Nothing of the fresh install's to send")
+
+        // A setting chosen here before joining is kept and sent; one both
+        // chose goes to the later edit.
+        var chosen = fresh
+        chosen.readerCrossReferenceSort = "c"
+        chosen.planWpm = 260
+        let mixed = try UserSettingsSyncManager.shared.planSettingsMerge(
+            localSettings: chosen, localReadings: [],
+            remoteSettings: library, remoteReadings: [], base: nil
+        )
+        XCTAssertEqual(mixed.settings?.readerCrossReferenceSort, "c")
+        XCTAssertEqual(mixed.settings?.planReaderCount, 3)
+        XCTAssertEqual(mixed.settings?.planWpm, 260)
+        XCTAssertTrue(mixed.needsPublish)
+    }
+
+    @MainActor
     func testLocalOnlyDefaultModulesDoNotRequireRemoteStorage() async throws {
         let coordinator = SyncCoordinator.shared
         let previous = coordinator.settings
