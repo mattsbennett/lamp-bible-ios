@@ -7250,6 +7250,22 @@ extension LibrarySyncPassTests {
         XCTAssertEqual(try Data(contentsOf: kept), own, "the commentary's picture is its own")
         XCTAssertTrue(first.broughtDown.contains(path), "taken once, as here")
         XCTAssertFalse(second.broughtDown.contains(path), "and not fetched again")
+
+        // Deleted elsewhere: the pass still syncs, reports no deletion left
+        // undone, and the commentary's picture stays.
+        let stored = await server.file(path)
+        let revision = try XCTUnwrap(stored?.revision)
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(
+                path, at: ModuleDatabase.nowMilliseconds() + 1_000, revision: revision
+            )
+        }
+        try await server.delete(path, condition: .ifRevision(revision))
+        guard case .synced(_, let third) = try await pass().run() else { return XCTFail("the third pass syncs") }
+
+        XCTAssertFalse(third.deletionsNotCarriedOut.contains(path), "nothing reported as left undone")
+        XCTAssertTrue(third.sent.isEmpty, "and nothing sent back")
+        XCTAssertEqual(try Data(contentsOf: kept), own, "the commentary's picture is still its own")
     }
 
     /// A book brought in by the older module sync fetches each picture where

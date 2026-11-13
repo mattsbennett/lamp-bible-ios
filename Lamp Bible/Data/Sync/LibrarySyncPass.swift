@@ -541,25 +541,26 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         }
 
         // A book's pictures, by core's rules, for the books in the library
-        // and any the manifest already names, less an ID held here as
-        // another kind. The cache they're kept in also holds commentaries',
-        // dictionaries' and notes' pictures, and those of the books that
-        // came with the app: none goes up as a book's.
+        // and any the manifest already names. The cache they're kept in also
+        // holds commentaries', dictionaries' and notes' pictures, and those
+        // of the books that came with the app: none goes up as a book's, and
+        // a book whose ID is another module's here has no folder of its own
+        // (`bookOnly`) to send from.
         let held = heldModules.values
         otherModuleIDs = Set(held.filter { $0.type != .book }.map(\.id))
-        let books = LampBookMediaFiles.publishedBookModuleIDs(
-            books: Set(held.filter { $0.type == .book }.map(\.id)),
-            otherModules: otherModuleIDs,
-            remotePaths: manifest.members.map(\.path)
-        )
         // One the library holds for a book whose ID is another module's here
         // is kept off this device, as taken when it was last fetched: held,
         // so later passes neither fetch it again nor count it as missing.
+        // Not one under a tombstone: no library carries out a deletion of a
+        // book's picture, so held there it would be planned to go back up.
         for member in manifest.members where keptOffForAnotherModule(member.path) {
             gathered.heldWithoutAFile.insert(member.path)
         }
         let pictures = LampBookMediaFiles.outgoing(
-            forBookModuleIDs: books, folders: ModuleMediaStorage.shared.bookFolders(for:)
+            books: Set(held.filter { $0.type == .book }.map(\.id)),
+            otherModules: otherModuleIDs,
+            remotePaths: manifest.members.map(\.path),
+            folders: ModuleMediaStorage.shared.bookFolders(for:)
         )
         for file in pictures.files {
             guard let digest = try? LampSyncContentRevision.digest(forFileAt: file.url) else { continue }
