@@ -7177,6 +7177,24 @@ extension LibrarySyncPassTests {
     }
 }
 
+extension LibrarySyncPassTests {
+    /// A note's picture keeps its path within the folder when the folder is
+    /// reached through a link, as Documents is on a device: /var is a link
+    /// to /private/var, and the walk names each file under the latter. Here
+    /// /tmp stands for /var: a link to /private/tmp.
+    func testAPictureKeepsItsPathThroughALinkedFolder() throws {
+        let documents = URL(fileURLWithPath: "/tmp/lamp-media-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let picture = documents.appendingPathComponent("NoteMedia/notes-1/pic.jpg")
+        try FileManager.default.createDirectory(at: picture.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("a picture".utf8).write(to: picture)
+
+        let found = LibrarySyncPass.mediaFiles(in: documents, directory: "NoteMedia")
+
+        XCTAssertEqual(Array(found.keys), ["NoteMedia/notes-1/pic.jpg"])
+    }
+}
+
 /// A book's pictures, found by core's rules (`LampBookMediaFiles`) in the
 /// book's own folder of the module media cache.
 final class BookMediaTests: XCTestCase {

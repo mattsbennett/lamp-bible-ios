@@ -330,6 +330,27 @@ struct LibrarySyncPass {
         }
     }
 
+    /// The files under `directory` of `documents`, by server path: the
+    /// directory's own name, then each file's path within it. On a device the
+    /// walk names each file under /private/var though Documents is under
+    /// /var, so both are standardized before one is taken from the other, as
+    /// core takes a book's pictures.
+    static func mediaFiles(in documents: URL, directory: String) -> [String: URL] {
+        let root = documents.appendingPathComponent(directory, isDirectory: true)
+        guard let files = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return [:] }
+        let prefix = root.standardizedFileURL.path + "/"
+        var media: [String: URL] = [:]
+        for case let url as URL in files
+        where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(prefix) else { continue }
+            media["\(directory)/\(path.dropFirst(prefix.count))"] = url
+        }
+        return media
+    }
+
     /// The module a media file belongs to, as a path in the library.
     static func modulePath(forMedia path: String) -> String? {
         guard let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
@@ -700,19 +721,8 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     private func localMedia() -> [String: URL] {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         var media: [String: URL] = [:]
-        for (localRoot, remoteRoot) in [
-            (LampSyncFolderLayout.devotionalMediaDirectory, LampSyncFolderLayout.devotionalMediaDirectory),
-            (LampSyncFolderLayout.noteMediaDirectory, LampSyncFolderLayout.noteMediaDirectory),
-        ] {
-            let root = documents.appendingPathComponent(localRoot, isDirectory: true)
-            guard let files = FileManager.default.enumerator(
-                at: root, includingPropertiesForKeys: [.isRegularFileKey]
-            ) else { continue }
-            for case let url as URL in files
-            where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
-                let relative = url.path.dropFirst(root.path.count).drop { $0 == "/" }
-                media["\(remoteRoot)/\(relative)"] = url
-            }
+        for directory in [LampSyncFolderLayout.devotionalMediaDirectory, LampSyncFolderLayout.noteMediaDirectory] {
+            media.merge(LibrarySyncPass.mediaFiles(in: documents, directory: directory)) { kept, _ in kept }
         }
         return media
     }
