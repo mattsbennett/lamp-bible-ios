@@ -7,8 +7,8 @@
 
 import SwiftUI
 
-/// Displays media (image or audio) for commentary/dictionary/notes modules
-/// This is a reusable component that handles both image and audio types
+/// Displays a book's media (image or audio), found by core's rules for a
+/// book's pictures (`ModuleMediaStorage.bookMediaURL`)
 struct ModuleMediaView: View {
     let mediaRef: MediaReference
     let moduleId: String
@@ -147,18 +147,14 @@ struct ModuleMediaView: View {
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            if let image = ModuleMediaStorage.shared.loadImage(for: mediaRef, moduleId: moduleId) {
-                DispatchQueue.main.async {
-                    self.loadedImage = image
-                    self.isLoading = false
-                }
-            } else {
-                DispatchQueue.main.async {
-                    self.loadError = true
-                    self.isLoading = false
-                }
-            }
+        // Found by core's rules for a book's pictures: here, or on the web.
+        let url = ModuleMediaStorage.shared.bookMediaURL(for: mediaRef, moduleId: moduleId)
+        Task {
+            var image: UIImage?
+            if let url { image = await ModuleMediaStorage.bookImage(at: url) }
+            loadedImage = image
+            loadError = image == nil
+            isLoading = false
         }
     }
 }
@@ -171,12 +167,18 @@ struct ModuleAudioPlayerView: View {
 
     @StateObject private var player = AudioPlayer()
 
+    /// The recording, where a book's pictures are found; one only on the web
+    /// can't be played, as the player reads files.
+    private var playableURL: URL? {
+        ModuleMediaStorage.shared.bookMediaURL(for: mediaRef, moduleId: moduleId).flatMap { $0.isFileURL ? $0 : nil }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 // Play/Pause button
                 Button {
-                    if let url = ModuleMediaStorage.shared.getMediaURL(for: mediaRef, moduleId: moduleId) {
+                    if let url = playableURL {
                         if !player.isLoaded(url: url) {
                             player.load(url: url)
                         }
@@ -232,7 +234,7 @@ struct ModuleAudioPlayerView: View {
         .background(Color(UIColor.secondarySystemBackground))
         .cornerRadius(12)
         .onAppear {
-            if let url = ModuleMediaStorage.shared.getMediaURL(for: mediaRef, moduleId: moduleId) {
+            if let url = playableURL {
                 player.load(url: url)
             }
         }

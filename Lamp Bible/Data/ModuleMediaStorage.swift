@@ -9,6 +9,7 @@ import Foundation
 import UIKit
 import AVFoundation
 import Accelerate
+import LampModuleKit
 
 /// Handles media file storage for all module types (commentaries, dictionaries, notes)
 /// Media files are stored in a local cache directory and can be synced to/from cloud storage
@@ -59,6 +60,39 @@ class ModuleMediaStorage {
             ? mediaRef.filename
             : "__invalid_media_reference__"
         return mediaDirectory(for: moduleId).appendingPathComponent(filename)
+    }
+
+    // MARK: - Books
+
+    /// Where a book's pictures are kept here, for core's rules
+    /// (`LampBookMediaFiles`) to find, publish and install them by: the
+    /// book's own folder in the cache, shared with no other book.
+    func bookFolders(for moduleId: String) -> LampBookMediaFiles.Folders {
+        let folder = mediaDirectory(for: moduleId)
+        return LampBookMediaFiles.Folders(read: [folder], install: folder)
+    }
+
+    /// Where a picture a book names is: here, or the web address it names.
+    func bookMediaURL(for mediaRef: MediaReference, moduleId: String) -> URL? {
+        LampBookMediaFiles.url(for: mediaRef.filename, in: bookFolders(for: moduleId))
+    }
+
+    /// Where a picture a book names is put when it arrives, so the reader
+    /// finds it there; nil for a name that climbs out of the book's folder.
+    func bookMediaInstallURL(for mediaRef: MediaReference, moduleId: String) -> URL? {
+        LampPortableBookJSON.safeRelativeMediaPath(mediaRef.filename).map {
+            bookFolders(for: moduleId).install.appendingPathComponent($0)
+        }
+    }
+
+    /// A book's picture where `bookMediaURL` found it, read here or fetched
+    /// from the web, off the main thread.
+    static func bookImage(at url: URL) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            if url.isFileURL { return UIImage(contentsOfFile: url.path) }
+            guard let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+            return UIImage(data: data)
+        }.value
     }
 
     // MARK: - Image Operations
@@ -226,9 +260,8 @@ class ModuleMediaStorage {
         try ensureMediaDirectory(for: moduleId)
 
         for mediaRef in mediaRefs {
-            guard BookMediaPath.isSafeMediaPath(mediaRef.filename) else { continue }
+            guard let destURL = bookMediaInstallURL(for: mediaRef, moduleId: moduleId) else { continue }
             let sourceURL = bundleMediaDir.appendingPathComponent(mediaRef.filename)
-            let destURL = expectedMediaURL(for: mediaRef, moduleId: moduleId)
 
             if fileManager.fileExists(atPath: sourceURL.path) {
                 try fileManager.createDirectory(

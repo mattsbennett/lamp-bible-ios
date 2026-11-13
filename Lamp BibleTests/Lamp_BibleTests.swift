@@ -7116,6 +7116,94 @@ extension LibrarySyncPassTests {
     }
 }
 
+extension LibrarySyncPassTests {
+    /// A picture's file in the module media cache, where a book's import or
+    /// a sync leaves it.
+    private func cachePicture(_ path: String, of moduleId: String, _ bytes: Data) throws {
+        let url = ModuleMediaStorage.shared.mediaDirectory(for: moduleId).appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try bytes.write(to: url)
+    }
+
+    /// A book installed here: a module with a file, read-only.
+    private func saveBook(_ id: String) throws {
+        try database.saveModule(Module(
+            id: id, type: .book, name: "A Book", filePath: "\(id).lamp", isEditable: false
+        ))
+    }
+
+    /// The cache a book's pictures are kept in also holds commentaries',
+    /// dictionaries' and notes' pictures. Only a book's go up as a book's:
+    /// those of the books here, and of any the library already holds
+    /// pictures for.
+    func testOnlyABooksPicturesGoUpFromTheCacheTheyShare() async throws {
+        let book = "\(moduleId!)-book", named = "\(moduleId!)-named", commentary = "\(moduleId!)-commentary"
+        defer {
+            for id in [book, named, commentary] { try? ModuleMediaStorage.shared.deleteAllMedia(for: id) }
+            try? database.deleteModule(id: book)
+        }
+        try saveBook(book)
+        try cachePicture("figures/map.png", of: book, Data("the book's map".utf8))
+        try cachePicture("cover.png", of: named, Data("a cover".utf8))
+        try cachePicture("plate.png", of: commentary, Data("a commentary's plate".utf8))
+        try await publishElsewhere("BookMedia/\(named)/title.png", Data("already there".utf8))
+
+        _ = try await pass().run()
+
+        let map = await server.file("BookMedia/\(book)/figures/map.png")
+        XCTAssertEqual(map?.data, Data("the book's map".utf8), "a book here sends its pictures")
+        let cover = await server.file("BookMedia/\(named)/cover.png")
+        XCTAssertEqual(cover?.data, Data("a cover".utf8), "as does one whose pictures the library holds")
+        let plate = await server.file("BookMedia/\(commentary)/plate.png")
+        XCTAssertNil(plate, "a commentary's picture never goes up as a book's")
+    }
+
+    /// One published elsewhere arrives where the book's reader looks.
+    func testABooksPictureFromElsewhereArrivesWhereTheReaderLooks() async throws {
+        let book = "\(moduleId!)-book"
+        defer {
+            try? ModuleMediaStorage.shared.deleteAllMedia(for: book)
+            try? database.deleteModule(id: book)
+        }
+        try saveBook(book)
+        let bytes = Data("the map".utf8)
+        try await publishElsewhere("BookMedia/\(book)/figures/map.png", bytes)
+
+        _ = try await pass().run()
+
+        let map = MediaReference(type: .image, filename: "figures/map.png", mimeType: "image/png")
+        let found = try XCTUnwrap(ModuleMediaStorage.shared.bookMediaURL(for: map, moduleId: book))
+        XCTAssertEqual(try Data(contentsOf: found), bytes)
+    }
+}
+
+/// A book's pictures, found by core's rules (`LampBookMediaFiles`) in the
+/// book's own folder of the module media cache.
+final class BookMediaTests: XCTestCase {
+    /// Kept here under the name it is put by, one written escaped included;
+    /// a web address is its own answer; nothing outside the book's folder is.
+    func testABooksPictureIsFoundWhereItIsPut() throws {
+        let book = "book-media-\(UUID().uuidString.lowercased())"
+        let storage = ModuleMediaStorage.shared
+        defer { try? storage.deleteAllMedia(for: book) }
+
+        let escaped = MediaReference(type: .image, filename: "plates/Figure%201.png", mimeType: "image/png")
+        let put = try XCTUnwrap(storage.bookMediaInstallURL(for: escaped, moduleId: book))
+        XCTAssertEqual(put.lastPathComponent, "Figure 1.png")
+        XCTAssertNil(storage.bookMediaURL(for: escaped, moduleId: book), "not here yet")
+        try FileManager.default.createDirectory(at: put.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("a plate".utf8).write(to: put)
+        XCTAssertEqual(storage.bookMediaURL(for: escaped, moduleId: book), put)
+
+        let web = MediaReference(type: .image, filename: "https://example.org/map.png", mimeType: "image/png")
+        XCTAssertEqual(storage.bookMediaURL(for: web, moduleId: book), URL(string: "https://example.org/map.png"))
+
+        let climbing = MediaReference(type: .image, filename: "../other/plate.png", mimeType: "image/png")
+        XCTAssertNil(storage.bookMediaURL(for: climbing, moduleId: book))
+        XCTAssertNil(storage.bookMediaInstallURL(for: climbing, moduleId: book))
+    }
+}
+
 final class NoteMediaTests: XCTestCase {
     private let database = ModuleDatabase.shared
     private var moduleId: String!

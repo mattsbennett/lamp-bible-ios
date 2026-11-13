@@ -500,8 +500,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             heldModules[path] = (type, id)
         }
 
-        // Media only for modules in the library: the cache also holds media
-        // for books that came with the app, which are no one's to upload.
+        // Media only for modules in the library.
         let libraryModules = Set(heldModules.keys).union(manifest.members.map(\.path))
         for (path, url) in localMedia() {
             guard manifest.entry(at: path) != nil
@@ -509,6 +508,25 @@ final class PhonePassLibrary: LampSyncPassLibrary {
                   let kind = LampSyncFolderLayout.kind(of: path),
                   let digest = try? LampSyncContentRevision.digest(forFileAt: url) else { continue }
             gathered.local.append(LampSyncLocalFile(path: path, kind: kind, url: url, digest: digest))
+        }
+
+        // A book's pictures, by core's rules, for the books in the library
+        // and any the manifest already names. The cache they're kept in also
+        // holds commentaries', dictionaries' and notes' pictures, and those
+        // of the books that came with the app: none goes up as a book's.
+        let books = Set(heldModules.values.filter { $0.type == .book }.map(\.id))
+            .union(LampBookMediaFiles.bookModuleIDs(inRemotePaths: manifest.members.map(\.path)))
+        let pictures = LampBookMediaFiles.outgoing(
+            forBookModuleIDs: books, folders: ModuleMediaStorage.shared.bookFolders(for:)
+        )
+        for file in pictures.files {
+            guard let digest = try? LampSyncContentRevision.digest(forFileAt: file.url) else { continue }
+            gathered.local.append(LampSyncLocalFile(
+                path: file.remotePath, kind: .bookMedia, url: file.url, digest: digest
+            ))
+        }
+        for kept in pictures.unplaceable {
+            print("[LibrarySync] book picture \(kept.path) kept here: \(kept.reason)")
         }
 
         carriedDeletions = try database.pendingManifestChanges(source: source).filter { $0.change == .delete }
@@ -677,14 +695,14 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         return translations + plans + quizzes + others
     }
 
-    /// Media present on this device, by server path.
+    /// Writings' and notes' media present on this device, by server path.
+    /// A book's pictures are gathered by core's rules instead.
     private func localMedia() -> [String: URL] {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         var media: [String: URL] = [:]
         for (localRoot, remoteRoot) in [
             (LampSyncFolderLayout.devotionalMediaDirectory, LampSyncFolderLayout.devotionalMediaDirectory),
             (LampSyncFolderLayout.noteMediaDirectory, LampSyncFolderLayout.noteMediaDirectory),
-            ("ModuleMediaCache", LampSyncFolderLayout.bookMediaDirectory),
         ] {
             let root = documents.appendingPathComponent(localRoot, isDirectory: true)
             guard let files = FileManager.default.enumerator(
@@ -705,8 +723,9 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         case .devotionalMedia, .noteMedia:
             return documents.appendingPathComponent(path)
         case .bookMedia:
-            let rest = path.dropFirst(LampSyncFolderLayout.bookMediaDirectory.count + 1)
-            return documents.appendingPathComponent("ModuleMediaCache").appendingPathComponent(String(rest))
+            return LampBookMediaFiles.installURL(
+                forRemotePath: path, folders: ModuleMediaStorage.shared.bookFolders(for:)
+            )
         default:
             return nil
         }

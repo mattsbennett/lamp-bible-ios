@@ -467,8 +467,14 @@ private struct BookCover: View {
         }
         .shadow(color: .black.opacity(compact ? 0.08 : 0.14), radius: compact ? 1.5 : 6, x: 0, y: compact ? 1 : 4)
         .onAppear {
-            guard image == nil, let cover = book.coverMediaReference else { return }
-            image = ModuleMediaStorage.shared.loadImage(for: cover, moduleId: book.id)
+            guard image == nil, let cover = book.coverMediaReference,
+                  let url = ModuleMediaStorage.shared.bookMediaURL(for: cover, moduleId: book.id) else { return }
+            // One kept here is shown at once, as before; one on the web when it comes.
+            if url.isFileURL {
+                image = UIImage(contentsOfFile: url.path)
+            } else {
+                Task { image = await ModuleMediaStorage.bookImage(at: url) }
+            }
         }
         .accessibilityHidden(true)
     }

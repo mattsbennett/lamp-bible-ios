@@ -2030,16 +2030,16 @@ class ModuleSyncManager: ObservableObject {
             throw ModuleSyncError.moduleNotFound(moduleId)
         }
         return try book.mediaReferences.map { mediaRef in
-            guard BookMediaPath.isSafeMediaPath(mediaRef.filename) else {
+            guard let localURL = ModuleMediaStorage.shared.bookMediaInstallURL(
+                for: mediaRef, moduleId: moduleId
+            ) else {
                 throw forExport
                     ? ModuleSyncError.exportFailed("Invalid book media filename: \(mediaRef.filename)")
                     : ModuleSyncError.importFailed("Invalid book media filename: \(mediaRef.filename)")
             }
             return LampSyncReferencedMedia.Item(
                 remotePath: "BookMedia/\(moduleId)/\(mediaRef.filename)",
-                localURL: ModuleMediaStorage.shared.expectedMediaURL(
-                    for: mediaRef, moduleId: moduleId
-                )
+                localURL: localURL
             )
         }
     }
