@@ -49,17 +49,33 @@ struct ReadingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            hero
-                .if(stackHorizontally) { view in
-                    view.frame(maxWidth: 560)
+        Group {
+            if stackHorizontally {
+                // Each reading its own card, side by side, under the day's.
+                VStack(alignment: .leading, spacing: 22) {
+                    hero
+                        .clipShape(RoundedRectangle(cornerRadius: LampTheme.Radius.panel, style: .continuous))
+                        .shadow(color: Color(red: 0.55, green: 0.1, blue: 0.2).opacity(0.22), radius: 18, y: 8)
+                        .frame(maxWidth: 560)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("^[\(readings.count) Reading](inflect: true)")
+                            .lampSectionHeader()
+                            .padding(.horizontal, 6)
+                            .accessibilityAddTraits(.isHeader)
+                        readingCards
+                    }
                 }
-            VStack(alignment: .leading, spacing: 10) {
-                Text("^[\(readings.count) Reading](inflect: true)")
-                    .lampSectionHeader()
-                    .padding(.horizontal, 6)
-                    .accessibilityAddTraits(.isHeader)
-                readingsList
+            } else {
+                // The day card heads the readings in one card: it folds, and
+                // they stay. It already counts them, so they need no heading
+                // of their own.
+                VStack(alignment: .leading, spacing: 0) {
+                    hero
+                    readingsList
+                }
+                .background(LampTheme.card)
+                .clipShape(RoundedRectangle(cornerRadius: LampTheme.Radius.panel, style: .continuous))
+                .shadow(color: .black.opacity(0.08), radius: 14, y: 6)
             }
         }
         .task(id: readings.first(where: { !isRead($0) })?.sv) {
@@ -94,11 +110,7 @@ struct ReadingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            HeroBackground()
-                .clipShape(RoundedRectangle(cornerRadius: LampTheme.Radius.panel, style: .continuous))
-        }
-        .shadow(color: Color(red: 0.55, green: 0.1, blue: 0.2).opacity(0.22), radius: 18, y: 8)
+        .background { HeroBackground() }
     }
 
     private func heroCard(readCount: Int) -> some View {
@@ -368,31 +380,30 @@ struct ReadingsView: View {
 
     // MARK: - Readings
 
-    /// The day's readings in one card on a phone; on a wide screen, each its
-    /// own card side by side.
-    @ViewBuilder
-    private var readingsList: some View {
-        if stackHorizontally {
-            ConditionalStack(isHorizonalStack: true) {
-                ForEach(Array(readings.enumerated()), id: \.element.id) { index, reading in
-                    row(reading)
-                        .frame(width: 325)
-                        .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
-                        .id(index)
-                }
+    /// On a wide screen, each reading its own card, side by side.
+    private var readingCards: some View {
+        ConditionalStack(isHorizonalStack: true) {
+            ForEach(Array(readings.enumerated()), id: \.element.id) { index, reading in
+                row(reading)
+                    .frame(width: 325)
+                    .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+                    .id(index)
             }
-        } else {
-            VStack(spacing: 0) {
-                ForEach(Array(readings.enumerated()), id: \.element.id) { index, reading in
-                    if index > 0 {
-                        Divider().padding(.leading, 62)
-                    }
-                    row(reading)
-                        .id(index)
-                }
-            }
-            .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
         }
+    }
+
+    /// On a phone, the day's readings under the day card, one to a row.
+    private var readingsList: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(readings.enumerated()), id: \.element.id) { index, reading in
+                if index > 0 {
+                    Divider().padding(.leading, 62)
+                }
+                row(reading)
+                    .id(index)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private func row(_ reading: ReadingMetaData) -> some View {
