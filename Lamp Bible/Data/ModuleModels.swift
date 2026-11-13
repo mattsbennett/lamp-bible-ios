@@ -404,7 +404,7 @@ struct BookJSONImportDescriptor: Equatable {
         guard !title.isEmpty else { throw BookJSONImportError.missingTitle }
         guard !document.sections.isEmpty else { throw BookJSONImportError.missingSections }
         let mediaReferences = document.media ?? []
-        guard mediaReferences.allSatisfy({ BookMediaPath.isSafeMediaPath($0.filename) }) else {
+        guard mediaReferences.allSatisfy({ BookMediaPath.isBookPicture($0.filename) }) else {
             throw BookJSONImportError.unsafeMediaFilename
         }
 
@@ -451,7 +451,7 @@ enum BookJSONImportError: LocalizedError, Equatable {
         case .missingModuleID: "The book metadata is missing its module ID."
         case .missingTitle: "The book metadata is missing its title."
         case .missingSections: "The book does not contain any sections."
-        case .unsafeMediaFilename: "A book media filename contains an unsafe path."
+        case .unsafeMediaFilename: "The book names a picture by a name that can't be kept or synced."
         }
     }
 }
@@ -463,6 +463,17 @@ enum BookMediaPath {
 
     static func isSafeMediaPath(_ path: String) -> Bool {
         LampPortableBookJSON.safeRelativeMediaPath(path) != nil
+    }
+
+    /// Whether a book may name this picture: by a web address, or by a name
+    /// core can keep and sync (`LampBookMediaFiles.relativePath`). One that
+    /// decodes to a hidden file, say, would be saved with the book and then
+    /// never brought in with it.
+    static func isBookPicture(_ filename: String) -> Bool {
+        if let scheme = URL(string: filename)?.scheme?.lowercased(), scheme == "https" || scheme == "http" {
+            return true
+        }
+        return LampBookMediaFiles.relativePath(forFilename: filename) != nil
     }
 }
 

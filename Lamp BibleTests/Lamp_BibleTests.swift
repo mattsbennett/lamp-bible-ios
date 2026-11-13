@@ -771,6 +771,25 @@ final class Lamp_BibleTests: XCTestCase {
         }
     }
 
+    /// A picture named so that it decodes to one sync can't carry, a hidden
+    /// file, is refused before the book is saved; one on the web is not.
+    func testBookJSONDescriptorRefusesAPictureNameSyncCantCarry() throws {
+        func book(naming filename: String) -> Data {
+            Data("""
+            {
+              "meta": {"id":"named-book","type":"book","title":"Named","language":"en"},
+              "sections": [{"id":"one","type":"chapter","title":"One","content":[]}],
+              "media": [{"id":"cover","type":"image","filename":"\(filename)","mimeType":"image/png"}]
+            }
+            """.utf8)
+        }
+        XCTAssertThrowsError(try BookJSONImportDescriptor.decode(from: book(naming: "%2Ecover.png"))) { error in
+            XCTAssertEqual(error as? BookJSONImportError, .unsafeMediaFilename)
+        }
+        XCTAssertNoThrow(try BookJSONImportDescriptor.decode(from: book(naming: "https://example.org/cover.png")))
+        XCTAssertNoThrow(try BookJSONImportDescriptor.decode(from: book(naming: "plates/Figure%201.png")))
+    }
+
     func testBookSectionKeepsValidBlocksAroundMalformedEntry() {
         let section = BookSection(
             id: "book:chapter", moduleId: "book", sectionId: "chapter",
@@ -7178,13 +7197,12 @@ extension LibrarySyncPassTests {
         XCTAssertNil(plate, "the commentary's picture doesn't go up as the book's")
     }
 
-    /// A book brought in by the older module sync fetches each picture where
-    /// a pass publishes it, by the name decoded, and one sent before that at
-    /// the name as the book writes it.
-    func testAnOlderDownloadFindsAPictureUnderEitherName() async throws {
-        let book = "\(moduleId!)-book"
+    /// A book imported here naming two pictures by escaped names,
+    /// `plates/Figure%201.png` and `plates/Figure%202.png`, with neither
+    /// file beside it. Removed, with its pictures, by the defer it returns.
+    private func importPlatesBook(_ book: String) async throws -> () -> Void {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(book, isDirectory: true)
-        defer {
+        let cleanUp = { [database] in
             try? FileManager.default.removeItem(at: folder)
             try? database.deleteAllEntriesForModule(moduleId: book)
             try? database.deleteModule(id: book)
@@ -7204,6 +7222,16 @@ extension LibrarySyncPassTests {
         }
         """.utf8).write(to: json)
         try await ModuleSyncManager.shared.importModuleDocumentFromFile(url: json, moduleType: .book)
+        return cleanUp
+    }
+
+    /// A book brought in by the older module sync fetches each picture where
+    /// a pass publishes it, by the name decoded, and one sent before that at
+    /// the name as the book writes it.
+    func testAnOlderDownloadFindsAPictureUnderEitherName() async throws {
+        let book = "\(moduleId!)-book"
+        let cleanUp = try await importPlatesBook(book)
+        defer { cleanUp() }
 
         let earlier = Data("sent by its written name".utf8), published = Data("published decoded".utf8)
         _ = await server.seed("BookMedia/\(book)/plates/Figure%201.png", earlier)
@@ -7219,6 +7247,56 @@ extension LibrarySyncPassTests {
             XCTAssertEqual(found.lastPathComponent, name == "plates/Figure%201.png" ? "Figure 1.png" : "Figure 2.png")
             XCTAssertEqual(try Data(contentsOf: found), bytes, name)
         }
+    }
+
+    /// Only a server that says there is no picture by the name decoded is
+    /// asked for it by the name as written. One that fails to send it may
+    /// still have it, and the other name may be another picture, which
+    /// would be kept under this one's name for good.
+    func testAnOlderDownloadTriesTheWrittenNameOnlyForOneThatIsntThere() async throws {
+        let book = "\(moduleId!)-book"
+        let cleanUp = try await importPlatesBook(book)
+        defer { cleanUp() }
+        let decoded = try LampSyncFolderLayout.bookMediaPath(moduleID: book, path: "plates/Figure 1.png")
+        let failing = FailingPictureStorage(
+            failing: decoded,
+            files: ["BookMedia/\(book)/plates/Figure%201.png": Data("another picture".utf8)]
+        )
+
+        do {
+            try await ModuleSyncManager.shared.downloadBookMedia(moduleId: book, from: failing)
+            XCTFail("the server's failure is the download's")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .badServerResponse)
+        }
+
+        let ref = MediaReference(type: .image, filename: "plates/Figure%201.png", mimeType: "image/png")
+        XCTAssertNil(ModuleMediaStorage.shared.bookMediaURL(for: ref, moduleId: book), "nothing kept under its name")
+    }
+
+    /// A picture that arrives where core won't let it be kept, through a
+    /// link, fails the pass rather than being recorded as taken, so it is
+    /// neither written through the link nor taken as here.
+    func testAPictureThatCantBeKeptHereIsntRecordedAsTaken() async throws {
+        let book = "\(moduleId!)-book"
+        let elsewhere = FileManager.default.temporaryDirectory.appendingPathComponent("elsewhere-\(book)", isDirectory: true)
+        let cache = ModuleMediaStorage.shared.mediaDirectory(for: book)
+        defer {
+            try? FileManager.default.removeItem(at: cache)
+            try? FileManager.default.removeItem(at: elsewhere)
+            try? database.deleteModule(id: book)
+        }
+        try saveBook(book)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: cache, withDestinationURL: elsewhere)
+        let path = "BookMedia/\(book)/map.png"
+        try await publishElsewhere(path, Data("the map".utf8))
+
+        _ = try? await pass().run()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: elsewhere.appendingPathComponent("map.png").path))
+        XCTAssertNil(try database.syncFileRecord(source: source, path: path))
     }
 
     /// One published elsewhere arrives where the book's reader looks.
@@ -7255,6 +7333,21 @@ extension LibrarySyncPassTests {
         let found = LibrarySyncPass.mediaFiles(in: documents, directory: "NoteMedia")
 
         XCTAssertEqual(Array(found.keys), ["NoteMedia/notes-1/pic.jpg"])
+    }
+}
+
+/// A server that fails to send one path, and holds `files`.
+private struct FailingPictureStorage: ModuleStorage {
+    let failing: String
+    let files: [String: Data]
+
+    func isAvailable() async -> Bool { true }
+    func directoryURL(for type: ModuleType) -> URL? { nil }
+    func getSyncStatus(type: ModuleType, fileName: String) async -> ModuleSyncStatus { .synced }
+    func readFile(path: String) async throws -> Data {
+        if path == failing { throw URLError(.badServerResponse) }
+        guard let data = files[path] else { throw ModuleStorageError.fileNotFound(path) }
+        return data
     }
 }
 
@@ -7314,6 +7407,32 @@ final class BookMediaTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: two, encoding: .utf8), "as written")
         XCTAssertNil(storage.bookMediaInstallURL(for: refs[2], moduleId: book))
         XCTAssertNil(storage.bookMediaURL(for: refs[2], moduleId: book))
+    }
+
+    /// A picture beside the book that is a link isn't brought in: copied, it
+    /// would be the link, which core neither shows nor publishes.
+    func testAnImportLeavesALinkedPictureBehind() throws {
+        let book = "book-media-\(UUID().uuidString.lowercased())"
+        let storage = ModuleMediaStorage.shared
+        let beside = FileManager.default.temporaryDirectory.appendingPathComponent(book, isDirectory: true)
+        defer {
+            try? storage.deleteAllMedia(for: book)
+            try? FileManager.default.removeItem(at: beside)
+        }
+        try FileManager.default.createDirectory(at: beside, withIntermediateDirectories: true)
+        let real = beside.appendingPathComponent("real.png")
+        try Data("a picture".utf8).write(to: real)
+        try FileManager.default.createSymbolicLink(
+            at: beside.appendingPathComponent("linked.png"), withDestinationURL: real
+        )
+        let refs = ["real.png", "linked.png"].map { MediaReference(type: .image, filename: $0, mimeType: "image/png") }
+
+        try storage.importMediaFromBundle(bundleMediaDir: beside, mediaRefs: refs, moduleId: book)
+
+        XCTAssertNotNil(storage.bookMediaURL(for: refs[0], moduleId: book))
+        XCTAssertNil(storage.bookMediaURL(for: refs[1], moduleId: book))
+        let kept = storage.mediaDirectory(for: book).appendingPathComponent("linked.png")
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: kept.path), "no link kept")
     }
 }
 

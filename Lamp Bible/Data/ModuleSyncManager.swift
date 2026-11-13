@@ -2019,10 +2019,14 @@ class ModuleSyncManager: ObservableObject {
         try await LampSyncReferencedMedia.downloadMissing(pictures.map(\.item)) { path in
             do {
                 return try await storage.readFile(path: path)
-            } catch {
+            } catch ModuleStorageError.fileNotFound {
                 // One sent before pictures went up by the name they're kept
-                // under is at the name as the book writes it.
-                guard let earlierPath = earlier[path], earlierPath != path else { throw error }
+                // under is at the name as the book writes it. Only when the
+                // server says there is none: one it failed to send may be
+                // there, and the other name may be another picture.
+                guard let earlierPath = earlier[path], earlierPath != path else {
+                    throw ModuleStorageError.fileNotFound(path)
+                }
                 return try await storage.readFile(path: earlierPath)
             }
         }

@@ -66,10 +66,11 @@ class ModuleMediaStorage {
 
     /// Where a book's pictures are kept here, for core's rules
     /// (`LampBookMediaFiles`) to find, publish and install them by: the
-    /// book's own folder in the cache, shared with no other book.
+    /// book's own folder in the cache, shared with no other book, with no
+    /// link anywhere below the cache.
     func bookFolders(for moduleId: String) -> LampBookMediaFiles.Folders {
         let folder = mediaDirectory(for: moduleId)
-        return LampBookMediaFiles.Folders(read: [folder], install: folder)
+        return LampBookMediaFiles.Folders(read: [folder], install: folder, anchor: mediaBaseDirectory)
     }
 
     /// Where a picture a book names is: here, or the web address it names.
@@ -260,14 +261,13 @@ class ModuleMediaStorage {
 
         for mediaRef in mediaRefs {
             guard let destURL = bookMediaInstallURL(for: mediaRef, moduleId: moduleId) else { continue }
-            // Beside the book under the name decoded, as it is kept, or as
-            // its metadata writes it.
-            let sourceURL = [LampBookMediaFiles.relativePath(forFilename: mediaRef.filename), mediaRef.filename]
-                .compactMap { $0 }
-                .map { bundleMediaDir.appendingPathComponent($0) }
-                .first { fileManager.fileExists(atPath: $0.path) }
-
-            if let sourceURL {
+            // Beside the book, found as core finds a book's pictures: the
+            // name decoded, then as its metadata writes it, and never
+            // through a link, which would be copied as the link.
+            let beside = LampBookMediaFiles.Folders(
+                read: [bundleMediaDir], install: bundleMediaDir, anchor: bundleMediaDir
+            )
+            if let sourceURL = LampBookMediaFiles.url(for: mediaRef.filename, in: beside), sourceURL.isFileURL {
                 try fileManager.createDirectory(
                     at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true
                 )

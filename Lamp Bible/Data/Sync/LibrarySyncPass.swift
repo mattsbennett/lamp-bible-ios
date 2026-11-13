@@ -59,6 +59,9 @@ enum LibrarySyncError: LocalizedError, Equatable {
     case incomplete([String])
     /// A deletion of a whole collection, which this device never carries out.
     case collectionKept(String)
+    /// A picture that arrived with nowhere here core lets it be kept, such
+    /// as through a link: never recorded as taken, so it is tried again.
+    case mediaNotKept(String)
 
     var errorDescription: String? {
         switch self {
@@ -69,6 +72,8 @@ enum LibrarySyncError: LocalizedError, Equatable {
                 : "Some of the library didn't sync: \(first)"
         case .collectionKept(let path):
             return "\(path) holds a whole collection, so it is kept here."
+        case .mediaNotKept(let path):
+            return "\(path) has nowhere on this device it can be kept."
         }
     }
 }
@@ -567,7 +572,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     func install(_ path: String, from url: URL) async throws -> String? {
         switch LampSyncFolderLayout.kind(of: path) {
         case .devotionalMedia, .noteMedia, .bookMedia:
-            guard let local = localURL(forMedia: path) else { return nil }
+            guard let local = localURL(forMedia: path) else { throw LibrarySyncError.mediaNotKept(path) }
             try FileManager.default.createDirectory(
                 at: local.deletingLastPathComponent(), withIntermediateDirectories: true
             )
