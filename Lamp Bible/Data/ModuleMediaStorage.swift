@@ -78,11 +78,10 @@ class ModuleMediaStorage {
     }
 
     /// Where a picture a book names is put when it arrives, so the reader
-    /// finds it there; nil for a name that climbs out of the book's folder.
+    /// finds it there; nil for a name sync can't carry, or that climbs out
+    /// of the book's folder.
     func bookMediaInstallURL(for mediaRef: MediaReference, moduleId: String) -> URL? {
-        LampPortableBookJSON.safeRelativeMediaPath(mediaRef.filename).map {
-            bookFolders(for: moduleId).install.appendingPathComponent($0)
-        }
+        LampBookMediaFiles.installURL(forFilename: mediaRef.filename, in: bookFolders(for: moduleId))
     }
 
     /// A book's picture where `bookMediaURL` found it, read here or fetched
@@ -261,9 +260,14 @@ class ModuleMediaStorage {
 
         for mediaRef in mediaRefs {
             guard let destURL = bookMediaInstallURL(for: mediaRef, moduleId: moduleId) else { continue }
-            let sourceURL = bundleMediaDir.appendingPathComponent(mediaRef.filename)
+            // Beside the book under the name decoded, as it is kept, or as
+            // its metadata writes it.
+            let sourceURL = [LampBookMediaFiles.relativePath(forFilename: mediaRef.filename), mediaRef.filename]
+                .compactMap { $0 }
+                .map { bundleMediaDir.appendingPathComponent($0) }
+                .first { fileManager.fileExists(atPath: $0.path) }
 
-            if fileManager.fileExists(atPath: sourceURL.path) {
+            if let sourceURL {
                 try fileManager.createDirectory(
                     at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true
                 )

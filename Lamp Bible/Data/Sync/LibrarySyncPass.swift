@@ -532,11 +532,16 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         }
 
         // A book's pictures, by core's rules, for the books in the library
-        // and any the manifest already names. The cache they're kept in also
-        // holds commentaries', dictionaries' and notes' pictures, and those
-        // of the books that came with the app: none goes up as a book's.
-        let books = Set(heldModules.values.filter { $0.type == .book }.map(\.id))
-            .union(LampBookMediaFiles.bookModuleIDs(inRemotePaths: manifest.members.map(\.path)))
+        // and any the manifest already names, less an ID held here as
+        // another kind. The cache they're kept in also holds commentaries',
+        // dictionaries' and notes' pictures, and those of the books that
+        // came with the app: none goes up as a book's.
+        let held = heldModules.values
+        let books = LampBookMediaFiles.publishedBookModuleIDs(
+            books: Set(held.filter { $0.type == .book }.map(\.id)),
+            otherModules: Set(held.filter { $0.type != .book }.map(\.id)),
+            remotePaths: manifest.members.map(\.path)
+        )
         let pictures = LampBookMediaFiles.outgoing(
             forBookModuleIDs: books, folders: ModuleMediaStorage.shared.bookFolders(for:)
         )

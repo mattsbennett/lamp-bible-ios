@@ -2012,34 +2012,46 @@ class ModuleSyncManager: ObservableObject {
 
     func downloadBookMedia(moduleId: String, from storage: ModuleStorage) async throws {
         guard await storage.isAvailable() else { throw ModuleStorageError.notAvailable }
-        let items = try bookMediaItems(moduleId: moduleId, forExport: false)
-        try await LampSyncReferencedMedia.downloadMissing(items) { path in
-            try await storage.readFile(path: path)
+        let pictures = try bookMediaItems(moduleId: moduleId)
+        let earlier = Dictionary(
+            pictures.map { ($0.item.remotePath, $0.earlierPath) }, uniquingKeysWith: { first, _ in first }
+        )
+        try await LampSyncReferencedMedia.downloadMissing(pictures.map(\.item)) { path in
+            do {
+                return try await storage.readFile(path: path)
+            } catch {
+                // One sent before pictures went up by the name they're kept
+                // under is at the name as the book writes it.
+                guard let earlierPath = earlier[path], earlierPath != path else { throw error }
+                return try await storage.readFile(path: earlierPath)
+            }
         }
     }
 
-    private func bookMediaItems(
-        moduleId: String, forExport: Bool
-    ) throws -> [LampSyncReferencedMedia.Item] {
+    /// Each picture a book names: where a pass publishes it, as core names
+    /// it, and where it is kept here; with the path as the book writes the
+    /// name, where earlier versions sent it.
+    func bookMediaItems(
+        moduleId: String
+    ) throws -> [(item: LampSyncReferencedMedia.Item, earlierPath: String)] {
         guard BookMediaPath.isSafeFilename(moduleId) else {
-            throw forExport
-                ? ModuleSyncError.exportFailed("Invalid media module ID: \(moduleId)")
-                : ModuleSyncError.importFailed("Invalid media module ID: \(moduleId)")
+            throw ModuleSyncError.importFailed("Invalid media module ID: \(moduleId)")
         }
         guard let book = try database.getBookModule(id: moduleId) else {
             throw ModuleSyncError.moduleNotFound(moduleId)
         }
         return try book.mediaReferences.map { mediaRef in
-            guard let localURL = ModuleMediaStorage.shared.bookMediaInstallURL(
-                for: mediaRef, moduleId: moduleId
-            ) else {
-                throw forExport
-                    ? ModuleSyncError.exportFailed("Invalid book media filename: \(mediaRef.filename)")
-                    : ModuleSyncError.importFailed("Invalid book media filename: \(mediaRef.filename)")
+            guard let relative = LampBookMediaFiles.relativePath(forFilename: mediaRef.filename),
+                  let localURL = ModuleMediaStorage.shared.bookMediaInstallURL(for: mediaRef, moduleId: moduleId)
+            else {
+                throw ModuleSyncError.importFailed("Invalid book media filename: \(mediaRef.filename)")
             }
-            return LampSyncReferencedMedia.Item(
-                remotePath: "BookMedia/\(moduleId)/\(mediaRef.filename)",
-                localURL: localURL
+            return (
+                LampSyncReferencedMedia.Item(
+                    remotePath: try LampSyncFolderLayout.bookMediaPath(moduleID: moduleId, path: relative),
+                    localURL: localURL
+                ),
+                "BookMedia/\(moduleId)/\(mediaRef.filename)"
             )
         }
     }
