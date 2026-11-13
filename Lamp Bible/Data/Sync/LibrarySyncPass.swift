@@ -431,6 +431,10 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     /// What each module path held here is, as the database knows it: a
     /// module's file may be named other than by its ID.
     private var heldModules: [String: (type: ModuleType, id: String)] = [:]
+    /// The IDs held here as modules other than books, gathered with them: a
+    /// book's pictures under one of these IDs would share its folder in the
+    /// cache, so they're neither sent nor taken in.
+    private var otherModuleIDs: Set<String> = []
     /// What each editable module exported as when the pass gathered it,
     /// against which an install finds an edit made while the pass ran.
     private var gatheredDigests: [String: String] = [:]
@@ -542,11 +546,18 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         // dictionaries' and notes' pictures, and those of the books that
         // came with the app: none goes up as a book's.
         let held = heldModules.values
+        otherModuleIDs = Set(held.filter { $0.type != .book }.map(\.id))
         let books = LampBookMediaFiles.publishedBookModuleIDs(
             books: Set(held.filter { $0.type == .book }.map(\.id)),
-            otherModules: Set(held.filter { $0.type != .book }.map(\.id)),
+            otherModules: otherModuleIDs,
             remotePaths: manifest.members.map(\.path)
         )
+        // One the library holds for a book whose ID is another module's here
+        // is kept off this device, as taken when it was last fetched: held,
+        // so later passes neither fetch it again nor count it as missing.
+        for member in manifest.members where keptOffForAnotherModule(member.path) {
+            gathered.heldWithoutAFile.insert(member.path)
+        }
         let pictures = LampBookMediaFiles.outgoing(
             forBookModuleIDs: books, folders: ModuleMediaStorage.shared.bookFolders(for:)
         )
@@ -572,7 +583,15 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     func install(_ path: String, from url: URL) async throws -> String? {
         switch LampSyncFolderLayout.kind(of: path) {
         case .devotionalMedia, .noteMedia, .bookMedia:
-            guard let local = localURL(forMedia: path) else { throw LibrarySyncError.mediaNotKept(path) }
+            guard let local = localURL(forMedia: path) else {
+                // Another module's folder, not this book's: taken as here,
+                // with nothing written, so it isn't fetched on every pass.
+                if keptOffForAnotherModule(path) {
+                    print("[LibrarySync] \(path) kept off this device: its book's ID is another module's here")
+                    return nil
+                }
+                throw LibrarySyncError.mediaNotKept(path)
+            }
             try FileManager.default.createDirectory(
                 at: local.deletingLastPathComponent(), withIntermediateDirectories: true
             )
@@ -744,11 +763,21 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             return documents.appendingPathComponent(path)
         case .bookMedia:
             return LampBookMediaFiles.installURL(
-                forRemotePath: path, folders: ModuleMediaStorage.shared.bookFolders(for:)
+                forRemotePath: path, folders: ModuleMediaStorage.shared.bookFolders(for:),
+                otherModules: otherModuleIDs
             )
         default:
             return nil
         }
+    }
+
+    /// A book's picture that core keeps out of the cache only because its
+    /// book's ID, as the volume compares names, is another module's here.
+    private func keptOffForAnotherModule(_ path: String) -> Bool {
+        let folders = ModuleMediaStorage.shared.bookFolders(for:)
+        return LampSyncFolderLayout.kind(of: path) == .bookMedia
+            && LampBookMediaFiles.installURL(forRemotePath: path, folders: folders, otherModules: otherModuleIDs) == nil
+            && LampBookMediaFiles.installURL(forRemotePath: path, folders: folders) != nil
     }
 
     private func savedAt(_ module: Module) throws -> Int64? {

@@ -7225,6 +7225,33 @@ extension LibrarySyncPassTests {
         return cleanUp
     }
 
+    /// A picture the library holds for a book deleted elsewhere, whose ID is
+    /// a commentary's here, would be written over the commentary's own in
+    /// the folder they'd share. It is kept off this device, and the pass
+    /// neither fails for it nor fetches it again.
+    func testABooksPictureUnderACommentarysIDIsKeptOffThisDevice() async throws {
+        let study = "\(moduleId!)-study"
+        defer {
+            try? ModuleMediaStorage.shared.deleteAllMedia(for: study)
+            try? database.deleteModule(id: study)
+        }
+        try database.saveModule(Module(
+            id: study, type: .commentary, name: "A Study", filePath: "\(study).lamp", isEditable: false
+        ))
+        let own = Data("the commentary's map".utf8)
+        try cachePicture("map.png", of: study, own)
+        let path = "BookMedia/\(study)/map.png"
+        try await publishElsewhere(path, Data("the deleted book's map".utf8))
+
+        guard case .synced(_, let first) = try await pass().run() else { return XCTFail("the first pass syncs") }
+        guard case .synced(_, let second) = try await pass().run() else { return XCTFail("the second pass syncs") }
+
+        let kept = ModuleMediaStorage.shared.mediaDirectory(for: study).appendingPathComponent("map.png")
+        XCTAssertEqual(try Data(contentsOf: kept), own, "the commentary's picture is its own")
+        XCTAssertTrue(first.broughtDown.contains(path), "taken once, as here")
+        XCTAssertFalse(second.broughtDown.contains(path), "and not fetched again")
+    }
+
     /// A book brought in by the older module sync fetches each picture where
     /// a pass publishes it, by the name decoded, and one sent before that at
     /// the name as the book writes it.
