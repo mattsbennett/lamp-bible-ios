@@ -20,8 +20,10 @@ This repository holds the iOS and iPadOS app: its SwiftUI screens, lifecycle, an
 
 ## Repository layout
 
+The app expects its sibling repositories to be cloned into the same parent folder:
+
 ```text
-Personal Repos/
+<parent folder>/
 ├── lamp-bible-core/      shared Swift package (local path dependency)
 ├── lamp-bible-ios/       this repository
 ├── lamp-bible-macos/     the Mac app
