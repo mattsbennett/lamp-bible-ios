@@ -6894,6 +6894,15 @@ final class BundledLexiconTests: XCTestCase {
 /// notes, and the Hebrew word's verses with the Septuagint's Greek beside them.
 final class StrongsSeptuagintTests: XCTestCase {
 
+    /// ἀγάπη is 15 words in the LXX's 600,000-odd, which per thousand read
+    /// "About 0": a rarer word is counted in every ten thousand or more.
+    func testARareWordsRateNeverReadsAsNothing() {
+        XCTAssertEqual(StrongsAnalysisView.rate(perThousand: 3.31), "3.3 in every 1,000")
+        XCTAssertEqual(StrongsAnalysisView.rate(perThousand: 0.024), "2.4 in every 100,000")
+        XCTAssertEqual(StrongsAnalysisView.rate(perThousand: 0.5), "5 in every 10,000")
+        XCTAssertEqual(StrongsAnalysisView.rate(perThousand: 0), "0 in every 1,000")
+    }
+
     /// From the bundle: love's Hebrew, where that Hebrew stands in TAHOT, and
     /// the Septuagint's Greek for a psalm the two number differently.
     func testLovesHebrewIsFoundWithItsVersesAndTheGreekBesideThem() async throws {
