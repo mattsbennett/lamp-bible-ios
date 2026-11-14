@@ -6229,7 +6229,11 @@ final class SearchSpeedTests: XCTestCase {
     func testABDBEntryLeadsBackToItsStrongsNumbers() throws {
         try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
         XCTAssertEqual(try BundledModuleDatabase.shared.getReverseLexiconMappings(targetKey: "BDB3"), ["H3"])
-        XCTAssertEqual(try BundledModuleDatabase.shared.getReverseLexiconMappings(targetKey: "BDB9264"), ["H3", "H4"])
+        // The Aramaic אֵב's entry. The mapping rebuilt from Open Scriptures'
+        // Lexical Index (2026-11-13) leads only H4 there, where the older
+        // one also led H3, the Hebrew word the entry refers back to; until
+        // the bundle with the new mapping ships, either holds.
+        XCTAssertTrue(try BundledModuleDatabase.shared.getReverseLexiconMappings(targetKey: "BDB9264").contains("H4"))
         XCTAssertEqual(try BundledModuleDatabase.shared.getReverseLexiconMappings(targetKey: "BDB-none"), [])
     }
 
@@ -6801,7 +6805,9 @@ final class BundledLexiconTests: XCTestCase {
         XCTAssertEqual(greek.first { $0.lexiconKey == "tbesg" }?.gloss, "love")
 
         let hebrew = LexiconLookup.allEntries(for: "H3")
-        XCTAssertEqual(hebrew.filter { $0.lexiconKey == "bdb" }.compactMap(\.bdbId), ["BDB3", "BDB9264"],
+        // BDB3 is the Hebrew word's own entry. The older mapping also led to
+        // the Aramaic one, BDB9264, which the rebuilt mapping leaves to H4.
+        XCTAssertEqual(hebrew.filter { $0.lexiconKey == "bdb" }.compactMap(\.bdbId).first, "BDB3",
                        "BDB is still reached through the bundle's mappings")
         XCTAssertFalse(hebrew.contains { $0.lexiconKey == "tbesg" })
     }
