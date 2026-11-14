@@ -1596,7 +1596,11 @@ struct SearchView: View {
     @ViewBuilder
     private var searchOffers: some View {
         let query = currentSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reference = LampSearchQuery(query).reference
+        // The translation's own book names are read ahead of the English
+        // ones, so "Juan 3:16" opens John 3:16 in the RV1909, and the offer
+        // names the passage as that translation does.
+        let bookNames = TranslationDatabase.shared.ownBookNames(translationId: translationId)
+        let reference = LampSearchQuery(query).reference(bookNames: bookNames)
         let strongsKey = searchScope == .bible && searchMode == .text && translationHasStrongsAnnotations
             ? LampStrongsKey.typedKey(query) : nil
         if reference != nil || strongsKey != nil {
@@ -1604,7 +1608,7 @@ struct SearchView: View {
                 if let reference {
                     SearchOfferRow(
                         icon: "book",
-                        title: "Go to \(reference.description)",
+                        title: "Go to \(reference.description(bookNames: bookNames))",
                         subtitle: "Open the passage in the reader"
                     ) {
                         navigateToHighlightedVerse(reference.startReference)
