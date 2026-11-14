@@ -6948,9 +6948,15 @@ final class StrongsSeptuagintTests: XCTestCase {
             return XCTFail("No verses: \(String(describing: loader.verses[love.id]))")
         }
         let genesis = try XCTUnwrap(rows.first { $0.reference == 1_029_020 })
-        XCTAssertEqual(genesis.english?.reference, 1_029_020)
-        XCTAssertTrue(genesis.english?.snippet?.word.lowercased().contains("love") == true, genesis.english?.snippet?.word ?? "untagged")
-        XCTAssertNotNil(genesis.greek)
+        guard case .read(let english) = genesis.english else {
+            return XCTFail("No English: \(genesis.english)")
+        }
+        XCTAssertEqual(english.reference, 1_029_020)
+        XCTAssertEqual(genesis.shownReference, 1_029_020, "named and opened at the BSB's own number")
+        XCTAssertTrue(english.snippet?.word.lowercased().contains("love") == true, english.snippet?.word ?? "untagged")
+        guard case .text = genesis.greek else {
+            return XCTFail("No Greek: \(genesis.greek)")
+        }
     }
 
     /// Read in a text that tags none of the Hebrew, as the Septuagint itself
@@ -6970,8 +6976,62 @@ final class StrongsSeptuagintTests: XCTestCase {
             return XCTFail("No verses: \(String(describing: loader.verses[love.id]))")
         }
         let psalm = try XCTUnwrap(rows.first { $0.reference == 19_109_004 })
-        XCTAssertEqual(psalm.english?.reference, 19_108_004)
-        XCTAssertNil(psalm.english?.snippet)
+        guard case .read(let english) = psalm.english else {
+            return XCTFail("No English: \(psalm.english)")
+        }
+        XCTAssertEqual(english.reference, 19_108_004)
+        XCTAssertEqual(psalm.shownReference, 19_108_004)
+        XCTAssertNil(english.snippet)
+    }
+
+    /// A tag's offsets count code points, which a word written with its
+    /// accent as a separate mark has more of than Characters: sliced by
+    /// Character, the mark would land a letter early.
+    func testTheGreekIsMarkedByCodePoint() {
+        let line = "e\u{0301}ν λόγος"
+        XCTAssertEqual(
+            StrongsSeptuagint.marked(line, at: [LampSeptuagintSection.Span(start: 4, end: 9)]),
+            "e\u{0301}ν <mark>λόγος</mark>"
+        )
+        // A span past the end leaves the verse unmarked rather than cut.
+        XCTAssertEqual(StrongsSeptuagint.marked(line, at: [LampSeptuagintSection.Span(start: 4, end: 40)]), line)
+    }
+
+    /// The tagged Septuagint counts ἀγάπη itself, and love's Hebrew is
+    /// narrowed to the verses where the Septuagint uses it, with the Greek
+    /// word marked where it stands in each one.
+    @MainActor
+    func testLovesHebrewIsNarrowedToTheVersesTheSeptuagintRendersWithIt() async throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let loader = SeptuagintLoader()
+        await loader.loadWords(key: "G26")
+        let own = try XCTUnwrap(loader.own, "the Septuagint tags ἀγάπη")
+        XCTAssertEqual(loader.tagging, .tagged(own.translationName))
+        XCTAssertNotNil(LampSeptuagintSection.contrast(newTestament: loader.newTestament, septuagint: own))
+
+        await loader.loadCounts(key: "G26", translationId: "BSBs")
+        XCTAssertTrue(loader.hasCrossed)
+        let love = try XCTUnwrap(loader.words.first { $0.hebrew.strongs == "H160" })
+        let all = try XCTUnwrap(love.references)
+        let rendered = try XCTUnwrap(loader.renderedVerses[love.id])
+        XCTAssertFalse(rendered.isEmpty)
+        XCTAssertTrue(Set(rendered).isSubset(of: Set(all)))
+
+        await loader.loadVerses(for: love, translationId: "BSBs", references: rendered)
+        guard case .rows(let rows) = loader.verses[love.id] else {
+            return XCTFail("No verses: \(String(describing: loader.verses[love.id]))")
+        }
+        XCTAssertEqual(rows.map(\.reference), Array(rendered.prefix(StrongsSeptuagint.shownVerses)))
+        var marked = 0
+        for row in rows {
+            guard case .text(let greek) = row.greek, let spans = loader.greekMarks[row.reference] else { continue }
+            let line = StrongsSeptuagint.marked(greek, at: spans)
+            if let open = line.range(of: "<mark>") {
+                marked += 1
+                XCTAssertTrue(line[open.upperBound...].hasPrefix("ἀγάπ"), line)
+            }
+        }
+        XCTAssertGreaterThan(marked, 0, "the Greek word is marked in the verses it stands in")
     }
 }
 
