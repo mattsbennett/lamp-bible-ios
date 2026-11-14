@@ -25,6 +25,8 @@ struct BookLibraryView: View {
     @State private var pendingImportURL: URL?
     @State private var pendingImportHasSecurityScope = false
     @State private var toast: LampToast?
+    @State private var hasLoaded = false
+    @State private var loadGeneration = 0
 
     private var isSearching: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -54,7 +56,10 @@ struct BookLibraryView: View {
 
     var body: some View {
         Group {
-            if books.isEmpty {
+            if !hasLoaded {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if books.isEmpty {
                 ContentUnavailableView {
                     Label("No Books Installed", systemImage: "books.vertical")
                 } description: {
@@ -82,7 +87,7 @@ struct BookLibraryView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 32)
                 }
-                .refreshable { loadBooks() }
+                .refreshable { await loadBooks() }
             }
         }
         .navigationTitle("Books")
@@ -116,7 +121,7 @@ struct BookLibraryView: View {
         }
         // Full screen rather than a sheet: at the top of a section, a sheet
         // takes pulling the text down as a request to close the book.
-        .fullScreenCover(item: $selectedBook, onDismiss: loadPositions) { item in
+        .fullScreenCover(item: $selectedBook, onDismiss: { Task { await loadPositions() } }) { item in
             BookModuleView(moduleId: item.id)
         }
         .fileImporter(
@@ -153,12 +158,12 @@ struct BookLibraryView: View {
             Text(alertMessage ?? "")
         }
         .lampToast($toast)
-        .task { loadBooks() }
+        .task { await loadBooks() }
         .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
-            loadBooks()
+            Task { await loadBooks() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .bookReadingDidChange)) { _ in
-            loadPositions()
+            Task { await loadPositions() }
         }
     }
 
@@ -261,34 +266,50 @@ struct BookLibraryView: View {
         .buttonStyle(BookCoverButtonStyle())
     }
 
-    private func loadBooks() {
-        var byID: [String: BookLibraryItem] = [:]
-        if let bundled = try? BundledModuleDatabase.shared.getBookModules() {
-            for book in bundled {
-                byID[book.id] = BookLibraryItem(book: book, isBundled: true)
+    /// Reads the shelf off the main actor: every book row, with its
+    /// footnote and media JSON, from both databases is too much to fetch
+    /// while the screen slides in.
+    private func loadBooks() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let (loaded, loadedGenres) = await Task.detached(priority: .userInitiated) {
+            var byID: [String: BookLibraryItem] = [:]
+            if let bundled = try? BundledModuleDatabase.shared.getBookModules() {
+                for book in bundled {
+                    byID[book.id] = BookLibraryItem(book: book, isBundled: true)
+                }
             }
-        }
-        if let installed = try? ModuleDatabase.shared.getBookModules() {
-            for book in installed {
-                byID[book.id] = BookLibraryItem(book: book, isBundled: false)
+            if let installed = try? ModuleDatabase.shared.getBookModules() {
+                for book in installed {
+                    byID[book.id] = BookLibraryItem(book: book, isBundled: false)
+                }
             }
-        }
-        books = byID.values.sorted {
-            $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending
-        }
-        genres = BundledModuleDatabase.shared.bookGenres()
-        loadPositions()
+            let sorted = byID.values.sorted {
+                $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending
+            }
+            return (sorted, BundledModuleDatabase.shared.bookGenres())
+        }.value
+        // A read that a later one overtook would hide a book just imported.
+        guard generation == loadGeneration else { return }
+        books = loaded
+        genres = loadedGenres
+        hasLoaded = true
+        await loadPositions()
     }
 
-    private func loadPositions() {
+    private func loadPositions() async {
         let installed = Set(books.map(\.id))
-        positions = BookReadingState.store().positions().filter { installed.contains($0.key) }
+        let saved = BookReadingState.store().positions().filter { installed.contains($0.key) }
         // Looked up, not kept with the position: a section renamed by a newer
         // edition shows its current title, and the two apps can't disagree.
-        sectionTitles = positions.compactMapValues { position in
-            (try? ModuleDatabase.shared.getBookSectionTitle(id: position.sectionID))
-                ?? (try? BundledModuleDatabase.shared.getBookSectionTitle(id: position.sectionID))
-        }
+        let titles = await Task.detached(priority: .userInitiated) {
+            saved.compactMapValues { position in
+                (try? ModuleDatabase.shared.getBookSectionTitle(id: position.sectionID))
+                    ?? (try? BundledModuleDatabase.shared.getBookSectionTitle(id: position.sectionID))
+            }
+        }.value
+        positions = saved
+        sectionTitles = titles
     }
 
     private func prepareBookImport(from url: URL) {
@@ -316,7 +337,7 @@ struct BookLibraryView: View {
                 )
                 let name = try? ModuleSyncManager.shared.existingModuleName(forDocumentAt: url)
                 if accessing { url.stopAccessingSecurityScopedResource() }
-                loadBooks()
+                await loadBooks()
                 isImporting = false
                 announceImport(name: name ?? nil, replaced: false)
             } catch {
@@ -344,7 +365,7 @@ struct BookLibraryView: View {
                     moduleType: .book
                 )
                 let name = try? ModuleSyncManager.shared.existingModuleName(forDocumentAt: url)
-                loadBooks()
+                await loadBooks()
                 isImporting = false
                 announceImport(name: name ?? nil, replaced: true)
             } catch {

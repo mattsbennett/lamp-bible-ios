@@ -84,7 +84,7 @@ struct ChapterListView: View {
         }
         .sensoryFeedback(.selection, trigger: heldChapter) { _, held in held != nil }
         .task(id: translationId) {
-            loadHeadings()
+            await loadHeadings()
         }
     }
 
@@ -143,16 +143,25 @@ struct ChapterListView: View {
         }
     }
 
-    private func loadHeadings() {
-        var result: [Int: String] = [:]
-        for chapter in 1...max(1, chapterCount) {
-            let headings = (try? TranslationDatabase.shared.getHeadingsForChapter(
-                translationId: translationId, book: book.id, chapter: chapter
-            )) ?? []
-            if let first = headings.min(by: { $0.beforeVerse < $1.beforeVerse }) {
-                result[chapter] = first.text
+    /// A query for each chapter, so off the main actor: Psalms is 150 of
+    /// them, read while the list slides in.
+    private func loadHeadings() async {
+        let translationId = self.translationId
+        let bookId = book.id
+        let count = chapterCount
+        let result = await Task.detached(priority: .userInitiated) {
+            var result: [Int: String] = [:]
+            for chapter in 1...max(1, count) {
+                let headings = (try? TranslationDatabase.shared.getHeadingsForChapter(
+                    translationId: translationId, book: bookId, chapter: chapter
+                )) ?? []
+                if let first = headings.min(by: { $0.beforeVerse < $1.beforeVerse }) {
+                    result[chapter] = first.text
+                }
             }
-        }
+            return result
+        }.value
+        guard !Task.isCancelled else { return }
         chapterHeadings = result
     }
 

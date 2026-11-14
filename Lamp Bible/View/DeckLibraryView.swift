@@ -12,6 +12,7 @@ struct DeckLibraryView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var entries: [PresentationDeckEntry] = []
+    @State private var loadGeneration = 0
     @State private var isImporting = false
     @State private var importError: String?
     @State private var pendingDeckID: String?
@@ -48,9 +49,9 @@ struct DeckLibraryView: View {
             }
             .background(LampTheme.groupedBackground.ignoresSafeArea())
         }
-        .task { reload() }
+        .task { await reload() }
         .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
-            reload()
+            Task { await reload() }
         }
         .fileImporter(
             isPresented: $isImporting,
@@ -183,11 +184,20 @@ struct DeckLibraryView: View {
 
     // MARK: - Actions
 
-    private func reload() {
-        let decks = PresentationDeckStorage.shared
-        // Unable to read the writings, list every deck rather than hide one.
-        entries = (try? DevotionalStorage.shared.getAllWritingIDs())
-            .map(decks.listedEntries(writingIDs:)) ?? decks.entries()
+    /// Reads and decodes every deck file, so off the main actor, as the
+    /// writing views already read the decks. A read that a later one
+    /// overtakes drops its result, so a removed deck can't come back.
+    private func reload() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let loaded = await Task.detached(priority: .userInitiated) {
+            let decks = PresentationDeckStorage.shared
+            // Unable to read the writings, list every deck rather than hide one.
+            return (try? DevotionalStorage.shared.getAllWritingIDs())
+                .map(decks.listedEntries(writingIDs:)) ?? decks.entries()
+        }.value
+        guard generation == loadGeneration else { return }
+        entries = loaded
         if let pendingDeckID, !entries.contains(where: { $0.id == pendingDeckID }) {
             self.pendingDeckID = nil
         }
@@ -198,7 +208,7 @@ struct DeckLibraryView: View {
         case .success(let url):
             do {
                 try PresentationDeckStorage.shared.importDeck(from: url)
-                reload()
+                Task { await reload() }
             } catch {
                 importError = error.localizedDescription
             }
@@ -210,7 +220,7 @@ struct DeckLibraryView: View {
     private func remove(_ entry: PresentationDeckEntry) {
         do {
             try PresentationDeckStorage.shared.removeImportedDeck(id: entry.id)
-            reload()
+            Task { await reload() }
         } catch {
             importError = error.localizedDescription
         }

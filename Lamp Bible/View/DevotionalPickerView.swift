@@ -26,6 +26,7 @@ struct DevotionalPickerView: View {
     @State private var availableTags: [String] = []
     @State private var availableCategories: [String] = []
     @State private var isLoading: Bool = true
+    @State private var loadGeneration: Int = 0
     @State private var showingNewDevotional: Bool = false
     @State private var showingSortMenu: Bool = false
     @State private var showingFilterSheet: Bool = false
@@ -556,14 +557,19 @@ struct DevotionalPickerView: View {
                             // its own disclosure mark in its own colour.
                             ZStack {
                                 NavigationLink {
-                                    DevotionalView(
-                                        devotional: devotional,
-                                        moduleId: selectedModuleId,
-                                        initialMode: .read,
-                                        onBack: {
-                                            loadDevotionals()
-                                        }
-                                    )
+                                    // Built on the push, not with the row:
+                                    // the writing view's init converts and
+                                    // re-encodes the writing.
+                                    DeferredDestination {
+                                        DevotionalView(
+                                            devotional: devotional,
+                                            moduleId: selectedModuleId,
+                                            initialMode: .read,
+                                            onBack: {
+                                                loadDevotionals()
+                                            }
+                                        )
+                                    }
                                 } label: {
                                     EmptyView()
                                 }
@@ -629,42 +635,63 @@ struct DevotionalPickerView: View {
         }.value
     }
 
+    /// One module's writings, with the tags and categories to filter them by.
+    private struct LoadedWritings {
+        let modules: [Module]
+        let moduleId: String
+        let devotionals: [Devotional]
+        let tags: [String]
+        let categories: [String]
+    }
+
+    /// Reads the writings off the main actor: every row of the module is
+    /// decoded from its JSON, which held up the screen while it opened. A
+    /// load that a later one overtakes drops its result.
     private func loadDevotionals() {
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let requestedModuleId = selectedModuleId.isEmpty ? initialModuleId : selectedModuleId
+        let sort = sortOption
         Task {
-            isLoading = true
+            // Another module's writings stay hidden while this one loads: a
+            // row opened or deleted meanwhile would act under the wrong module.
+            if devotionals.isEmpty || requestedModuleId != lastLoadedModuleId {
+                isLoading = true
+            }
             do {
                 // Ensure the default devotionals module exists
                 try await ModuleSyncManager.shared.ensureDefaultDevotionalsModule()
 
-                // Load available devotional modules first
-                devotionalModules = try ModuleDatabase.shared.getAllModules(type: .devotional)
+                let loaded = try await Task.detached(priority: .userInitiated) {
+                    let modules = try ModuleDatabase.shared.getAllModules(type: .devotional)
+                    // If the selected module doesn't exist, fall back to first available
+                    let moduleId = modules.contains(where: { $0.id == requestedModuleId })
+                        ? requestedModuleId
+                        : (modules.first?.id ?? "devotionals")
+                    return LoadedWritings(
+                        modules: modules,
+                        moduleId: moduleId,
+                        devotionals: try DevotionalStorage.shared.getDevotionals(
+                            moduleId: moduleId,
+                            filter: DevotionalFilterOptions(),
+                            sort: sort
+                        ),
+                        tags: try DevotionalStorage.shared.getAllTags(moduleId: moduleId),
+                        categories: try DevotionalStorage.shared.getUsedCategories(moduleId: moduleId)
+                    )
+                }.value
 
-                // Ensure we have a valid selected module
-                if selectedModuleId.isEmpty {
-                    selectedModuleId = initialModuleId
-                }
-                // If the selected module doesn't exist, fall back to first available
-                if !devotionalModules.contains(where: { $0.id == selectedModuleId }) {
-                    selectedModuleId = devotionalModules.first?.id ?? "devotionals"
-                }
-
-                // Load devotionals with current sort
-                devotionals = try DevotionalStorage.shared.getDevotionals(
-                    moduleId: selectedModuleId,
-                    filter: DevotionalFilterOptions(),
-                    sort: sortOption
-                )
-
-                // Load available tags and categories for filtering
-                availableTags = try DevotionalStorage.shared.getAllTags(moduleId: selectedModuleId)
-                availableCategories = try DevotionalStorage.shared.getUsedCategories(moduleId: selectedModuleId)
-
-                // Track which module we loaded
-                lastLoadedModuleId = selectedModuleId
+                guard generation == loadGeneration else { return }
+                devotionalModules = loaded.modules
+                selectedModuleId = loaded.moduleId
+                devotionals = loaded.devotionals
+                availableTags = loaded.tags
+                availableCategories = loaded.categories
+                lastLoadedModuleId = loaded.moduleId
             } catch {
                 print("Failed to load devotionals: \(error)")
             }
-            isLoading = false
+            if generation == loadGeneration { isLoading = false }
         }
     }
 
@@ -1133,4 +1160,16 @@ struct DevotionalCategoryField: View {
 
 #Preview {
     DevotionalPickerView(isFullScreen: true)
+}
+
+/// A navigation destination built when it is shown rather than when the link
+/// is: a `NavigationLink` makes its destination with every render of the row.
+private struct DeferredDestination<Content: View>: View {
+    let content: () -> Content
+
+    init(@ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    var body: some View { content() }
 }
