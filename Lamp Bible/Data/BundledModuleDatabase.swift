@@ -1470,7 +1470,67 @@ class TranslationDatabase {
     private let bundledDb = BundledModuleDatabase.shared
     private let userDb = ModuleDatabase.shared
 
+    /// Each translation's books and their chapter counts, read once.
+    private var coverage: [String: [Int: Int]] = [:]
+    /// Bumped whenever coverage is forgotten, so a read that began before
+    /// a translation changed isn't kept.
+    private var coverageGeneration = 0
+    private let coverageLock = NSLock()
+
     private init() {}
+
+    // MARK: - Coverage
+
+    /// The books this translation has verses in, in canonical order. The
+    /// Brenton Septuagint has no New Testament and TAGNT no Old, so a list
+    /// or a step to the next book must not offer what would open empty.
+    func coveredBooks(translationId: String) -> [Int] {
+        chapterCounts(translationId: translationId).keys.sorted()
+    }
+
+    /// Whether the translation has any of this book.
+    func covers(_ book: Int, translationId: String) -> Bool {
+        chapterCounts(translationId: translationId)[book] != nil
+    }
+
+    /// Each covered book's chapter count in the translation.
+    func chapterCounts(translationId: String) -> [Int: Int] {
+        coverageLock.lock()
+        if let known = coverage[translationId] {
+            coverageLock.unlock()
+            return known
+        }
+        let generation = coverageGeneration
+        coverageLock.unlock()
+        var counts: [Int: Int] = [:]
+        var allRead = true
+        for book in 1...66 {
+            do {
+                let count = try getChapterCount(translationId: translationId, book: book)
+                if count > 0 { counts[book] = count }
+            } catch {
+                allRead = false
+            }
+        }
+        coverageLock.lock()
+        // A failed read isn't a missing book, and a translation installed,
+        // replaced or removed during the reads may have left them mixed:
+        // either way, answer this once but keep nothing.
+        if allRead && generation == coverageGeneration {
+            coverage[translationId] = counts
+        }
+        coverageLock.unlock()
+        return counts
+    }
+
+    /// Forget what each translation covers, when one is installed, replaced
+    /// or removed.
+    func forgetCoverage() {
+        coverageLock.lock()
+        coverage.removeAll()
+        coverageGeneration &+= 1
+        coverageLock.unlock()
+    }
 
     // MARK: - Unified Translation Queries
 

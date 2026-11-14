@@ -1897,6 +1897,13 @@ struct ReaderView: View {
     @SceneStorage("readerTranslationId") private var translationId: String = ""  // GRDB translation ID (session)
     @State private var translationAbbreviation: String = ""  // For display
     @State private var translationName: String = ""  // For display
+    /// A book the last load found the translation lacks — a link from a
+    /// note into Matthew while reading the Brenton Septuagint — which the
+    /// page says rather than showing nothing.
+    @State private var uncoveredBook: Int? = nil
+    /// Whether that load was the plan's reading, which "Read in" reloads,
+    /// rather than a chapter a link or search asked for, which it reopens.
+    @State private var uncoveredBookIsPlanReading = false
     @SceneStorage("readerCurrentVerseId") var currentVerseId: Int = 1001001
     @Binding var visibleVerseId: Int
     @Binding var scrollOrigin: ScrollOrigin
@@ -2081,6 +2088,50 @@ struct ReaderView: View {
         verses.first?.chapter == 1
     }
 
+    /// Said in place of an empty page when the translation lacks the book.
+    @ViewBuilder
+    private var uncoveredBookNotice: some View {
+        if let book = uncoveredBook, verses.isEmpty, !isFetchingContent {
+            // The interface's English name: the translation has none for it.
+            let bookName = (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "this book"
+            ContentUnavailableView {
+                Label("Not in \(translationAbbreviation)", systemImage: "book.closed")
+            } description: {
+                Text("\(translationName.isEmpty ? translationAbbreviation : translationName) doesn’t include \(bookName).")
+            } actions: {
+                if let other = translationCovering(book) {
+                    Button("Read in \(other.abbreviation)") {
+                        translationAbbreviation = other.abbreviation
+                        translationName = other.name
+                        translationId = other.id
+                        HighlightManager.shared.loadSetsForTranslation(other.id)
+                        if uncoveredBookIsPlanReading && planReadingIndex >= 0 {
+                            loadPlanReading(at: planReadingIndex)
+                        } else {
+                            // The verse the link or search asked for, not its
+                            // chapter's first.
+                            animateScroll = false
+                            loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: currentVerseId)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .background(LampTheme.readerBackground)
+        }
+    }
+
+    /// A shown translation that has the book, in the current one's language
+    /// where one does.
+    private func translationCovering(_ book: Int) -> TranslationModule? {
+        let hidden = Set(userSettings.hiddenTranslations.split(separator: ",").map(String.init))
+        let candidates = ((try? TranslationDatabase.shared.getAllTranslations()) ?? [])
+            .filter { $0.id != translationId && !hidden.contains($0.id) }
+            .filter { TranslationDatabase.shared.covers(book, translationId: $0.id) }
+        let language = (try? TranslationDatabase.shared.getTranslation(id: translationId))?.language
+        return candidates.first { $0.language == language } ?? candidates.first
+    }
+
     @ViewBuilder
     private var bookPickerSheet: some View {
         BookListView(
@@ -2192,6 +2243,14 @@ struct ReaderView: View {
         case chapter(translationId: String, book: Int, chapter: Int)
         case range(translationId: String, startRef: Int, endRef: Int)
 
+        /// The translation and book the fetch reads from.
+        var place: (translationId: String, book: Int) {
+            switch self {
+            case let .chapter(translationId, book, _): (translationId, book)
+            case let .range(translationId, startRef, _): (translationId, startRef / 1_000_000)
+            }
+        }
+
         func run() throws -> (verses: [TranslationVerse], headings: [TranslationHeading]) {
             switch self {
             case let .chapter(translationId, book, chapter):
@@ -2235,10 +2294,14 @@ struct ReaderView: View {
             fetch = .chapter(translationId: translationId, book: newBook, chapter: newChapter)
 
         case LOADING_PREV_BOOK:
-            fetch = .chapter(translationId: translationId, book: max(1, currentBook - 1), chapter: 1)
+            if let book = previousCoveredBook(before: currentBook, translationId: translationId) {
+                fetch = .chapter(translationId: translationId, book: book, chapter: 1)
+            }
 
         case LOADING_NEXT_BOOK:
-            fetch = .chapter(translationId: translationId, book: min(66, currentBook + 1), chapter: 1)
+            if let book = nextCoveredBook(after: currentBook, translationId: translationId) {
+                fetch = .chapter(translationId: translationId, book: book, chapter: 1)
+            }
 
         case LOADING_READING:
             // The index can outrun the readings when a plan or date changes
@@ -2262,7 +2325,8 @@ struct ReaderView: View {
             translationId = newTranslationId
             // Reload highlight sets for the new translation
             HighlightManager.shared.loadSetsForTranslation(newTranslationId)
-            fetch = .chapter(translationId: newTranslationId, book: currentBook, chapter: currentChapter)
+            let place = placeInTranslation(newTranslationId, book: currentBook, chapter: currentChapter)
+            fetch = .chapter(translationId: newTranslationId, book: place.book, chapter: place.chapter)
 
         default:
             break
@@ -2297,6 +2361,11 @@ struct ReaderView: View {
                 // A newer load owns the flag, so leave it set when superseded
                 guard generation == loadGeneration else { return }
                 isFetchingContent = false
+                let place = fetch.place
+                uncoveredBook = loaded.verses.isEmpty
+                    && !TranslationDatabase.shared.covers(place.book, translationId: place.translationId)
+                    ? place.book : nil
+                uncoveredBookIsPlanReading = false
                 applyLoadedVerses(loaded, loadingCase: loadingCase, targetVerseId: targetVerseId)
             }
         }
@@ -2340,14 +2409,24 @@ struct ReaderView: View {
         isHistoryNavigation = false
     }
 
+    /// The book before this one that the translation has, if any. Steps
+    /// skip what it lacks, as the Brenton Septuagint's New Testament.
+    private func previousCoveredBook(before book: Int, translationId: String) -> Int? {
+        TranslationDatabase.shared.coveredBooks(translationId: translationId).last { $0 < book }
+    }
+
+    /// The book after this one that the translation has, if any.
+    private func nextCoveredBook(after book: Int, translationId: String) -> Int? {
+        TranslationDatabase.shared.coveredBooks(translationId: translationId).first { $0 > book }
+    }
+
     /// Get the previous chapter (handles book boundaries)
     private func getPreviousChapter(book: Int, chapter: Int) -> (book: Int, chapter: Int) {
         if chapter > 1 {
             return (book, chapter - 1)
-        } else if book > 1 {
+        } else if let prevBook = previousCoveredBook(before: book, translationId: translationId) {
             // Go to last chapter of previous book
-            let prevBook = book - 1
-            let lastChapter = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: prevBook)) ?? 1
+            let lastChapter = TranslationDatabase.shared.chapterCounts(translationId: translationId)[prevBook] ?? 1
             return (prevBook, lastChapter)
         }
         return (book, chapter)  // Already at beginning
@@ -2355,28 +2434,41 @@ struct ReaderView: View {
 
     /// Get the next chapter (handles book boundaries)
     private func getNextChapter(book: Int, chapter: Int, translationId: String) -> (book: Int, chapter: Int) {
-        let chapterCount = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: book)) ?? 999
+        let chapterCount = TranslationDatabase.shared.chapterCounts(translationId: translationId)[book] ?? 0
         if chapter < chapterCount {
             return (book, chapter + 1)
-        } else if book < 66 {
+        } else if let nextBook = nextCoveredBook(after: book, translationId: translationId) {
             // Go to first chapter of next book
-            return (book + 1, 1)
+            return (nextBook, 1)
         }
         return (book, chapter)  // Already at end
     }
 
     /// Check if there's a previous chapter available
     private func hasPreviousChapter(book: Int, chapter: Int) -> Bool {
-        return !(book == 1 && chapter == 1)
+        chapter > 1 || previousCoveredBook(before: book, translationId: translationId) != nil
     }
 
     /// Check if there's a next chapter available
     private func hasNextChapter(book: Int, chapter: Int) -> Bool {
-        if book == 66 {
-            let chapterCount = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: 66)) ?? 22
-            return chapter < chapterCount
+        let chapterCount = TranslationDatabase.shared.chapterCounts(translationId: translationId)[book] ?? 0
+        return chapter < chapterCount || nextCoveredBook(after: book, translationId: translationId) != nil
+    }
+
+    /// Where a translation reads a place from: the place itself where the
+    /// translation has its book, its last chapter where it numbers fewer,
+    /// and else the first book it has in the same testament, or its first
+    /// book at all — so switching to the Brenton Septuagint in Matthew
+    /// opens Genesis rather than an empty page.
+    private func placeInTranslation(_ translationId: String, book: Int, chapter: Int) -> (book: Int, chapter: Int) {
+        let counts = TranslationDatabase.shared.chapterCounts(translationId: translationId)
+        if let count = counts[book] {
+            return (book, min(chapter, count))
         }
-        return true
+        let covered = counts.keys.sorted()
+        let sameTestament = covered.first { ($0 >= 40) == (book >= 40) }
+        guard let fallback = sameTestament ?? covered.first else { return (book, chapter) }
+        return (fallback, 1)
     }
 
     /// Get the label for the previous chapter (e.g., "Genesis 49")
@@ -3124,6 +3216,7 @@ struct ReaderView: View {
             } action: { width in
                 readerWidth = width
             }
+            .overlay { uncoveredBookNotice }
             .overlay { floatingSpeechButton }
             .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isPlanSpeechActive)
             .navigationBarBackButtonHidden(true)
@@ -3568,10 +3661,14 @@ struct ReaderView: View {
                 isFetchingContent = false
 
                 if fetchedVerses.isEmpty {
-                    // Every bundled translation covers every plan reading, so this
-                    // means the selected translation doesn't have the range.
+                    // The selected translation doesn't have the range, as the
+                    // Brenton Septuagint has no New Testament.
                     print("ReaderView: no verses for reading \(reading.sv)-\(reading.ev) in '\(translationId)'")
                 }
+                let book = reading.sv / 1_000_000
+                uncoveredBook = fetchedVerses.isEmpty
+                    && !TranslationDatabase.shared.covers(book, translationId: translationId) ? book : nil
+                uncoveredBookIsPlanReading = true
 
                 verses = fetchedVerses
                 headings = allHeadings

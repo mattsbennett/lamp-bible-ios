@@ -230,6 +230,7 @@ final class PlanMetaDataCache {
         entries.removeAll()
         insertionOrder.removeAll()
         lock.unlock()
+        TranslationDatabase.shared.forgetCoverage()
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .translationsDidChange, object: nil)
         }

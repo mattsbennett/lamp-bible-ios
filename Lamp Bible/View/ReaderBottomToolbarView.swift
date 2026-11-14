@@ -668,11 +668,15 @@ struct ReaderBottomToolbarView: ToolbarContent {
 
     private var currentBook: Int { currentVerseId / 1000000 }
     private var currentChapter: Int { (currentVerseId % 1000000) / 1000 }
-    // Standard Bible covers Genesis (1) through Revelation (66)
-    private var firstBook: Int { 1 }
+    /// The first and last books the translation has: Genesis to Malachi in
+    /// the Brenton Septuagint, Matthew to Revelation in TAGNT.
+    private var coverage: [Int: Int] {
+        TranslationDatabase.shared.chapterCounts(translationId: translationId)
+    }
+    private var firstBook: Int { coverage.keys.min() ?? 1 }
     private var firstChapter: Int { 1 }
-    private var lastBook: Int { 66 }
-    private var lastChapter: Int { 22 }  // Revelation has 22 chapters
+    private var lastBook: Int { coverage.keys.max() ?? 66 }
+    private var lastChapter: Int { coverage[lastBook] ?? 22 }
 
     var body: some ToolbarContent {
         // Always show mode button and mode-specific content

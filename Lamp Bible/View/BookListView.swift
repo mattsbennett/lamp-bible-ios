@@ -18,6 +18,27 @@ struct BookListView: View {
     let onPickVerse: (Int) -> Void
     var onTranslationChange: ((String) -> Void)? = nil
 
+    init(
+        currentVerseId: Binding<Int>,
+        showingBookPicker: Binding<Bool>,
+        translationId: Binding<String>,
+        translationAbbreviation: Binding<String>,
+        loadVersesClosure: @escaping () -> Void,
+        onPickVerse: @escaping (Int) -> Void,
+        onTranslationChange: ((String) -> Void)? = nil
+    ) {
+        _currentVerseId = currentVerseId
+        _showingBookPicker = showingBookPicker
+        _translationId = translationId
+        _translationAbbreviation = translationAbbreviation
+        self.loadVersesClosure = loadVersesClosure
+        self.onPickVerse = onPickVerse
+        self.onTranslationChange = onTranslationChange
+        // Read now, not in a task, so the first frame lists only the books
+        // the translation has and can be brought to the one being read.
+        _chapterCounts = State(initialValue: TranslationDatabase.shared.chapterCounts(translationId: translationId.wrappedValue))
+    }
+
     private var userSettings: UserSettings {
         UserDatabase.shared.getSettings()
     }
@@ -26,10 +47,12 @@ struct BookListView: View {
         userSettings.hiddenTranslations
     }
 
-    /// Get all Bible books from GRDB, by the translation's own names
-    /// ("Génesis" in the RV1909) where it gives them.
+    /// The Bible books this translation has, by its own names ("Génesis" in
+    /// the RV1909) where it gives them. A book it lacks (the New Testament
+    /// in the Brenton Septuagint) isn't offered, since it would open empty.
     private var books: [BibleBook] {
-        let all = (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
+        let all = ((try? BundledModuleDatabase.shared.getAllBooks()) ?? [])
+            .filter { chapterCounts[$0.id] != nil }
         guard !ownBookNames.isEmpty else { return all }
         return all.map { book in
             var book = book
@@ -52,8 +75,8 @@ struct BookListView: View {
         return availableTranslations.filter { !hiddenIds.contains($0.id) }
     }
 
-    /// Each book's chapter count in this translation, read once per opening.
-    @State private var chapterCounts: [Int: Int] = [:]
+    /// Each covered book's chapter count in this translation.
+    @State private var chapterCounts: [Int: Int]
     /// Books whose rows are on screen, for the testament switch's state.
     @State private var visibleBooks: Set<Int> = []
     /// Genre names, for the section headers.
@@ -116,8 +139,11 @@ struct BookListView: View {
             .contentMargins(.top, 4, for: .scrollContent)
             // A jump to either testament in a band of its own at the foot, so
             // it covers no rows, showing which testament the list is in.
+            // A translation with one testament has nothing to jump to.
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                testamentJump(proxy)
+                if coversBothTestaments {
+                    testamentJump(proxy)
+                }
             }
             // Open on the book being read, in its testament, rather than at
             // Genesis with the reader in Matthew. A turn of the run loop
@@ -178,6 +204,10 @@ struct BookListView: View {
     }
 
     /// The testament at the top of the visible rows.
+    private var coversBothTestaments: Bool {
+        chapterCounts.keys.contains { $0 < 40 } && chapterCounts.keys.contains { $0 >= 40 }
+    }
+
     private var visibleTestament: String {
         (visibleBooks.min() ?? 1) >= 40 ? "NT" : "OT"
     }
@@ -246,11 +276,7 @@ struct BookListView: View {
 
     private func loadCounts() {
         ownBookNames = TranslationDatabase.shared.ownBookNames(translationId: translationId)
-        var counts: [Int: Int] = [:]
-        for book in books {
-            counts[book.id] = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: book.id)) ?? 0
-        }
-        chapterCounts = counts
+        chapterCounts = TranslationDatabase.shared.chapterCounts(translationId: translationId)
         if genreNames.isEmpty {
             let genres = (try? BundledModuleDatabase.shared.getAllGenres()) ?? []
             genreNames = Dictionary(genres.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
