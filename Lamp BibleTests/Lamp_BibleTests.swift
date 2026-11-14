@@ -6953,7 +6953,10 @@ final class StrongsSeptuagintTests: XCTestCase {
         }
         XCTAssertEqual(english.reference, 1_029_020)
         XCTAssertEqual(genesis.shownReference, 1_029_020, "named and opened at the BSB's own number")
-        XCTAssertTrue(english.snippet?.word.lowercased().contains("love") == true, english.snippet?.word ?? "untagged")
+        let text = try XCTUnwrap(english.text, "the BSB tags love here")
+        let scalars = Array(text.unicodeScalars)
+        let first = try XCTUnwrap(english.marks.first)
+        XCTAssertTrue(String(String.UnicodeScalarView(scalars[first.start..<first.end])).lowercased().contains("love"), text)
         guard case .text = genesis.greek else {
             return XCTFail("No Greek: \(genesis.greek)")
         }
@@ -6981,7 +6984,7 @@ final class StrongsSeptuagintTests: XCTestCase {
         }
         XCTAssertEqual(english.reference, 19_108_004)
         XCTAssertEqual(psalm.shownReference, 19_108_004)
-        XCTAssertNil(english.snippet)
+        XCTAssertNil(english.text)
     }
 
     /// A tag's offsets count code points, which a word written with its
@@ -7001,17 +7004,15 @@ final class StrongsSeptuagintTests: XCTestCase {
     /// their own, set raised, even at the edge of the marked word; in an
     /// ordinary Bible the same digits are text, and a free number never is.
     func testAnInterlinearsWordOrderNumeralsAreSetApart() {
-        let snippet = LampStrongsContext.Snippet(
-            before: "than [2the 3", word: "love", after: " 1which] he had in 40 days",
-            isTrimmedAtStart: false, isTrimmedAtEnd: true
-        )
-        XCTAssertEqual(StrongsSeptuagint.englishPieces(snippet, isInterlinear: true), [
+        let line = "than [2the 3love 1which] he had in 40 days"
+        let love = [LampSeptuagintSection.Span(start: 12, end: 16)]
+        XCTAssertEqual(StrongsSeptuagint.englishPieces(line, marks: love, isInterlinear: true), [
             .plain("than ["), .marker("2"), .plain("the "), .marker("3"),
             .match("love"),
-            .plain(" "), .marker("1"), .plain("which] he had in 40 days…"),
+            .plain(" "), .marker("1"), .plain("which] he had in 40 days"),
         ])
-        XCTAssertEqual(StrongsSeptuagint.englishPieces(snippet, isInterlinear: false), [
-            .plain("than [2the 3"), .match("love"), .plain(" 1which] he had in 40 days…"),
+        XCTAssertEqual(StrongsSeptuagint.englishPieces(line, marks: love, isInterlinear: false), [
+            .plain("than [2the 3"), .match("love"), .plain(" 1which] he had in 40 days"),
         ])
     }
 
@@ -7031,6 +7032,21 @@ final class StrongsSeptuagintTests: XCTestCase {
         )
     }
 
+    /// A word's own numeral stands just before it, where its mark begins:
+    /// ABP Song of Songs 8:6, "[3is strong 4as 5death 1the 2love]", with
+    /// "love" marked. Split on the whole line, the 2 is still raised.
+    func testANumeralAtAMarksEdgeIsStillRaised() {
+        let line = "for [3is strong 4as 5death 1the 2love];"
+        XCTAssertEqual(
+            StrongsSeptuagint.englishPieces(
+                line, marks: [LampSeptuagintSection.Span(start: 33, end: 37)], isInterlinear: true
+            ),
+            [.plain("for ["), .marker("3"), .plain("is strong "), .marker("4"), .plain("as "),
+             .marker("5"), .plain("death "), .marker("1"), .plain("the "), .marker("2"),
+             .match("love"), .plain("];")]
+        )
+    }
+
     /// From the bundle: the BSB tags אוֹר twice in Genesis 1:3, and the row's
     /// English carries both places.
     @MainActor
@@ -7044,8 +7060,8 @@ final class StrongsSeptuagintTests: XCTestCase {
         guard case .rows(let rows) = loader.verses[light.id], let row = rows.first else {
             return XCTFail("No verses: \(String(describing: loader.verses[light.id]))")
         }
-        let line = try XCTUnwrap(row.englishLine, "the English verse is read whole")
-        XCTAssertEqual(line.marks.count, 2, line.text)
+        guard case .read(let english) = row.english else { return XCTFail("No English: \(row.english)") }
+        XCTAssertEqual(english.marks.count, 2, english.text ?? "untagged")
     }
 
     /// The tagged Septuagint counts ἀγάπη itself, and love's Hebrew is

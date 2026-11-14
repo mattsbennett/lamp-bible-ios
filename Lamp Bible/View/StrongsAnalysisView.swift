@@ -174,6 +174,11 @@ struct StrongsAnalysisView: View {
     /// Which English the verses read where a Septuagint in English is
     /// installed: that, or the reader's own Bible. Kept, as on the Mac.
     @AppStorage("strongs.analysis.septuagintEnglishIsDirect") private var readsSeptuagintInEnglish = true
+    /// Whether each verse shows the Septuagint's Greek under its English.
+    /// Off to begin with, since a reader with no Greek never wants it, and
+    /// kept. Only the drawing: the Greek is read either way, since the
+    /// marks and the settling of doubts are worked out from it.
+    @AppStorage("strongs.analysis.septuagintShowsGreek") private var showsSeptuagintGreek = false
     @AppStorage("strongs.analysis.spreadGrouping") private var spreadGrouping: LampStrongsSpreadGrouping = .books
     @AppStorage("strongs.analysis.measure") private var measure: LampStrongsSpreadMeasure = .occurrences
     @Environment(\.colorScheme) private var colorScheme
@@ -2025,6 +2030,12 @@ struct StrongsAnalysisView: View {
             translatesRow(word)
         }
         englishChoice
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(LampSeptuagintSection.OriginalLanguage.title, isOn: $showsSeptuagintGreek)
+            Text(LampSeptuagintSection.OriginalLanguage.note)
+                .font(.footnote)
+                .foregroundStyle(LampTheme.caption)
+        }
         // Whose verses these are, and what they have been narrowed to. The
         // footer says the first half where the Septuagint doesn't count
         // the word, and nothing is narrowed then.
@@ -2051,6 +2062,7 @@ struct StrongsAnalysisView: View {
                     usingGreek: septuagint.renderedVerses[word.id] == nil ? nil : headword.lemma,
                     references: references,
                     translationId: translationId,
+                    showsGreek: showsSeptuagintGreek,
                     loader: septuagint
                 ) { reference, key in
                     septuagintPreview = SeptuagintPreview(id: reference, key: key)
@@ -2063,7 +2075,13 @@ struct StrongsAnalysisView: View {
     /// when there is a choice, with what each one gives and costs.
     @ViewBuilder
     private var englishChoice: some View {
-        if septuagint.septuagintInEnglish != nil {
+        // Not where the reader's own Bible is the Septuagint in English:
+        // "ABP | ABP", and the second would ask it for the Hebrew word,
+        // which it doesn't tag, and blank every row.
+        if LampSeptuagintSection.EnglishChoice.isOffered(
+            septuagintInEnglish: septuagint.septuagintInEnglish,
+            readersTranslationID: translationId
+        ) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(LampSeptuagintSection.EnglishChoice.title)
                     .font(.footnote.weight(.semibold))
@@ -3142,19 +3160,6 @@ enum StrongsSeptuagint {
         return pieces
     }
 
-    /// Core's snippet in pieces, its one word marked, for a row whose whole
-    /// line wasn't read.
-    static func englishPieces(_ snippet: LampStrongsContext.Snippet, isInterlinear: Bool) -> [EnglishPiece] {
-        let opening = (snippet.isTrimmedAtStart ? "…" : "") + snippet.before
-        let line = opening + snippet.word + snippet.after + (snippet.isTrimmedAtEnd ? "…" : "")
-        let start = opening.unicodeScalars.count
-        return englishPieces(
-            line,
-            marks: [LampSeptuagintSection.Span(start: start, end: start + snippet.word.unicodeScalars.count)],
-            isInterlinear: isInterlinear
-        )
-    }
-
     /// The Septuagint's Greek for each of `references`, numbered as the Hebrew
     /// text numbers them, where the Septuagint has the verse. Throws if
     /// cancelled part way, since a verse not read would look like one the
@@ -3201,12 +3206,6 @@ final class SeptuagintLoader {
         var id: String { "\(hebrew.text)|\(hebrew.strongs ?? "")" }
     }
 
-    /// A verse's text and the places a word stands in it.
-    struct Line: Equatable, Sendable {
-        let text: String
-        let marks: [Span]
-    }
-
     struct Verse: Identifiable, Equatable, Sendable {
         /// The Greek beside the verse. Three states, as on the Mac: the rows
         /// go up before the chapters are read, and "not read yet" must never
@@ -3238,11 +3237,6 @@ final class SeptuagintLoader {
         var opensAt: Int?
         var english: English = .pending
         var greek: Greek = .pending
-        /// The English verse whole, with every place the word is tagged in
-        /// it, in code points. Core's snippet is cut around the first, and
-        /// marking only that beside a Greek line that marks each of its own
-        /// said the rest were some other word.
-        var englishLine: Line?
 
         var id: Int { reference }
 
@@ -3574,6 +3568,17 @@ final class SeptuagintLoader {
         forgetVerses()
     }
 
+    /// Whether the rows read the Septuagint in English. The reader's choice
+    /// where it is offered; where it isn't, their own Bible is that text,
+    /// and a choice kept from another Bible must not blank the rows.
+    func readsSeptuagintInEnglish(reading translationId: String) -> Bool {
+        guard septuagintInEnglish != nil else { return false }
+        return readsSeptuagintInEnglish || !LampSeptuagintSection.EnglishChoice.isOffered(
+            septuagintInEnglish: septuagintInEnglish,
+            readersTranslationID: translationId
+        )
+    }
+
     /// Forget the rows so they are read again from the other English. The
     /// counts, the crossing and the doubts don't depend on the English.
     func forgetVerses() {
@@ -3666,7 +3671,7 @@ final class SeptuagintLoader {
             hebrewKey: word.hebrew.strongs,
             greekKey: key,
             readersTranslationID: translationId,
-            septuagintInEnglish: readsSeptuagintInEnglish ? septuagintInEnglish : nil
+            septuagintInEnglish: readsSeptuagintInEnglish(reading: translationId) ? septuagintInEnglish : nil
         )
         let doubted = Set((pairingDoubts[word.id] ?? [:]).keys)
         let hebrewSpans = self.hebrewSpans[word.id] ?? [:]
@@ -3750,32 +3755,18 @@ final class SeptuagintLoader {
             englishMark = nil
         }
         var english: [Int: LampSeptuagintSection.English] = [:]
-        var englishLines: [Int: Line] = [:]
         if englishModule != hebrew.id, let module = translations.first(where: { $0.id == englishModule }) {
             do {
-                let analysis = try englishMark.flatMap {
-                    try database.analyzeStrongs(key: $0, translationId: module.id)
-                }
+                // Each row's verse whole, marked everywhere the word is
+                // tagged in it, as the Greek under it is.
                 english = LampSeptuagintSection.english(
                     for: shown,
                     hebrewNumbering: hebrewNumbering,
                     englishNumbering: database.versification(of: module),
-                    analysis: analysis
+                    analysis: try englishMark.flatMap {
+                        try database.analyzeStrongs(key: $0, translationId: module.id)
+                    }
                 )
-                // Every occurrence in the verse, where core's row has found
-                // the word tagged there at all.
-                if let analysis {
-                    var marks: [Int: [Span]] = [:]
-                    for occurrence in analysis.occurrences {
-                        marks[occurrence.reference, default: []].append(
-                            Span(start: occurrence.startOffset, end: occurrence.endOffset)
-                        )
-                    }
-                    for (reference, row) in english where row.snippet != nil {
-                        guard let text = analysis.verseTexts[row.reference] else { continue }
-                        englishLines[reference] = Line(text: text, marks: marks[row.reference] ?? [])
-                    }
-                }
             } catch {
                 return Task.isCancelled ? .cutShort : .unreadable(module.name)
             }
@@ -3808,8 +3799,7 @@ final class SeptuagintLoader {
                 reference: $0,
                 opensAt: opensAt[$0],
                 english: english[$0].map(Verse.English.read) ?? .none,
-                greek: greek[$0].map(Verse.Greek.text) ?? .absent,
-                englishLine: englishLines[$0]
+                greek: greek[$0].map(Verse.Greek.text) ?? .absent
             )
         }
 
@@ -3868,6 +3858,8 @@ private struct SeptuagintWordGroup: View {
     let references: [Int]
     /// The translation being read.
     let translationId: String
+    /// Whether the Septuagint's Greek is drawn under each verse.
+    var showsGreek = false
     let loader: SeptuagintLoader
     let onPreview: (Int, String) -> Void
 
@@ -3983,17 +3975,17 @@ private struct SeptuagintWordGroup: View {
                     : StrongsAnalysisView.referenceTitle(reference, bookNames: [:]))
                     .font(.headline)
                     .foregroundStyle(.primary)
-                if case .read(let english) = verse.english, let snippet = english.snippet {
+                // No English where the translation doesn't tag the word here:
+                // shown unmarked it would be a guess at which English it is.
+                if case .read(let english) = verse.english, let text = english.text {
                     Self.englishLine(
-                        verse.englishLine.map {
-                            StrongsSeptuagint.englishPieces($0.text, marks: $0.marks, isInterlinear: isInterlinear)
-                        } ?? StrongsSeptuagint.englishPieces(snippet, isInterlinear: isInterlinear)
+                        StrongsSeptuagint.englishPieces(text, marks: english.marks, isInterlinear: isInterlinear)
                     )
                         .font(.system(size: 16, design: .serif))
                         .foregroundStyle(LampTheme.readerText)
                         .lineSpacing(2)
                 }
-                switch verse.greek {
+                switch showsGreek ? verse.greek : .pending {
                 case .text(let greek):
                     // The Greek word marked where the tagging puts it, so why
                     // the verse is in a narrowed list can be seen.
@@ -4028,7 +4020,7 @@ private struct SeptuagintWordGroup: View {
     /// interlinear whose word-order numerals are set as superscripts. Only
     /// then: in an ordinary Bible a numeral against a word ("1st") is text.
     private var isInterlinear: Bool {
-        loader.readsSeptuagintInEnglish && loader.septuagintInEnglish != nil
+        loader.readsSeptuagintInEnglish(reading: translationId)
     }
 
     /// The English with its word marked as a find, and any word-order
