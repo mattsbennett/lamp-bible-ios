@@ -10,6 +10,7 @@ import SwiftUI
 import NaturalLanguage
 import UIKit
 import GRDB
+import LampCore
 import LampModuleKit
 import CoreText
 
@@ -2127,9 +2128,14 @@ struct ReaderView: View {
         let hidden = Set(userSettings.hiddenTranslations.split(separator: ",").map(String.init))
         let candidates = ((try? TranslationDatabase.shared.getAllTranslations()) ?? [])
             .filter { $0.id != translationId && !hidden.contains($0.id) }
-            .filter { TranslationDatabase.shared.covers(book, translationId: $0.id) }
         let language = (try? TranslationDatabase.shared.getTranslation(id: translationId))?.language
-        return candidates.first { $0.language == language } ?? candidates.first
+        return LampTranslationCoverage.alternative(
+            having: book,
+            near: language,
+            among: candidates,
+            language: { $0.language },
+            covers: { TranslationDatabase.shared.covers(book, translationId: $0.id) }
+        )
     }
 
     @ViewBuilder
@@ -2455,20 +2461,17 @@ struct ReaderView: View {
         return chapter < chapterCount || nextCoveredBook(after: book, translationId: translationId) != nil
     }
 
-    /// Where a translation reads a place from: the place itself where the
-    /// translation has its book, its last chapter where it numbers fewer,
-    /// and else the first book it has in the same testament, or its first
-    /// book at all — so switching to the Brenton Septuagint in Matthew
-    /// opens Genesis rather than an empty page.
+    /// Where a translation reads a place from, by core's rule: the place,
+    /// at its last chapter where the translation numbers fewer, else the
+    /// same testament's first book it has — so switching to the Brenton
+    /// Septuagint in Matthew opens Genesis rather than an empty page. A
+    /// translation that holds nothing keeps the place.
     private func placeInTranslation(_ translationId: String, book: Int, chapter: Int) -> (book: Int, chapter: Int) {
-        let counts = TranslationDatabase.shared.chapterCounts(translationId: translationId)
-        if let count = counts[book] {
-            return (book, min(chapter, count))
-        }
-        let covered = counts.keys.sorted()
-        let sameTestament = covered.first { ($0 >= 40) == (book >= 40) }
-        guard let fallback = sameTestament ?? covered.first else { return (book, chapter) }
-        return (fallback, 1)
+        LampTranslationCoverage.landing(
+            book: book,
+            chapter: chapter,
+            chapterCounts: TranslationDatabase.shared.chapterCounts(translationId: translationId)
+        ) ?? (book, chapter)
     }
 
     /// Get the label for the previous chapter (e.g., "Genesis 49")

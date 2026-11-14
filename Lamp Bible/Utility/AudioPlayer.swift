@@ -392,8 +392,7 @@ enum SpeechVoiceCatalog {
     /// `nil` when the language is unknown, so callers can word themselves around
     /// the gap instead of splicing a placeholder into a sentence.
     static func languageName(for languageCode: String?) -> String? {
-        guard let base = normalized(languageCode) else { return nil }
-        return Locale.current.localizedString(forLanguageCode: base) ?? base
+        LampTranslationLanguages.name(of: languageCode)
     }
 
     private static func normalized(_ languageCode: String?) -> String? {

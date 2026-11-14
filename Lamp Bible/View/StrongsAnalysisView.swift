@@ -3036,11 +3036,11 @@ enum StrongsSeptuagint {
     }
 
     private static func isHebrew(_ translation: TranslationModule) -> Bool {
-        ["hbo", "he", "heb", "hebrew"].contains(translation.language.lowercased())
+        LampTranslationLanguages.strongsSide(of: translation.language) == .hebrew
     }
 
     private static func isGreek(_ translation: TranslationModule) -> Bool {
-        ["grc", "el", "ell", "greek"].contains(translation.language.lowercased())
+        LampTranslationLanguages.strongsSide(of: translation.language) == .greek
     }
 
     /// A text in Greek or Hebrew, which a translation *of* the Greek Old

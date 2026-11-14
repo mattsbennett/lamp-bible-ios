@@ -1788,9 +1788,11 @@ class TranslationDatabase {
 
     /// Every book's own name in a translation, by book number, for lists.
     func ownBookNames(translationId: String) -> [Int: String] {
-        let books = (try? getTranslationBooks(translationId: translationId)) ?? []
-        return Dictionary(books.filter { !$0.name.isEmpty }.map { ($0.bookNumber, $0.name) },
-                          uniquingKeysWith: { first, _ in first })
+        let read = { (db: Database) in
+            try LampTranslationCoverage.bookNames(in: db, translationID: translationId)
+        }
+        return (try? (bundledDb.isTranslationBundled(id: translationId)
+            ? bundledDb.read(read) : userDb.read(read))) ?? [:]
     }
 
     // MARK: - Navigation Helpers
