@@ -136,7 +136,9 @@ struct StrongsAnalysisView: View {
     /// What the verse list is narrowed to: a rendering, form, parsing, book
     /// or chapter, chosen from the figure that counts it.
     @State private var filter: LampStrongsFilter?
-    @State private var shownVerseCount = 50
+    /// Ten to begin with, so the sections under the list are in reach;
+    /// Show All lists the rest.
+    @State private var shownVerseCount = StrongsAnalysisView.firstVerses
     @State private var previewReference: VersePreviewReference?
     /// The books chosen from the toolbar, once chosen; until then, those the
     /// analysis opened on.
@@ -168,9 +170,6 @@ struct StrongsAnalysisView: View {
     /// The Septuagint book a bar was tapped for, which narrows the Hebrew
     /// words' verses to it. Book numbers are the same in both texts.
     @State private var septuagintBook: Int?
-    /// Every verse of each Hebrew word, rather than only those where the
-    /// Septuagint uses this Greek word.
-    @State private var isShowingEveryHebrewVerse = false
     @State private var isShowingSeptuagintMethod = false
     /// Which English the verses read where a Septuagint in English is
     /// installed: that, or the reader's own Bible. Kept, as on the Mac.
@@ -192,6 +191,9 @@ struct StrongsAnalysisView: View {
     @AppStorage("strongs.analysis.cardChart")
     private var storedCardChart = LampStrongsCardChoice.standard.storedChart
     @State private var isChoosingCardSlots = false
+
+    /// How many of the word's verses are listed before Show All.
+    static let firstVerses = 10
 
     private struct BookRangeChoice: Equatable {
         let range: ClosedRange<Int>?
@@ -276,7 +278,7 @@ struct StrongsAnalysisView: View {
         isLoading = true
         loadError = nil
         filter = nil
-        shownVerseCount = 50
+        shownVerseCount = Self.firstVerses
         compared = []
         isComparing = false
         // A pass over the translation's tagged verses, or its index, and a
@@ -395,10 +397,12 @@ struct StrongsAnalysisView: View {
                 if !compared.isEmpty || isComparing {
                     compareSection(analysis)
                 }
+                verses(analysis)
+                // Under the word's own verses: the Septuagint is a second
+                // subject, read after the first.
                 if !septuagint.words.isEmpty || septuagint.own != nil {
                     septuagintSection
                 }
-                verses(analysis)
             }
         }
         .listStyle(.insetGrouped)
@@ -454,7 +458,7 @@ struct StrongsAnalysisView: View {
     private func choose(_ next: LampStrongsFilter?) {
         guard let next else { return }
         filter = filter == next ? next.widened : next
-        shownVerseCount = 50
+        shownVerseCount = Self.firstVerses
     }
 
     // MARK: Books in range
@@ -1527,6 +1531,10 @@ struct StrongsAnalysisView: View {
             }
         }
         .padding(.vertical, 6)
+        // No rule under the ring: the list's separator starts where a row's
+        // text does, which for a centred ring is half way across, and the
+        // key's rows below are plainly a new run without one.
+        .listRowSeparator(.hidden, edges: .bottom)
         // "Other" names nothing to filter by, so its row is no button.
         ForEach(Array(slices.enumerated()), id: \.element.id) { index, slice in
             let sliceFilter = slice.isOther ? nil : filters[slice.id] ?? nil
@@ -1981,7 +1989,7 @@ struct StrongsAnalysisView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(LampSeptuagintSection.ownUseAbout)
                 // Only where the lists are in fact narrowed.
-                if septuagintCrossing != nil, !isShowingEveryHebrewVerse {
+                if septuagintCrossing != nil {
                     Text(LampSeptuagintSection.renderedCaveat(greek: headword.lemma))
                 }
                 // Only a text that declares its tags were matched rather than
@@ -2025,14 +2033,6 @@ struct StrongsAnalysisView: View {
                 .font(.subheadline)
                 .foregroundStyle(LampTheme.caption)
         }
-        if let crossing = septuagintCrossing, crossing.shown < crossing.total {
-            Button(isShowingEveryHebrewVerse
-                ? "Only the Verses Using \(headword.lemma ?? "It")"
-                : "Show All \(crossing.total) Verses") {
-                isShowingEveryHebrewVerse.toggle()
-            }
-            .font(.subheadline)
-        }
         // Until the Hebrew text has been counted there are no lists to show,
         // and an empty space reads as none.
         if septuagint.words.allSatisfy({ $0.references == nil }) {
@@ -2048,8 +2048,7 @@ struct StrongsAnalysisView: View {
             if let references = hebrewVerses(of: word), !references.isEmpty {
                 SeptuagintWordGroup(
                     word: word,
-                    usingGreek: isShowingEveryHebrewVerse || septuagint.renderedVerses[word.id] == nil
-                        ? nil : headword.lemma,
+                    usingGreek: septuagint.renderedVerses[word.id] == nil ? nil : headword.lemma,
                     references: references,
                     translationId: translationId,
                     loader: septuagint
@@ -2069,9 +2068,15 @@ struct StrongsAnalysisView: View {
                 Text(LampSeptuagintSection.EnglishChoice.title)
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(LampTheme.caption)
+                // Each reading by the module it is, which a reader can check:
+                // "Septuagint in English" and "Your Bible" named neither.
+                let titles = LampSeptuagintSection.EnglishChoice.titles(
+                    septuagintInEnglish: septuagint.septuagintInEnglishName,
+                    readersBible: analysis.map { $0.translationAbbreviation ?? $0.translationName }
+                )
                 Picker(LampSeptuagintSection.EnglishChoice.title, selection: $readsSeptuagintInEnglish) {
-                    Text(LampSeptuagintSection.EnglishChoice.direct).tag(true)
-                    Text(LampSeptuagintSection.EnglishChoice.indirect).tag(false)
+                    Text(titles.direct).tag(true)
+                    Text(titles.indirect).tag(false)
                 }
                 .pickerStyle(.segmented)
                 Text(readsSeptuagintInEnglish
@@ -2089,7 +2094,7 @@ struct StrongsAnalysisView: View {
     /// is every verse then, and saying it was narrowed would be untrue.
     private var hebrewIntroduction: String {
         let note = LampSeptuagintSection.note(greek: headword.lemma, septuagint: septuagint.tagging)
-        guard let crossing = septuagintCrossing, !isShowingEveryHebrewVerse else { return note }
+        guard let crossing = septuagintCrossing else { return note }
         let narrowed = LampSeptuagintSection.renderedHeading(
             greek: headword.lemma, shown: crossing.shown, of: crossing.total
         )
@@ -2097,10 +2102,12 @@ struct StrongsAnalysisView: View {
     }
 
     /// A Hebrew word's verses as listed: those the Septuagint renders with
-    /// this Greek word, or every one when asked, inside the book chosen.
+    /// this Greek word once crossed, inside the book chosen.
     private func hebrewVerses(of word: SeptuagintLoader.Word) -> [Int]? {
-        let all = isShowingEveryHebrewVerse ? word.references
-            : (septuagint.renderedVerses[word.id] ?? word.references)
+        // The rest the Septuagint renders with another word, which is off
+        // this section's subject, and a Septuagint in English marks no
+        // English in them. The Hebrew word's own analysis has them all.
+        let all = septuagint.renderedVerses[word.id] ?? word.references
         guard let book = septuagintBook else { return all }
         return all?.filter { $0 / 1_000_000 == book }
     }
@@ -2202,7 +2209,7 @@ struct StrongsAnalysisView: View {
                 if filter != nil {
                     Button("Show All") {
                         filter = nil
-                        shownVerseCount = 50
+                        shownVerseCount = Self.firstVerses
                     }
                     .font(.footnote)
                     .textCase(nil)
@@ -3078,6 +3085,45 @@ enum StrongsSeptuagint {
         return marked + text(cursor..<scalars.count)
     }
 
+    /// A piece of an English row: plain, the word marked, or a word-order
+    /// numeral an interlinear prints against its English.
+    enum EnglishPiece: Equatable {
+        case plain(String)
+        case match(String)
+        case marker(String)
+    }
+
+    /// A row's English in pieces, the snippet's word marked. Read as an
+    /// interlinear, the Apostolic Bible Polyglot's "[2said 3to her 1Amnon]",
+    /// the numerals glued to a word are pieces of their own, to be set
+    /// raised and small as its readers expect them; split on the whole line
+    /// so a numeral at the edge of the marked word is still found.
+    static func englishPieces(_ snippet: LampStrongsContext.Snippet, isInterlinear: Bool) -> [EnglishPiece] {
+        let opening = (snippet.isTrimmedAtStart ? "…" : "") + snippet.before
+        let line = opening + snippet.word + snippet.after + (snippet.isTrimmedAtEnd ? "…" : "")
+        let marked = opening.count..<(opening.count + snippet.word.count)
+        let runs = isInterlinear
+            ? LampSeptuagintSection.interlinearRuns(in: line)
+            : [(text: line, isMarker: false)]
+        var pieces: [EnglishPiece] = []
+        var offset = 0
+        for run in runs {
+            let characters = Array(run.text)
+            let start = offset
+            offset += characters.count
+            if run.isMarker {
+                pieces.append(.marker(run.text))
+                continue
+            }
+            let lower = min(max(marked.lowerBound - start, 0), characters.count)
+            let upper = min(max(marked.upperBound - start, 0), characters.count)
+            if lower > 0 { pieces.append(.plain(String(characters[..<lower]))) }
+            if upper > lower { pieces.append(.match(String(characters[lower..<upper]))) }
+            if upper < characters.count { pieces.append(.plain(String(characters[upper...]))) }
+        }
+        return pieces
+    }
+
     /// The Septuagint's Greek for each of `references`, numbered as the Hebrew
     /// text numbers them, where the Septuagint has the verse. Throws if
     /// cancelled part way, since a verse not read would look like one the
@@ -3207,6 +3253,8 @@ final class SeptuagintLoader {
     private(set) var hasCrossed = false
     /// An installed translation of the Greek Old Testament, for this key.
     private(set) var septuagintInEnglish: String?
+    /// Its abbreviation, which names it where the reader chooses.
+    private(set) var septuagintInEnglishName: String?
     /// Whether to read that text rather than the reader's own Bible.
     var readsSeptuagintInEnglish = true
     /// How many times the rows have been thrown away: part of a load's
@@ -3454,11 +3502,11 @@ final class SeptuagintLoader {
 
     private func resolveSeptuagintInEnglishBody(key: String) async {
         guard septuagintInEnglishFor != key, loadedKey == key else { return }
-        let result = await Task.detached(priority: .utility) { () -> Result<String?, Error> in
+        let result = await Task.detached(priority: .utility) { () -> Result<(id: String?, name: String?), Error> in
             let database = TranslationDatabase.shared
             do {
                 let translations = try database.getAllTranslations()
-                return .success(try await LampSeptuagintSection.septuagintInEnglish(
+                let found = try await LampSeptuagintSection.septuagintInEnglish(
                     among: translations.map {
                         (id: $0.id,
                          tagsStrongs: $0.features?.strongs == true,
@@ -3467,15 +3515,18 @@ final class SeptuagintLoader {
                     key: key
                 ) { id in
                     try database.analyzeStrongs(key: key, translationId: id, includingVerseText: false)
-                })
+                }
+                let module = translations.first { $0.id == found }
+                return .success((found, module.map { $0.abbreviation.isEmpty ? $0.name : $0.abbreviation }))
             } catch {
                 return .failure(error)
             }
         }.value
         guard loadedKey == key, case .success(let found) = result else { return }
         septuagintInEnglishFor = key
-        guard found != septuagintInEnglish else { return }
-        septuagintInEnglish = found
+        septuagintInEnglishName = found.name
+        guard found.id != septuagintInEnglish else { return }
+        septuagintInEnglish = found.id
         // Rows already read came from the other text, and nothing in them
         // would say so.
         forgetVerses()
@@ -3874,7 +3925,7 @@ private struct SeptuagintWordGroup: View {
                     .font(.headline)
                     .foregroundStyle(.primary)
                 if case .read(let english) = verse.english, let snippet = english.snippet {
-                    SearchResultRow.snippetText(fromMarked: Self.marked(snippet), limit: 160)
+                    Self.englishLine(snippet, isInterlinear: isInterlinear)
                         .font(.system(size: 16, design: .serif))
                         .foregroundStyle(LampTheme.readerText)
                         .lineSpacing(2)
@@ -3910,10 +3961,26 @@ private struct SeptuagintWordGroup: View {
         .buttonStyle(.plain)
     }
 
-    /// The snippet with its word in `<mark>`, as the verse list marks a find.
-    private static func marked(_ snippet: LampStrongsContext.Snippet) -> String {
-        (snippet.isTrimmedAtStart ? "…" : "") + snippet.before
-            + "<mark>" + snippet.word + "</mark>"
-            + snippet.after + (snippet.isTrimmedAtEnd ? "…" : "")
+    /// Whether the rows' English is the Septuagint in English, an
+    /// interlinear whose word-order numerals are set as superscripts. Only
+    /// then: in an ordinary Bible a numeral against a word ("1st") is text.
+    private var isInterlinear: Bool {
+        loader.readsSeptuagintInEnglish && loader.septuagintInEnglish != nil
+    }
+
+    /// The English with its word marked as a find, and any word-order
+    /// numerals raised and small in the caption grey.
+    private static func englishLine(_ snippet: LampStrongsContext.Snippet, isInterlinear: Bool) -> Text {
+        StrongsSeptuagint.englishPieces(snippet, isInterlinear: isInterlinear).reduce(Text("")) { line, piece in
+            switch piece {
+            case .plain(let text): line + Text(text)
+            case .match(let text): line + Text.findMatch(text)
+            case .marker(let text):
+                line + Text(text)
+                    .font(.system(size: 11, design: .serif))
+                    .baselineOffset(5)
+                    .foregroundStyle(LampTheme.caption)
+            }
+        }
     }
 }

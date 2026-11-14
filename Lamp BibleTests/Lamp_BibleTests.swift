@@ -6997,6 +6997,24 @@ final class StrongsSeptuagintTests: XCTestCase {
         XCTAssertEqual(StrongsSeptuagint.marked(line, at: [LampSeptuagintSection.Span(start: 4, end: 40)]), line)
     }
 
+    /// The Apostolic Bible Polyglot's word-order numerals are pieces of
+    /// their own, set raised, even at the edge of the marked word; in an
+    /// ordinary Bible the same digits are text, and a free number never is.
+    func testAnInterlinearsWordOrderNumeralsAreSetApart() {
+        let snippet = LampStrongsContext.Snippet(
+            before: "than [2the 3", word: "love", after: " 1which] he had in 40 days",
+            isTrimmedAtStart: false, isTrimmedAtEnd: true
+        )
+        XCTAssertEqual(StrongsSeptuagint.englishPieces(snippet, isInterlinear: true), [
+            .plain("than ["), .marker("2"), .plain("the "), .marker("3"),
+            .match("love"),
+            .plain(" "), .marker("1"), .plain("which] he had in 40 days…"),
+        ])
+        XCTAssertEqual(StrongsSeptuagint.englishPieces(snippet, isInterlinear: false), [
+            .plain("than [2the 3"), .match("love"), .plain(" 1which] he had in 40 days…"),
+        ])
+    }
+
     /// The tagged Septuagint counts ἀγάπη itself, and love's Hebrew is
     /// narrowed to the verses where the Septuagint uses it, with the Greek
     /// word marked where it stands in each one.
