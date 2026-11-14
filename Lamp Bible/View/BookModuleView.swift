@@ -679,7 +679,7 @@ struct BookModuleView: View {
                 onNavigateToVerse: { openReader(at: $0) }
             )
         }
-        .task(id: moduleId) { loadBook() }
+        .task(id: moduleId) { await loadBook() }
         .onReceive(NotificationCenter.default.publisher(for: .bookReadingDidChange)) { _ in
             bookmarkIDs = BookReadingState.store().bookmarkIDs(for: moduleId)
         }
@@ -978,33 +978,63 @@ struct BookModuleView: View {
 
     // MARK: Loading
 
-    private func loadBook() {
-        do {
-            let loaded: BookModule
-            let loadedSections: [BookSection]
-            if let userBook = try ModuleDatabase.shared.getBookModule(id: moduleId) {
-                loaded = userBook
-                loadedSections = try ModuleDatabase.shared.getBookSections(moduleId: moduleId)
-            } else if let bundledBook = try BundledModuleDatabase.shared.getBookModule(id: moduleId) {
-                loaded = bundledBook
-                loadedSections = try BundledModuleDatabase.shared.getBookSections(moduleId: moduleId)
-            } else {
-                loadError = "The book module is no longer available."
-                return
-            }
+    /// A book as the reader opens it: every section with its text, and the
+    /// footnotes and media decoded from the module's JSON.
+    private struct LoadedBook {
+        let book: BookModule
+        let sections: [BookSection]
+        let footnotesByID: [String: BookFootnote]
+        let footnoteNumbers: [String: Int]
+        let mediaByID: [String: MediaReference]
+    }
 
-            book = loaded
-            sections = loadedSections
-            let footnotes = loaded.footnotes
-            footnotesByID = Dictionary(footnotes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            footnoteNumbers = Dictionary(
+    /// Reads the whole book, every section's text included, so it runs off
+    /// the main actor: on the main actor it held up the push into the reader.
+    private nonisolated static func readBook(moduleId: String) throws -> LoadedBook? {
+        let loaded: BookModule
+        let loadedSections: [BookSection]
+        if let userBook = try ModuleDatabase.shared.getBookModule(id: moduleId) {
+            loaded = userBook
+            loadedSections = try ModuleDatabase.shared.getBookSections(moduleId: moduleId)
+        } else if let bundledBook = try BundledModuleDatabase.shared.getBookModule(id: moduleId) {
+            loaded = bundledBook
+            loadedSections = try BundledModuleDatabase.shared.getBookSections(moduleId: moduleId)
+        } else {
+            return nil
+        }
+        let footnotes = loaded.footnotes
+        return LoadedBook(
+            book: loaded,
+            sections: loadedSections,
+            footnotesByID: Dictionary(footnotes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+            footnoteNumbers: Dictionary(
                 footnotes.enumerated().map { ($0.element.id, $0.offset + 1) },
                 uniquingKeysWith: { first, _ in first }
-            )
-            mediaByID = Dictionary(
+            ),
+            mediaByID: Dictionary(
                 loaded.mediaReferences.map { ($0.id, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
+        )
+    }
+
+    private func loadBook() async {
+        let moduleId = self.moduleId
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try Self.readBook(moduleId: moduleId)
+            }.value
+            guard !Task.isCancelled else { return }
+            guard let result else {
+                loadError = "The book module is no longer available."
+                return
+            }
+            let loadedSections = result.sections
+            book = result.book
+            sections = loadedSections
+            footnotesByID = result.footnotesByID
+            footnoteNumbers = result.footnoteNumbers
+            mediaByID = result.mediaByID
             guard !loadedSections.isEmpty else {
                 loadError = "This book does not contain any sections."
                 return

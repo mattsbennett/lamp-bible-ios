@@ -182,6 +182,7 @@ struct ModuleManagerView: View {
     @State private var selectedType: ModuleType? = nil
     @State private var selectedSource: ModuleSource = .all
     @State private var isLoading: Bool = true
+    @State private var loadGeneration: Int = 0
     @State private var isSyncing: Bool = false
     @State private var showingImportSheet: Bool = false
     @State private var showingLampImporter: Bool = false
@@ -958,11 +959,48 @@ struct ModuleManagerView: View {
         }
     }
 
+    /// Everything the list shows, read in one pass.
+    private struct LibrarySnapshot {
+        var modules: [DisplayModule] = []
+        var commentarySeriesGroups: [CommentarySeriesGroup] = []
+        var dictionarySeriesGroups: [DictionarySeriesGroup] = []
+        var highlightSets: [HighlightSetDisplay] = []
+        var bundledPlans: [Plan] = []
+        var userPlans: [Plan] = []
+        var bundledQuizzes: [QuizModule] = []
+        var userQuizzes: [QuizModule] = []
+    }
+
+    /// Reads the library off the main actor, so opening the screen (and every
+    /// reload after an import or delete) never waits on the databases: a
+    /// count of every translation's verses, every commentary book and every
+    /// highlight set is too much to decode while the screen slides in. A load
+    /// that a later one overtakes drops its result.
     @MainActor
     private func loadModules() async {
-        print("[ModuleManager] loadModules() called")
-        isLoading = true
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        if modules.isEmpty { isLoading = true }
 
+        let database = self.database
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            Self.readLibrary(database: database)
+        }.value
+
+        guard generation == loadGeneration else { return }
+        modules = snapshot.modules
+        commentarySeriesGroups = snapshot.commentarySeriesGroups
+        dictionarySeriesGroups = snapshot.dictionarySeriesGroups
+        highlightSets = snapshot.highlightSets
+        bundledPlans = snapshot.bundledPlans
+        userPlans = snapshot.userPlans
+        bundledQuizzes = snapshot.bundledQuizzes
+        userQuizzes = snapshot.userQuizzes
+        isLoading = false
+    }
+
+    private nonisolated static func readLibrary(database: ModuleDatabase) -> LibrarySnapshot {
+        var snapshot = LibrarySnapshot()
         var allModules: [DisplayModule] = []
 
         // Load translations from GRDB (bundled + user-imported)
@@ -1030,11 +1068,9 @@ struct ModuleManagerView: View {
 
         // Create Strong's series group if we have modules
         if !strongsModules.isEmpty {
-            dictionarySeriesGroups = [
+            snapshot.dictionarySeriesGroups = [
                 DictionarySeriesGroup(id: "strongs", seriesName: "Strong's Concordance", modules: strongsModules)
             ]
-        } else {
-            dictionarySeriesGroups = []
         }
 
         // Long-form books are optional in the bundled database.
@@ -1089,32 +1125,32 @@ struct ModuleManagerView: View {
         }.sorted { $0.seriesName < $1.seriesName }
 
         // Combine bundled Strong's group with user dictionary series groups
-        dictionarySeriesGroups = dictionarySeriesGroups + userDictGroups
+        snapshot.dictionarySeriesGroups += userDictGroups
 
         // Load plans from bundled database
-        bundledPlans = (try? bundledDb.getAllPlans()) ?? []
+        snapshot.bundledPlans = (try? bundledDb.getAllPlans()) ?? []
 
         // Load user plans from user database
-        userPlans = (try? database.getAllPlans()) ?? []
+        snapshot.userPlans = (try? database.getAllPlans()) ?? []
 
         // Load quizzes from bundled database
         do {
             let quizzes = try bundledDb.getAllQuizModules()
             print("[ModuleManager] Loaded \(quizzes.count) bundled quizzes")
-            bundledQuizzes = quizzes
+            snapshot.bundledQuizzes = quizzes
         } catch {
             print("[ModuleManager] Failed to load bundled quizzes: \(error)")
-            bundledQuizzes = []
+            snapshot.bundledQuizzes = []
         }
 
         // Load user quizzes from user database
         do {
             let userQuizzes = try database.getAllQuizModules()
             print("[ModuleManager] Loaded \(userQuizzes.count) user quizzes")
-            self.userQuizzes = userQuizzes
+            snapshot.userQuizzes = userQuizzes
         } catch {
             print("[ModuleManager] Failed to load user quizzes: \(error)")
-            self.userQuizzes = []
+            snapshot.userQuizzes = []
         }
 
         // Load commentary series groups (bundled + user)
@@ -1209,7 +1245,7 @@ struct ModuleManagerView: View {
             print("Failed to load user commentary series: \(error)")
         }
 
-        commentarySeriesGroups = allCommentaryGroups.sorted { $0.displayName < $1.displayName }
+        snapshot.commentarySeriesGroups = allCommentaryGroups.sorted { $0.displayName < $1.displayName }
 
         // Load highlight sets with translation info
         var allHighlightSets: [HighlightSetDisplay] = []
@@ -1241,10 +1277,10 @@ struct ModuleManagerView: View {
         } catch {
             print("Failed to load highlight sets: \(error)")
         }
-        highlightSets = allHighlightSets.sorted { $0.set.name < $1.set.name }
+        snapshot.highlightSets = allHighlightSets.sorted { $0.set.name < $1.set.name }
 
-        modules = allModules
-        isLoading = false
+        snapshot.modules = allModules
+        return snapshot
     }
 
     private func syncAllModules() {

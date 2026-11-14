@@ -169,12 +169,22 @@ struct TranslationList: View {
     var body: some View {
         // Under their languages, as the pickers list them; inside the one
         // Translations section, so as headings in it like Hidden's.
-        let groups = LampTranslationLanguages.grouped(visibleTranslationsList, language: { $0.language })
+        // Whole Bibles first in each language, then the parts of the Bible
+        // under a heading of their own.
+        let groups = LampTranslationLanguages.grouped(
+            visibleTranslationsList,
+            language: { $0.language },
+            holdsWholeBible: { TranslationDatabase.shared.holdsWholeBible(translationId: $0.id) }
+        )
         ForEach(groups) { group in
             if groups.count > 1 {
                 subheader(group.title, isFirst: group.id == groups.first?.id)
             }
-            ForEach(group.items) { translation in
+            ForEach(group.parts) { part in
+            if let title = part.title {
+                partHeader(title)
+            }
+            ForEach(part.items) { translation in
                 TranslationRow(
                     translation: translation,
                     isDefault: translation.id == defaultTranslationId,
@@ -190,6 +200,7 @@ struct TranslationList: View {
                         .tint(.orange)
                     }
                 }
+            }
             }
         }
 
@@ -214,6 +225,16 @@ struct TranslationList: View {
                 }
             }
         }
+    }
+
+    /// A lesser heading inside a language, over its parts of the Bible.
+    private func partHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 4, trailing: 20))
+            .listRowSeparator(.hidden, edges: .bottom)
     }
 
     /// A heading among the rows, the first one close under the section's own.
@@ -274,13 +295,30 @@ struct TranslationLanguageSections<Rows: View>: View {
     @ViewBuilder let rows: ([TranslationModule]) -> Rows
 
     var body: some View {
-        let groups = LampTranslationLanguages.grouped(translations, language: { $0.language })
+        // Whole Bibles first in each language, then the parts of the Bible
+        // below a divider. Not a nested Section: in a menu its rows come
+        // out disabled, as the Mac found.
+        let groups = LampTranslationLanguages.grouped(
+            translations,
+            language: { $0.language },
+            holdsWholeBible: { TranslationDatabase.shared.holdsWholeBible(translationId: $0.id) }
+        )
         if groups.count > 1 {
             ForEach(groups) { group in
-                Section(group.title) { rows(group.items) }
+                Section(group.title) { parts(group) }
             }
-        } else {
-            rows(translations)
+        } else if let group = groups.first {
+            parts(group)
+        }
+    }
+
+    @ViewBuilder
+    private func parts(_ group: LampTranslationLanguages.Group<TranslationModule>) -> some View {
+        ForEach(group.parts) { part in
+            if part.id != group.parts.first?.id {
+                Divider()
+            }
+            rows(part.items)
         }
     }
 }

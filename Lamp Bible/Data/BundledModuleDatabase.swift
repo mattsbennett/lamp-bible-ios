@@ -1488,12 +1488,20 @@ class TranslationDatabase {
         chapterCounts(translationId: translationId).keys.sorted()
     }
 
+    /// Whether the translation holds the whole Bible, all 66 books, by
+    /// core's rule; the pickers list such before the parts of the Bible
+    /// (the Septuagint, TAHOT, TAGNT) in each language.
+    func holdsWholeBible(translationId: String) -> Bool {
+        LampCanonicalBooks.holdsEveryBook(chapterCounts(translationId: translationId).keys)
+    }
+
     /// Whether the translation has any of this book.
     func covers(_ book: Int, translationId: String) -> Bool {
         chapterCounts(translationId: translationId)[book] != nil
     }
 
-    /// Each covered book's chapter count in the translation.
+    /// Each covered book's chapter count in the translation, as core reads
+    /// it from the books the translation lists, which both apps share.
     func chapterCounts(translationId: String) -> [Int: Int] {
         coverageLock.lock()
         if let known = coverage[translationId] {
@@ -1502,21 +1510,32 @@ class TranslationDatabase {
         }
         let generation = coverageGeneration
         coverageLock.unlock()
-        var counts: [Int: Int] = [:]
-        var allRead = true
-        for book in 1...66 {
-            do {
-                let count = try getChapterCount(translationId: translationId, book: book)
-                if count > 0 { counts[book] = count }
-            } catch {
-                allRead = false
+        let counts: [Int: Int]
+        do {
+            let read = { (db: Database) -> [Int: Int] in
+                let listed = try LampTranslationCoverage.chapterCounts(in: db, translationID: translationId)
+                guard listed.isEmpty else { return listed }
+                // An import may carry verses but no book list; then its books
+                // are the ones its verses are in.
+                var fromVerses: [Int: Int] = [:]
+                for row in try Row.fetchAll(db, sql: """
+                    SELECT book, MAX(chapter) AS chapters FROM translation_verses
+                    WHERE translation_id = ? GROUP BY book
+                    """, arguments: [translationId]) {
+                    fromVerses[row["book"]] = row["chapters"]
+                }
+                return fromVerses
             }
+            counts = try (bundledDb.isTranslationBundled(id: translationId)
+                ? bundledDb.read(read) : userDb.read(read)).filter { $0.value > 0 }
+        } catch {
+            // A failed read isn't a missing book: answer nothing, keep nothing.
+            return [:]
         }
         coverageLock.lock()
-        // A failed read isn't a missing book, and a translation installed,
-        // replaced or removed during the reads may have left them mixed:
-        // either way, answer this once but keep nothing.
-        if allRead && generation == coverageGeneration {
+        // A translation installed, replaced or removed during the read may
+        // have changed what it covers: answer this once, but keep nothing.
+        if generation == coverageGeneration {
             coverage[translationId] = counts
         }
         coverageLock.unlock()
