@@ -503,10 +503,6 @@ struct StrongsAnalysisView: View {
 
     // MARK: Summary
 
-    private var languageName: String {
-        key.hasPrefix("H") ? "Hebrew" : key.hasPrefix("G") ? "Greek" : "original-language"
-    }
-
     /// "3.3 in every 1,000", or for a word too rare to show there, in every
     /// 10,000 or more, so a word that occurs never reads as "About 0".
     static func rate(perThousand: Double) -> String {
@@ -520,6 +516,9 @@ struct StrongsAnalysisView: View {
         return "\(figure) in every \(per.formatted())"
     }
 
+    /// The rate against every tagged word, of either language, in the books
+    /// that tag the key's: in the Septuagint a name numbered by its Hebrew
+    /// is counted among the Greek around it, so no one language is named.
     private func rateLine(_ analysis: LampStrongsAnalysis) -> String {
         let rate = Self.rate(perThousand: analysis.ratePerThousandWords)
         let books = bookRange.map { range -> String in
@@ -528,7 +527,7 @@ struct StrongsAnalysisView: View {
                             "New Testament", "Old Testament"].contains(name)
             return " in \(takesThe ? "the " : "")\(name)"
         } ?? ""
-        return "About \(rate) tagged \(languageName) words of the \(analysis.translationAbbreviation ?? analysis.translationName)\(books)."
+        return "About \(rate) tagged words of the \(analysis.translationAbbreviation ?? analysis.translationName)\(books)."
     }
 
     private func summary(_ analysis: LampStrongsAnalysis) -> some View {
