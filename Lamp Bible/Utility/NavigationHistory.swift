@@ -164,13 +164,15 @@ class NavigationHistory: ObservableObject {
     }
 
     /// Get all history entries with their descriptions
+    /// - Parameter translationId: The translation being read, whose own book
+    ///   names the entries use, since going to one opens it there.
     /// - Returns: Array of (index, verseId, description) tuples
-    func allHistory() -> [(index: Int, verseId: Int, description: String)] {
+    func allHistory(translationId: String? = nil) -> [(index: Int, verseId: Int, description: String)] {
         return history.enumerated().compactMap { index, verseId in
             let (verse, chapter, book) = splitVerseId(verseId)
 
-            if let bookObj = try? BundledModuleDatabase.shared.getBook(id: book) {
-                return (index, verseId, "\(bookObj.name) \(chapter):\(verse)")
+            if let name = TranslationDatabase.shared.bookName(book, translationId: translationId) {
+                return (index, verseId, "\(name) \(chapter):\(verse)")
             }
             return nil
         }
@@ -179,7 +181,7 @@ class NavigationHistory: ObservableObject {
     /// Get recent history entries (for display in a menu)
     /// - Parameter count: Maximum number of entries to return
     /// - Returns: Array of (verseId, description) tuples, most recent first
-    func recentHistory(count: Int = 10) -> [(verseId: Int, description: String)] {
+    func recentHistory(count: Int = 10, translationId: String? = nil) -> [(verseId: Int, description: String)] {
         let startIndex = max(0, currentIndex - count)
         let endIndex = currentIndex
 
@@ -189,8 +191,8 @@ class NavigationHistory: ObservableObject {
             let verseId = history[index]
             let (verse, chapter, book) = splitVerseId(verseId)
 
-            if let bookObj = try? BundledModuleDatabase.shared.getBook(id: book) {
-                return (verseId, "\(bookObj.name) \(chapter):\(verse)")
+            if let name = TranslationDatabase.shared.bookName(book, translationId: translationId) {
+                return (verseId, "\(name) \(chapter):\(verse)")
             }
             return nil
         }

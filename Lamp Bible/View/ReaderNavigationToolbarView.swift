@@ -192,8 +192,7 @@ struct ReaderNavigationToolbarView: View {
     @ViewBuilder
     private var title: some View {
         let (_, currentChapter, currentBook) = splitVerseId(currentVerseId)
-        let book = try? BundledModuleDatabase.shared.getBook(id: currentBook)
-        let place = (book?.name ?? "") + " \(currentChapter)"
+        let place = (TranslationDatabase.shared.bookName(currentBook, translationId: translationId) ?? "") + " \(currentChapter)"
 
         if isHorizontalSplit && !isCompact {
             // The passage and the tool, in one capsule. The passage opens the

@@ -26,10 +26,20 @@ struct BookListView: View {
         userSettings.hiddenTranslations
     }
 
-    /// Get all Bible books from GRDB
+    /// Get all Bible books from GRDB, by the translation's own names
+    /// ("Génesis" in the RV1909) where it gives them.
     private var books: [BibleBook] {
-        (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
+        let all = (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
+        guard !ownBookNames.isEmpty else { return all }
+        return all.map { book in
+            var book = book
+            if let name = ownBookNames[book.id] { book.name = name }
+            return book
+        }
     }
+
+    /// The translation's own book names, read once per opening.
+    @State private var ownBookNames: [Int: String] = [:]
 
     /// Get available translations from GRDB
     private var availableTranslations: [TranslationModule] {
@@ -235,6 +245,7 @@ struct BookListView: View {
     }
 
     private func loadCounts() {
+        ownBookNames = TranslationDatabase.shared.ownBookNames(translationId: translationId)
         var counts: [Int: Int] = [:]
         for book in books {
             counts[book.id] = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: book.id)) ?? 0

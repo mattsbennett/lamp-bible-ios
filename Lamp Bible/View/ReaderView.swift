@@ -327,6 +327,8 @@ struct ChapterTextView: UIViewRepresentable {
     /// The space between lines the reader has chosen, in points.
     var lineSpacingChoice: CGFloat? = nil
     let bookName: String
+    /// Whose names a later chapter's heading gives its book by.
+    var translationId: String? = nil
     let chapter: Int
     let showBookTitle: Bool
     let showStrongsHints: Bool
@@ -724,7 +726,7 @@ struct ChapterTextView: UIViewRepresentable {
             var opensChapter = false
             if verse.chapter != currentChapter {
                 // Get book name for this chapter
-                let chapterBookName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name ?? bookName
+                let chapterBookName = TranslationDatabase.shared.bookName(verse.book, translationId: translationId) ?? bookName
                 if currentChapter != nil {
                     // A later chapter of the reading opens as the first did.
                     result.append(chapterOpening(
@@ -2068,7 +2070,7 @@ struct ReaderView: View {
 
     private var bookName: String {
         guard let firstVerse = verses.first else { return "" }
-        return (try? BundledModuleDatabase.shared.getBook(id: firstVerse.book))?.name ?? ""
+        return TranslationDatabase.shared.bookName(firstVerse.book, translationId: translationId) ?? ""
     }
 
     private var chapterNumber: Int {
@@ -2384,7 +2386,7 @@ struct ReaderView: View {
             return nil
         }
         let (prevBook, prevChapter) = getPreviousChapter(book: firstVerse.book, chapter: firstVerse.chapter)
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: prevBook))?.name ?? "Book \(prevBook)"
+        let bookName = TranslationDatabase.shared.bookName(prevBook, translationId: translationId) ?? "Book \(prevBook)"
         return "\(bookName) \(prevChapter)"
     }
 
@@ -2395,7 +2397,7 @@ struct ReaderView: View {
             return nil
         }
         let (nextBook, nextChapter) = getNextChapter(book: firstVerse.book, chapter: firstVerse.chapter, translationId: translationId)
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: nextBook))?.name ?? "Book \(nextBook)"
+        let bookName = TranslationDatabase.shared.bookName(nextBook, translationId: translationId) ?? "Book \(nextBook)"
         return "\(bookName) \(nextChapter)"
     }
 
@@ -2487,6 +2489,7 @@ struct ReaderView: View {
             let segments = ReaderSpeechTextBuilder.planReadingSegments(
                 readingDescription: inputs.readingDescription,
                 verses: verses,
+                translationId: inputs.translationId,
                 languageCode: language
             )
             let hasVoice = SpeechVoiceCatalog.hasVoice(for: language)
@@ -2794,6 +2797,7 @@ struct ReaderView: View {
                                 typeface: LampProseTypeface(rawValue: readerTypeface) ?? .serif,
                                 lineSpacingChoice: CGFloat(LampTextScale.readerLineSpacing.clamped(readerLineSpacing)),
                                 bookName: bookName,
+                                translationId: translationId,
                                 chapter: chapterNumber,
                                 showBookTitle: showBookTitle,
                                 showStrongsHints: showStrongsHints,
@@ -3996,14 +4000,17 @@ private enum ReaderSpeechTextBuilder {
     /// reader can follow along with what's being spoken. Chapter headings are
     /// attributed to the verse that follows them, so following doesn't stall.
     ///
-    /// The reading's description and the book names are English, and the
-    /// request is spoken in the translation's language, so a Spanish voice
-    /// would read "Romans 8" by Spanish rules. Outside English the description
-    /// is left out and a chapter is announced by its number alone, which every
-    /// voice says in its own language.
+    /// The reading's description is English, and the request is spoken in the
+    /// translation's language, so outside English the description is left
+    /// out. A chapter is announced by the translation's own name for its book
+    /// ("Génesis 1"). A translation outside English that gives only the
+    /// English names is announced by the chapter's number alone, which every
+    /// voice says in its own language, rather than "Romans 8" read by Spanish
+    /// rules.
     static func planReadingSegments(
         readingDescription: String,
         verses: [TranslationVerse],
+        translationId: String,
         languageCode: String?
     ) -> [TextSpeechSegment] {
         let speaksEnglishLabels = languageCode.map {
@@ -4020,10 +4027,13 @@ private enum ReaderSpeechTextBuilder {
             let chapterKey = "\(verse.book)-\(verse.chapter)"
             if chapterKey != currentChapterKey {
                 currentChapterKey = chapterKey
+                let englishName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name
+                let ownName = TranslationDatabase.shared.ownBookName(verse.book, translationId: translationId)
                 let heading: String
                 if speaksEnglishLabels {
-                    let bookName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name ?? "Book \(verse.book)"
-                    heading = "\(bookName) \(verse.chapter)"
+                    heading = "\(ownName ?? englishName ?? "Book \(verse.book)") \(verse.chapter)"
+                } else if let ownName, ownName != englishName {
+                    heading = "\(ownName) \(verse.chapter)"
                 } else {
                     heading = "\(verse.chapter)"
                 }

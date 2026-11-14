@@ -273,6 +273,8 @@ struct NavigationToolbarContent: View {
 
 struct HistoryToolbarContent: View {
     let currentVerseId: Int
+    /// The translation being read, whose book names the list uses.
+    var translationId: String? = nil
     let navigateToVerseId: (Int) -> Void
     @ObservedObject private var history = NavigationHistory.shared
     @State private var showingHistoryList: Bool = false
@@ -303,6 +305,7 @@ struct HistoryToolbarContent: View {
                 .popover(isPresented: $showingHistoryList) {
                     HistoryListPopover(
                         currentVerseId: currentVerseId,
+                        translationId: translationId,
                         navigateToVerseId: { verseId in
                             showingHistoryList = false
                             navigateToVerseId(verseId)
@@ -331,6 +334,7 @@ struct HistoryToolbarContent: View {
 
 struct HistoryListPopover: View {
     let currentVerseId: Int
+    var translationId: String? = nil
     let navigateToVerseId: (Int) -> Void
     @ObservedObject private var history = NavigationHistory.shared
 
@@ -350,7 +354,7 @@ struct HistoryListPopover: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(history.allHistory(), id: \.index) { item in
+                            ForEach(history.allHistory(translationId: translationId), id: \.index) { item in
                                 Button {
                                     if let verseId = history.goToIndex(item.index, savingPosition: currentVerseId) {
                                         navigateToVerseId(verseId)
@@ -733,6 +737,7 @@ struct ReaderBottomToolbarView: ToolbarContent {
         case .history:
             HistoryToolbarContent(
                 currentVerseId: currentVerseId,
+                translationId: translationId,
                 navigateToVerseId: navigateToVerseId
             )
             .frame(maxWidth: .infinity)

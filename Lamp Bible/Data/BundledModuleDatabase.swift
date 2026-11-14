@@ -1687,6 +1687,33 @@ class TranslationDatabase {
         }
     }
 
+    /// A book's name as the translation itself gives it ("Génesis" in the
+    /// RV1909), or `nil` when it gives none.
+    ///
+    /// Wherever a translation's passage is shown — the reader's title and
+    /// headings, the book picker, history, Read Aloud — the book goes by this
+    /// name. References across the app (notes, cross-references, search)
+    /// stay in English, the interface's language.
+    func ownBookName(_ book: Int, translationId: String?) -> String? {
+        guard let translationId, !translationId.isEmpty,
+              let name = try? getTranslationBook(translationId: translationId, bookNumber: book)?.name,
+              !name.isEmpty else { return nil }
+        return name
+    }
+
+    /// The translation's own name for a book, else the English one.
+    func bookName(_ book: Int, translationId: String?) -> String? {
+        ownBookName(book, translationId: translationId)
+            ?? (try? BundledModuleDatabase.shared.getBook(id: book))?.name
+    }
+
+    /// Every book's own name in a translation, by book number, for lists.
+    func ownBookNames(translationId: String) -> [Int: String] {
+        let books = (try? getTranslationBooks(translationId: translationId)) ?? []
+        return Dictionary(books.filter { !$0.name.isEmpty }.map { ($0.bookNumber, $0.name) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
     // MARK: - Navigation Helpers
 
     /// Get chapter count for a book
