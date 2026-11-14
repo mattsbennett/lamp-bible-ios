@@ -4910,51 +4910,74 @@ struct QuizSheetView: View {
     /// when it runs long enough to want paragraphs. Same length as `text`.
     static func paragraphed(_ text: String, sentencesPerParagraph: Int = 2, minimumLength: Int = 240) -> String {
         guard text.count >= minimumLength, !text.contains("\n") else { return text }
-        let tokenizer = NLTokenizer(unit: .sentence)
-        tokenizer.string = text
-        var breaks: [String.Index] = []
-        var count = 0
-        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            count += 1
-            if count % sentencesPerParagraph == 0, range.upperBound < text.endIndex {
-                // The whitespace that ends the token, if there is one.
-                var end = range.upperBound
-                while end > range.lowerBound, text[text.index(before: end)].isWhitespace {
-                    end = text.index(before: end)
-                }
-                if end < range.upperBound, text[end] == " " {
-                    breaks.append(end)
-                }
-            }
-            return true
-        }
-        guard !breaks.isEmpty else { return text }
         var characters = Array(text)
-        for index in breaks {
-            characters[text.distance(from: text.startIndex, to: index)] = "\n"
+        var changed = false
+        var count = 0
+        for end in sentenceEnds(in: text) {
+            count += 1
+            // At the next end that has a space after it, if this one hasn't.
+            guard count >= sentencesPerParagraph, end < text.endIndex, text[end] == " " else { continue }
+            characters[text.distance(from: text.startIndex, to: end)] = "\n"
+            changed = true
+            count = 0
         }
-        return String(characters)
+        return changed ? String(characters) : text
     }
 
     /// The first sentence of `text`, as an NSRange, when there is more than one.
     static func firstSentenceRange(in text: String) -> NSRange? {
-        let tokenizer = NLTokenizer(unit: .sentence)
-        tokenizer.string = text
-        var first: Range<String.Index>?
-        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            first = range
-            return false
-        }
+        let start = text.firstIndex { !$0.isWhitespace } ?? text.startIndex
         // Only a sentence short enough to read as a gist; a long one set in
         // bold is a heavy block, not a lead.
-        guard let first, first.upperBound < text.endIndex, text[first].count <= 140 else { return nil }
-        // The token carries the space after the sentence; leave that plain.
-        var end = first.upperBound
-        while end > first.lowerBound, text[text.index(before: end)].isWhitespace {
-            end = text.index(before: end)
+        guard let end = sentenceEnds(in: text).first, end > start,
+              text[end...].contains(where: { !$0.isWhitespace }),
+              text[start..<end].count <= 140 else { return nil }
+        return NSRange(start..<end, in: text)
+    }
+
+    /// Where `text`'s sentences end, each just past its last mark and before
+    /// the space after it. The sentence tokenizer ends one at every full
+    /// stop, so the ends it finds after "cf." or "e.g.", or inside brackets
+    /// still open, are left out: the sentence goes on there.
+    static func sentenceEnds(in text: String) -> [String.Index] {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var ends: [String.Index] = []
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            var end = range.upperBound
+            while end > range.lowerBound, text[text.index(before: end)].isWhitespace {
+                end = text.index(before: end)
+            }
+            if end > range.lowerBound, !goesOn(text, at: end) {
+                ends.append(end)
+            }
+            return true
         }
-        guard end > first.lowerBound else { return nil }
-        return NSRange(first.lowerBound..<end, in: text)
+        return ends
+    }
+
+    /// Short forms a study note writes with a full stop mid-sentence.
+    /// "etc." is not among them: it ends sentences as often as not.
+    private static let abbreviations: Set<String> = [
+        "cf.", "cp.", "e.g.", "i.e.", "viz.", "v.", "vv.", "ch.", "chs.", "ff.",
+        "lit.", "esp.", "ca.", "c.", "vs.", "al.", "ibid.",
+    ]
+
+    /// Whether the sentence the tokenizer ended at `end` goes on: a bracket
+    /// is still open, or the stop is an abbreviation's.
+    private static func goesOn(_ text: String, at end: String.Index) -> Bool {
+        let head = text[..<end]
+        var depth = 0
+        for character in head {
+            if character == "(" || character == "[" {
+                depth += 1
+            } else if character == ")" || character == "]" {
+                depth = max(0, depth - 1)
+            }
+        }
+        if depth > 0 { return true }
+        guard let word = head.split(whereSeparator: \.isWhitespace).last else { return false }
+        return abbreviations.contains(word.drop { "([\"'“‘".contains($0) }.lowercased())
     }
 
     /// Handle tapped scripture reference URL from quiz text

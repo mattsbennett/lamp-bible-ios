@@ -615,13 +615,20 @@ struct SettingsView: View {
                             planViewRefreshID = UUID()
                         }
                     }
-                    HStack(spacing: 10) {
-                        Text("Adult average")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        wpmPreset("Aloud", wpm: 183, generator: generator)
-                        wpmPreset("Silent", wpm: 238, generator: generator)
+                    // The chips beside their label where they fit, else on a
+                    // line under it; never a chip broken over two lines.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            wpmPresetsLabel
+                            Spacer()
+                            wpmPresets(generator: generator)
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            wpmPresetsLabel
+                            HStack(spacing: 10) {
+                                wpmPresets(generator: generator)
+                            }
+                        }
                     }
                 } header: {
                     Text("Reading Rate").lampSectionHeader()
@@ -879,6 +886,19 @@ struct SettingsView: View {
     }
 
     /// A reading-rate preset: filled when it is the rate set now.
+    private var wpmPresetsLabel: some View {
+        Text("Adult average")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize()
+    }
+
+    @ViewBuilder
+    private func wpmPresets(generator: UINotificationFeedbackGenerator) -> some View {
+        wpmPreset("Aloud", wpm: 183, generator: generator)
+        wpmPreset("Silent", wpm: 238, generator: generator)
+    }
+
     private func wpmPreset(_ title: String, wpm: Double, generator: UINotificationFeedbackGenerator) -> some View {
         let isCurrent = Int(planWpm) == Int(wpm)
         return Button {
@@ -896,6 +916,7 @@ struct SettingsView: View {
         .buttonBorderShape(.capsule)
         .controlSize(.small)
         .tint(isCurrent ? .accentColor : .secondary)
+        .fixedSize()
         .accessibilityLabel("\(title), \(Int(wpm)) words a minute")
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }

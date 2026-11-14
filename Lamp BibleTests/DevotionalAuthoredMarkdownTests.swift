@@ -167,6 +167,28 @@ final class QuizAnswerParagraphTests: XCTestCase {
         XCTAssertTrue(result.hasPrefix("One is here and it is long enough to count. Two follows it with more words in it.\nThree"))
     }
 
+    /// The Colossians 1 answer that broke after "(cf.": an abbreviation's
+    /// stop, or one inside brackets, ends no paragraph, and the break moves
+    /// on to the next sentence that does end.
+    func testNoParagraphEndsAfterAnAbbreviationOrInsideBrackets() {
+        let text = "Paul calls it a mystery now revealed to the saints. "
+            + "That God's redemptive purpose in Christ extends to Gentiles, not just Israel. "
+            + "This was latent in OT promises (cf. Genesis 12:3; Isaiah 49:6) but only fully revealed through the apostolic gospel. "
+            + "Paul describes himself as a steward (lit. a household manager. See v.25) of this revelation, e.g. in his sufferings. "
+            + "The goal is corporate maturity."
+        let result = QuizSheetView.paragraphed(text)
+        XCTAssertEqual(result.count, text.count)
+        XCTAssertEqual(result.components(separatedBy: "\n"), [
+            "Paul calls it a mystery now revealed to the saints. That God's redemptive purpose in Christ extends to Gentiles, not just Israel.",
+            "This was latent in OT promises (cf. Genesis 12:3; Isaiah 49:6) but only fully revealed through the apostolic gospel. "
+                + "Paul describes himself as a steward (lit. a household manager. See v.25) of this revelation, e.g. in his sufferings.",
+            "The goal is corporate maturity.",
+        ])
+        let lead = QuizSheetView.firstSentenceRange(in: "Compare it (cf. Gen. 1:1) with this. Then more.")
+        XCTAssertEqual(lead.map { ("Compare it (cf. Gen. 1:1) with this. Then more." as NSString).substring(with: $0) },
+                       "Compare it (cf. Gen. 1:1) with this.")
+    }
+
     func testAShortAnswerIsLeftWhole() {
         let text = "Love is patient. It is kind. It keeps no record of wrongs."
         XCTAssertEqual(QuizSheetView.paragraphed(text), text)
