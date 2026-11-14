@@ -2482,12 +2482,13 @@ struct ReaderView: View {
         let verses = self.verses
         let wpm = userSettings.planWpm
         DispatchQueue.global(qos: .userInitiated).async {
-            let segments = ReaderSpeechTextBuilder.planReadingSegments(
-                readingDescription: inputs.readingDescription,
-                verses: verses
-            )
             let translation = try? TranslationDatabase.shared.getTranslation(id: inputs.translationId)
             let language = translation?.language
+            let segments = ReaderSpeechTextBuilder.planReadingSegments(
+                readingDescription: inputs.readingDescription,
+                verses: verses,
+                languageCode: language
+            )
             let hasVoice = SpeechVoiceCatalog.hasVoice(for: language)
             let request = TextSpeechRequest(
                 id: inputs.speechId,
@@ -3994,9 +3995,22 @@ private enum ReaderSpeechTextBuilder {
     /// One segment per verse (plus the reference and any chapter headings) so the
     /// reader can follow along with what's being spoken. Chapter headings are
     /// attributed to the verse that follows them, so following doesn't stall.
-    static func planReadingSegments(readingDescription: String, verses: [TranslationVerse]) -> [TextSpeechSegment] {
+    ///
+    /// The reading's description and the book names are English, and the
+    /// request is spoken in the translation's language, so a Spanish voice
+    /// would read "Romans 8" by Spanish rules. Outside English the description
+    /// is left out and a chapter is announced by its number alone, which every
+    /// voice says in its own language.
+    static func planReadingSegments(
+        readingDescription: String,
+        verses: [TranslationVerse],
+        languageCode: String?
+    ) -> [TextSpeechSegment] {
+        let speaksEnglishLabels = languageCode.map {
+            $0.isEmpty || $0.lowercased().split(separator: "-").first == "en"
+        } ?? true
         var parts: [TextSpeechSegment] = []
-        let description = normalized(readingDescription)
+        let description = speaksEnglishLabels ? normalized(readingDescription) : ""
         if !description.isEmpty {
             parts.append(TextSpeechSegment(text: description))
         }
@@ -4006,8 +4020,13 @@ private enum ReaderSpeechTextBuilder {
             let chapterKey = "\(verse.book)-\(verse.chapter)"
             if chapterKey != currentChapterKey {
                 currentChapterKey = chapterKey
-                let bookName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name ?? "Book \(verse.book)"
-                let heading = "\(bookName) \(verse.chapter)"
+                let heading: String
+                if speaksEnglishLabels {
+                    let bookName = (try? BundledModuleDatabase.shared.getBook(id: verse.book))?.name ?? "Book \(verse.book)"
+                    heading = "\(bookName) \(verse.chapter)"
+                } else {
+                    heading = "\(verse.chapter)"
+                }
                 // A single-chapter reading is described as "Genesis 1" and its only
                 // chapter heading is also "Genesis 1" — announcing both reads the
                 // title twice. Multi-chapter readings don't collide.
