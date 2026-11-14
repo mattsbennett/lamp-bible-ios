@@ -7015,6 +7015,39 @@ final class StrongsSeptuagintTests: XCTestCase {
         ])
     }
 
+    /// Every place the word is tagged is marked in the English, as every
+    /// place the Greek word stands is marked in the Greek: "light" twice in
+    /// Genesis 1:3, and a word-order numeral before the second still raised.
+    func testEveryTaggedPlaceInTheEnglishIsMarked() {
+        let line = "Let there be light! And 2there was 1light."
+        XCTAssertEqual(
+            StrongsSeptuagint.englishPieces(
+                line,
+                marks: [LampSeptuagintSection.Span(start: 13, end: 19), LampSeptuagintSection.Span(start: 35, end: 41)],
+                isInterlinear: true
+            ),
+            [.plain("Let there be "), .match("light!"), .plain(" And "), .marker("2"),
+             .plain("there was "), .marker("1"), .match("light"), .plain(".")]
+        )
+    }
+
+    /// From the bundle: the BSB tags אוֹר twice in Genesis 1:3, and the row's
+    /// English carries both places.
+    @MainActor
+    func testARowsEnglishCarriesEveryPlaceTheWordIsTagged() async throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let loader = SeptuagintLoader()
+        await loader.loadWords(key: "G5457")
+        await loader.loadCounts(key: "G5457", translationId: "BSBs")
+        let light = try XCTUnwrap(loader.words.first { $0.hebrew.strongs == "H216" })
+        await loader.loadVerses(for: light, translationId: "BSBs", references: [1_001_003])
+        guard case .rows(let rows) = loader.verses[light.id], let row = rows.first else {
+            return XCTFail("No verses: \(String(describing: loader.verses[light.id]))")
+        }
+        let line = try XCTUnwrap(row.englishLine, "the English verse is read whole")
+        XCTAssertEqual(line.marks.count, 2, line.text)
+    }
+
     /// The tagged Septuagint counts ἀγάπη itself, and love's Hebrew is
     /// narrowed to the verses where the Septuagint uses it, with the Greek
     /// word marked where it stands in each one.

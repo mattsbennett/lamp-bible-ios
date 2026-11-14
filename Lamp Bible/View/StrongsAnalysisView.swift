@@ -3093,18 +3093,32 @@ enum StrongsSeptuagint {
         case marker(String)
     }
 
-    /// A row's English in pieces, the snippet's word marked. Read as an
-    /// interlinear, the Apostolic Bible Polyglot's "[2said 3to her 1Amnon]",
-    /// the numerals glued to a word are pieces of their own, to be set
-    /// raised and small as its readers expect them; split on the whole line
-    /// so a numeral at the edge of the marked word is still found.
-    static func englishPieces(_ snippet: LampStrongsContext.Snippet, isInterlinear: Bool) -> [EnglishPiece] {
-        let opening = (snippet.isTrimmedAtStart ? "…" : "") + snippet.before
-        let line = opening + snippet.word + snippet.after + (snippet.isTrimmedAtEnd ? "…" : "")
-        let marked = opening.count..<(opening.count + snippet.word.count)
+    /// A row's English in pieces, each place the word is tagged marked.
+    /// Read as an interlinear, the Apostolic Bible Polyglot's "[2said 3to
+    /// her 1Amnon]", the numerals glued to a word are pieces of their own,
+    /// to be set raised and small as its readers expect them. Split on the
+    /// whole line, so a numeral just before a marked word, which is that
+    /// word's own and the usual case, is still found.
+    ///
+    /// `marks` count code points, as the tags do; the line is split in
+    /// Characters, so each is converted where it lands.
+    static func englishPieces(
+        _ text: String,
+        marks: [LampSeptuagintSection.Span],
+        isInterlinear: Bool
+    ) -> [EnglishPiece] {
+        let scalars = text.unicodeScalars
+        var ranges: [Range<Int>] = []
+        for span in marks.sorted(by: { $0.start < $1.start })
+        where span.start >= 0 && span.end > span.start && span.end <= scalars.count {
+            let lower = text.distance(from: text.startIndex, to: scalars.index(scalars.startIndex, offsetBy: span.start))
+            let upper = text.distance(from: text.startIndex, to: scalars.index(scalars.startIndex, offsetBy: span.end))
+            guard upper > lower, lower >= (ranges.last?.upperBound ?? 0) else { continue }
+            ranges.append(lower..<upper)
+        }
         let runs = isInterlinear
-            ? LampSeptuagintSection.interlinearRuns(in: line)
-            : [(text: line, isMarker: false)]
+            ? LampSeptuagintSection.interlinearRuns(in: text)
+            : [(text: text, isMarker: false)]
         var pieces: [EnglishPiece] = []
         var offset = 0
         for run in runs {
@@ -3115,13 +3129,30 @@ enum StrongsSeptuagint {
                 pieces.append(.marker(run.text))
                 continue
             }
-            let lower = min(max(marked.lowerBound - start, 0), characters.count)
-            let upper = min(max(marked.upperBound - start, 0), characters.count)
-            if lower > 0 { pieces.append(.plain(String(characters[..<lower]))) }
-            if upper > lower { pieces.append(.match(String(characters[lower..<upper]))) }
-            if upper < characters.count { pieces.append(.plain(String(characters[upper...]))) }
+            var cursor = 0
+            for range in ranges where range.upperBound > start && range.lowerBound < offset {
+                let lower = max(range.lowerBound - start, cursor)
+                let upper = min(range.upperBound - start, characters.count)
+                if lower > cursor { pieces.append(.plain(String(characters[cursor..<lower]))) }
+                if upper > lower { pieces.append(.match(String(characters[lower..<upper]))) }
+                cursor = max(cursor, upper)
+            }
+            if cursor < characters.count { pieces.append(.plain(String(characters[cursor...]))) }
         }
         return pieces
+    }
+
+    /// Core's snippet in pieces, its one word marked, for a row whose whole
+    /// line wasn't read.
+    static func englishPieces(_ snippet: LampStrongsContext.Snippet, isInterlinear: Bool) -> [EnglishPiece] {
+        let opening = (snippet.isTrimmedAtStart ? "…" : "") + snippet.before
+        let line = opening + snippet.word + snippet.after + (snippet.isTrimmedAtEnd ? "…" : "")
+        let start = opening.unicodeScalars.count
+        return englishPieces(
+            line,
+            marks: [LampSeptuagintSection.Span(start: start, end: start + snippet.word.unicodeScalars.count)],
+            isInterlinear: isInterlinear
+        )
     }
 
     /// The Septuagint's Greek for each of `references`, numbered as the Hebrew
@@ -3170,6 +3201,12 @@ final class SeptuagintLoader {
         var id: String { "\(hebrew.text)|\(hebrew.strongs ?? "")" }
     }
 
+    /// A verse's text and the places a word stands in it.
+    struct Line: Equatable, Sendable {
+        let text: String
+        let marks: [Span]
+    }
+
     struct Verse: Identifiable, Equatable, Sendable {
         /// The Greek beside the verse. Three states, as on the Mac: the rows
         /// go up before the chapters are read, and "not read yet" must never
@@ -3201,6 +3238,11 @@ final class SeptuagintLoader {
         var opensAt: Int?
         var english: English = .pending
         var greek: Greek = .pending
+        /// The English verse whole, with every place the word is tagged in
+        /// it, in code points. Core's snippet is cut around the first, and
+        /// marking only that beside a Greek line that marks each of its own
+        /// said the rest were some other word.
+        var englishLine: Line?
 
         var id: Int { reference }
 
@@ -3708,16 +3750,32 @@ final class SeptuagintLoader {
             englishMark = nil
         }
         var english: [Int: LampSeptuagintSection.English] = [:]
+        var englishLines: [Int: Line] = [:]
         if englishModule != hebrew.id, let module = translations.first(where: { $0.id == englishModule }) {
             do {
+                let analysis = try englishMark.flatMap {
+                    try database.analyzeStrongs(key: $0, translationId: module.id)
+                }
                 english = LampSeptuagintSection.english(
                     for: shown,
                     hebrewNumbering: hebrewNumbering,
                     englishNumbering: database.versification(of: module),
-                    analysis: try englishMark.flatMap {
-                        try database.analyzeStrongs(key: $0, translationId: module.id)
-                    }
+                    analysis: analysis
                 )
+                // Every occurrence in the verse, where core's row has found
+                // the word tagged there at all.
+                if let analysis {
+                    var marks: [Int: [Span]] = [:]
+                    for occurrence in analysis.occurrences {
+                        marks[occurrence.reference, default: []].append(
+                            Span(start: occurrence.startOffset, end: occurrence.endOffset)
+                        )
+                    }
+                    for (reference, row) in english where row.snippet != nil {
+                        guard let text = analysis.verseTexts[row.reference] else { continue }
+                        englishLines[reference] = Line(text: text, marks: marks[row.reference] ?? [])
+                    }
+                }
             } catch {
                 return Task.isCancelled ? .cutShort : .unreadable(module.name)
             }
@@ -3750,7 +3808,8 @@ final class SeptuagintLoader {
                 reference: $0,
                 opensAt: opensAt[$0],
                 english: english[$0].map(Verse.English.read) ?? .none,
-                greek: greek[$0].map(Verse.Greek.text) ?? .absent
+                greek: greek[$0].map(Verse.Greek.text) ?? .absent,
+                englishLine: englishLines[$0]
             )
         }
 
@@ -3925,7 +3984,11 @@ private struct SeptuagintWordGroup: View {
                     .font(.headline)
                     .foregroundStyle(.primary)
                 if case .read(let english) = verse.english, let snippet = english.snippet {
-                    Self.englishLine(snippet, isInterlinear: isInterlinear)
+                    Self.englishLine(
+                        verse.englishLine.map {
+                            StrongsSeptuagint.englishPieces($0.text, marks: $0.marks, isInterlinear: isInterlinear)
+                        } ?? StrongsSeptuagint.englishPieces(snippet, isInterlinear: isInterlinear)
+                    )
                         .font(.system(size: 16, design: .serif))
                         .foregroundStyle(LampTheme.readerText)
                         .lineSpacing(2)
@@ -3970,8 +4033,8 @@ private struct SeptuagintWordGroup: View {
 
     /// The English with its word marked as a find, and any word-order
     /// numerals raised and small in the caption grey.
-    private static func englishLine(_ snippet: LampStrongsContext.Snippet, isInterlinear: Bool) -> Text {
-        StrongsSeptuagint.englishPieces(snippet, isInterlinear: isInterlinear).reduce(Text("")) { line, piece in
+    private static func englishLine(_ pieces: [StrongsSeptuagint.EnglishPiece]) -> Text {
+        pieces.reduce(Text("")) { line, piece in
             switch piece {
             case .plain(let text): line + Text(text)
             case .match(let text): line + Text.findMatch(text)
