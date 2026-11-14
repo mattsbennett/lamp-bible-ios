@@ -866,7 +866,9 @@ struct StrongsAnalysisView: View {
                                 aside: readings[form.id]?.transliteration,
                                 line: formLine(readings[form.id])
                             ))
-                        })
+                        }),
+                        whole: analysis.occurrenceCount,
+                        leftOut: unspelledLine(analysis)
                     )
                 } else {
                     forms(analysis)
@@ -1493,10 +1495,17 @@ struct StrongsAnalysisView: View {
     /// Each part's share as core slices it, the largest six and the rest as
     /// "Other", each named slice a way to filter the verses.
     @ViewBuilder
+    ///
+    /// `whole` is the count the slices are part of where it can be more than
+    /// they add up to: a word's occurrences, some of which have no spelling
+    /// to be a slice of. The hole then says "113 of 116", not a total the
+    /// occurrence list contradicts, and `leftOut` says why under the ring.
     private func share(
         of entries: [LampStrongsChartDivision],
         isOriginalLanguage: Bool = false,
-        details: [String: ShareDetail] = [:]
+        details: [String: ShareDetail] = [:],
+        whole: Int? = nil,
+        leftOut: String? = nil
     ) -> some View {
         let slices = LampStrongsShare.slices(from: entries.map(\.division))
         let filters = Dictionary(
@@ -1504,10 +1513,19 @@ struct StrongsAnalysisView: View {
             uniquingKeysWith: { first, _ in first }
         )
         let total = slices.reduce(0) { $0 + $1.value }
-        StrongsShareRing(slices: slices, total: total) { index in
-            shareColor(index, of: slices)
+        let isShort = (whole ?? total) > total
+        VStack(spacing: 8) {
+            StrongsShareRing(slices: slices, total: total, whole: isShort ? whole : nil) { index in
+                shareColor(index, of: slices)
+            }
+            .frame(maxWidth: .infinity)
+            if isShort, let leftOut {
+                Text(leftOut)
+                    .font(.footnote)
+                    .foregroundStyle(LampTheme.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .frame(maxWidth: .infinity)
         .padding(.vertical, 6)
         // "Other" names nothing to filter by, so its row is no button.
         ForEach(Array(slices.enumerated()), id: \.element.id) { index, slice in
@@ -1563,6 +1581,19 @@ struct StrongsAnalysisView: View {
             .disabled(sliceFilter == nil)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
+    }
+
+    /// Under the Forms ring, where some occurrences have no spelling and so
+    /// no slice: why its total is short of the occurrence list's. As the
+    /// Mac says it.
+    private func unspelledLine(_ analysis: LampStrongsAnalysis) -> String? {
+        let missing = analysis.occurrenceCount - analysis.forms.reduce(0) { $0 + $1.count }
+        guard missing > 0 else { return nil }
+        let language = LampStrongsKey.normalized(analysis.key).first == "H" ? "Hebrew" : "Greek"
+        let name = analysis.translationAbbreviation ?? analysis.translationName
+        return missing == 1
+            ? "1 occurrence is tagged in \(name) without a \(language) spelling, so the ring leaves it out."
+            : "\(missing) occurrences are tagged in \(name) without a \(language) spelling, so the ring leaves them out."
     }
 
     /// One hue, deepest for the largest slice; the gathered rest faintest,
@@ -2571,6 +2602,8 @@ private struct StrongsCardSlotsSheet: View {
 private struct StrongsShareRing: View {
     let slices: [LampStrongsShare.Slice]
     let total: Int
+    /// What the slices are part of, where it is more than they add up to.
+    var whole: Int? = nil
     let color: (Int) -> Color
 
     @State private var selected: Int?
@@ -2578,7 +2611,13 @@ private struct StrongsShareRing: View {
     /// Smaller than it was: the legend beside it carries every figure,
     /// and the ring took half a screen to say the largest share.
     private static let size: CGFloat = 124
-    private static let holeRatio: CGFloat = 0.6
+    /// A band wide enough for a slice's percentage across it at three and
+    /// nine o'clock, where the label lies along the radius: at 0.6 "45%" ran
+    /// from the hole to the ring's edge.
+    private static let holeRatio: CGFloat = 0.55
+    /// The smallest slice whose percentage is printed on it, as on the Mac;
+    /// one too narrow for its label at this size is left to the list too.
+    private static let labelledFraction = 0.05
 
     var body: some View {
         ZStack {
@@ -2602,6 +2641,32 @@ private struct StrongsShareRing: View {
                         context.stroke(path, with: .color(Color(uiColor: .secondarySystemGroupedBackground)), lineWidth: 1.5)
                     }
                     start += sweep
+                }
+                // Each slice's percentage on it. One hue in steps of strength
+                // couldn't be told apart at 31, 27 and 25%, and the list was
+                // doing all the matching. Black on every step, light or dark:
+                // 4.6:1 or better on all of them, where white falls to 1.3:1
+                // on the palest. Only where the label fits its arc.
+                let middle = (radius + hole) / 2
+                var from = -Double.pi / 2
+                for (index, slice) in slices.enumerated() {
+                    let extent = 2 * Double.pi * slice.fraction
+                    defer { from += extent }
+                    guard slice.fraction >= Self.labelledFraction else { continue }
+                    let label = context.resolve(
+                        Text(LampStrongsSpread.percent(slice.fraction))
+                            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                            .foregroundColor(.black)
+                    )
+                    let width = label.measure(in: CGSize(width: 100, height: 20)).width
+                    guard slices.count == 1 || width + 4 <= CGFloat(extent) * middle else { continue }
+                    let angle = from + extent / 2
+                    var faded = context
+                    if selected != nil && selected != index { faded.opacity = 0.35 }
+                    faded.draw(label, at: CGPoint(
+                        x: centre.x + middle * CGFloat(cos(angle)),
+                        y: centre.y + middle * CGFloat(sin(angle))
+                    ))
                 }
             }
             .contentShape(Circle())
@@ -2649,7 +2714,7 @@ private struct StrongsShareRing: View {
                 Text("\(total)")
                     .font(.title3.weight(.semibold))
                     .monospacedDigit()
-                Text("in all")
+                Text(whole.map { "of \($0)" } ?? "in all")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
