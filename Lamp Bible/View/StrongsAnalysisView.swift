@@ -2238,9 +2238,14 @@ struct StrongsAnalysisView: View {
             .padding(.vertical, 4)
             // What each gives and costs, by the choice it's about.
             DisclosureGroup(isExpanded: $isShowingEnglishNote) {
-                Text(readsSeptuagintInEnglish
-                    ? LampSeptuagintSection.directEnglishNote
-                    : LampSeptuagintSection.indirectEnglishWarning)
+                // Both texts by name, neither as "your" Bible: with both
+                // installed, both are the reader's.
+                Text(LampSeptuagintSection.EnglishChoice.note(
+                    readsSeptuagintInEnglish: readsSeptuagintInEnglish,
+                    septuagintInEnglish: septuagint.septuagintInEnglishName,
+                    readersBible: analysis.map { $0.translationAbbreviation ?? $0.translationName },
+                    greek: headword.lemma
+                ))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 2)
