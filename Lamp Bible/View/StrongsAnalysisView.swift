@@ -234,6 +234,19 @@ struct StrongsAnalysisView: View {
                 }
             } else if let analysis, analysis.occurrenceCount > 0 {
                 content(analysis)
+            } else if isComparing {
+                // Whether any translation tags the key is known only once
+                // every one has answered.
+                ProgressView("Counting \(key)…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if LampStrongsPresence.absent(from: [analysis].compactMap { $0 } + compared) {
+                // Tagged nowhere: most likely a mistyped number, which a page
+                // of noughts would pass off as a finding.
+                ContentUnavailableView(
+                    LampStrongsPresence.title(key: key),
+                    systemImage: "chart.bar.xaxis",
+                    description: Text(LampStrongsPresence.reason(narrowed: bookRange != nil))
+                )
             } else {
                 ContentUnavailableView(
                     "Not Tagged Here",
