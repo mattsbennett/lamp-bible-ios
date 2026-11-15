@@ -8,6 +8,7 @@
 import Foundation
 import GRDB
 import SwiftUI
+import LampModuleKit
 import LampCore
 import UIKit
 
@@ -952,7 +953,8 @@ extension CommentaryUnit {
 /// Cell view for displaying a commentary unit
 struct CommentaryUnitCell: View {
     let data: CommentaryUnitData
-    let fontSize: Int
+    /// The panel's text: its size, typeface and line spacing.
+    let text: LampToolText
     let onScriptureTap: ((Int, Int?) -> Void)?
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String, CommentaryFootnote) -> Void)?
@@ -968,7 +970,7 @@ struct CommentaryUnitCell: View {
                 // One small line for the outline, so the comment starts high
                 // in the panel instead of under a stack of headings.
                 Text(data.outlineTrail.joined(separator: "  ›  ").uppercased())
-                    .font(.system(size: max(11, CGFloat(fontSize) - 5), weight: .semibold))
+                    .font(.system(size: max(11, text.size - 5), weight: .semibold))
                     .tracking(0.5)
                     .foregroundStyle(LampTheme.caption)
                     .lineLimit(2)
@@ -984,10 +986,7 @@ struct CommentaryUnitCell: View {
         CommentaryUnitView(
             unit: data.unit,
             abbreviations: data.abbreviations,
-            style: CommentaryRenderer.Style(
-                bodyFont: .system(size: CGFloat(fontSize)),
-                uiBodyFont: .systemFont(ofSize: CGFloat(fontSize))
-            ),
+            style: .tool(text),
             onScriptureTap: onScriptureTap,
             onStrongsTap: onStrongsTap,
             onFootnoteTap: onFootnoteTap,
@@ -1329,6 +1328,15 @@ struct ToolPanelView: View {
     @State private var headerBarHeight: CGFloat = 0
     @State private var showingOptionsMenu: Bool = false
     @AppStorage("toolFontSize") private var toolFontSize: Int = 16
+    @AppStorage(LampTextScale.toolTypefaceKey) private var toolTypeface = LampProseTypeface.serif.rawValue
+    @AppStorage(LampTextScale.toolLineSpacingKey) private var toolLineSpacing = LampTextScale.toolLineSpacing.defaultValue
+    /// The panel's text as set: its size, typeface and line spacing.
+    private var toolText: LampToolText {
+        LampToolText(size: toolFontSize, typeface: toolTypeface, lineSpacing: toolLineSpacing)
+    }
+    /// What the lists are laid out for, in their ids, so a change of any of
+    /// it lays them out again.
+    private var toolTextKey: String { "\(toolFontSize)_\(toolTypeface)_\(toolLineSpacing)" }
 
     // Sync status
     @State private var syncStatus: ModuleSyncStatus = .synced
@@ -1667,39 +1675,11 @@ struct ToolPanelView: View {
                         .background(Color(UIColor.secondarySystemGroupedBackground))
                         .cornerRadius(14)
 
-                        // Font size controls - compact row
-                        HStack(spacing: 0) {
-                            Button {
-                                if toolFontSize > 12 {
-                                    toolFontSize -= 2
-                                }
-                            } label: {
-                                Image(systemName: "textformat.size.smaller")
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(toolFontSize <= 12)
-
-                            Divider()
-                                .frame(height: 20)
-
-                            Button {
-                                if toolFontSize < 24 {
-                                    toolFontSize += 2
-                                }
-                            } label: {
-                                Image(systemName: "textformat.size.larger")
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(toolFontSize >= 24)
-                        }
-                        .background(Color(UIColor.secondarySystemGroupedBackground))
-                        .cornerRadius(14)
+                        // How the panel's text is set: its typeface and size,
+                        // then its line spacing, as the reader's menu has them.
+                        ToolTextSettingsCard(toolFontSize: $toolFontSize)
+                            .background(Color(UIColor.secondarySystemGroupedBackground))
+                            .cornerRadius(14)
                     }
                     .font(.body)
                     .fontWeight(.regular)
@@ -2141,7 +2121,7 @@ struct ToolPanelView: View {
                     UIKitVerseList(
                         items: items,
                         cellContent: { data in noteSectionCell(data) },
-                        listId: "notes_\(book)_\(chapter)_\(toolFontSize)_\(sections.count)",
+                        listId: "notes_\(book)_\(chapter)_\(toolTextKey)_\(sections.count)",
                         additionalTopOffset: 0,
                         topInset: hideHeader ? sharedHeaderHeight : headerBarHeight,
                         // Notes are written here: scrolling them keeps the
@@ -2168,7 +2148,7 @@ struct ToolPanelView: View {
                         .font(.system(size: 40))
                         .foregroundStyle(.tertiary)
                     Text("Select a commentary series")
-                        .font(.system(size: CGFloat(toolFontSize)))
+                        .font(toolText.font())
                         .foregroundStyle(.tertiary)
                 }
                 .centeredInVisibleSpace()
@@ -2185,7 +2165,7 @@ struct ToolPanelView: View {
                         .font(.system(size: 40))
                         .foregroundStyle(.tertiary)
                     Text("\(selectedCommentarySeries) does not include \(bookName)")
-                        .font(.system(size: CGFloat(toolFontSize)))
+                        .font(toolText.font())
                         .foregroundStyle(.tertiary)
                         .multilineTextAlignment(.center)
                 }
@@ -2193,7 +2173,7 @@ struct ToolPanelView: View {
             } else if commentaryUnits.isEmpty {
                 VStack(spacing: 12) {
                     Text("No commentary for this chapter")
-                        .font(.system(size: CGFloat(toolFontSize)))
+                        .font(toolText.font())
                         .foregroundStyle(.tertiary)
                 }
                 .centeredInVisibleSpace()
@@ -2275,7 +2255,7 @@ struct ToolPanelView: View {
             cellContent: { data in
                 CommentaryUnitCell(
                     data: data,
-                    fontSize: toolFontSize,
+                    text: toolText,
                     onScriptureTap: { sv, ev in
                         openCommentaryReference(sv: sv, ev: ev, at: nil)
                     },
@@ -2295,7 +2275,7 @@ struct ToolPanelView: View {
                 .padding(.top, data.unit.isTitleOnly ? 6 : 10)
                 .padding(.bottom, data.unit.isTitleOnly ? 0 : 10)
             },
-            listId: "commentary_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)_\(selectedCommentarySeries)_\(toolFontSize)",
+            listId: "commentary_\(book)_\(startChapter ?? chapter)_\(endChapter ?? chapter)_\(selectedCommentarySeries)_\(toolTextKey)",
             additionalTopOffset: 0,
                         topInset: hideHeader ? sharedHeaderHeight : headerBarHeight,
                         onToolbarCollapseChange: { collapsed in
@@ -2528,8 +2508,13 @@ struct ToolPanelView: View {
             }
 
             commentarySeries = allSeries
+            // The one open here, while it's installed; else the reader's
+            // default, as after a reinstall forgets the one open; else the
+            // first there is.
             if !commentarySeries.isEmpty && (selectedCommentarySeries.isEmpty || !commentarySeries.contains(selectedCommentarySeries)) {
-                selectedCommentarySeries = commentarySeries.first ?? ""
+                let chosen = UserDatabase.shared.getSettings().defaultCommentarySeries
+                selectedCommentarySeries = chosen.flatMap { commentarySeries.contains($0) ? $0 : nil }
+                    ?? commentarySeries.first ?? ""
             }
         } catch {
             print("Failed to load commentary series: \(error)")
@@ -2592,10 +2577,7 @@ struct ToolPanelView: View {
                     // Render the footnote content with annotation support
                     AnnotatedTextView(
                         footnote.content,
-                        style: CommentaryRenderer.Style(
-                            bodyFont: .system(size: CGFloat(toolFontSize)),
-                            uiBodyFont: .systemFont(ofSize: CGFloat(toolFontSize))
-                        ),
+                        style: .tool(toolText),
                         onScriptureTap: { sv, ev in
                             commentaryFootnote = nil
                             // A footnote's references aren't in the chapter's
@@ -4109,7 +4091,10 @@ private struct NoteContentRenderer {
     /// the same references.
     static func cached(_ content: String, fontSize: CGFloat, media: [String: URL] = [:]) -> RenderResult {
         let pictures = media.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.path)" }.joined(separator: ",")
-        let key = "\(fontSize)|\(pictures)|\(content)" as NSString
+        // The panel's typeface and spacing are part of what a note looks
+        // like, so of what is cached for it.
+        let text = LampToolText.current
+        let key = "\(fontSize)|\(text.typeface.rawValue)|\(text.lineSpacing)|\(pictures)|\(content)" as NSString
         if let hit = cache.object(forKey: key) { return hit.result }
         let result = render(content, fontSize: fontSize, media: media)
         cache.setObject(Box(result), forKey: key)
@@ -4120,7 +4105,11 @@ private struct NoteContentRenderer {
     /// tappable reference, whether written out ("John 3:16") or linked, and
     /// footnote markers as superscript.
     static func render(_ content: String, fontSize: CGFloat, media: [String: URL] = [:]) -> RenderResult {
-        let rendered = NoteMarkdown.render(content, fontSize: fontSize, media: media)
+        // In the panel's typeface, at its line spacing, as the rest of it is.
+        let toolText = LampToolText.current
+        let rendered = NoteMarkdown.render(
+            content, fontSize: fontSize, serif: toolText.isSerif, lineSpacing: toolText.lineSpacing, media: media
+        )
         let text = rendered.text
         let plain = text.string
 
@@ -4471,6 +4460,11 @@ struct VerseSheetContent: View {
     var highlightQuery: String? = nil
     var highlightMode: SearchMode? = nil
 
+    /// Set as the tool panel's text is, as every reference sheet is: its
+    /// size, typeface and line spacing (owner, Nov 2026).
+    private var toolText: LampToolText { .current }
+    private var bodyFont: Font { toolText.font() }
+
     init(title: String, verseId: Int, endVerseId: Int? = nil, translationId: String?, onNavigate: (() -> Void)? = nil) {
         self.title = title
         self.verseId = verseId
@@ -4614,7 +4608,7 @@ struct VerseSheetContent: View {
                 let hasMultipleChapters = allVerses.contains { $0.verse.chapter != allVerses.first?.verse.chapter }
                 if hasMultipleChapters {
                     var chapterHeading = AttributedString("Chapter \(verse.chapter)\n")
-                    chapterHeading.font = .headline
+                    chapterHeading.font = toolText.font(weight: .semibold)
                     chapterHeading.foregroundColor = .primary
                     result.append(chapterHeading)
                 }
@@ -4622,7 +4616,7 @@ struct VerseSheetContent: View {
 
             // Add verse number as superscript
             var verseNum = AttributedString("\(verse.verse)")
-            verseNum.font = .caption
+            verseNum.font = toolText.font(size: max(11, toolText.size * 0.7))
             verseNum.foregroundColor = .secondary
             verseNum.baselineOffset = 4
 
@@ -4636,7 +4630,7 @@ struct VerseSheetContent: View {
                 }
             } else {
                 var text = AttributedString(" " + verse.text)
-                text.font = .body
+                text.font = bodyFont
                 verseTextContent = text
             }
 
@@ -4669,7 +4663,7 @@ struct VerseSheetContent: View {
 
         guard lowercaseText.contains(lowercaseQuery) else {
             var plain = AttributedString(text)
-            plain.font = .body
+            plain.font = bodyFont
             result.append(plain)
             return result
         }
@@ -4679,18 +4673,18 @@ struct VerseSheetContent: View {
             if let range = text.range(of: query, options: .caseInsensitive, range: currentIndex..<text.endIndex) {
                 if currentIndex < range.lowerBound {
                     var before = AttributedString(String(text[currentIndex..<range.lowerBound]))
-                    before.font = .body
+                    before.font = bodyFont
                     result.append(before)
                 }
                 var highlight = AttributedString(String(text[range]))
-                highlight.font = .body.bold()
+                highlight.font = bodyFont.bold()
                 highlight.backgroundColor = .lampFindMatch
                 highlight.foregroundColor = .lampOnFindMatch
                 result.append(highlight)
                 currentIndex = range.upperBound
             } else {
                 var remaining = AttributedString(String(text[currentIndex..<text.endIndex]))
-                remaining.font = .body
+                remaining.font = bodyFont
                 result.append(remaining)
                 break
             }
@@ -4720,7 +4714,7 @@ struct VerseSheetContent: View {
         // If no highlights found, return plain text
         guard !highlightRanges.isEmpty else {
             var plain = AttributedString(text)
-            plain.font = .body
+            plain.font = bodyFont
             result.append(plain)
             return result
         }
@@ -4739,7 +4733,7 @@ struct VerseSheetContent: View {
                 let startIdx = text.index(text.startIndex, offsetBy: currentIndex)
                 let endIdx = text.index(text.startIndex, offsetBy: start)
                 var before = AttributedString(String(text[startIdx..<endIdx]))
-                before.font = .body
+                before.font = bodyFont
                 result.append(before)
             }
 
@@ -4748,7 +4742,7 @@ struct VerseSheetContent: View {
                 let startIdx = text.index(text.startIndex, offsetBy: start)
                 let endIdx = text.index(text.startIndex, offsetBy: end)
                 var highlight = AttributedString(String(text[startIdx..<endIdx]))
-                highlight.font = .body.bold()
+                highlight.font = bodyFont.bold()
                 highlight.backgroundColor = .lampFindMatch
                 highlight.foregroundColor = .lampOnFindMatch
                 result.append(highlight)
@@ -4761,7 +4755,7 @@ struct VerseSheetContent: View {
         if currentIndex < text.count {
             let startIdx = text.index(text.startIndex, offsetBy: currentIndex)
             var remaining = AttributedString(String(text[startIdx...]))
-            remaining.font = .body
+            remaining.font = bodyFont
             result.append(remaining)
         }
 
@@ -4772,7 +4766,7 @@ struct VerseSheetContent: View {
         VStack(alignment: .leading, spacing: 8) {
             if let passageText {
                 Text(passageText)
-                    .lineSpacing(4)
+                    .lineSpacing(toolText.lineSpacing)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ProgressView()

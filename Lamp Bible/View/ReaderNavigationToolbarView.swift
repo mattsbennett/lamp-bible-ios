@@ -410,9 +410,10 @@ struct ReaderNavigationToolbarView: View {
             Button {
                 showingViewOptions = false
             } label: {
+                // In the label colour, as the app's other back buttons are.
                 Image(systemName: "chevron.left")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Color.primary)
                     .frame(width: 32, height: 32)
                     .contentShape(Rectangle())
             }
@@ -421,54 +422,25 @@ struct ReaderNavigationToolbarView: View {
 
             // How scripture is set.
             menuCaption("View")
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Picker("Typeface", selection: $readerTypeface) {
-                        Text("Serif").tag(LampProseTypeface.serif.rawValue)
-                        Text("Sans").tag(LampProseTypeface.sansSerif.rawValue)
+            TextSettingsCard(
+                typeface: $readerTypeface,
+                canDecrease: userSettings.readerFontSize > 12,
+                canIncrease: userSettings.readerFontSize < 30,
+                decrease: {
+                    try? UserDatabase.shared.updateSettings { settings in
+                        settings.readerFontSize = settings.readerFontSize - 2
                     }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: .infinity)
-
-                    textSizeStepper(
-                        canDecrease: userSettings.readerFontSize > 12,
-                        canIncrease: userSettings.readerFontSize < 30,
-                        decrease: {
-                            try? UserDatabase.shared.updateSettings { settings in
-                                settings.readerFontSize = settings.readerFontSize - 2
-                            }
-                            userSettings.readerFontSize -= 2
-                        },
-                        increase: {
-                            try? UserDatabase.shared.updateSettings { settings in
-                                settings.readerFontSize = settings.readerFontSize + 2
-                            }
-                            userSettings.readerFontSize += 2
-                        }
-                    )
-                    .frame(width: 112)
-                }
-                .padding(.leading, 12)
-                .padding(.trailing, 6)
-                .padding(.vertical, 4)
-
-                Divider()
-                    .padding(.leading, 12)
-
-                // The space between lines, in points, as the Mac sets it.
-                HStack(spacing: 10) {
-                    Text("Line Spacing")
-                    Spacer(minLength: 4)
-                    Text("\(Int(LampTextScale.readerLineSpacing.clamped(readerLineSpacing))) pt")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    lineSpacingStepper
-                        .frame(width: 112)
-                }
-                .padding(.leading, 12)
-                .padding(.trailing, 6)
-                .padding(.vertical, 4)
-            }
+                    userSettings.readerFontSize -= 2
+                },
+                increase: {
+                    try? UserDatabase.shared.updateSettings { settings in
+                        settings.readerFontSize = settings.readerFontSize + 2
+                    }
+                    userSettings.readerFontSize += 2
+                },
+                lineSpacing: $readerLineSpacing,
+                scale: .readerLineSpacing
+            )
             .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
 
             // Tool options section (only in horizontal split mode)
@@ -505,14 +477,10 @@ struct ReaderNavigationToolbarView: View {
                 }
                 .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
 
-                // Tool font size controls
-                textSizeStepper(
-                    canDecrease: toolFontSize > 12,
-                    canIncrease: toolFontSize < 24,
-                    decrease: { toolFontSize -= 2 },
-                    increase: { toolFontSize += 2 }
-                )
-                .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+                // How the panel's text is set, as the reader's is above:
+                // its typeface and size on one row, its line spacing below.
+                ToolTextSettingsCard(toolFontSize: $toolFontSize)
+                    .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
             }
         }
     }
@@ -572,76 +540,6 @@ struct ReaderNavigationToolbarView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .accessibilityLabel(title)
-    }
-
-    /// Smaller and larger text, each a letter drawn at the size it moves toward.
-    private func textSizeStepper(
-        canDecrease: Bool,
-        canIncrease: Bool,
-        decrease: @escaping () -> Void,
-        increase: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 0) {
-            Button(action: decrease) {
-                Text("A")
-                    .font(.system(size: 14, weight: .medium, design: .serif))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!canDecrease)
-            .accessibilityLabel("Smaller Text")
-
-            Divider()
-                .frame(height: 22)
-
-            Button(action: increase) {
-                Text("A")
-                    .font(.system(size: 22, weight: .medium, design: .serif))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!canIncrease)
-            .accessibilityLabel("Larger Text")
-        }
-    }
-
-    /// Tighter and looser lines, a step of a point each.
-    private var lineSpacingStepper: some View {
-        let scale = LampTextScale.readerLineSpacing
-        return HStack(spacing: 0) {
-            Button {
-                readerLineSpacing = scale.stepped(readerLineSpacing, by: -1)
-            } label: {
-                Image(systemName: "arrow.down.and.line.horizontal.and.arrow.up")
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!scale.canDecrease(readerLineSpacing))
-            .accessibilityLabel("Tighter Lines")
-
-            Divider()
-                .frame(height: 22)
-
-            Button {
-                readerLineSpacing = scale.stepped(readerLineSpacing, by: 1)
-            } label: {
-                Image(systemName: "arrow.up.and.down.text.horizontal")
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!scale.canIncrease(readerLineSpacing))
-            .accessibilityLabel("Looser Lines")
-        }
     }
 
     @ViewBuilder
@@ -810,5 +708,139 @@ struct WindowControlsInsetReader: UIViewRepresentable {
             reported = value
             onChange?(value)
         }
+    }
+}
+
+
+/// How a body of text is set, on one card: its typeface and size on one row,
+/// the space between its lines on the next. The reader's and the tool
+/// panel's, so the two read alike wherever they are set.
+struct TextSettingsCard: View {
+    @Binding var typeface: String
+    let canDecrease: Bool
+    let canIncrease: Bool
+    let decrease: () -> Void
+    let increase: () -> Void
+    @Binding var lineSpacing: Double
+    let scale: LampTextScale
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Picker("Typeface", selection: $typeface) {
+                    Text("Serif").tag(LampProseTypeface.serif.rawValue)
+                    Text("Sans").tag(LampProseTypeface.sansSerif.rawValue)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: .infinity)
+
+                textSizeStepper
+                    .frame(width: 112)
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 6)
+            .padding(.vertical, 4)
+
+            Divider()
+                .padding(.leading, 12)
+
+            // The space between lines, in points, as the Mac sets it.
+            HStack(spacing: 10) {
+                Text("Line Spacing")
+                Spacer(minLength: 4)
+                Text("\(Int(scale.clamped(lineSpacing))) pt")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                lineSpacingStepper
+                    .frame(width: 112)
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 6)
+            .padding(.vertical, 4)
+        }
+    }
+
+    /// Smaller and larger text, each a letter drawn at the size it moves toward.
+    private var textSizeStepper: some View {
+        HStack(spacing: 0) {
+            Button(action: decrease) {
+                Text("A")
+                    .font(.system(size: 14, weight: .medium, design: .serif))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canDecrease)
+            .accessibilityLabel("Smaller Text")
+
+            Divider()
+                .frame(height: 22)
+
+            Button(action: increase) {
+                Text("A")
+                    .font(.system(size: 22, weight: .medium, design: .serif))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canIncrease)
+            .accessibilityLabel("Larger Text")
+        }
+    }
+
+    /// Tighter and looser lines, a step of a point each.
+    private var lineSpacingStepper: some View {
+        HStack(spacing: 0) {
+            Button {
+                lineSpacing = scale.stepped(lineSpacing, by: -1)
+            } label: {
+                Image(systemName: "arrow.down.and.line.horizontal.and.arrow.up")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!scale.canDecrease(lineSpacing))
+            .accessibilityLabel("Tighter Lines")
+
+            Divider()
+                .frame(height: 22)
+
+            Button {
+                lineSpacing = scale.stepped(lineSpacing, by: 1)
+            } label: {
+                Image(systemName: "arrow.up.and.down.text.horizontal")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!scale.canIncrease(lineSpacing))
+            .accessibilityLabel("Looser Lines")
+        }
+    }
+}
+
+/// The tool panel's text settings: the panel's typeface, size and line
+/// spacing, which its sheets take too.
+struct ToolTextSettingsCard: View {
+    @Binding var toolFontSize: Int
+    @AppStorage(LampTextScale.toolTypefaceKey) private var typeface = LampProseTypeface.serif.rawValue
+    @AppStorage(LampTextScale.toolLineSpacingKey) private var lineSpacing = LampTextScale.toolLineSpacing.defaultValue
+
+    var body: some View {
+        TextSettingsCard(
+            typeface: $typeface,
+            canDecrease: toolFontSize > LampToolText.sizeRange.lowerBound,
+            canIncrease: toolFontSize < LampToolText.sizeRange.upperBound,
+            decrease: { toolFontSize -= 2 },
+            increase: { toolFontSize += 2 },
+            lineSpacing: $lineSpacing,
+            scale: .toolLineSpacing
+        )
     }
 }

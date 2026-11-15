@@ -326,11 +326,22 @@ struct SplitReaderView: View {
                         rightPanelWidth = min(350, geometry.size.width / 3)
                     }
                 } else {
-                    if storedBottomPanelHeight != 0 {
-                        bottomPanelHeight = CGFloat(storedBottomPanelHeight)
-                    } else {
-                        bottomPanelHeight = geometry.size.height / 3
-                    }
+                    settleBottomPanelHeight(in: geometry.size.height)
+                }
+            }
+            // A panel that moves to the bottom without the view reappearing,
+            // as an iPad's tools on the right do when the app goes into
+            // Split View and turns compact, had no height of its own yet:
+            // only its handle showed, too little to drag it up by.
+            .onChange(of: effectiveOrientation) { _, orientation in
+                if orientation != "right" { settleBottomPanelHeight(in: geometry.size.height) }
+            }
+            // A change of space only ever raises a panel too small to drag:
+            // a keyboard shortens the space for a moment, and capping then
+            // would leave the panel smaller once it went.
+            .onChange(of: geometry.size.height) { _, height in
+                if effectiveOrientation != "right", bottomPanelHeight < minPanelSize {
+                    settleBottomPanelHeight(in: height)
                 }
             }
         }
@@ -340,6 +351,18 @@ struct SplitReaderView: View {
 
     /// The height of the reader's header, which a right-hand panel starts
     /// below.
+    /// The bottom panel's height, kept between its smallest and its largest
+    /// share of the space: the height it had, else the one last dragged to,
+    /// else a third of the space.
+    private func settleBottomPanelHeight(in containerHeight: CGFloat) {
+        guard containerHeight > 0 else { return }
+        let stored = CGFloat(storedBottomPanelHeight)
+        let wanted = bottomPanelHeight >= minPanelSize ? bottomPanelHeight
+            : stored >= minPanelSize ? stored
+            : containerHeight / 3
+        bottomPanelHeight = min(max(wanted, minPanelSize), containerHeight * maxPanelRatio)
+    }
+
     /// The divider was let go well past the panel's smallest size.
     private func closePanelFromDivider() {
         withAnimation(.easeInOut(duration: 0.25)) {

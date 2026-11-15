@@ -32,22 +32,28 @@ enum NoteMarkdown {
     }
 
     /// `media` is where each of the note's pictures is on this device, by id.
-    static func render(_ markdown: String, fontSize: CGFloat, media: [String: URL] = [:]) -> Rendered {
+    /// `serif` and `lineSpacing` are the tool panel's settings; without them
+    /// a note is set as it always was, in sans, its lines a third of its size
+    /// apart.
+    static func render(
+        _ markdown: String, fontSize: CGFloat, serif: Bool = false, lineSpacing: CGFloat? = nil,
+        media: [String: URL] = [:]
+    ) -> Rendered {
         let out = NSMutableAttributedString()
         var links: [VerseLink] = []
         let lines = markdown.components(separatedBy: "\n")
         for (index, raw) in lines.enumerated() {
             if let picture = raw.wholeMatch(of: #/\s*!\[([^\]]*)\]\(media/([^)\s]+)\)\s*/#) {
-                let attributes = baseAttributes(fontSize: fontSize)
+                let attributes = baseAttributes(fontSize: fontSize, serif: serif)
                 if index > 0 { out.append(NSAttributedString(string: "\n", attributes: attributes)) }
                 out.append(self.picture(
-                    media[String(picture.2)], caption: String(picture.1), fontSize: fontSize
+                    media[String(picture.2)], caption: String(picture.1), fontSize: fontSize, serif: serif
                 ))
                 continue
             }
             let block = Block(raw)
-            let style = paragraphStyle(fontSize: fontSize, block: block)
-            var attributes = baseAttributes(fontSize: block.fontSize(fontSize), bold: block.isHeading)
+            let style = paragraphStyle(fontSize: fontSize, block: block, lineSpacing: lineSpacing)
+            var attributes = baseAttributes(fontSize: block.fontSize(fontSize), bold: block.isHeading, serif: serif)
             attributes[.paragraphStyle] = style
             if block.isQuote { attributes[.foregroundColor] = UIColor.secondaryLabel }
 
@@ -61,7 +67,9 @@ enum NoteMarkdown {
                 out.append(NSAttributedString(string: "———", attributes: rule))
                 continue
             }
-            let line = inline(block.text, attributes: attributes, fontSize: block.fontSize(fontSize), bold: block.isHeading)
+            let line = inline(
+                block.text, attributes: attributes, fontSize: block.fontSize(fontSize), bold: block.isHeading, serif: serif
+            )
             for link in line.links {
                 links.append(VerseLink(
                     range: NSRange(location: link.range.location + out.length, length: link.range.length),
@@ -70,8 +78,8 @@ enum NoteMarkdown {
             }
             out.append(line.text)
             for picture in line.pictures {
-                out.append(NSAttributedString(string: "\n", attributes: baseAttributes(fontSize: fontSize)))
-                out.append(self.picture(media[picture.id], caption: picture.caption, fontSize: fontSize))
+                out.append(NSAttributedString(string: "\n", attributes: baseAttributes(fontSize: fontSize, serif: serif)))
+                out.append(self.picture(media[picture.id], caption: picture.caption, fontSize: fontSize, serif: serif))
             }
         }
         return Rendered(text: out, verseLinks: links)
@@ -82,11 +90,11 @@ enum NoteMarkdown {
     /// A picture, as wide as the note up to its own width, with its caption
     /// under it. One not on this device yet, as before a sync brings it,
     /// is named where it will be.
-    private static func picture(_ url: URL?, caption: String, fontSize: CGFloat) -> NSAttributedString {
+    private static func picture(_ url: URL?, caption: String, fontSize: CGFloat, serif: Bool) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
         style.paragraphSpacingBefore = fontSize * 0.3
         style.paragraphSpacing = fontSize * 0.3
-        var captionAttributes = baseAttributes(fontSize: fontSize * 0.85)
+        var captionAttributes = baseAttributes(fontSize: fontSize * 0.85, serif: serif)
         captionAttributes[.foregroundColor] = UIColor.secondaryLabel
         captionAttributes[.paragraphStyle] = style
 
@@ -165,9 +173,9 @@ enum NoteMarkdown {
         }
     }
 
-    private static func paragraphStyle(fontSize: CGFloat, block: Block) -> NSParagraphStyle {
+    private static func paragraphStyle(fontSize: CGFloat, block: Block, lineSpacing: CGFloat?) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = fontSize * 0.35
+        style.lineSpacing = lineSpacing ?? fontSize * 0.35
         let step = fontSize * 1.4
         switch block.kind {
         case .bullet, .ordered:
@@ -185,9 +193,9 @@ enum NoteMarkdown {
         return style
     }
 
-    static func baseAttributes(fontSize: CGFloat, bold: Bool = false) -> [NSAttributedString.Key: Any] {
+    static func baseAttributes(fontSize: CGFloat, bold: Bool = false, serif: Bool = false) -> [NSAttributedString.Key: Any] {
         [
-            .font: font(size: fontSize, bold: bold, italic: false, code: false),
+            .font: font(size: fontSize, bold: bold, italic: false, code: false, serif: serif),
             .foregroundColor: UIColor.label,
         ]
     }
@@ -201,7 +209,7 @@ enum NoteMarkdown {
     }
 
     private static func inline(
-        _ text: String, attributes: [NSAttributedString.Key: Any], fontSize: CGFloat, bold: Bool
+        _ text: String, attributes: [NSAttributedString.Key: Any], fontSize: CGFloat, bold: Bool, serif: Bool
     ) -> (text: NSAttributedString, links: [InlineLink], pictures: [(id: String, caption: String)]) {
         guard !text.isEmpty else { return (NSAttributedString(), [], []) }
         let options = AttributedString.MarkdownParsingOptions(
@@ -222,7 +230,8 @@ enum NoteMarkdown {
                 size: fontSize,
                 bold: bold || intent.contains(.stronglyEmphasized),
                 italic: intent.contains(.emphasized),
-                code: intent.contains(.code)
+                code: intent.contains(.code),
+                serif: serif
             )
             if intent.contains(.strikethrough) {
                 runAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
@@ -272,10 +281,11 @@ enum NoteMarkdown {
         return (start, parts.count > 1 ? parts[1] : nil)
     }
 
-    private static func font(size: CGFloat, bold: Bool, italic: Bool, code: Bool) -> UIFont {
+    private static func font(size: CGFloat, bold: Bool, italic: Bool, code: Bool, serif: Bool) -> UIFont {
         if code {
             return .monospacedSystemFont(ofSize: size * 0.95, weight: bold ? .semibold : .regular)
         }
+        if serif { return LampTheme.serif(size: size, weight: bold ? .semibold : .regular, italic: italic) }
         let base = UIFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
         guard italic, let descriptor = base.fontDescriptor.withSymbolicTraits(
             base.fontDescriptor.symbolicTraits.union(.traitItalic)

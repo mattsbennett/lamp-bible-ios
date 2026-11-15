@@ -318,9 +318,11 @@ class UserSettingsSyncManager {
         take(\.defaultQuizAgeGroup)
         take(\.planReaderCount)
         take(\.aiEnabled)
+        take(\.defaultCommentarySeries)
         // Only a choice travels: a device that never chose, or a build that
         // doesn't know the setting and wrote the row without it, has no say.
         if merged.aiEnabled == nil { merged.aiEnabled = local.aiEnabled }
+        if merged.defaultCommentarySeries == nil { merged.defaultCommentarySeries = local.defaultCommentarySeries }
         merged.updatedAt = max(local.updatedAt, remote.updatedAt)
         return merged
     }

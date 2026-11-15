@@ -21,6 +21,7 @@ struct ModuleSettingsView: View {
     @State private var translations: [TranslationModule] = []
     @State private var greekLexicons: [(key: String, name: String)] = []
     @State private var hebrewLexicons: [(key: String, name: String)] = []
+    @State private var commentarySeries: [String] = []
     @State private var loadGeneration = 0
 
     // Binding helpers that persist to database
@@ -64,6 +65,20 @@ struct ModuleSettingsView: View {
         )
     }
 
+    /// The commentary the panel opens on when none is open on this device.
+    private var defaultCommentarySeries: Binding<String> {
+        Binding(
+            get: { userSettings.defaultCommentarySeries ?? "" },
+            set: { newValue in
+                // "None" is a choice too, stored as an empty name: nil means
+                // no one has chosen, which sync leaves alone, so a default
+                // cleared as nil never reached the other devices.
+                userSettings.defaultCommentarySeries = newValue
+                try? UserDatabase.shared.updateSettings { $0.defaultCommentarySeries = newValue }
+            }
+        )
+    }
+
     private var hiddenGreekLexicons: Binding<String> {
         Binding(
             get: { userSettings.hiddenGreekLexicons },
@@ -100,6 +115,23 @@ struct ModuleSettingsView: View {
                 Text("Translations")
             } footer: {
                 Text("Tap to set default. Swipe to hide.")
+            }
+
+            // MARK: - Commentaries Section
+            if !commentarySeries.isEmpty {
+                Section {
+                    Picker("Default Commentary", selection: defaultCommentarySeries) {
+                        Text("None").tag("")
+                        ForEach(commentarySeries, id: \.self) { series in
+                            Text(series).tag(series)
+                        }
+                    }
+                    .tint(.primary)
+                } header: {
+                    Text("Commentaries")
+                } footer: {
+                    Text("Opened in the tools when no commentary is open on this device, as after reinstalling.")
+                }
             }
 
             // MARK: - Lexicons Section
@@ -152,6 +184,7 @@ struct ModuleSettingsView: View {
         let translations: [TranslationModule]
         let greek: [(key: String, name: String)]
         let hebrew: [(key: String, name: String)]
+        let commentaries: [String]
     }
 
     private func loadModules() async {
@@ -161,13 +194,25 @@ struct ModuleSettingsView: View {
             ListedModules(
                 translations: (try? TranslationDatabase.shared.getAllTranslations()) ?? [],
                 greek: Self.lexicons(in: "greek"),
-                hebrew: Self.lexicons(in: "hebrew")
+                hebrew: Self.lexicons(in: "hebrew"),
+                commentaries: Self.commentaries()
             )
         }.value
         guard generation == loadGeneration else { return }
         translations = listed.translations
         greekLexicons = listed.greek
         hebrewLexicons = listed.hebrew
+        commentarySeries = listed.commentaries
+    }
+
+    /// The commentaries the panel can open, bundled first, as its picker
+    /// lists them.
+    private nonisolated static func commentaries() -> [String] {
+        var all = (try? BundledModuleDatabase.shared.getBundledCommentarySeriesNames()) ?? []
+        for series in (try? ModuleDatabase.shared.getCommentarySeriesNames()) ?? [] where !all.contains(series) {
+            all.append(series)
+        }
+        return all
     }
 
     /// The bundle's lexicons in a language ("greek" or "hebrew"), and the

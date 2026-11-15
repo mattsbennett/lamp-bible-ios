@@ -610,6 +610,30 @@ final class NoteEditorHostView: UIView {
     func applyAppearance(fontSize: CGFloat) {
         let isDark = traitCollection.userInterfaceStyle == .dark
         page?.run("window.editorAPI.setTheme(\(isDark)); window.editorAPI.setFontSize(\(Int(fontSize)))")
+        applyToolText(fontSize: fontSize)
+    }
+
+    /// The tool panel's typeface and line spacing, as the note reads when
+    /// not being edited. The editor's own style sheet fixes serif at a line
+    /// height of 1.6 and has nothing to set them by, so a rule of the app's
+    /// own, kept in one style element, overrides them.
+    @MainActor
+    func applyToolText(fontSize: CGFloat) {
+        let text = LampToolText.current
+        let family = text.isSerif
+            ? "ui-serif, \"New York\", \"Iowan Old Style\", Georgia, serif"
+            : "-apple-system, system-ui, sans-serif"
+        // The editor sets its text a twentieth larger than the size it's given.
+        let lineHeight = String(format: "%.3f", text.cssLineHeight(fontSize: fontSize * 1.05))
+        // Paragraphs and list items too: the editor sets their line height
+        // on them, which a rule on their parent doesn't reach.
+        let rule = ".tiptap{font-family:\(family) !important}"
+            + ".tiptap,.tiptap p,.tiptap li{line-height:\(lineHeight) !important}"
+        page?.run("""
+            (function(){var e=document.getElementById('lamp-tool-text');\
+            if(!e){e=document.createElement('style');e.id='lamp-tool-text';document.head.appendChild(e);}\
+            e.textContent='\(rule)';})()
+            """)
     }
 
     private func report(_ markdown: String) {
@@ -754,8 +778,10 @@ struct PooledNoteEditor: UIViewRepresentable {
         // Only a change from outside the editor: its own edits come back the
         // same as what it last reported.
         view.replace(with: markdown)
-        if context.coordinator.fontSize != fontSize {
+        let toolText = LampToolText.current
+        if context.coordinator.fontSize != fontSize || context.coordinator.toolText != toolText {
             context.coordinator.fontSize = fontSize
+            context.coordinator.toolText = toolText
             view.applyAppearance(fontSize: fontSize)
         }
     }
@@ -768,6 +794,8 @@ struct PooledNoteEditor: UIViewRepresentable {
 
     final class Coordinator {
         var fontSize: CGFloat
+        /// The panel's typeface and spacing last applied.
+        var toolText = LampToolText.current
         init(fontSize: CGFloat) { self.fontSize = fontSize }
     }
 

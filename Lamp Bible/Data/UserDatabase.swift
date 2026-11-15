@@ -340,6 +340,14 @@ class UserDatabase {
             }
         }
 
+        // The commentary the panel opens on when none is open here: NULL
+        // until someone chooses one.
+        migrator.registerMigration("v11_default_commentary") { db in
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "default_commentary_series", .text)
+            }
+        }
+
         return migrator
     }
 
@@ -659,6 +667,7 @@ class UserDatabase {
                         default_quiz_age_group = ?,
                         plan_reader_count = ?,
                         ai_enabled = COALESCE(?, ai_enabled),
+                        default_commentary_series = COALESCE(?, default_commentary_series),
                         updated_at = ?
                     WHERE id = 1
                     """, arguments: [
@@ -688,6 +697,7 @@ class UserDatabase {
                         // A device that never chose, or a build that doesn't
                         // know the setting, has no say in it.
                         remote.aiEnabled,
+                        remote.defaultCommentarySeries,
                         remote.updatedAt
                     ])
                 // Plans chosen on a phone without plan progress reach the

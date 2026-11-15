@@ -2455,7 +2455,9 @@ private struct StrongsDefinitionPage: View {
                                     senses: entry.parsedSenses,
                                     translationId: translationId,
                                     onNavigateToVerse: onNavigateToVerse,
-                                    baseFontSize: CGFloat(UserDatabase.shared.getSettings().readerFontSize) * 0.92
+                                    // The tool panel's size, as every dictionary
+                                    // entry is shown in.
+                                    baseFontSize: LampToolText.current.size
                                 )
                             }
                         }

@@ -154,14 +154,88 @@ enum LampTheme {
 
 extension LampTextScale {
     /// The space between the reader's lines, in points: the Mac's scale under
-    /// the Mac's key, so a setting reads the same on both.
+    /// the Mac's key, so a setting reads the same on both. Nine to begin
+    /// with, at the owner's word (Nov 2026).
     static let readerLineSpacing = LampTextScale(
+        minimum: 2,
+        maximum: 16,
+        step: 1,
+        defaultValue: 9
+    )
+    static let readerLineSpacingKey = "reader.lineSpacing"
+
+    /// The space between the tool panel's lines, and its sheets', in points.
+    /// Seven to begin with: its text is reference reading, set closer than
+    /// the reader's (owner, Nov 2026).
+    static let toolLineSpacing = LampTextScale(
         minimum: 2,
         maximum: 16,
         step: 1,
         defaultValue: 7
     )
-    static let readerLineSpacingKey = "reader.lineSpacing"
+    static let toolLineSpacingKey = "tool.lineSpacing"
+    /// The tool panel's typeface, and its sheets': serif to begin with, as
+    /// the reader's is.
+    static let toolTypefaceKey = "tool.typeface"
+}
+
+/// How the tool panel sets its text, and every sheet a reference or a word
+/// opens: its size, its typeface and the space between its lines. The
+/// reader has its own; these are the panel's, set beside it, so reference
+/// reading can sit closer and smaller than scripture (owner, Nov 2026).
+struct LampToolText: Equatable {
+    var size: CGFloat
+    var typeface: LampProseTypeface
+    var lineSpacing: CGFloat
+
+    /// The panel's size key, as it has always been stored.
+    static let sizeKey = "toolFontSize"
+    static let sizeDefault = 16
+    static let sizeRange = 12...24
+
+    init(size: Int, typeface: String, lineSpacing: Double) {
+        self.size = CGFloat(min(max(size, Self.sizeRange.lowerBound), Self.sizeRange.upperBound))
+        self.typeface = LampProseTypeface(rawValue: typeface) ?? .serif
+        self.lineSpacing = CGFloat(LampTextScale.toolLineSpacing.clamped(lineSpacing))
+    }
+
+    /// As stored now, for a view that reads it once as it draws: a sheet,
+    /// which the settings can't be changed under.
+    static var current: LampToolText {
+        let defaults = UserDefaults.standard
+        return LampToolText(
+            size: defaults.object(forKey: sizeKey) as? Int ?? sizeDefault,
+            typeface: defaults.string(forKey: LampTextScale.toolTypefaceKey) ?? LampProseTypeface.serif.rawValue,
+            lineSpacing: defaults.object(forKey: LampTextScale.toolLineSpacingKey) as? Double
+                ?? LampTextScale.toolLineSpacing.defaultValue
+        )
+    }
+
+    var isSerif: Bool { typeface == .serif }
+    var design: Font.Design { isSerif ? .serif : .default }
+
+    func font(size: CGFloat? = nil, weight: Font.Weight = .regular) -> Font {
+        .system(size: size ?? self.size, weight: weight, design: design)
+    }
+
+    func uiFont(size: CGFloat? = nil, weight: UIFont.Weight = .regular, italic: Bool = false) -> UIFont {
+        let size = size ?? self.size
+        if isSerif { return LampTheme.serif(size: size, weight: weight, italic: italic) }
+        let base = UIFont.systemFont(ofSize: size, weight: weight)
+        guard italic, let slanted = base.fontDescriptor.withSymbolicTraits(.traitItalic) else { return base }
+        return UIFont(descriptor: slanted, size: size)
+    }
+
+    /// The space between paragraphs: a little more than between lines.
+    var paragraphSpacing: CGFloat { lineSpacing + 2 }
+
+    /// The line height a web view's CSS takes for this spacing, as a multiple
+    /// of `fontSize`: the face's own line, about 1.2 of its size, and the
+    /// chosen points on top.
+    func cssLineHeight(fontSize: CGFloat) -> Double {
+        guard fontSize > 0 else { return 1.6 }
+        return Double((fontSize * 1.2 + lineSpacing) / fontSize)
+    }
 }
 
 // MARK: - View helpers

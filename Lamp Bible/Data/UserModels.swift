@@ -42,6 +42,10 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
     /// someone does, which is not the same as off (`AIFeatures`). Only a
     /// choice travels to other devices.
     var aiEnabled: Bool? = nil
+    /// The commentary the tool panel opens on when none is open on this
+    /// device, as after a reinstall. Nil until someone chooses one, and only a
+    /// choice travels, as `aiEnabled`'s does; "None" chosen is an empty name.
+    var defaultCommentarySeries: String? = nil
     var updatedAt: Date = Date()
 
     // MARK: - CodingKeys for snake_case mapping
@@ -72,6 +76,7 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
         case defaultQuizAgeGroup = "default_quiz_age_group"
         case planReaderCount = "plan_reader_count"
         case aiEnabled = "ai_enabled"
+        case defaultCommentarySeries = "default_commentary_series"
         case updatedAt = "updated_at"
     }
 

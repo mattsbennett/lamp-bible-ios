@@ -1130,9 +1130,35 @@ final class Lamp_BibleTests: XCTestCase {
         // The merge names every setting; one added since must join it, or a
         // change to it made on two devices at once keeps only the remote's.
         XCTAssertEqual(
-            Mirror(reflecting: UserSettings()).children.count, 26,
+            Mirror(reflecting: UserSettings()).children.count, 27,
             "A new setting needs a line in UserSettingsSyncManager.mergingFields"
         )
+    }
+
+    /// The default commentary is a choice that travels, and a row written
+    /// by a build that doesn't know it leaves this device's alone.
+    @MainActor
+    func testADefaultCommentaryOutlivesARowWrittenWithoutIt() {
+        var baseSettings = UserSettings()
+        baseSettings.defaultCommentarySeries = "Treasury of Scripture Knowledge, Enhanced v1.2"
+        baseSettings.updatedAt = Date(timeIntervalSince1970: 100)
+        var remoteSettings = baseSettings
+        remoteSettings.defaultCommentarySeries = nil
+        remoteSettings.updatedAt = Date(timeIntervalSince1970: 200)
+        XCTAssertEqual(UserSettingsSyncManager.mergingFields(
+            base: baseSettings, local: baseSettings, remote: remoteSettings
+        ).defaultCommentarySeries, "Treasury of Scripture Knowledge, Enhanced v1.2")
+
+        remoteSettings.defaultCommentarySeries = "Matthew Henry"
+        XCTAssertEqual(UserSettingsSyncManager.mergingFields(
+            base: baseSettings, local: baseSettings, remote: remoteSettings
+        ).defaultCommentarySeries, "Matthew Henry")
+
+        // "None" chosen there is a choice, and arrives.
+        remoteSettings.defaultCommentarySeries = ""
+        XCTAssertEqual(UserSettingsSyncManager.mergingFields(
+            base: baseSettings, local: baseSettings, remote: remoteSettings
+        ).defaultCommentarySeries, "")
     }
 
     @MainActor

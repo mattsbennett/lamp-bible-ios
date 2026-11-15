@@ -94,6 +94,12 @@ struct CommentaryRenderer {
         /// An annotation whose offsets miss its own `text` is placed where
         /// that text is, as a dictionary's are read.
         var findsAnnotationsByText: Bool = false
+        /// The space between lines and between paragraphs, in points. The
+        /// tool panel's and its sheets' come from its settings.
+        var lineSpacing: CGFloat = 6
+        var paragraphSpacing: CGFloat = 8
+        /// Whether the text is set in serif, which its titles then follow.
+        var isSerif: Bool = false
 
         var uiFootnoteFont: UIFont? {
             if let base = uiBodyFont {
@@ -397,8 +403,8 @@ struct CommentaryRenderer {
 
         // Line and paragraph spacing
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 6
-        paragraphStyle.paragraphSpacing = 8
+        paragraphStyle.lineSpacing = style.lineSpacing
+        paragraphStyle.paragraphSpacing = style.paragraphSpacing
         // Force LTR base direction to prevent RTL Hebrew from reordering mixed content
         paragraphStyle.baseWritingDirection = .leftToRight
         result.addAttribute(.paragraphStyle, value: paragraphStyle, range: NSRange(location: 0, length: result.length))
@@ -655,8 +661,8 @@ struct CommentaryRenderer {
 
         // Line and paragraph spacing
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 6
-        paragraphStyle.paragraphSpacing = 8
+        paragraphStyle.lineSpacing = style.lineSpacing
+        paragraphStyle.paragraphSpacing = style.paragraphSpacing
         // Force LTR base direction to prevent RTL Hebrew from reordering mixed content
         paragraphStyle.baseWritingDirection = .leftToRight
         result.addAttribute(.paragraphStyle, value: paragraphStyle, range: NSRange(location: 0, length: result.length))
@@ -1340,15 +1346,19 @@ struct CommentaryUnitView: View {
 
     private var titleFont: Font {
         let baseSize = style.uiBodyFont?.pointSize ?? 17
+        // In the text's own typeface, serif or sans as it is set.
+        let design: Font.Design = style.isSerif ? .serif : .default
         // A close scale, so a pericope's title and the sections around it
         // read as one outline rather than jumping between sizes.
         switch unit.type {
         case .section:
-            return unit.level == 1 ? .system(size: baseSize + 3, weight: .bold) : .system(size: baseSize + 1.5, weight: .semibold)
+            return unit.level == 1
+                ? .system(size: baseSize + 3, weight: .bold, design: design)
+                : .system(size: baseSize + 1.5, weight: .semibold, design: design)
         case .pericope:
-            return .system(size: baseSize + 0.5, weight: .semibold)
+            return .system(size: baseSize + 0.5, weight: .semibold, design: design)
         case .verse:
-            return .system(size: baseSize - 2, weight: .semibold)
+            return .system(size: baseSize - 2, weight: .semibold, design: design)
         }
     }
 
@@ -1525,15 +1535,19 @@ struct CommentaryUnitViewWithItems: View {
 
     private var titleFont: Font {
         let baseSize = style.uiBodyFont?.pointSize ?? 17
+        // In the text's own typeface, serif or sans as it is set.
+        let design: Font.Design = style.isSerif ? .serif : .default
         // A close scale, so a pericope's title and the sections around it
         // read as one outline rather than jumping between sizes.
         switch unit.type {
         case .section:
-            return unit.level == 1 ? .system(size: baseSize + 3, weight: .bold) : .system(size: baseSize + 1.5, weight: .semibold)
+            return unit.level == 1
+                ? .system(size: baseSize + 3, weight: .bold, design: design)
+                : .system(size: baseSize + 1.5, weight: .semibold, design: design)
         case .pericope:
-            return .system(size: baseSize + 0.5, weight: .semibold)
+            return .system(size: baseSize + 0.5, weight: .semibold, design: design)
         case .verse:
-            return .system(size: baseSize - 2, weight: .semibold)
+            return .system(size: baseSize - 2, weight: .semibold, design: design)
         }
     }
 
@@ -1625,5 +1639,17 @@ extension AttributedString {
         }
 
         return result
+    }
+}
+
+
+extension CommentaryRenderer.Style {
+    /// The tool panel's text, and its sheets': its size, typeface and spacing.
+    static func tool(_ text: LampToolText) -> Self {
+        var style = Self(bodyFont: text.font(), uiBodyFont: text.uiFont())
+        style.lineSpacing = text.lineSpacing
+        style.paragraphSpacing = text.paragraphSpacing
+        style.isSerif = text.isSerif
+        return style
     }
 }

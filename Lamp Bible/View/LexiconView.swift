@@ -96,7 +96,8 @@ struct LexiconTextRenderer {
         var paragraphSpacing: CGFloat = 8
         var searchTerms: [String] = []
 
-        var font: UIFont { .systemFont(ofSize: fontSize) }
+        /// In the tool panel's typeface, as every dictionary sheet is.
+        var font: UIFont { LampToolText.current.uiFont(size: fontSize) }
     }
 
     struct RenderResult {
@@ -1145,8 +1146,9 @@ struct LinkedDefinitionText: View {
         let effectiveFontSize = fontSize ?? fontPointSize(from: font)
         return LexiconTextRenderer.Style(
             fontSize: effectiveFontSize,
-            lineSpacing: effectiveFontSize * 0.4,
-            paragraphSpacing: effectiveFontSize * 0.5,
+            // The tool panel's line spacing, which every sheet takes.
+            lineSpacing: LampToolText.current.lineSpacing,
+            paragraphSpacing: LampToolText.current.paragraphSpacing,
             searchTerms: searchTerms
         )
     }
@@ -1355,18 +1357,18 @@ private struct LexiconSheetItemContent: View {
         UserDatabase.shared.getSettings()
     }
 
-    /// Base font size at 90% of user's reader font size
+    /// The tool panel's text size, which every dictionary sheet takes.
     private var baseFontSize: CGFloat {
-        CGFloat(userSettings.readerFontSize) * 0.92
+        LampToolText.current.size
     }
 
     // Scaled fonts (matching LexiconEntryView +5% scaling)
-    private var titleFont: Font { .system(size: baseFontSize * 1.47) }
-    private var headlineFont: Font { .system(size: baseFontSize * 1.155) }
-    private var bodyFont: Font { .system(size: baseFontSize * 1.024) }
-    private var subheadlineFont: Font { .system(size: baseFontSize * 0.924) }
-    private var captionFont: Font { .system(size: baseFontSize * 0.798) }
-    private var caption2Font: Font { .system(size: baseFontSize * 0.735) }
+    private var titleFont: Font { .system(size: baseFontSize * 1.47, design: LampToolText.current.design) }
+    private var headlineFont: Font { .system(size: baseFontSize * 1.155, design: LampToolText.current.design) }
+    private var bodyFont: Font { .system(size: baseFontSize * 1.024, design: LampToolText.current.design) }
+    private var subheadlineFont: Font { .system(size: baseFontSize * 0.924, design: LampToolText.current.design) }
+    private var captionFont: Font { .system(size: baseFontSize * 0.798, design: LampToolText.current.design) }
+    private var caption2Font: Font { .system(size: baseFontSize * 0.735, design: LampToolText.current.design) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1432,8 +1434,18 @@ private struct StrongsRefContent: View {
 
     private func loadEntry() async {
         let key = strongsNum
+        // The reader's first lexicon for the key's language, as the word's
+        // own sheet opens on, hidden ones skipped: the first entry found was
+        // whichever came back first, often Strong's over the reader's own
+        // dictionary placed above it.
+        let settings = UserDatabase.shared.getSettings()
+        let isHebrew = LampStrongsKey.normalized(key).hasPrefix("H")
+        let order = isHebrew ? settings.hebrewLexiconOrder : settings.greekLexiconOrder
+        let hidden = isHebrew ? settings.hiddenHebrewLexicons : settings.hiddenGreekLexicons
         let result = await Task.detached(priority: .userInitiated) { () -> (entry: LexiconEntry, senses: [DictionarySense])? in
-            guard let entry = LexiconLookup.allEntries(for: key).first else { return nil }
+            guard let entry = visibleLexiconEntries(for: key, orderString: order, hiddenString: hidden).first
+                ?? LexiconLookup.sortedEntries(for: key, orderString: order).first
+            else { return nil }
             return (entry, parseSensesForEntry(entry))
         }.value
         guard !Task.isCancelled else { return }
@@ -1486,8 +1498,8 @@ private struct VerseRefContent: View {
     var baseFontSize: CGFloat = 17
 
     // Scaled fonts
-    private var bodyFont: Font { .system(size: baseFontSize * 1.024) }
-    private var captionFont: Font { .system(size: baseFontSize * 0.798) }
+    private var bodyFont: Font { .system(size: baseFontSize * 1.024, design: LampToolText.current.design) }
+    private var captionFont: Font { .system(size: baseFontSize * 0.798, design: LampToolText.current.design) }
 
     /// The verses and the translation's name, read once off the main thread
     /// rather than on every render.
@@ -1549,7 +1561,7 @@ private struct VerseRefContent: View {
         VStack(alignment: .leading, spacing: 8) {
             if hasLoaded {
                 Text(versesText)
-                    .lineSpacing(6)
+                    .lineSpacing(LampToolText.current.lineSpacing)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ProgressView()
@@ -2027,8 +2039,10 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         var itemIndex = baseOffset
 
         // Use CommentaryRenderer style
+        // The tool panel's typeface and spacing, as every dictionary sheet's.
+        let toolText = LampToolText.current
         var style = CommentaryRenderer.Style(
-            uiBodyFont: UIFont.systemFont(ofSize: fontSize),
+            uiBodyFont: toolText.uiFont(size: fontSize),
             scriptureColor: .lampLink,
             strongsColor: .lampOriginalLanguageInText,
             boldStrongs: false,
@@ -2036,6 +2050,9 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
             abbreviationColor: Color.secondary
         )
         style.findsAnnotationsByText = true
+        style.lineSpacing = toolText.lineSpacing
+        style.paragraphSpacing = toolText.paragraphSpacing
+        style.isSerif = toolText.isSerif
 
         // Get the base attributed string from CommentaryRenderer
         // Its Greek and Hebrew runs are isolated last, below, since the
@@ -2212,13 +2229,13 @@ struct LexiconEntryView: View {
     var scrollCoordinateSpace: String = "lexiconScroll"
 
     // Scaled fonts relative to base size
-    private var titleFont: Font { .system(size: baseFontSize * 1.4) }  // ~title2 (+5%)
-    private var headlineFont: Font { .system(size: baseFontSize * 1.155) }  // ~headline (+5%)
-    private var bodyFont: Font { .system(size: baseFontSize) }  // definition text (+5%)
-    private var calloutFont: Font { .system(size: baseFontSize * 0.987) }  // ~callout (+5%)
-    private var subheadlineFont: Font { .system(size: baseFontSize * 0.924) }  // ~subheadline (+5%)
-    private var captionFont: Font { .system(size: baseFontSize * 0.798) }  // ~caption (+5%)
-    private var caption2Font: Font { .system(size: baseFontSize * 0.735) }  // ~caption2 (+5%)
+    private var titleFont: Font { .system(size: baseFontSize * 1.4, design: LampToolText.current.design) }  // ~title2 (+5%)
+    private var headlineFont: Font { .system(size: baseFontSize * 1.155, design: LampToolText.current.design) }  // ~headline (+5%)
+    private var bodyFont: Font { .system(size: baseFontSize, design: LampToolText.current.design) }  // definition text (+5%)
+    private var calloutFont: Font { .system(size: baseFontSize * 0.987, design: LampToolText.current.design) }  // ~callout (+5%)
+    private var subheadlineFont: Font { .system(size: baseFontSize * 0.924, design: LampToolText.current.design) }  // ~subheadline (+5%)
+    private var captionFont: Font { .system(size: baseFontSize * 0.798, design: LampToolText.current.design) }  // ~caption (+5%)
+    private var caption2Font: Font { .system(size: baseFontSize * 0.735, design: LampToolText.current.design) }  // ~caption2 (+5%)
 
     /// True if this entry has multiple senses
     private var hasSenses: Bool {
@@ -2265,7 +2282,9 @@ struct LexiconEntryView: View {
             // long name such as "Complete Word Study Dictionary: Old
             // Testament" shouted.
             Text(entry.lexiconName.uppercased())
-                .font(caption2Font)
+                // Sans, as the entry's other small capital labels are,
+                // whichever typeface the text is in.
+                .font(.system(size: baseFontSize * 0.735))
                 .foregroundStyle(.tertiary)
 
             // Header: the lemma (with a homograph's Roman numeral), and on
@@ -2673,11 +2692,11 @@ struct UserDictionarySenseView: View {
     private var senseIndex: Int { senseNumber - 1 }
 
     // Scaled fonts
-    private var bodyFont: Font { .system(size: baseFontSize) }  // definition text (+5%)
-    private var calloutFont: Font { .system(size: baseFontSize * 0.987) }  // (+5%)
-    private var subheadlineFont: Font { .system(size: baseFontSize * 0.924) }  // (+5%)
-    private var captionFont: Font { .system(size: baseFontSize * 0.798) }  // (+5%)
-    private var caption2Font: Font { .system(size: baseFontSize * 0.735) }  // (+5%)
+    private var bodyFont: Font { .system(size: baseFontSize, design: LampToolText.current.design) }  // definition text (+5%)
+    private var calloutFont: Font { .system(size: baseFontSize * 0.987, design: LampToolText.current.design) }  // (+5%)
+    private var subheadlineFont: Font { .system(size: baseFontSize * 0.924, design: LampToolText.current.design) }  // (+5%)
+    private var captionFont: Font { .system(size: baseFontSize * 0.798, design: LampToolText.current.design) }  // (+5%)
+    private var caption2Font: Font { .system(size: baseFontSize * 0.735, design: LampToolText.current.design) }  // (+5%)
 
     // Count items in definition for offset calculation
     private var definitionItemCount: Int {
@@ -3075,7 +3094,7 @@ struct LexiconPageView: View {
     private var needsScrollToMatch: Bool { !searchTerms.isEmpty }
 
     // Scaled fonts
-    private var captionFont: Font { .system(size: baseFontSize * 0.798) }  // (+5%)
+    private var captionFont: Font { .system(size: baseFontSize * 0.798, design: LampToolText.current.design) }  // (+5%)
 
     /// Find the first entry/sense/field that contains a search term match
     /// Returns (entryId, senseIndex, fieldName) where senseIndex is nil for entry-level match
@@ -3672,9 +3691,9 @@ struct LexiconSheetView: View {
     private var hiddenGreekLexicons: String { userSettings.hiddenGreekLexicons }
     private var hiddenHebrewLexicons: String { userSettings.hiddenHebrewLexicons }
 
-    /// Base font size at 90% of user's reader font size
+    /// The tool panel's text size, which every dictionary sheet takes.
     private var scaledBaseFontSize: CGFloat {
-        CGFloat(userSettings.readerFontSize) * 0.92
+        LampToolText.current.size
     }
 
     /// Extract search terms from the query string for highlighting
@@ -3813,7 +3832,7 @@ struct LexiconSheetView: View {
                 LexiconSearchSheet(
                     strongsNum: item.strongsNum,
                     translationId: translationId,
-                    fontSize: Int(userSettings.readerFontSize),
+                    fontSize: Int(LampToolText.current.size),
                     onNavigateToVerse: handleNavigateToVerse
                 )
             }
@@ -3850,8 +3869,8 @@ struct LexiconPopoverContent: View {
     }
 
     // Scaled fonts
-    private var headlineFont: Font { .system(size: scaledBaseFontSize * 1.1) }
-    private var captionFont: Font { .system(size: scaledBaseFontSize * 0.76) }
+    private var headlineFont: Font { .system(size: scaledBaseFontSize * 1.1, design: LampToolText.current.design) }
+    private var captionFont: Font { .system(size: scaledBaseFontSize * 0.76, design: LampToolText.current.design) }
 
     // Parse senses from JSON based on entry type
     private func parseSenses(for entry: LexiconEntry) -> [DictionarySense] {
