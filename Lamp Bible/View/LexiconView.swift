@@ -1425,6 +1425,21 @@ private struct StrongsRefContent: View {
     var baseFontSize: CGFloat = 17
 
     @State private var hitCount: Int? = nil
+    /// The first lexicon's entry and its senses, looked up once off the main
+    /// thread rather than on every render (the hit count's arrival is one).
+    @State private var loaded: (entry: LexiconEntry, senses: [DictionarySense])?
+    @State private var hasLoaded = false
+
+    private func loadEntry() async {
+        let key = strongsNum
+        let result = await Task.detached(priority: .userInitiated) { () -> (entry: LexiconEntry, senses: [DictionarySense])? in
+            guard let entry = LexiconLookup.allEntries(for: key).first else { return nil }
+            return (entry, parseSensesForEntry(entry))
+        }.value
+        guard !Task.isCancelled else { return }
+        loaded = result
+        hasLoaded = true
+    }
 
     /// Off the main thread: a count reads every verse that may tag the key.
     private func loadHitCount() async {
@@ -1436,21 +1451,27 @@ private struct StrongsRefContent: View {
     }
 
     var body: some View {
-        if let entry = LexiconLookup.allEntries(for: strongsNum).first {
-            LexiconEntryView(
-                entry: entry,
-                senses: parseSensesForEntry(entry),
-                translationId: translationId,
-                onSearchStrongs: onSearchStrongs,
-                onNavigateToVerse: onNavigateToVerse,
-                baseFontSize: baseFontSize,
-                hitCount: hitCount
-            )
-            .task { await loadHitCount() }
-        } else {
-            Text("Entry not found: \(strongsNum)")
-                .foregroundStyle(.secondary)
+        Group {
+            if !hasLoaded {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+            } else if let loaded {
+                LexiconEntryView(
+                    entry: loaded.entry,
+                    senses: loaded.senses,
+                    translationId: translationId,
+                    onSearchStrongs: onSearchStrongs,
+                    onNavigateToVerse: onNavigateToVerse,
+                    baseFontSize: baseFontSize,
+                    hitCount: hitCount
+                )
+                .task { await loadHitCount() }
+            } else {
+                Text("Entry not found: \(strongsNum)")
+                    .foregroundStyle(.secondary)
+            }
         }
+        .task(id: strongsNum) { await loadEntry() }
     }
 }
 
@@ -1468,21 +1489,33 @@ private struct VerseRefContent: View {
     private var bodyFont: Font { .system(size: baseFontSize * 1.024) }
     private var captionFont: Font { .system(size: baseFontSize * 0.798) }
 
-    private var verses: [TranslationVerse] {
-        guard let transId = translationId else { return [] }
+    /// The verses and the translation's name, read once off the main thread
+    /// rather than on every render.
+    @State private var verses: [TranslationVerse] = []
+    @State private var translationName: String?
+    @State private var hasLoaded = false
+
+    private func load() async {
+        guard let transId = translationId else {
+            hasLoaded = true
+            return
+        }
         let startId = verseId
         let endId = endVerseId ?? verseId
-        return (try? TranslationDatabase.shared.getVerseRange(
-            translationId: transId,
-            startRef: startId,
-            endRef: endId
-        )) ?? []
-    }
-
-    /// Get the translation name for display
-    private var translationName: String? {
-        guard let transId = translationId else { return nil }
-        return (try? TranslationDatabase.shared.getTranslation(id: transId))?.name
+        let (loadedVerses, name) = await Task.detached(priority: .userInitiated) {
+            (
+                (try? TranslationDatabase.shared.getVerseRange(
+                    translationId: transId,
+                    startRef: startId,
+                    endRef: endId
+                )) ?? [],
+                (try? TranslationDatabase.shared.getTranslation(id: transId))?.name
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        verses = loadedVerses
+        translationName = name
+        hasLoaded = true
     }
 
     private var versesText: AttributedString {
@@ -1514,9 +1547,14 @@ private struct VerseRefContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(versesText)
-                .lineSpacing(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if hasLoaded {
+                Text(versesText)
+                    .lineSpacing(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+            }
 
             if let name = translationName {
                 Text(name)
@@ -1525,7 +1563,16 @@ private struct VerseRefContent: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
+        .task(id: VerseRefKey(translationId: translationId, start: verseId, end: endVerseId)) {
+            await load()
+        }
     }
+}
+
+private struct VerseRefKey: Hashable {
+    let translationId: String?
+    let start: Int
+    let end: Int?
 }
 
 /// BDB reference content for sheet display
@@ -3440,66 +3487,6 @@ struct LexiconSearchSheet: View {
     }
 }
 
-// Holds raw entry data for background parsing (no Realm references)
-private struct RawEntryData: Sendable {
-    let id: String
-    let strongsId: String
-    let lemma: String
-    let xlit: String?
-    let pron: String?
-    let def: String?
-    let kjv: String?
-    let deriv: String?
-    let lexiconKey: String
-    let lexiconName: String
-    let pos: String?
-    let gloss: String?
-    let sensesJson: String?
-    let referencesJson: String?
-    let bdbId: String?
-    let homograph: Int?
-
-    init(from entry: LexiconEntry) {
-        self.id = entry.id
-        self.strongsId = entry.strongsId
-        self.lemma = entry.lemma
-        self.xlit = entry.xlit
-        self.pron = entry.pron
-        self.def = entry.def
-        self.kjv = entry.kjv
-        self.deriv = entry.deriv
-        self.lexiconKey = entry.lexiconKey
-        self.lexiconName = entry.lexiconName
-        self.pos = entry.pos
-        self.gloss = entry.gloss
-        self.sensesJson = entry.sensesJson
-        self.referencesJson = entry.referencesJson
-        self.bdbId = entry.bdbId
-        self.homograph = entry.homograph
-    }
-
-    func toLexiconEntry() -> LexiconEntry {
-        LexiconEntry(
-            id: id,
-            strongsId: strongsId,
-            lemma: lemma,
-            xlit: xlit,
-            pron: pron,
-            def: def,
-            kjv: kjv,
-            deriv: deriv,
-            lexiconKey: lexiconKey,
-            lexiconName: lexiconName,
-            pos: pos,
-            gloss: gloss,
-            sensesJson: sensesJson,
-            referencesJson: referencesJson,
-            bdbId: bdbId,
-            homograph: homograph
-        )
-    }
-}
-
 // Background parsing queue
 private let lexiconParsingQueue = DispatchQueue(label: "com.lampbible.lexiconParsing", qos: .userInitiated)
 
@@ -3511,6 +3498,7 @@ class LexiconLoader: ObservableObject {
     @Published var cachedTotalCounts: [String: Int] = [:]
     @Published var isLoading: Bool = true
     @Published var strongsHitCounts: [String: Int] = [:]  // Hit counts per Strong's number
+    private var loadGeneration = 0
 
     func load(
         strongs: [String],
@@ -3521,33 +3509,34 @@ class LexiconLoader: ObservableObject {
         hiddenGreekLexicons: String = "",
         translationId: String? = nil  // For counting hits (GRDB translation ID)
     ) {
-        // Step 1: Fetch all Realm data synchronously on main thread and copy to Sendable structs
-        let lexicons = computeAvailableLexicons(
-            strongs: strongs,
-            restrictToLexicon: restrictToLexicon,
-            hebrewLexiconOrder: hebrewLexiconOrder,
-            greekLexiconOrder: greekLexiconOrder,
-            hiddenHebrewLexicons: hiddenHebrewLexicons,
-            hiddenGreekLexicons: hiddenGreekLexicons
-        )
+        loadGeneration &+= 1
+        let generation = loadGeneration
 
-        var rawEntriesByLexicon: [String: [RawEntryData]] = [:]
-        for lexiconKey in lexicons {
-            let entries = computeEntries(for: lexiconKey, strongs: strongs)
-            rawEntriesByLexicon[lexiconKey] = entries.map { RawEntryData(from: $0) }
-        }
-
-        // Step 2: Parse JSON in background using explicit GCD queue
-        // NOTE: Uses thread-safe counting function that doesn't access Realm
+        // Step 1 and 2, off the main thread: the lookups (every lexicon's
+        // entry for every number, and each user dictionary's) and the parse of
+        // their senses. On the main thread they held up the sheet as it opened.
         lexiconParsingQueue.async { [weak self] in
+            let entriesByNumber = Dictionary(
+                strongs.map { ($0, LexiconLookup.allEntries(for: $0)) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let lexicons = Self.computeAvailableLexicons(
+                strongs: strongs,
+                entriesByNumber: entriesByNumber,
+                restrictToLexicon: restrictToLexicon,
+                hebrewLexiconOrder: hebrewLexiconOrder,
+                greekLexiconOrder: greekLexiconOrder,
+                hiddenHebrewLexicons: hiddenHebrewLexicons,
+                hiddenGreekLexicons: hiddenGreekLexicons
+            )
+
             var parsedDataByLexicon: [String: [ParsedLexiconEntryData]] = [:]
             var totalCountsByLexicon: [String: Int] = [:]
 
-            for (lexiconKey, rawEntries) in rawEntriesByLexicon {
+            for lexiconKey in lexicons {
                 var parsedData: [ParsedLexiconEntryData] = []
                 var runningOffset = 0
-                for rawEntry in rawEntries {
-                    let entry = rawEntry.toLexiconEntry()
+                for entry in Self.computeEntries(for: lexiconKey, strongs: strongs, entriesByNumber: entriesByNumber) {
                     let senses = parseSensesForEntry(entry)
                     let hasSenses = !senses.isEmpty
                     parsedData.append(ParsedLexiconEntryData(
@@ -3555,23 +3544,23 @@ class LexiconLoader: ObservableObject {
                         senses: senses,
                         offset: runningOffset
                     ))
-                    // Use thread-safe counting that doesn't require Realm access
                     runningOffset += countPopoverItemsInEntryThreadSafe(entry, hasSenses: hasSenses, senses: senses)
                 }
                 parsedDataByLexicon[lexiconKey] = parsedData
                 totalCountsByLexicon[lexiconKey] = runningOffset
             }
 
-            // Step 3: Update state on main thread
+            // Step 3: Update state on main thread, unless a later load began
             DispatchQueue.main.async { [weak self] in
-                self?.cachedLexicons = lexicons
-                self?.cachedParsedData = parsedDataByLexicon
-                self?.cachedTotalCounts = totalCountsByLexicon
-                self?.isLoading = false
+                guard let self, self.loadGeneration == generation else { return }
+                self.cachedLexicons = lexicons
+                self.cachedParsedData = parsedDataByLexicon
+                self.cachedTotalCounts = totalCountsByLexicon
+                self.isLoading = false
 
                 // Step 4: Load hit counts asynchronously (after UI update)
                 if let translationId = translationId {
-                    self?.loadHitCounts(for: strongs, translationId: translationId)
+                    self.loadHitCounts(for: strongs, translationId: translationId)
                 }
             }
         }
@@ -3596,8 +3585,9 @@ class LexiconLoader: ObservableObject {
         }
     }
 
-    private func computeAvailableLexicons(
+    private nonisolated static func computeAvailableLexicons(
         strongs: [String],
+        entriesByNumber: [String: [LexiconEntry]],
         restrictToLexicon: String?,
         hebrewLexiconOrder: String,
         greekLexiconOrder: String,
@@ -3614,8 +3604,7 @@ class LexiconLoader: ObservableObject {
 
         var lexicons: Set<String> = []
         for num in strongs {
-            let entries = LexiconLookup.allEntries(for: num)
-            for entry in entries {
+            for entry in entriesByNumber[num] ?? [] {
                 // Skip hidden lexicons
                 if !hiddenKeys.contains(entry.lexiconKey) {
                     lexicons.insert(entry.lexiconKey)
@@ -3630,13 +3619,17 @@ class LexiconLoader: ObservableObject {
         )
     }
 
-    private func computeEntries(for lexiconKey: String, strongs: [String]) -> [LexiconEntry] {
+    private nonisolated static func computeEntries(
+        for lexiconKey: String,
+        strongs: [String],
+        entriesByNumber: [String: [LexiconEntry]]
+    ) -> [LexiconEntry] {
         var result: [LexiconEntry] = []
         var seenIds = Set<String>()
         // A lexicon reached through a mapping, as BDB, may have several
         // entries for one number; the rest have one.
         for num in strongs {
-            for entry in LexiconLookup.allEntries(for: num) where entry.lexiconKey == lexiconKey {
+            for entry in entriesByNumber[num] ?? [] where entry.lexiconKey == lexiconKey {
                 if seenIds.insert(entry.id).inserted {
                     result.append(entry)
                 }

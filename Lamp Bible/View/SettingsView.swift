@@ -20,6 +20,16 @@ struct SettingsView: View {
         return "\(version) (\(build))"
     }
 
+    /// How many modules and translations the library holds, for the sync
+    /// section. It fetches every row of both, so it runs off the main actor.
+    static func libraryModuleCount() async -> Int {
+        await Task.detached(priority: .userInitiated) {
+            let modules = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
+            let translations = (try? TranslationDatabase.shared.getAllTranslations().count) ?? 0
+            return modules + translations
+        }.value
+    }
+
     @Environment(\.dismiss) var dismiss
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
     private let settingsChanged = NotificationCenter.default.publisher(for: .userDatabaseDidChange)
@@ -354,9 +364,7 @@ struct SettingsView: View {
                                     try await syncCoordinator.syncAll()
                                     // A sync that went through means the server answers.
                                     iCloudAvailable = await syncCoordinator.isAvailable
-                                    let modules = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
-                                    let translations = (try? TranslationDatabase.shared.getAllTranslations().count) ?? 0
-                                    moduleCount = modules + translations
+                                    moduleCount = await SettingsView.libraryModuleCount()
                                 } catch {
                                     manualSyncError = error.localizedDescription
                                     showingManualSyncError = true
@@ -475,9 +483,7 @@ struct SettingsView: View {
                     webdavPassword = KeychainHelper.getWebDAVPassword() ?? ""
 
                     iCloudAvailable = await SyncCoordinator.shared.isAvailable
-                    let modules = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
-                    let translations = (try? TranslationDatabase.shared.getAllTranslations().count) ?? 0
-                    moduleCount = modules + translations
+                    moduleCount = await SettingsView.libraryModuleCount()
 
                     // Mark settings as loaded to enable onChange handling
                     hasLoadedSettings = true
@@ -987,9 +993,7 @@ struct SettingsView: View {
         syncBackend = current
         previousBackend = current
         iCloudAvailable = await SyncCoordinator.shared.isAvailable
-        let modules = (try? ModuleDatabase.shared.getAllModules().count) ?? 0
-        let translations = (try? TranslationDatabase.shared.getAllTranslations().count) ?? 0
-        moduleCount = modules + translations
+        moduleCount = await SettingsView.libraryModuleCount()
         pendingBackendChange = nil
     }
 }

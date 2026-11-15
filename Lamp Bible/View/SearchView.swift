@@ -460,6 +460,7 @@ struct SearchView: View {
     @State private var availableModules: [SearchableModule] = []
     @State private var availableTags: [String] = []
     @State private var availableHighlightColors: [HighlightColor] = []
+    @State private var filterLoadGeneration = 0
 
     // Highlight color search
     @State private var filterHighlightColors: Set<String> = []  // For text search color filtering
@@ -914,9 +915,7 @@ struct SearchView: View {
                 SearchHistoryStore.migrateLegacy()
 
                 // Load available modules, tags, and colors for filters
-                availableModules = moduleSearch.getSearchableModules()
-                availableTags = moduleSearch.getAllDevotionalTags()
-                availableHighlightColors = moduleSearch.getAllHighlightColors()
+                loadFilterOptions()
 
                 // Override scope if specified (e.g., from lexicon Strong's search)
                 if let scope = initialSearchScope {
@@ -954,6 +953,29 @@ struct SearchView: View {
                     initialTranslationId: translationId
                 )
             }
+        }
+    }
+
+    /// The modules, tags and colours the filters offer: a dozen table reads,
+    /// and a pass over every highlight for its colour, so off the main actor.
+    /// The filters keep what they had until the new lists arrive, and a load
+    /// that a later one overtakes drops its result.
+    private func loadFilterOptions() {
+        filterLoadGeneration &+= 1
+        let generation = filterLoadGeneration
+        let moduleSearch = moduleSearch
+        Task {
+            let (modules, tags, colors) = await Task.detached(priority: .userInitiated) {
+                (
+                    moduleSearch.getSearchableModules(),
+                    moduleSearch.getAllDevotionalTags(),
+                    moduleSearch.getAllHighlightColors()
+                )
+            }.value
+            guard generation == filterLoadGeneration else { return }
+            availableModules = modules
+            availableTags = tags
+            availableHighlightColors = colors
         }
     }
 
@@ -2944,17 +2966,11 @@ struct DevotionalEntrySheet: View {
 
     private let scrollCoordinateSpaceName = "devotionalScroll"
 
-    private var entry: DevotionalEntry? {
-        try? ModuleDatabase.shared.read { db in
-            try DevotionalEntry.filter(Column("id") == entryId).fetchOne(db)
-        }
-    }
-
-    private var module: Module? {
-        try? ModuleDatabase.shared.read { db in
-            try Module.filter(Column("id") == moduleId).fetchOne(db)
-        }
-    }
+    /// Read once, off the main actor, rather than on every render: the
+    /// sheet renders again each time the match offset or scroll view lands.
+    @State private var entry: DevotionalEntry?
+    @State private var module: Module?
+    @State private var hasLoaded = false
 
     private var hasSearchTerms: Bool {
         guard let query = searchQuery, !query.isEmpty else { return false }
@@ -2964,7 +2980,10 @@ struct DevotionalEntrySheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let entry = entry {
+                if !hasLoaded {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let entry = entry {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             if let monthDay = entry.monthDay {
@@ -3050,6 +3069,23 @@ struct DevotionalEntrySheet: View {
                     ContentUnavailableView("Entry Not Found", systemImage: "doc.questionmark")
                 }
             }
+            .task(id: entryId) {
+                let (entryId, moduleId) = (entryId, moduleId)
+                let (loadedEntry, loadedModule) = await Task.detached(priority: .userInitiated) {
+                    (
+                        try? ModuleDatabase.shared.read { db in
+                            try DevotionalEntry.filter(Column("id") == entryId).fetchOne(db)
+                        },
+                        try? ModuleDatabase.shared.read { db in
+                            try Module.filter(Column("id") == moduleId).fetchOne(db)
+                        }
+                    )
+                }.value
+                guard !Task.isCancelled else { return }
+                entry = loadedEntry ?? nil
+                module = loadedModule ?? nil
+                hasLoaded = true
+            }
             .navigationTitle(module?.name ?? "Devotional")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -3073,17 +3109,11 @@ struct NoteEntrySheet: View {
 
     private let scrollCoordinateSpaceName = "noteScroll"
 
-    private var entry: NoteEntry? {
-        try? ModuleDatabase.shared.read { db in
-            try NoteEntry.filter(Column("id") == entryId).fetchOne(db)
-        }
-    }
-
-    private var module: Module? {
-        try? ModuleDatabase.shared.read { db in
-            try Module.filter(Column("id") == moduleId).fetchOne(db)
-        }
-    }
+    /// Read once, off the main actor, rather than on every render: the
+    /// sheet renders again each time the match offset or scroll view lands.
+    @State private var entry: NoteEntry?
+    @State private var module: Module?
+    @State private var hasLoaded = false
 
     private var verseReference: String? {
         guard let entry = entry else { return nil }
@@ -3103,7 +3133,10 @@ struct NoteEntrySheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let entry = entry {
+                if !hasLoaded {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let entry = entry {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             if let ref = verseReference {
@@ -3177,6 +3210,23 @@ struct NoteEntrySheet: View {
                     ContentUnavailableView("Entry Not Found", systemImage: "doc.questionmark")
                 }
             }
+            .task(id: entryId) {
+                let (entryId, moduleId) = (entryId, moduleId)
+                let (loadedEntry, loadedModule) = await Task.detached(priority: .userInitiated) {
+                    (
+                        try? ModuleDatabase.shared.read { db in
+                            try NoteEntry.filter(Column("id") == entryId).fetchOne(db)
+                        },
+                        try? ModuleDatabase.shared.read { db in
+                            try Module.filter(Column("id") == moduleId).fetchOne(db)
+                        }
+                    )
+                }.value
+                guard !Task.isCancelled else { return }
+                entry = loadedEntry ?? nil
+                module = loadedModule ?? nil
+                hasLoaded = true
+            }
             .navigationTitle(module?.name ?? "Note")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -3208,14 +3258,18 @@ struct CommentaryEntrySheet: View {
 
     /// The user's commentary, or a bundled one: the Treasury and the
     /// cross-references keep their units in the bundled database.
-    private var unit: CommentaryUnit? {
-        let fetch = { (db: Database) in try CommentaryUnit.filter(Column("id") == entryId).fetchOne(db) }
-        return (try? ModuleDatabase.shared.read(fetch)) ?? (try? BundledModuleDatabase.shared.read(fetch)) ?? nil
-    }
+    /// Read once, off the main actor, rather than on every render.
+    @State private var unit: CommentaryUnit?
+    @State private var module: Module?
+    @State private var hasLoaded = false
 
-    private var module: Module? {
-        let fetch = { (db: Database) in try Module.filter(Column("id") == moduleId).fetchOne(db) }
-        return (try? ModuleDatabase.shared.read(fetch)) ?? (try? BundledModuleDatabase.shared.read(fetch)) ?? nil
+    private nonisolated static func read(entryId: String, moduleId: String) -> (CommentaryUnit?, Module?) {
+        let fetchUnit = { (db: Database) in try CommentaryUnit.filter(Column("id") == entryId).fetchOne(db) }
+        let fetchModule = { (db: Database) in try Module.filter(Column("id") == moduleId).fetchOne(db) }
+        return (
+            (try? ModuleDatabase.shared.read(fetchUnit)) ?? (try? BundledModuleDatabase.shared.read(fetchUnit)) ?? nil,
+            (try? ModuleDatabase.shared.read(fetchModule)) ?? (try? BundledModuleDatabase.shared.read(fetchModule)) ?? nil
+        )
     }
 
     private var verseReference: String? {
@@ -3255,7 +3309,10 @@ struct CommentaryEntrySheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let unit = unit {
+                if !hasLoaded {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let unit = unit {
                     ScrollViewReader { proxy in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 16) {
@@ -3351,6 +3408,16 @@ struct CommentaryEntrySheet: View {
                 } else {
                     ContentUnavailableView("Entry Not Found", systemImage: "doc.questionmark")
                 }
+            }
+            .task(id: entryId) {
+                let (entryId, moduleId) = (entryId, moduleId)
+                let (loadedUnit, loadedModule) = await Task.detached(priority: .userInitiated) {
+                    Self.read(entryId: entryId, moduleId: moduleId)
+                }.value
+                guard !Task.isCancelled else { return }
+                unit = loadedUnit
+                module = loadedModule
+                hasLoaded = true
             }
             .navigationTitle(module?.name ?? "Commentary")
             .navigationBarTitleDisplayMode(.inline)
@@ -3782,16 +3849,17 @@ private struct HighlightedVerseContent: View {
 
     @MainActor
     private func loadVerseAndHighlights() async {
-        // Get the highlight set to find the translation
-        guard let set = try? ModuleDatabase.shared.getHighlightSet(id: highlightSetId) else { return }
-
-        // Load verse text
-        if let verse = try? TranslationDatabase.shared.getVerse(translationId: set.translationId, ref: verseId) {
-            verseText = verse.text
-        }
-
-        // Load highlights for this verse
-        highlights = (try? ModuleDatabase.shared.getHighlights(setId: highlightSetId, ref: verseId)) ?? []
+        let (highlightSetId, verseId) = (highlightSetId, verseId)
+        let loaded = await Task.detached(priority: .userInitiated) { () -> (String?, [HighlightEntry])? in
+            // Get the highlight set to find the translation
+            guard let set = try? ModuleDatabase.shared.getHighlightSet(id: highlightSetId) else { return nil }
+            let text = (try? TranslationDatabase.shared.getVerse(translationId: set.translationId, ref: verseId))?.text
+            let highlights = (try? ModuleDatabase.shared.getHighlights(setId: highlightSetId, ref: verseId)) ?? []
+            return (text, highlights)
+        }.value
+        guard !Task.isCancelled, let loaded else { return }
+        if let text = loaded.0 { verseText = text }
+        highlights = loaded.1
     }
 }
 
