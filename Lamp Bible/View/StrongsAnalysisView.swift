@@ -169,8 +169,6 @@ struct StrongsAnalysisView: View {
     @State private var septuagintBook: Int?
     @State private var isShowingSeptuagintMethod = false
     @State private var isShowingSeptuagintNarrowing = false
-    /// Every book the word stands in, rather than the commonest.
-    @State private var showsAllSeptuagintBooks = false
     /// Which English the verses read where a Septuagint in English is
     /// installed: that, or the reader's own Bible. Kept, as on the Mac.
     @AppStorage("strongs.analysis.septuagintEnglishIsDirect") private var readsSeptuagintInEnglish = true
@@ -202,8 +200,6 @@ struct StrongsAnalysisView: View {
 
     /// How many of the word's verses are listed before Show All.
     static let firstVerses = 10
-    /// How many of the Septuagint's books are barred before Show All.
-    static let septuagintBooksShown = 8
 
     private struct BookRangeChoice: Equatable {
         let range: ClosedRange<Int>?
@@ -1379,6 +1375,10 @@ struct StrongsAnalysisView: View {
             spreadMenus
             if let grouping = spreadGrouping.bars {
                 spreadBars(analysis, grouping: grouping)
+                // The card's key for the arrows and shades, as the
+                // Septuagint's bars have it, in place of a sentence.
+                StrongsExpectationLegend()
+                    .listRowSeparator(.hidden, edges: .top)
             } else {
                 chapterGrid(analysis)
             }
@@ -1426,10 +1426,9 @@ struct StrongsAnalysisView: View {
         guard spreadGrouping.usesMeasure else {
             return "A square for each chapter, darker where the word is commoner. Tap one to filter the verse list below."
         }
-        let share = activeMeasure == .occurrences ? " Beside each count, its share of them all." : ""
-        // Short sentences, each saying one thing: as one run of grey prose
-        // this was the paragraph the eye skipped.
-        return "↑ More or ↓ fewer than its length would lead you to expect, by more than chance.\(share) Tap one to filter the verse list below."
+        // The legend under the bars names the shades; this says, in short,
+        // what they are measured against, which a key can't.
+        return "Measured against what each part’s length would lead you to expect. Tap one to filter the verse list below."
     }
 
     /// The figure a bar is drawn to: a count, or a rate to two places.
@@ -2053,16 +2052,14 @@ struct StrongsAnalysisView: View {
         }
         let books = own.books.filter { $0.occurrenceCount > 0 }
         if !books.isEmpty {
-            rowCaption("Where it stands in the Septuagint")
-            // A common word stands in nearly every book, and thirty-odd bars
-            // were most of the section. The books it stands in most, in the
-            // canon's order, and the rest a tap away. A book chosen to narrow
-            // the lists is always among them.
-            let bars = LampStrongsSpread.bars(books, measure: activeMeasure)
-            let most = Set(bars.sorted { $0.occurrenceCount > $1.occurrenceCount }
-                .prefix(Self.septuagintBooksShown).map(\.id))
-            let isFolded = bars.count > Self.septuagintBooksShown + 2 && !showsAllSeptuagintBooks
-            ForEach(bars.filter { !isFolded || most.contains($0.id) || $0.id == septuagintBook }) { bar in
+            // Parallel with "Verses in each Testament" above, as the Mac has
+            // it: "Where it stands in the Septuagint" never said what the
+            // numbers were (owner, Nov 2026).
+            rowCaption("Verses in each book")
+            // Every book the word stands in. A list saying it hides some of
+            // itself read worse than a longer one: λόγος's 35 bars and all
+            // (owner, Nov 2026).
+            ForEach(LampStrongsSpread.bars(books, measure: activeMeasure)) { bar in
                 // Only where there are Hebrew words' verses to narrow.
                 barRow(
                     bar,
@@ -2072,14 +2069,6 @@ struct StrongsAnalysisView: View {
                 ) {
                     septuagintBook = septuagintBook == bar.id ? nil : bar.id
                 }
-            }
-            if bars.count > Self.septuagintBooksShown + 2 {
-                Button(showsAllSeptuagintBooks
-                    ? "Show the \(Self.septuagintBooksShown) Commonest Books"
-                    : "Show All \(bars.count) Books") {
-                    showsAllSeptuagintBooks.toggle()
-                }
-                .font(.subheadline)
             }
             if let book = septuagintBook {
                 Button("Showing \(books.first { $0.id == book }?.name ?? "One Book") Only · Show Every Book") {
@@ -2176,7 +2165,7 @@ struct StrongsAnalysisView: View {
             rowCaption(LampSeptuagintSection.title)
         }
         englishChoice
-        Toggle("\(LampSeptuagintSection.OriginalLanguage.title) under each verse", isOn: $showsSeptuagintGreek)
+        Toggle(LampSeptuagintSection.OriginalLanguage.title, isOn: $showsSeptuagintGreek)
             .font(.subheadline)
             // The accent, as the app's other switches are, not the system green.
             .tint(.accentColor)
