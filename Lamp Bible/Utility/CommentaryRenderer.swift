@@ -7,14 +7,12 @@
 
 import SwiftUI
 import UIKit
+import LampCore
 
 // MARK: - Custom Tappable Attributes
 
 /// Custom attribute key for indexed tappable items (avoids iOS URL resolution delay)
 private let CommentaryTappableIndexKey = NSAttributedString.Key("commentaryTappableIndex")
-/// Marks a Greek or Hebrew run, so the run can be isolated once the text is
-/// otherwise done; see `CommentaryRenderer.isolateScriptRuns(in:)`.
-private let CommentaryScriptRunKey = NSAttributedString.Key("commentaryScriptRun")
 
 /// Custom attribute key for direct tap action data (for non-indexed rendering)
 private let CommentaryTapActionKey = NSAttributedString.Key("commentaryTapAction")
@@ -264,13 +262,13 @@ struct CommentaryRenderer {
 
     // MARK: - UIKit Rendering (Robust)
 
-    /// `isolatesScriptRuns: false` leaves the Greek and Hebrew runs for the
-    /// caller to isolate, for a caller that still lays attributes on by the
-    /// text's own offsets; it then calls `isolateScriptRuns(in:)` last.
+    /// `holdsNumbersLeftToRight: false` leaves the marks of
+    /// `holdNumbersLeftToRight(in:)` to the caller, for a caller that still
+    /// lays attributes on by the text's own offsets; it then calls it last.
     static func renderUIKit(
         _ annotatedText: AnnotatedText,
         style: Style = defaultStyle,
-        isolatesScriptRuns: Bool = true
+        holdsNumbersLeftToRight: Bool = true
     ) -> NSAttributedString {
         let text = annotatedText.text
         let result = NSMutableAttributedString(string: text)
@@ -307,7 +305,6 @@ struct CommentaryRenderer {
                     }
 
                 case .greek:
-                    result.addAttribute(CommentaryScriptRunKey, value: true, range: range)
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
@@ -318,7 +315,6 @@ struct CommentaryRenderer {
                     }
 
                 case .hebrew:
-                    result.addAttribute(CommentaryScriptRunKey, value: true, range: range)
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
                     // Add tap action if strongs data is present
                     if let key = annotation.data?.strongs {
@@ -426,33 +422,21 @@ struct CommentaryRenderer {
             }
         }
 
-        if isolatesScriptRuns { isolateScriptRuns(in: result) }
+        if holdsNumbersLeftToRight { holdNumbersLeftToRight(in: result) }
         return result
     }
 
-    /// Sets each Greek or Hebrew run between a first-strong isolate and a pop
-    /// (U+2068 … U+2069), so the run neither reorders with nor drags in
-    /// what's beside it. Without it, a reference starting with a digit after
+    /// Keeps a number after Hebrew with the English after it, as the Mac
+    /// does: core's `LampBidiNumbers` puts a left-to-right mark (U+200E) in
+    /// front of it. Without one, a reference starting with a digit after
     /// Hebrew ("גֵּבִים 1Kgs 6:9") draws its "1" on the far side of the Hebrew,
-    /// since a number after a right-to-left word joins it.
+    /// since a number takes the direction of the letter before it.
     ///
-    /// Display only, and done last, since it moves every later offset: the
-    /// module's text and annotation offsets stay as they are, and attributes
-    /// already laid on travel with their characters.
-    static func isolateScriptRuns(in result: NSMutableAttributedString) {
-        var runs: [NSRange] = []
-        result.enumerateAttribute(
-            CommentaryScriptRunKey,
-            in: NSRange(location: 0, length: result.length)
-        ) { value, range, _ in
-            if value as? Bool == true, range.length > 0 { runs.append(range) }
-        }
-        for run in runs.reversed() {
-            let endAttributes = result.attributes(at: run.upperBound - 1, effectiveRange: nil)
-            result.insert(NSAttributedString(string: "\u{2069}", attributes: endAttributes), at: run.upperBound)
-            let startAttributes = result.attributes(at: run.location, effectiveRange: nil)
-            result.insert(NSAttributedString(string: "\u{2068}", attributes: startAttributes), at: run.location)
-        }
+    /// Display only, and done last, since each mark moves every later
+    /// offset: the module's text and annotation offsets stay as they are, and
+    /// attributes already laid on travel with their characters.
+    static func holdNumbersLeftToRight(in result: NSMutableAttributedString) {
+        LampBidiNumbers.holdLeftToRight(in: result)
     }
 
     // MARK: - UIKit Rendering with Tappable Items (for prev/next navigation)
@@ -533,7 +517,6 @@ struct CommentaryRenderer {
                     }
 
                 case .greek:
-                    result.addAttribute(CommentaryScriptRunKey, value: true, range: range)
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
@@ -550,7 +533,6 @@ struct CommentaryRenderer {
                     }
 
                 case .hebrew:
-                    result.addAttribute(CommentaryScriptRunKey, value: true, range: range)
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
                     // Add tappable item if strongs data is present
                     if let key = annotation.data?.strongs {
@@ -684,7 +666,7 @@ struct CommentaryRenderer {
             }
         }
 
-        isolateScriptRuns(in: result)
+        holdNumbersLeftToRight(in: result)
         return RenderResult(attributedString: result, tappableItems: tappableItems)
     }
 
@@ -950,7 +932,7 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
         if shouldReportMatchOffset, let callback = onFirstMatchOffset, !style.searchTerms.isEmpty {
             DispatchQueue.main.async {
                 textView.layoutIfNeeded()
-                // Searched in the text as drawn, which isolated script runs and
+                // Searched in the text as drawn, which left-to-right marks and
                 // footnote markers have moved off the module text's offsets.
                 if let matchRange = self.findFirstMatchRange(in: textView.attributedText?.string ?? annotatedText.text) {
                     // Calculate rect for the match
@@ -1134,7 +1116,7 @@ private struct AnnotatedUITextViewWithItemsRepresentable: UIViewRepresentable {
         if shouldReportMatchOffset, let callback = onFirstMatchOffset, !style.searchTerms.isEmpty {
             DispatchQueue.main.async {
                 textView.layoutIfNeeded()
-                // Searched in the text as drawn, which isolated script runs and
+                // Searched in the text as drawn, which left-to-right marks and
                 // footnote markers have moved off the module text's offsets.
                 if let matchRange = self.findFirstMatchRange(in: textView.attributedText?.string ?? annotatedText.text) {
                     if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),

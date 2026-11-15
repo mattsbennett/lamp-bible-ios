@@ -6693,22 +6693,19 @@ final class CommentaryEncodedSpanTests: XCTestCase {
             footnoteRefs: [["id": "1", "offset": 13]]
         )
         let expected = "see ὁ λόγος[1] in John 1:1"
-        // The UIKit renderers also isolate the Greek run (U+2068 … U+2069), so
-        // its direction can't pull in what is beside it.
-        let isolated = "see \u{2068}ὁ λόγος\u{2069}[1] in John 1:1"
 
         XCTAssertEqual(String(CommentaryRenderer.render(text).characters), expected)
         let withItems = CommentaryRenderer.renderUIKitWithItems(text)
-        XCTAssertEqual(withItems.attributedString.string, isolated)
+        XCTAssertEqual(withItems.attributedString.string, expected)
         XCTAssertEqual(withItems.tappableItems.map(\.displayText), ["John 1:1", "1"])
 
         let drawn = CommentaryRenderer.renderUIKit(text)
-        XCTAssertEqual(drawn.string, isolated)
+        XCTAssertEqual(drawn.string, expected)
         func isItalic(_ location: Int) -> Bool {
             (drawn.attribute(.font, at: location, effectiveRange: nil) as? UIFont)?
                 .fontDescriptor.symbolicTraits.contains(.traitItalic) ?? false
         }
-        let nsExpected = isolated as NSString
+        let nsExpected = expected as NSString
         XCTAssertFalse(isItalic(nsExpected.range(of: "see").location))
         XCTAssertTrue(isItalic(nsExpected.range(of: "ὁ").location))
         XCTAssertTrue(isItalic(nsExpected.range(of: "ς").location))
@@ -8840,10 +8837,10 @@ final class WritingCollectionRenameTests: XCTestCase {
     }
 }
 
-/// Hebrew or Greek beside a reference keeps its order: the run is isolated,
-/// so a reference starting with a digit ("1Kgs") isn't drawn with its "1" on
+/// A reference starting with a digit after Hebrew keeps its order: core's
+/// left-to-right mark goes in front of the "1Kgs", so the "1" isn't drawn on
 /// the far side of the Hebrew.
-final class CommentaryScriptIsolationTests: XCTestCase {
+final class CommentaryBidiNumberTests: XCTestCase {
     private let hebrew = "גֵּבִים"
 
     private func entry() -> AnnotatedText {
@@ -8860,34 +8857,34 @@ final class CommentaryScriptIsolationTests: XCTestCase {
         ])
     }
 
-    func testTheHebrewRunIsSetBetweenAnIsolateAndItsPop() {
-        let rendered = CommentaryRenderer.renderUIKit(entry()).string
-        XCTAssertEqual(rendered, "singular \u{2068}\(hebrew)\u{2069} 1Kgs 6:9 and he covered")
+    private var held: String { "singular \(hebrew) \u{200E}1Kgs 6:9 and he covered" }
+
+    func testTheReferenceAfterHebrewIsHeldLeftToRight() {
+        XCTAssertEqual(CommentaryRenderer.renderUIKit(entry()).string, held)
     }
 
-    func testTheIndexedRendererIsolatesTheRunToo() {
-        let rendered = CommentaryRenderer.renderUIKitWithItems(entry()).attributedString.string
-        XCTAssertEqual(rendered, "singular \u{2068}\(hebrew)\u{2069} 1Kgs 6:9 and he covered")
+    func testTheIndexedRendererHoldsItToo() {
+        XCTAssertEqual(CommentaryRenderer.renderUIKitWithItems(entry()).attributedString.string, held)
     }
 
-    /// Isolation comes last, so what was laid on by offset stays on its own
-    /// characters: the reference's colour still covers exactly "1Kgs 6:9".
-    func testAttributesStayOnTheirCharacters() {
+    /// The mark comes last and takes the digit's attributes, so it sits
+    /// inside the reference: its link colour covers the mark and "1Kgs 6:9".
+    func testTheMarkSitsInsideTheReference() {
         let style = CommentaryRenderer.defaultStyle
         let rendered = CommentaryRenderer.renderUIKit(entry(), style: style)
         let string = rendered.string as NSString
-        let refRange = string.range(of: "1Kgs 6:9")
+        let refRange = string.range(of: "\u{200E}1Kgs 6:9")
         var effective = NSRange()
         let colour = rendered.attribute(.foregroundColor, at: refRange.location, effectiveRange: &effective)
         XCTAssertEqual(colour as? UIColor, UIColor(style.scriptureColor))
         XCTAssertEqual(effective, refRange)
     }
 
-    func testACallerCanLeaveIsolationForLast() {
-        let plain = CommentaryRenderer.renderUIKit(entry(), isolatesScriptRuns: false)
+    func testACallerCanLeaveTheMarksForLast() {
+        let plain = CommentaryRenderer.renderUIKit(entry(), holdsNumbersLeftToRight: false)
         XCTAssertEqual(plain.string, entry().text)
         let mutable = NSMutableAttributedString(attributedString: plain)
-        CommentaryRenderer.isolateScriptRuns(in: mutable)
-        XCTAssertEqual(mutable.string, "singular \u{2068}\(hebrew)\u{2069} 1Kgs 6:9 and he covered")
+        CommentaryRenderer.holdNumbersLeftToRight(in: mutable)
+        XCTAssertEqual(mutable.string, held)
     }
 }
