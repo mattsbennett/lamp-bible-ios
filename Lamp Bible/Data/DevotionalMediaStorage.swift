@@ -29,17 +29,18 @@ class DevotionalMediaStorage {
 
     /// Moves writings' media from format 3's folder, `Documents/DevotionalMedia`,
     /// to format 4's, `Documents/WritingMedia`, which the sync pass mirrors
-    /// path for path. The writing collection's folder takes its new name,
-    /// `writing`, unless the collection is still called `devotionals` here
-    /// (`ModuleDatabase.nameWritingCollectionAsFormatFourDoes` leaves it when
-    /// a module is already called `writing`).
+    /// path for path. The writing collection's folder, `devotionals`, takes
+    /// its new name, `writing`, only once the collection has
+    /// (`ModuleDatabase.writingCollectionHasItsNewName`): until then, and for
+    /// an installed module still called `devotionals`, it keeps its name.
     ///
-    /// Safe to run on every launch: it does nothing once the old folder is
-    /// gone, and finishes a move cut short. A file already at the new path
-    /// is kept, since a media file's name is its content's. Never throws:
-    /// it runs where a throw would cost the database.
+    /// Safe to run on every launch and before each sync: it does nothing once
+    /// there is nothing left to move, and finishes a move cut short. Where a
+    /// file is at both paths, the same bytes are one file, and of two that
+    /// differ the one saved later is kept. Never throws: it runs where a throw
+    /// would cost the database.
     static func moveFormatThreeWritingMedia(
-        collectionKeepsItsOldName: Bool,
+        renamingTheCollectionsFolder: Bool,
         documents: URL? = nil,
         fileManager: FileManager = .default
     ) {
@@ -49,7 +50,7 @@ class DevotionalMediaStorage {
         // Moved on a launch when the collection could not yet take its new
         // name, under its old one: renamed now it has.
         let keptName = new.appendingPathComponent(LampSyncFolderLayout.FormatThree.writingCollectionID, isDirectory: true)
-        if !collectionKeepsItsOldName, fileManager.fileExists(atPath: keptName.path) {
+        if renamingTheCollectionsFolder, fileManager.fileExists(atPath: keptName.path) {
             merge(
                 keptName, into: new.appendingPathComponent(LampSyncLocalDeletion.writingCollectionID),
                 fileManager: fileManager
@@ -60,7 +61,7 @@ class DevotionalMediaStorage {
         else { return }
         for module in modules {
             var name = module.lastPathComponent
-            if name == LampSyncFolderLayout.FormatThree.writingCollectionID, !collectionKeepsItsOldName {
+            if name == LampSyncFolderLayout.FormatThree.writingCollectionID, renamingTheCollectionsFolder {
                 name = LampSyncLocalDeletion.writingCollectionID
             }
             merge(module, into: new.appendingPathComponent(name), fileManager: fileManager)
@@ -85,7 +86,18 @@ class DevotionalMediaStorage {
             }
             removeIfEmpty(source, fileManager: fileManager)
         } else if !sourceIsDirectory.boolValue, !isDirectory.boolValue {
-            // The same name is the same file: the copy there already is it.
+            // A file at both: the same bytes are one file. Otherwise one was
+            // saved again under the same name, and the later is kept.
+            if !fileManager.contentsEqual(atPath: source.path, andPath: destination.path) {
+                func saved(_ url: URL) -> Date {
+                    (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                }
+                if saved(source) > saved(destination) {
+                    guard (try? fileManager.removeItem(at: destination)) != nil else { return }
+                    try? fileManager.moveItem(at: source, to: destination)
+                    return
+                }
+            }
             try? fileManager.removeItem(at: source)
         }
     }

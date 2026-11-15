@@ -8659,6 +8659,24 @@ final class WritingCollectionRenameTests: XCTestCase {
         XCTAssertEqual(try queue.read {
             try String.fetchAll($0, sql: "SELECT module_id FROM devotional_entries WHERE id LIKE 'w%' ORDER BY id")
         }, ["writing", "writing"])
+        XCTAssertTrue(try queue.read { try ModuleDatabase.syncsFormatFourWriting(in: $0) })
+    }
+
+    /// A phone that never made a writing of its own, with a book called
+    /// `writing`, would take the server's collection into that book: it does
+    /// not sync until the book goes.
+    func testAModuleCalledWritingThatIsNotTheCollectionStopsSync() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE modules (id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL,
+                    file_path TEXT NOT NULL, is_editable INTEGER NOT NULL DEFAULT 0);
+                INSERT INTO modules VALUES ('writing', 'book', 'Writing', 'writing.lamp', 0);
+                """)
+        }
+        XCTAssertFalse(try queue.read { try ModuleDatabase.syncsFormatFourWriting(in: $0) })
+        try queue.write { try $0.execute(sql: "DELETE FROM modules") }
+        XCTAssertTrue(try queue.read { try ModuleDatabase.syncsFormatFourWriting(in: $0) })
     }
 
     /// A module called `devotionals` that is not this device's writing, an
@@ -8733,20 +8751,28 @@ final class WritingCollectionRenameTests: XCTestCase {
         // Already moved by a launch cut short.
         try put("WritingMedia/writing/w1/c.jpg", "c")
         try put("DevotionalMedia/devotionals/w1/c.jpg", "c")
+        // Saved again under the same name after the first copy was made.
+        try put("WritingMedia/writing/w1/d.jpg", "d")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -3_600)],
+            ofItemAtPath: documents.appendingPathComponent("WritingMedia/writing/w1/d.jpg").path
+        )
+        try put("DevotionalMedia/devotionals/w1/d.jpg", "d, saved again")
         try put("NoteMedia/notes/43011035/n.png", "n")
 
-        DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: false, documents: documents)
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(renamingTheCollectionsFolder: true, documents: documents)
 
         func text(_ path: String) -> String? {
             (try? Data(contentsOf: documents.appendingPathComponent(path))).map { String(decoding: $0, as: UTF8.self) }
         }
         XCTAssertEqual(text("WritingMedia/writing/w1/a.jpg"), "a")
         XCTAssertEqual(text("WritingMedia/writing/w1/c.jpg"), "c")
+        XCTAssertEqual(text("WritingMedia/writing/w1/d.jpg"), "d, saved again")
         XCTAssertEqual(text("WritingMedia/sermons/s1/b.jpg"), "b")
         XCTAssertEqual(text("NoteMedia/notes/43011035/n.png"), "n")
         XCTAssertFalse(FileManager.default.fileExists(atPath: documents.appendingPathComponent("DevotionalMedia").path))
         // Again, nothing to do.
-        DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: false, documents: documents)
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(renamingTheCollectionsFolder: true, documents: documents)
         XCTAssertEqual(text("WritingMedia/writing/w1/a.jpg"), "a")
     }
 
@@ -8758,14 +8784,14 @@ final class WritingCollectionRenameTests: XCTestCase {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("a".utf8).write(to: url)
 
-        DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: true, documents: documents)
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(renamingTheCollectionsFolder: false, documents: documents)
 
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: documents.appendingPathComponent("WritingMedia/devotionals/w1/a.jpg").path
         ))
 
         // Renamed on a later launch: its media follows.
-        DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: false, documents: documents)
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(renamingTheCollectionsFolder: true, documents: documents)
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: documents.appendingPathComponent("WritingMedia/writing/w1/a.jpg").path
         ))

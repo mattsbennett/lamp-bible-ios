@@ -62,9 +62,9 @@ enum LibrarySyncError: LocalizedError, Equatable {
     /// A picture that arrived with nowhere here core lets it be kept, such
     /// as through a link: never recorded as taken, so it is tried again.
     case mediaNotKept(String)
-    /// The writing collection is still called `devotionals` here, because
-    /// another module is already called `writing`, the collection's name on
-    /// the server since bundle format 4.
+    /// Another module here is called `writing`, the writing collection's name
+    /// on the server since bundle format 4: so the collection cannot take
+    /// it, or what arrives as the collection would be taken into that module.
     case writingCollectionNotRenamed
 
     var errorDescription: String? {
@@ -175,6 +175,9 @@ struct LibrarySyncPass {
         guard database.nameWritingCollectionIfItCan() else {
             throw LibrarySyncError.writingCollectionNotRenamed
         }
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(
+            renamingTheCollectionsFolder: database.writingCollectionHasItsNewName()
+        )
         // Whether the library has moved, asked first and cheaply: while the
         // archive is still there, at the revision this device imported, one
         // HEAD says so without the library being downloaded to learn it. A
@@ -671,6 +674,21 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     private func installModule(_ path: String, from url: URL, merging: Bool) async throws -> String? {
         guard let type = LibrarySyncPass.moduleType(of: path),
               let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
+        // This device keeps one module per ID, whatever its kind. A module
+        // named for a collection anywhere but that collection's path, a book
+        // called `writing` say, or one whose ID another kind already holds
+        // here, would be taken into that module and its rows replaced. Kept
+        // off this device instead, and taken as here so it isn't fetched on
+        // every pass.
+        let collectionIDs = [LampSyncLocalDeletion.notesCollectionID, LampSyncLocalDeletion.writingCollectionID]
+        if collectionIDs.contains(id), LampSyncLocalDeletion.target(of: path) != .collection {
+            print("[LibrarySync] \(path) kept off this device: its ID is a collection's")
+            return nil
+        }
+        if let existing = try database.getModule(id: id), existing.type != type {
+            print("[LibrarySync] \(path) kept off this device: its ID is a \(existing.type.rawValue) module's here")
+            return nil
+        }
         let fileName = String(path.dropFirst(storage.directoryName(for: type).count + 1))
         let data = try Data(contentsOf: url, options: .alwaysMapped)
         let editable = [ModuleType.notes, .devotional, .highlights].contains(type)

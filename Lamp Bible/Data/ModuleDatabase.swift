@@ -73,8 +73,10 @@ class ModuleDatabase {
             // cost the database.
             // The collection's new name, again: v43 runs once, and a module
             // already called `writing` makes it wait until that is removed.
-            let renamed = nameWritingCollectionIfItCan()
-            DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: !renamed)
+            nameWritingCollectionIfItCan()
+            DevotionalMediaStorage.moveFormatThreeWritingMedia(
+                renamingTheCollectionsFolder: writingCollectionHasItsNewName()
+            )
         } catch {
             print("[ModuleDatabase] Failed to open database: \(error)")
             print("[ModuleDatabase] Attempting to delete and recreate database...")
@@ -1600,9 +1602,12 @@ class ModuleDatabase {
         // at `Writing/writing.lamp`, its media at `WritingMedia/`. The
         // collection takes that name here too, and what this device was yet
         // to tell the server about format 3's paths is carried to format 4's.
+        // Neither may throw: a migration that throws costs the database.
+        // The rename runs again at each launch and sync anyway.
         migrator.registerMigration("v43_writing_collection_named_writing") { db in
-            try ModuleDatabase.carryPendingSyncToFormatFourPaths(in: db)
-            try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: db)
+            // Each whole or not at all.
+            try? db.inSavepoint { try ModuleDatabase.carryPendingSyncToFormatFourPaths(in: db); return .commit }
+            try? db.inSavepoint { try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: db); return .commit }
             let selectedKey = "selectedDevotionalsModuleId"
             if UserDefaults.standard.string(forKey: selectedKey) == LampSyncFolderLayout.FormatThree.writingCollectionID {
                 UserDefaults.standard.set(LampSyncLocalDeletion.writingCollectionID, forKey: selectedKey)
@@ -1680,12 +1685,41 @@ class ModuleDatabase {
     }
 
     /// The rename, run where nothing may throw: at launch and before a sync.
-    /// True when the collection has its new name, or there is none to rename.
+    /// True when this device can sync format 4's writing: the collection has
+    /// its new name, or there is none, and no other module is called
+    /// `writing`, which this device, keeping one module per ID, would take
+    /// the server's collection into.
     @discardableResult
     func nameWritingCollectionIfItCan() -> Bool {
         (try? write { db in
-            try Self.nameWritingCollectionAsFormatFourDoes(in: db)
-            return try !Self.writingCollectionKeepsItsOldName(in: db)
+            try db.inSavepoint { try Self.nameWritingCollectionAsFormatFourDoes(in: db); return .commit }
+            return try Self.syncsFormatFourWriting(in: db)
+        }) ?? false
+    }
+
+    /// Whether the collection has its new name, or there is none, and
+    /// nothing else here is called `writing`.
+    static func syncsFormatFourWriting(in db: Database) throws -> Bool {
+        guard try !writingCollectionKeepsItsOldName(in: db) else { return false }
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT type, is_editable FROM modules WHERE id = ?",
+            arguments: [LampSyncLocalDeletion.writingCollectionID]
+        ) else { return true }
+        return (row["type"] as String?) == ModuleType.devotional.rawValue && (row["is_editable"] as Int?) == 1
+    }
+
+    /// Whether the writing collection here is called `writing`, and nothing
+    /// is still called `devotionals`: so the collection's media folder takes
+    /// that name too, and no other module's media is moved under it.
+    func writingCollectionHasItsNewName() -> Bool {
+        (try? read { db in
+            try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM modules WHERE id = ? AND type = ? AND is_editable = 1)
+                   AND NOT EXISTS(SELECT 1 FROM modules WHERE id = ?)
+                """, arguments: [
+                    LampSyncLocalDeletion.writingCollectionID, ModuleType.devotional.rawValue,
+                    LampSyncFolderLayout.FormatThree.writingCollectionID,
+                ]) == true
         }) ?? false
     }
 
