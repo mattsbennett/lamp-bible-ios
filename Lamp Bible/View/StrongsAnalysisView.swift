@@ -2143,7 +2143,7 @@ struct StrongsAnalysisView: View {
                 Text(LampSeptuagintSection.ownUseAbout)
                 if let contrast = LampSeptuagintSection.contrast(newTestament: septuagint.newTestament, septuagint: own) {
                     let rates = LampSeptuagintSection.contrastCaption(contrast)
-                    Text("The Testaments’ bars are counted apart and never added, each against the larger."
+                    Text("The New Testament and the Septuagint are different texts, so their verse counts are not added together. The bars only compare one count with the other."
                         + (rates.isEmpty ? "" : " " + rates))
                 }
                 Text("A book’s ↑ or ↓ says it uses the word more or less often than its size would suggest, by more than chance."
