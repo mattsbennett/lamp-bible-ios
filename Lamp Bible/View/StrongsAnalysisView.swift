@@ -2343,8 +2343,10 @@ struct StrongsAnalysisView: View {
                 }
             }
         } header: {
-            HStack {
-                Text(versesTitle(references.count))
+            // A heading as every other section's is: in the system's small
+            // grey header it read as a caption under the section above.
+            HStack(alignment: .firstTextBaseline) {
+                sectionHeader(versesTitle(references.count))
                 Spacer()
                 if filter != nil {
                     Button("Show All") {
