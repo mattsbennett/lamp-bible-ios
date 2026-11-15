@@ -6693,19 +6693,22 @@ final class CommentaryEncodedSpanTests: XCTestCase {
             footnoteRefs: [["id": "1", "offset": 13]]
         )
         let expected = "see ὁ λόγος[1] in John 1:1"
+        // The UIKit renderers also isolate the Greek run (U+2068 … U+2069), so
+        // its direction can't pull in what is beside it.
+        let isolated = "see \u{2068}ὁ λόγος\u{2069}[1] in John 1:1"
 
         XCTAssertEqual(String(CommentaryRenderer.render(text).characters), expected)
         let withItems = CommentaryRenderer.renderUIKitWithItems(text)
-        XCTAssertEqual(withItems.attributedString.string, expected)
+        XCTAssertEqual(withItems.attributedString.string, isolated)
         XCTAssertEqual(withItems.tappableItems.map(\.displayText), ["John 1:1", "1"])
 
         let drawn = CommentaryRenderer.renderUIKit(text)
-        XCTAssertEqual(drawn.string, expected)
+        XCTAssertEqual(drawn.string, isolated)
         func isItalic(_ location: Int) -> Bool {
             (drawn.attribute(.font, at: location, effectiveRange: nil) as? UIFont)?
                 .fontDescriptor.symbolicTraits.contains(.traitItalic) ?? false
         }
-        let nsExpected = expected as NSString
+        let nsExpected = isolated as NSString
         XCTAssertFalse(isItalic(nsExpected.range(of: "see").location))
         XCTAssertTrue(isItalic(nsExpected.range(of: "ὁ").location))
         XCTAssertTrue(isItalic(nsExpected.range(of: "ς").location))
