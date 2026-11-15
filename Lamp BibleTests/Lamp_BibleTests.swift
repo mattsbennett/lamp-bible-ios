@@ -6822,7 +6822,9 @@ final class BundledLexiconTests: XCTestCase {
         XCTAssertEqual(faith.lemma, "πίστις", "Strong's bare word, not Dodson's with its endings")
         XCTAssertEqual(faith.gloss, "faith", "TBESG's senses of one word read as their head")
         XCTAssertEqual(StrongsHeadword.lookUp("G86").gloss, "hell: Hades", "A single sense stays whole")
-        XCTAssertEqual(StrongsHeadword.lookUp("H160").gloss, "{affection (in a good or a bad sense)}")
+        // Strong's own definition, without the braces its Hebrew entries were
+        // written in: the bundle strips that markup when it is built.
+        XCTAssertEqual(StrongsHeadword.lookUp("H160").gloss, "affection (in a good or a bad sense)")
     }
 
     func testAUserWhoNeverChoseGetsStrongsThenTBESG() {

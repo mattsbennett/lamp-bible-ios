@@ -179,6 +179,9 @@ struct StrongsAnalysisView: View {
     /// kept. Only the drawing: the Greek is read either way, since the
     /// marks and the settling of doubts are worked out from it.
     @AppStorage("strongs.analysis.septuagintShowsGreek") private var showsSeptuagintGreek = false
+    /// The list's own collection view, for the Jump To menu, which a List
+    /// can't land on a section's heading by itself.
+    @State private var analysisList: UICollectionView?
     @AppStorage("strongs.analysis.spreadGrouping") private var spreadGrouping: LampStrongsSpreadGrouping = .books
     @AppStorage("strongs.analysis.measure") private var measure: LampStrongsSpreadMeasure = .occurrences
     @Environment(\.colorScheme) private var colorScheme
@@ -362,6 +365,11 @@ struct StrongsAnalysisView: View {
             List {
                 Section {
                     summary(analysis)
+                        // Set only when it changes, or each update would set it
+                        // again and draw again.
+                        .background(AnalysisListFinder { found in
+                            if analysisList !== found { analysisList = found }
+                        })
                 } footer: {
                     // The rate, outside the card: the card keeps to the figures
                     // and the chart, unless one of its figures is the rate.
@@ -378,35 +386,63 @@ struct StrongsAnalysisView: View {
                     .lampFootnote()
                 }
                 definitionSection
+                    .id(Jump.definition.anchor)
                 if analysis.isInKeysOwnLanguage {
                     ownLanguageSection(analysis) {
-                        // Short of the top, so the heading shows above the
-                        // first row rather than under the bar.
                         withAnimation { proxy.scrollTo(Self.compareAnchor, anchor: UnitPoint(x: 0.5, y: 0.15)) }
                     }
+                    .id(Jump.translatedAs.anchor)
                 } else if !analysis.renderings.isEmpty {
                     renderingsSection(analysis)
+                        .id(Jump.translatedAs.anchor)
                 }
                 // A Greek or Hebrew key always has its Forms, which say why
                 // where a translation's tags give none.
-                if !analysis.forms.isEmpty || "GH".contains(LampStrongsKey.normalized(analysis.key).first ?? " ") {
+                if showsForms(analysis) {
                     formsSection(analysis)
+                        .id(Jump.forms.anchor)
                 }
                 if !analysis.grammar.isEmpty {
                     grammarSection(analysis)
+                        .id(Jump.grammar.anchor)
                 }
                 spreadSection(analysis)
+                    .id(Jump.spread.anchor)
                 if !analysis.companions.isEmpty {
                     companionsSection(analysis)
+                        .id(Jump.foundWith.anchor)
                 }
+                // Its own anchor, which Translated As already scrolls to.
                 if !compared.isEmpty || isComparing {
                     compareSection(analysis)
                 }
                 verses(analysis)
+                    .id(Jump.verses.anchor)
                 // Under the word's own verses: the Septuagint is a second
                 // subject, read after the first.
                 if !septuagint.words.isEmpty || septuagint.own != nil {
                     septuagintSection
+                        .id(Jump.septuagint.anchor)
+                }
+            }
+            .toolbar {
+                // The page's sections, each a tap away: a single column
+                // carrying many subjects, kept on one page rather than split
+                // into tabs that would hide all but one. On the bottom bar,
+                // so the top keeps to Close and the books.
+                ToolbarItem(placement: .bottomBar) {
+                    Menu {
+                        ForEach(jumps(analysis), id: \.self) { jump in
+                            Button(jumpTitle(jump)) {
+                                go(to: jump, in: analysis, proxy: proxy)
+                            }
+                        }
+                    } label: {
+                        Label("Jump To", systemImage: "list.bullet")
+                    }
+                    // In the page's order, top to bottom, not reversed to put
+                    // the first nearest the button as a bottom menu would.
+                    .menuOrder(.fixed)
                 }
             }
         }
@@ -436,6 +472,91 @@ struct StrongsAnalysisView: View {
                 figures: $storedCardFigures,
                 chart: $storedCardChart
             )
+        }
+    }
+
+    /// A section the bottom bar's menu goes to.
+    enum Jump: CaseIterable {
+        case definition, translatedAs, forms, grammar, spread, foundWith, compare, verses, septuagint
+
+        var anchor: String { "jump.\(self)" }
+    }
+
+    /// Bring a section into view with its heading at the top.
+    ///
+    /// A List scrolls only to rows, and only to their top, middle or bottom,
+    /// so on its own it lands a section with the heading hidden under the
+    /// bar, and can't reach rows it hasn't built yet. So the menu asks the
+    /// list's collection view where the section's heading is and goes there,
+    /// then settles once the rows on the way have been laid out at their real
+    /// heights. Where that isn't to hand, the section's first row at the top.
+    private func go(to jump: Jump, in analysis: LampStrongsAnalysis, proxy: ScrollViewProxy) {
+        let shown = jumps(analysis)
+        // The card above them all is the list's first section.
+        guard let list = analysisList, let index = shown.firstIndex(of: jump),
+              list.numberOfSections == shown.count + 1
+        else {
+            proxy.scrollTo(jump == .compare ? Self.compareAnchor : jump.anchor, anchor: .top)
+            return
+        }
+        let section = index + 1
+        func offset() -> CGFloat? {
+            list.layoutIfNeeded()
+            let heading = list.layoutAttributesForSupplementaryElement(
+                ofKind: UICollectionView.elementKindSectionHeader,
+                at: IndexPath(item: 0, section: section)
+            )
+            let frame = heading.flatMap { $0.frame.height > 0 ? $0.frame : nil }
+                ?? list.layoutAttributesForItem(at: IndexPath(item: 0, section: section))?.frame
+            guard let frame else { return nil }
+            let top = -list.adjustedContentInset.top
+            let bottom = max(top, list.contentSize.height - list.bounds.height + list.adjustedContentInset.bottom)
+            return min(max(frame.minY - list.adjustedContentInset.top - 4, top), bottom)
+        }
+        guard let first = offset() else {
+            proxy.scrollTo(jump == .compare ? Self.compareAnchor : jump.anchor, anchor: .top)
+            return
+        }
+        list.setContentOffset(CGPoint(x: 0, y: first), animated: false)
+        DispatchQueue.main.async {
+            if let settled = offset(), abs(settled - list.contentOffset.y) > 1 {
+                list.setContentOffset(CGPoint(x: 0, y: settled), animated: false)
+            }
+        }
+    }
+
+    private func showsForms(_ analysis: LampStrongsAnalysis) -> Bool {
+        !analysis.forms.isEmpty || "GH".contains(LampStrongsKey.normalized(analysis.key).first ?? " ")
+    }
+
+    /// The sections this page has, in its order, by the same tests that
+    /// draw them, so the menu never offers one that isn't there.
+    private func jumps(_ analysis: LampStrongsAnalysis) -> [Jump] {
+        Jump.allCases.filter { jump in
+            switch jump {
+            case .definition, .spread, .verses: true
+            case .translatedAs: analysis.isInKeysOwnLanguage || !analysis.renderings.isEmpty
+            case .forms: showsForms(analysis)
+            case .grammar: !analysis.grammar.isEmpty
+            case .foundWith: !analysis.companions.isEmpty
+            case .compare: !compared.isEmpty || isComparing
+            case .septuagint: !septuagint.words.isEmpty || septuagint.own != nil
+            }
+        }
+    }
+
+    /// Each by the heading it scrolls to.
+    private func jumpTitle(_ jump: Jump) -> String {
+        switch jump {
+        case .definition: "Definition"
+        case .translatedAs: "Translated As"
+        case .forms: "Forms"
+        case .grammar: "Grammar"
+        case .spread: spreadTitle
+        case .foundWith: "Found With"
+        case .compare: "Compare"
+        case .verses: "Verses"
+        case .septuagint: septuagint.own == nil ? LampSeptuagintSection.title : LampSeptuagintSection.ownUseTitle
         }
     }
 
@@ -1764,11 +1885,9 @@ struct StrongsAnalysisView: View {
     /// being read opening the word's analysis in it: the way from one
     /// translation to another, from any of them.
     private func compareSection(_ analysis: LampStrongsAnalysis) -> some View {
-        Section {
-            ForEach(
-                LampStrongsAnalysisOrder.ordered([analysis] + compared, activeTranslationID: translationId),
-                id: \.translationID
-            ) { other in
+        let ordered = LampStrongsAnalysisOrder.ordered([analysis] + compared, activeTranslationID: translationId)
+        return Section {
+            ForEach(ordered, id: \.translationID) { other in
                 // One that tags none of the word has nothing to open.
                 if other.translationID == translationId || other.occurrenceCount == 0 {
                     compareRow(other, isRead: other.translationID == translationId)
@@ -1781,6 +1900,7 @@ struct StrongsAnalysisView: View {
                     )) {
                         compareRow(other, isRead: false)
                     }
+
                     .accessibilityHint("Analyses \(analysis.key) in \(name)")
                 }
             }
@@ -2743,6 +2863,26 @@ private struct StrongsShareRing: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+/// Finds the collection view a List is drawn in, from a row inside it.
+private struct AnalysisListFinder: UIViewRepresentable {
+    var onFound: (UICollectionView?) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async {
+            var current = uiView.superview
+            while let view = current, !(view is UICollectionView) { current = view.superview }
+            onFound(current as? UICollectionView)
         }
     }
 }
