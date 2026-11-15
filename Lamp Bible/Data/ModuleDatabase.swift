@@ -1698,14 +1698,40 @@ class ModuleDatabase {
     }
 
     /// Whether the collection has its new name, or there is none, and
-    /// nothing else here is called `writing`.
+    /// nothing else here is called `writing`, in any of the registries a
+    /// module's ID is kept in: the modules, books and quizzes, whose rows the
+    /// collection's import would replace (`deleteAllEntriesForModule`).
     static func syncsFormatFourWriting(in db: Database) throws -> Bool {
         guard try !writingCollectionKeepsItsOldName(in: db) else { return false }
+        let id = LampSyncLocalDeletion.writingCollectionID
+        for table in ["book_modules", "quiz_modules"] where try db.tableExists(table) {
+            if try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM \(table) WHERE id = ?)", arguments: [id]) == true {
+                return false
+            }
+        }
         guard let row = try Row.fetchOne(
-            db, sql: "SELECT type, is_editable FROM modules WHERE id = ?",
-            arguments: [LampSyncLocalDeletion.writingCollectionID]
+            db, sql: "SELECT type, is_editable FROM modules WHERE id = ?", arguments: [id]
         ) else { return true }
         return (row["type"] as String?) == ModuleType.devotional.rawValue && (row["is_editable"] as Int?) == 1
+    }
+
+    /// Whether a module of a kind other than `type` holds `id` here, in any
+    /// registry: the modules, or the books or quizzes, which are kept apart
+    /// from them but share their IDs.
+    func holdsAnotherKindOfModule(id: String, than type: ModuleType) -> Bool {
+        (try? read { db in
+            if let held = try String.fetchOne(db, sql: "SELECT type FROM modules WHERE id = ?", arguments: [id]),
+               held != type.rawValue {
+                return true
+            }
+            for (table, kind) in [("book_modules", ModuleType.book), ("quiz_modules", ModuleType.quiz)] where kind != type {
+                guard try db.tableExists(table) else { continue }
+                if try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM \(table) WHERE id = ?)", arguments: [id]) == true {
+                    return true
+                }
+            }
+            return false
+        }) ?? false
     }
 
     /// Whether the writing collection here is called `writing`, and nothing

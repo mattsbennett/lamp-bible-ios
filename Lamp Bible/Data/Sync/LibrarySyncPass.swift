@@ -568,7 +568,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         // so later passes neither fetch it again nor count it as missing.
         // Not one under a tombstone: no library carries out a deletion of a
         // book's picture, so held there it would be planned to go back up.
-        for member in manifest.members where keptOffForAnotherModule(member.path) {
+        for member in manifest.members where keptOffForAnotherModule(member.path) || keptOffForItsID(member.path) {
             gathered.heldWithoutAFile.insert(member.path)
         }
         let pictures = LampBookMediaFiles.outgoing(
@@ -674,19 +674,8 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     private func installModule(_ path: String, from url: URL, merging: Bool) async throws -> String? {
         guard let type = LibrarySyncPass.moduleType(of: path),
               let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
-        // This device keeps one module per ID, whatever its kind. A module
-        // named for a collection anywhere but that collection's path, a book
-        // called `writing` say, or one whose ID another kind already holds
-        // here, would be taken into that module and its rows replaced. Kept
-        // off this device instead, and taken as here so it isn't fetched on
-        // every pass.
-        let collectionIDs = [LampSyncLocalDeletion.notesCollectionID, LampSyncLocalDeletion.writingCollectionID]
-        if collectionIDs.contains(id), LampSyncLocalDeletion.target(of: path) != .collection {
-            print("[LibrarySync] \(path) kept off this device: its ID is a collection's")
-            return nil
-        }
-        if let existing = try database.getModule(id: id), existing.type != type {
-            print("[LibrarySync] \(path) kept off this device: its ID is a \(existing.type.rawValue) module's here")
+        if keptOffForItsID(path) {
+            print("[LibrarySync] \(path) kept off this device: its ID is a collection's or another module's here")
             return nil
         }
         let fileName = String(path.dropFirst(storage.directoryName(for: type).count + 1))
@@ -800,6 +789,21 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         default:
             return nil
         }
+    }
+
+    /// A module this device will not take in. It keeps one module per ID,
+    /// whatever its kind, so one named for a collection anywhere but that
+    /// collection's path, a book called `writing` say, or one whose ID
+    /// another kind already holds here, would be taken into that module and
+    /// its rows replaced. Kept off instead, and held without a file, so it is
+    /// neither fetched on every pass nor deleted here when deleted elsewhere,
+    /// since it was never this device's to delete.
+    private func keptOffForItsID(_ path: String) -> Bool {
+        guard let type = LibrarySyncPass.moduleType(of: path),
+              let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return false }
+        let collectionIDs = [LampSyncLocalDeletion.notesCollectionID, LampSyncLocalDeletion.writingCollectionID]
+        if collectionIDs.contains(id), LampSyncLocalDeletion.target(of: path) != .collection { return true }
+        return database.holdsAnotherKindOfModule(id: id, than: type)
     }
 
     /// A book's picture that core keeps out of the cache only because its

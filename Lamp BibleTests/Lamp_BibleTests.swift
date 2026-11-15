@@ -8677,6 +8677,16 @@ final class WritingCollectionRenameTests: XCTestCase {
         XCTAssertFalse(try queue.read { try ModuleDatabase.syncsFormatFourWriting(in: $0) })
         try queue.write { try $0.execute(sql: "DELETE FROM modules") }
         XCTAssertTrue(try queue.read { try ModuleDatabase.syncsFormatFourWriting(in: $0) })
+
+        // A quiz is kept apart from the modules, under an ID they share: the
+        // collection's import would clear it as surely.
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE quiz_modules (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, name TEXT NOT NULL);
+                INSERT INTO quiz_modules VALUES ('writing', 'plan', 'A Quiz');
+                """)
+        }
+        XCTAssertFalse(try queue.read { try ModuleDatabase.syncsFormatFourWriting(in: $0) })
     }
 
     /// A module called `devotionals` that is not this device's writing, an
