@@ -20,6 +20,13 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
     /// Told when the header scrolls up out of sight and back, so the host
     /// can put the title in its bar while the header is hidden.
     var onHeaderScrolledAway: ((Bool) -> Void)?
+    /// The media refs the editor's map was last built from, and the map: an
+    /// update comes with every keystroke, and building the map looks for
+    /// each file on disk. A map missing a file is built again next update,
+    /// so a file that arrives late still shows.
+    var mediaMapKey: String?
+    var mediaMap: [String: String] = [:]
+    var mediaMapComplete = false
 
     override init(frame: CGRect) {
         let config = WKWebViewConfiguration()
@@ -221,6 +228,9 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         let contentBinding = $markdownContent
         let initialContent = markdownContent
         let mediaMap = buildMediaMap()
+        container.mediaMapKey = mediaMapKey
+        container.mediaMap = mediaMap
+        container.mediaMapComplete = mediaMap.count == (mediaRefs?.count ?? 0)
         let initialEditMode = editMode
         let initialFontSize = fontSize
         let initialViewMode = viewMode
@@ -229,7 +239,8 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         coordinator.onReady = { [weak container] in
             DispatchQueue.main.async {
                 coordinator.setContent(initialContent)
-                coordinator.setMediaMap(mediaMap)
+                // The latest map: a page loaded again holds none of it.
+                coordinator.setMediaMap(container?.mediaMap ?? mediaMap)
                 if initialEditMode == .markdown {
                     coordinator.switchToMarkdown()
                 }
@@ -305,7 +316,15 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         }
 
         // Update media map when refs change
-        coordinator.setMediaMap(buildMediaMap())
+        let key = mediaMapKey
+        if key != container.mediaMapKey || !container.mediaMapComplete {
+            let map = buildMediaMap()
+            let changed = key != container.mediaMapKey || map != container.mediaMap
+            container.mediaMapKey = key
+            container.mediaMap = map
+            container.mediaMapComplete = map.count == (mediaRefs?.count ?? 0)
+            if changed { coordinator.setMediaMap(map) }
+        }
 
         // Update header
         container.setHeader(header, for: viewMode, shows: showsHeader)
@@ -316,6 +335,13 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
     }
 
     // MARK: - Helpers
+
+    /// What the media map is built from: the writing, its module, and each
+    /// ref's id and file.
+    private var mediaMapKey: String {
+        let refs = (mediaRefs ?? []).map { "\($0.id)=\($0.filename)" }.joined(separator: ",")
+        return "\(devotionalId ?? "")|\(moduleId ?? "")|\(refs)"
+    }
 
     private func buildMediaMap() -> [String: String] {
         guard let refs = mediaRefs,

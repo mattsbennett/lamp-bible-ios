@@ -1272,6 +1272,8 @@ private struct BookSectionHeader: View {
     /// head, then the number large in the text's face, the title centred
     /// beneath it, and a short rule before the text.
     var body: some View {
+        // Decoded from the section's JSON, so once a render.
+        let keyScriptures = section.keyScriptures
         VStack(spacing: style.fontSize * 0.5) {
             Text(bookTitle.uppercased())
                 .font(.footnote.weight(.semibold))
@@ -1300,9 +1302,9 @@ private struct BookSectionHeader: View {
                 .frame(width: 32, height: 2)
                 .padding(.top, style.fontSize * 0.3)
                 .accessibilityHidden(true)
-            if !section.keyScriptures.isEmpty {
+            if !keyScriptures.isEmpty {
                 WrappingHStack(alignment: .center, horizontalSpacing: 8, verticalSpacing: 8) {
-                    ForEach(section.keyScriptures, id: \.self) { reference in
+                    ForEach(keyScriptures, id: \.self) { reference in
                         if let url = Self.url(for: reference) {
                             Link(destination: url) {
                                 Label(

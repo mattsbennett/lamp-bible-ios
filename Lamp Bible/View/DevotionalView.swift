@@ -135,14 +135,6 @@ struct DevotionalView: View {
         // Load present mode font multiplier from settings
         let settings = UserDatabase.shared.getSettings()
         _presentFontMultiplier = State(initialValue: CGFloat(settings.devotionalPresentFontMultiplier))
-
-        // Debug: Log media when view opens
-        print("[DevotionalView] Opening devotional '\(devotional.meta.title)' with \(devotional.media?.count ?? 0) media items")
-        if let media = devotional.media {
-            for ref in media {
-                print("[DevotionalView]   - Media: \(ref.id) -> \(ref.filename)")
-            }
-        }
     }
 
 
@@ -1693,6 +1685,43 @@ struct DevotionalView: View {
 
 // MARK: - Link Editor Sheet
 
+/// A passage picker's book list and chapter and verse counts, each read once
+/// and kept for as long as the sheet holding it is up. Pickers ask for these
+/// with every render, and a render comes with every keystroke in the sheet.
+@MainActor
+final class PassageShapeMemo {
+    private var cachedBooks: [(id: Int, name: String)]?
+    private var chapterCounts: [String: Int] = [:]
+    private var verseCounts: [String: Int] = [:]
+
+    var books: [(id: Int, name: String)] {
+        if let cachedBooks { return cachedBooks }
+        let books = (try? BundledModuleDatabase.shared.getAllBooks())?.map { ($0.id, $0.name) } ?? []
+        cachedBooks = books
+        return books
+    }
+
+    func chapters(translationId: String, book: Int) -> [Int] {
+        let key = "\(translationId)|\(book)"
+        let count = chapterCounts[key] ?? {
+            let count = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: book)) ?? 50
+            chapterCounts[key] = count
+            return count
+        }()
+        return Array(1...max(1, count))
+    }
+
+    func verses(translationId: String, book: Int, chapter: Int) -> [Int] {
+        let key = "\(translationId)|\(book)|\(chapter)"
+        let count = verseCounts[key] ?? {
+            let count = (try? TranslationDatabase.shared.getVerseCount(translationId: translationId, book: book, chapter: chapter)) ?? 30
+            verseCounts[key] = count
+            return count
+        }()
+        return Array(1...max(1, count))
+    }
+}
+
 struct LinkEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -1723,22 +1752,21 @@ struct LinkEditorSheet: View {
     @State private var selectedStartVerse: Int = 1
     @State private var selectedEndVerse: Int? = nil
     @State private var useEndVerse: Bool = false
+    /// The pickers' books and counts, each read once while the sheet is up
+    /// rather than with every render (a keystroke in the URL field is one).
+    @State private var shape = PassageShapeMemo()
 
-    private var books: [(id: Int, name: String)] {
-        (try? BundledModuleDatabase.shared.getAllBooks())?.map { ($0.id, $0.name) } ?? []
-    }
+    private var books: [(id: Int, name: String)] { shape.books }
 
     private var chapters: [Int] {
         // Use a default translation to get chapter count
         let translationId = UserDatabase.shared.getSettings().readerTranslationId
-        let count = (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: selectedBook)) ?? 50
-        return Array(1...max(1, count))
+        return shape.chapters(translationId: translationId, book: selectedBook)
     }
 
     private var verses: [Int] {
         let translationId = UserDatabase.shared.getSettings().readerTranslationId
-        let count = (try? TranslationDatabase.shared.getVerseCount(translationId: translationId, book: selectedBook, chapter: selectedChapter)) ?? 30
-        return Array(1...max(1, count))
+        return shape.verses(translationId: translationId, book: selectedBook, chapter: selectedChapter)
     }
 
     var body: some View {
@@ -1991,19 +2019,21 @@ struct ScriptureQuoteSheet: View {
     // Preview
     @State private var previewText: String = ""
     @State private var isLoadingPreview: Bool = false
+    /// Counts the preview read each picker change; a later one drops an
+    /// earlier read that finishes after it.
+    @State private var previewGeneration: Int = 0
+    /// The pickers' books and counts, each read once while the sheet is up
+    /// rather than with every render.
+    @State private var shape = PassageShapeMemo()
 
-    private var books: [(id: Int, name: String)] {
-        (try? BundledModuleDatabase.shared.getAllBooks())?.map { ($0.id, $0.name) } ?? []
-    }
+    private var books: [(id: Int, name: String)] { shape.books }
 
     private func chapters(for book: Int) -> [Int] {
-        let count = (try? TranslationDatabase.shared.getChapterCount(translationId: selectedTranslationId, book: book)) ?? 50
-        return Array(1...max(1, count))
+        shape.chapters(translationId: selectedTranslationId, book: book)
     }
 
     private func verses(for book: Int, chapter: Int) -> [Int] {
-        let count = (try? TranslationDatabase.shared.getVerseCount(translationId: selectedTranslationId, book: book, chapter: chapter)) ?? 30
-        return Array(1...max(1, count))
+        shape.verses(translationId: selectedTranslationId, book: book, chapter: chapter)
     }
 
     private func bookName(for bookId: Int) -> String {
@@ -2194,11 +2224,13 @@ struct ScriptureQuoteSheet: View {
                     Button("Insert") {
                         onInsert(citation, previewText)
                     }
-                    .disabled(previewText.isEmpty || !isValidRange)
+                    // While a new passage loads, the text shown is the last
+                    // one's, which the citation no longer names.
+                    .disabled(previewText.isEmpty || !isValidRange || isLoadingPreview)
                 }
             }
-            .onAppear {
-                loadTranslations()
+            .task {
+                await loadTranslations()
             }
             .onChange(of: selectedTranslationId) { _, _ in
                 loadPreview()
@@ -2249,8 +2281,11 @@ struct ScriptureQuoteSheet: View {
         .presentationDetents([.large])
     }
 
-    private func loadTranslations() {
-        availableTranslations = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
+    /// Every translation in both databases, so read off the main actor.
+    private func loadTranslations() async {
+        availableTranslations = await Task.detached(priority: .userInitiated) {
+            (try? TranslationDatabase.shared.getAllTranslations()) ?? []
+        }.value
 
         // Use default translation from settings
         let settings = UserDatabase.shared.getSettings()
@@ -2263,41 +2298,46 @@ struct ScriptureQuoteSheet: View {
         loadPreview()
     }
 
+    /// Reads the passage off the main actor: a range can run to whole
+    /// chapters, and one picker change sets off several reads as the pickers
+    /// below it reset. Only the latest read's text is shown.
     private func loadPreview() {
+        previewGeneration &+= 1
+        let generation = previewGeneration
         guard !selectedTranslationId.isEmpty, isValidRange else {
             previewText = ""
+            isLoadingPreview = false
             return
         }
 
         isLoadingPreview = true
+        let translationId = selectedTranslationId
+        let startRef = self.startRef
+        let endRef = self.endRef
+        let includeVerseNumbers = self.includeVerseNumbers
 
         Task {
-            do {
-                let verses = try TranslationDatabase.shared.getVerseRange(
-                    translationId: selectedTranslationId,
-                    startRef: startRef,
-                    endRef: endRef
-                )
-
-                let text: String
-                if includeVerseNumbers {
-                    // Include verse numbers as bold: **1** text **2** text
-                    text = verses.map { "**\($0.verse)** \($0.text)" }.joined(separator: " ")
-                } else {
-                    // Join verse text without verse numbers
-                    text = verses.map { $0.text }.joined(separator: " ")
+            let text = await Task.detached(priority: .userInitiated) { () -> String in
+                do {
+                    let verses = try TranslationDatabase.shared.getVerseRange(
+                        translationId: translationId,
+                        startRef: startRef,
+                        endRef: endRef
+                    )
+                    if includeVerseNumbers {
+                        // Include verse numbers as bold: **1** text **2** text
+                        return verses.map { "**\($0.verse)** \($0.text)" }.joined(separator: " ")
+                    } else {
+                        // Join verse text without verse numbers
+                        return verses.map { $0.text }.joined(separator: " ")
+                    }
+                } catch {
+                    return "Error loading verses"
                 }
-
-                await MainActor.run {
-                    previewText = text
-                    isLoadingPreview = false
-                }
-            } catch {
-                await MainActor.run {
-                    previewText = "Error loading verses"
-                    isLoadingPreview = false
-                }
-            }
+            }.value
+            guard generation == previewGeneration else { return }
+            previewText = text
+            isLoadingPreview = false
         }
     }
 }

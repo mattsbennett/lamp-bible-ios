@@ -62,8 +62,34 @@ struct DevotionalPickerView: View {
         return module.name == "My Devotionals" ? "My Writing" : module.name
     }
 
-    // Filtered results
+    /// Counts each load's writings, so the filtered list is worked out
+    /// again only when they, the search or the filters change.
+    @State private var devotionalsVersion: Int = 0
+    @State private var filterMemo = FilteredWritingsMemo()
+
+    /// What the filtered list was last worked out from.
+    private var filterKey: String {
+        let range = filterOptions.dateRange.map { "\($0.lowerBound.timeIntervalSince1970)-\($0.upperBound.timeIntervalSince1970)" } ?? ""
+        return [
+            String(devotionalsVersion),
+            searchText,
+            filterOptions.tags.sorted().joined(separator: "\u{1F}"),
+            filterOptions.categories.sorted().joined(separator: "\u{1F}"),
+            range,
+        ].joined(separator: "\u{1E}")
+    }
+
+    // Filtered results, read several times a render: worked out once for
+    // each change of the writings, the search or the filters.
     private var filteredDevotionals: [Devotional] {
+        let key = filterKey
+        if let cached = filterMemo.result(for: key) { return cached }
+        let result = computeFilteredDevotionals()
+        filterMemo.store(result, for: key)
+        return result
+    }
+
+    private func computeFilteredDevotionals() -> [Devotional] {
         var result = devotionals
 
         // Apply search filter
@@ -685,6 +711,7 @@ struct DevotionalPickerView: View {
                 devotionalModules = loaded.modules
                 selectedModuleId = loaded.moduleId
                 devotionals = loaded.devotionals
+                devotionalsVersion &+= 1
                 availableTags = loaded.tags
                 availableCategories = loaded.categories
                 lastLoadedModuleId = loaded.moduleId
@@ -750,21 +777,49 @@ struct DevotionalListRow: View {
         self.showsDisclosure = showsDisclosure
     }
 
+    private static let dateParser: ISO8601DateFormatter = {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withFullDate]
+        parser.timeZone = TimeZone.autoupdatingCurrent
+        return parser
+    }()
+
     /// "2026-11-06" as a reader would write it.
     private var displayDate: String? {
         guard let raw = devotional.meta.date else { return nil }
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withFullDate]
-        parser.timeZone = TimeZone.current
-        guard let date = parser.date(from: raw) else { return raw }
+        guard let date = Self.dateParser.date(from: raw) else { return raw }
         return date.formatted(date: .abbreviated, time: .omitted)
     }
+
+    /// Each writing's excerpt, with the text it was taken from: a row draws
+    /// with every render of the list, and the excerpt takes a pass of
+    /// regular expressions over the text. The text is the writing's own
+    /// string, shared rather than copied, so comparing it is cheap.
+    private struct CachedExcerpt {
+        let markdown: String?
+        let lastModified: Int?
+        let excerpt: String?
+    }
+    @MainActor private static var excerpts: [String: CachedExcerpt] = [:]
 
     /// The opening of the text, so a row can be told from its neighbours
     /// by what it says and not only by its title.
     private var excerpt: String? {
+        let id = devotional.meta.id
+        // A writing kept only as blocks has no Markdown to compare, so its
+        // save time stands for it.
+        if let cached = Self.excerpts[id], cached.markdown == devotional.markdownContent,
+           devotional.markdownContent != nil || cached.lastModified == devotional.meta.lastModified {
+            return cached.excerpt
+        }
         let markdown = devotional.markdownContent ?? MarkdownDevotionalConverter.contentToMarkdown(devotional)
-        return Self.excerpt(fromMarkdown: markdown)
+        let excerpt = Self.excerpt(fromMarkdown: markdown)
+        Self.excerpts[id] = CachedExcerpt(
+            markdown: devotional.markdownContent,
+            lastModified: devotional.meta.lastModified,
+            excerpt: excerpt
+        )
+        return excerpt
     }
 
     /// Plain prose from the first paragraphs of some Markdown: headings,
@@ -1148,10 +1203,13 @@ struct DevotionalCategoryField: View {
                 category = customName.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        .onAppear {
-            offered = LampWritingCategory.offered(
-                forLibraryHolding: (try? DevotionalStorage.shared.getUsedCategories()) ?? []
-            )
+        .task {
+            // Every writing's category in the library, so read off the main
+            // actor; the suggestions show meanwhile.
+            let used = await Task.detached(priority: .userInitiated) {
+                (try? DevotionalStorage.shared.getUsedCategories()) ?? []
+            }.value
+            offered = LampWritingCategory.offered(forLibraryHolding: used)
         }
     }
 }
@@ -1172,4 +1230,21 @@ private struct DeferredDestination<Content: View>: View {
     }
 
     var body: some View { content() }
+}
+
+/// The writing list's filtered writings and what they were filtered from,
+/// kept across renders.
+@MainActor
+private final class FilteredWritingsMemo {
+    private var key: String?
+    private var value: [Devotional] = []
+
+    func result(for key: String) -> [Devotional]? {
+        self.key == key ? value : nil
+    }
+
+    func store(_ value: [Devotional], for key: String) {
+        self.key = key
+        self.value = value
+    }
 }
