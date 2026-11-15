@@ -189,7 +189,9 @@ struct MarkdownConverter {
             throw MarkdownError.moduleNotFound
         }
 
-        var markdown = "# \(module.name)\n\n"
+        // The heading is the name the library shows: the default module is
+        // stored as "My Devotionals" but shown as My Writing.
+        var markdown = "# \(DevotionalPickerView.displayName(of: module))\n\n"
 
         if let description = module.description, !description.isEmpty {
             markdown += "> \(description)\n\n"

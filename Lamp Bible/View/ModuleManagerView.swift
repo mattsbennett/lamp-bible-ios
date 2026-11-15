@@ -1501,7 +1501,9 @@ struct ModuleManagerView: View {
             }
 
             markdownExportData = markdown
-            markdownExportFilename = "\(module.name).md"
+            markdownExportFilename = module.type == .devotional
+                ? "\(DevotionalPickerView.displayName(of: module)).md"
+                : "\(module.name).md"
             moduleForMarkdownExport = module
             showingMarkdownExportPicker = true
         } catch {

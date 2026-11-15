@@ -41,7 +41,7 @@ iCloud Drive/Lamp Bible/
     │       └── ...
     └── Devotionals/
         ├── walking-by-faith.md
-        ├── All_Devotionals.md
+        ├── All_Writing.md
         └── media/
             └── ...
 ```
@@ -259,12 +259,12 @@ As we walk by faith today...
 | Image | `![caption](media/file.jpg)` | Embedded image |
 | Audio | `[caption](media/file.m4a)` | Embedded audio |
 
-### All Devotionals Export
+### All Writing Export
 
-When exporting all devotionals to `All_Devotionals.md`:
+When exporting all writing to `All_Writing.md` (versions before November 2026 named it `All_Devotionals.md`, headed `# My Devotionals`; those files import the same way):
 
 ```markdown
-# My Devotionals
+# My Writing
 
 ---
 
@@ -408,7 +408,7 @@ Example:
 
 **Export all devotionals:**
 - Go to Settings → Export → Devotionals → Export All
-- Creates individual files per devotional, plus `All_Devotionals.md`
+- Creates individual files per writing, plus `All_Writing.md`
 - All media consolidated in `Export/Devotionals/media/`
 
 ### Footnote ID Transformation

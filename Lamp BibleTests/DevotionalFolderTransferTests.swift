@@ -197,9 +197,9 @@ final class DevotionalFolderTransferTests: XCTestCase {
 
         let url = try manager.exportAllToSingleFile(devotionals, to: folder)
 
-        XCTAssertEqual(url.lastPathComponent, "All_Devotionals.md")
+        XCTAssertEqual(url.lastPathComponent, "All_Writing.md")
         let contents = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(contents.hasPrefix("# My Devotionals"))
+        XCTAssertTrue(contents.hasPrefix("# My Writing"))
         let first = try XCTUnwrap(contents.range(of: "First Light"))
         let second = try XCTUnwrap(contents.range(of: "Second Wind"))
         XCTAssertTrue(first.lowerBound < second.lowerBound)
@@ -212,7 +212,7 @@ final class DevotionalFolderTransferTests: XCTestCase {
             try manager.exportAllDevotionals([], moduleId: moduleId, to: folder)
         )
         XCTAssertFalse(FileManager.default.fileExists(
-            atPath: folder.appendingPathComponent("All_Devotionals.md").path
+            atPath: folder.appendingPathComponent("All_Writing.md").path
         ))
     }
 

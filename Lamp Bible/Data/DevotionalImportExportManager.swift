@@ -416,7 +416,7 @@ class DevotionalImportExportManager {
         }
 
         let markdown = Self.combinedMarkdown(for: devotionals)
-        let fileName = "All_Devotionals.md"
+        let fileName = "All_Writing.md"
         let fileURL = exportDir.appendingPathComponent(fileName)
 
         try markdown.write(to: fileURL, atomically: true, encoding: .utf8)
@@ -429,7 +429,7 @@ class DevotionalImportExportManager {
     /// someone reads outside the app.
     static func combinedMarkdown(for devotionals: [Devotional]) -> String {
         let entries = devotionals.map(MarkdownConverter.devotionalEntryMarkdown)
-        return "# My Devotionals\n\n---\n\n"
+        return "# My Writing\n\n---\n\n"
             + entries.joined(separator: "\n\n---\n\n") + "\n\n---\n"
     }
 
