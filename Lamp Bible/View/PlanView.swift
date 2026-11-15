@@ -259,7 +259,7 @@ struct PlanView: View {
                 DevotionalPickerView(
                     isFullScreen: false,
                     showNewProminent: true,
-                    initialModuleId: "devotionals"
+                    initialModuleId: WritingCollection.id
                 )
             }
 

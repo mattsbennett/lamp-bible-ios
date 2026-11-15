@@ -294,7 +294,7 @@ class DevotionalSharingManager {
     /// Import the devotionals held in a .lamp file (handles both JSON and bundle
     /// formats). A shared single devotional yields one entry; a collection yields all
     /// of them, so importing a collection never discards its contents.
-    func importFromFile(_ fileURL: URL, moduleId: String = "devotionals") throws -> [Devotional] {
+    func importFromFile(_ fileURL: URL, moduleId: String = WritingCollection.id) throws -> [Devotional] {
         let format = detectFileFormat(fileURL)
 
         switch format {
@@ -409,7 +409,7 @@ class DevotionalSharingManager {
     /// Import and save every devotional in a file into the given module, exporting to
     /// iCloud like any other devotional edit. Returns all entries that were saved.
     @discardableResult
-    func importAndSave(_ fileURL: URL, moduleId: String = "devotionals") async throws -> [Devotional] {
+    func importAndSave(_ fileURL: URL, moduleId: String = WritingCollection.id) async throws -> [Devotional] {
         let imported: [Devotional]
 
         if fileURL.pathExtension.lowercased() == "md" {

@@ -1335,7 +1335,7 @@ final class Lamp_BibleTests: XCTestCase {
         localOnly.backendSelectionWasExplicit = true
         let database = ModuleDatabase.shared
         let hadNotes = try database.getModule(id: "notes") != nil
-        let hadDevotionals = try database.getModule(id: "devotionals") != nil
+        let hadDevotionals = try database.getModule(id: WritingCollection.id) != nil
 
         var workError: Error?
         do {
@@ -1358,7 +1358,7 @@ final class Lamp_BibleTests: XCTestCase {
         try UserDatabase.shared.saveSyncSettings(previous)
         await coordinator.reloadSettings()
         if !hadNotes { try? database.deleteModule(id: "notes") }
-        if !hadDevotionals { try? database.deleteModule(id: "devotionals") }
+        if !hadDevotionals { try? database.deleteModule(id: WritingCollection.id) }
         if let workError { throw workError }
     }
 
@@ -2379,7 +2379,7 @@ final class EditableEntryComparisonTests: XCTestCase {
 
     private func writing(mediaJson: String?, footnotesJson: String?, body: String) throws -> DevotionalEntry {
         var row: [String: Any] = [
-            "id": "beta-writing", "module_id": "devotionals", "title": "Beta Writing",
+            "id": "beta-writing", "module_id": WritingCollection.id, "title": "Beta Writing",
             "content_json": body, "created": 1756000000, "last_modified": 1756000000
         ]
         if let mediaJson { row["media_json"] = mediaJson }
@@ -4100,7 +4100,7 @@ final class LibrarySyncPassTests: XCTestCase {
 
         _ = try await pass().run()
 
-        let published = await server.file("Devotionals/\(moduleId!).lamp")
+        let published = await server.file("Writing/\(moduleId!).lamp")
         XCTAssertNotNil(published)
         XCTAssertEqual(
             SyncCoordinator.shared.unsuppliedAttachments.map { ($0 as NSString).lastPathComponent },
@@ -4128,7 +4128,7 @@ final class LibrarySyncPassTests: XCTestCase {
 
         _ = try await pass().run()
 
-        let published = await server.file("Devotionals/\(moduleId!).lamp")
+        let published = await server.file("Writing/\(moduleId!).lamp")
         XCTAssertNotNil(published)
         XCTAssertEqual(SyncCoordinator.shared.unsuppliedAttachments, [])
     }
@@ -5081,7 +5081,7 @@ final class DevotionalOpenCategoryTests: XCTestCase {
         meta.categoryValue = category
         return DevotionalEntry(
             from: Devotional(meta: meta, content: .blocks([.paragraph("Body")])),
-            moduleId: "devotionals"
+            moduleId: WritingCollection.id
         )
     }
 
@@ -5093,7 +5093,7 @@ final class DevotionalOpenCategoryTests: XCTestCase {
 
         var edited = reread
         edited.meta.title = "Edited here"
-        XCTAssertEqual(DevotionalEntry(from: edited, moduleId: "devotionals").category, "lament")
+        XCTAssertEqual(DevotionalEntry(from: edited, moduleId: WritingCollection.id).category, "lament")
     }
 
     /// A kind keeps its writer's capitals, which could not be put back.
@@ -5110,7 +5110,7 @@ final class DevotionalOpenCategoryTests: XCTestCase {
 
         var changed = reread
         changed.meta.category = "study"
-        XCTAssertEqual(DevotionalEntry(from: changed, moduleId: "devotionals").category, "study")
+        XCTAssertEqual(DevotionalEntry(from: changed, moduleId: WritingCollection.id).category, "study")
     }
 
     /// Shown as exhortation everywhere, as the Mac has it, without an edit
@@ -5123,7 +5123,7 @@ final class DevotionalOpenCategoryTests: XCTestCase {
 
         var edited = reread
         edited.meta.title = "Edited here"
-        XCTAssertEqual(DevotionalEntry(from: edited, moduleId: "devotionals").category, "sermon")
+        XCTAssertEqual(DevotionalEntry(from: edited, moduleId: WritingCollection.id).category, "sermon")
     }
 
     /// Clearing the field in an editor leaves a writing with no kind.
@@ -7721,7 +7721,7 @@ final class NoteMediaTests: XCTestCase {
         }
         XCTAssertEqual(
             try ModuleSyncManager.shared.devotionalMediaItems(moduleId: writings, forExport: true).map(\.remotePath).sorted(),
-            ["DevotionalMedia/\(writings)/w/film.mov", "DevotionalMedia/\(writings)/w/pic.jpg"]
+            ["WritingMedia/\(writings)/w/film.mov", "WritingMedia/\(writings)/w/pic.jpg"]
         )
     }
 
@@ -8568,3 +8568,174 @@ final class HighlightSetFileTests: XCTestCase {
     }
 }
 
+
+/// Bundle format 4 calls the writing collection `writing`, keeps it at
+/// `Writing/writing.lamp` and its media under `WritingMedia/`. The phone's
+/// own copy takes the same names on update.
+final class WritingCollectionRenameTests: XCTestCase {
+    private func database() throws -> DatabaseQueue {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE modules (
+                    id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
+                    file_path TEXT NOT NULL, file_hash TEXT, last_synced INTEGER,
+                    is_editable INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE devotional_entries (
+                    id TEXT PRIMARY KEY,
+                    module_id TEXT NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL
+                );
+                CREATE TABLE devotional_publications (id TEXT PRIMARY KEY, module_id TEXT NOT NULL);
+                CREATE TABLE sync_pending_module_publications (module_id TEXT PRIMARY KEY, type TEXT NOT NULL);
+                CREATE TABLE sync_file_records (
+                    source TEXT NOT NULL, path TEXT NOT NULL, last_revision TEXT, uploaded_digest TEXT,
+                    updated_at INTEGER NOT NULL, pending_revision TEXT, PRIMARY KEY (source, path)
+                );
+                CREATE TABLE sync_pending_manifest_changes (
+                    source TEXT NOT NULL, path TEXT NOT NULL, change TEXT NOT NULL, revision TEXT,
+                    replacing TEXT, at INTEGER NOT NULL, PRIMARY KEY (source, path)
+                );
+                """)
+            try db.execute(sql: """
+                INSERT INTO modules VALUES ('devotionals', 'devotional', 'My Devotionals', 'mine', 'devotionals.lamp', 'abc', 99, 1);
+                INSERT INTO modules VALUES ('sermons', 'devotional', 'Sermons', NULL, 'sermons.lamp', 'def', 98, 0);
+                INSERT INTO devotional_entries VALUES ('w1', 'devotionals', 'Morning'), ('w2', 'devotionals', 'Evening'),
+                    ('s1', 'sermons', 'Advent');
+                INSERT INTO devotional_publications VALUES ('p1', 'devotionals');
+                INSERT INTO sync_pending_module_publications VALUES ('devotionals', 'devotional');
+                """)
+        }
+        return queue
+    }
+
+    func testTheCollectionAndEverythingNamingItTakeItsNewName() throws {
+        let queue = try database()
+        try queue.write { try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: $0) }
+        try queue.read { db in
+            let collection = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM modules WHERE id = 'writing'"))
+            XCTAssertEqual(collection["file_path"] as String?, "writing.lamp")
+            XCTAssertEqual(collection["name"] as String?, "My Devotionals")
+            XCTAssertEqual(collection["description"] as String?, "mine")
+            XCTAssertEqual(collection["is_editable"] as Int?, 1)
+            // Read from a file named for the old ID: compared again.
+            XCTAssertNil(collection["file_hash"] as String?)
+            XCTAssertNil(collection["last_synced"] as Int?)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM modules WHERE id = 'devotionals'"), 0)
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT module_id FROM devotional_entries ORDER BY id"),
+                ["sermons", "writing", "writing"]
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT module_id FROM devotional_publications"), "writing")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT module_id FROM sync_pending_module_publications"), "writing")
+            // Another writing module is left as it was.
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT file_hash FROM modules WHERE id = 'sermons'"), "def")
+        }
+        // Run again, it finds nothing to do.
+        try queue.write { try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: $0) }
+        XCTAssertEqual(try queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM devotional_entries") }, 3)
+    }
+
+    func testAModuleAlreadyCalledWritingLeavesTheCollectionAsItWas() throws {
+        let queue = try database()
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO modules VALUES ('writing', 'devotional', 'Writing', NULL, 'writing.lamp', NULL, NULL, 0)")
+            try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: db)
+        }
+        XCTAssertEqual(try queue.read {
+            try String.fetchAll($0, sql: "SELECT module_id FROM devotional_entries WHERE id LIKE 'w%' ORDER BY id")
+        }, ["devotionals", "devotionals"])
+    }
+
+    func testAFreshDatabaseHasNothingToRename() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: "CREATE TABLE modules (id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL, file_path TEXT NOT NULL)")
+            try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: db)
+            try ModuleDatabase.carryPendingSyncToFormatFourPaths(in: db)
+        }
+    }
+
+    func testPendingSyncAtFormatThreesPathsIsCarriedOrDropped() throws {
+        let queue = try database()
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO sync_file_records VALUES
+                    ('icloud', 'Devotionals/devotionals.lamp', 'r1', 'd1', 1, NULL),
+                    ('icloud', 'DevotionalMedia/devotionals/w1/a.jpg', 'r2', 'd2', 1, NULL),
+                    ('icloud', 'Translations/kjv.lamp', 'r3', 'd3', 1, NULL);
+                INSERT INTO sync_pending_manifest_changes VALUES
+                    ('icloud', 'Devotionals/sermons.lamp', 'delete', 'r4', NULL, 5),
+                    ('icloud', 'Devotionals/devotionals.lamp', 'write', 'r5', 'r1', 6),
+                    ('icloud', 'Notes/notes.lamp', 'write', 'r6', NULL, 7);
+                """)
+            try ModuleDatabase.carryPendingSyncToFormatFourPaths(in: db)
+        }
+        try queue.read { db in
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT path FROM sync_file_records"), ["Translations/kjv.lamp"])
+            let changes = try SyncPendingManifestChange.fetchAll(db).sorted { $0.path < $1.path }
+            XCTAssertEqual(changes.map(\.path), ["Notes/notes.lamp", "Writing/sermons.lamp"])
+            // The deletion is carried, of whatever copy the move made.
+            let deletion = try XCTUnwrap(changes.last)
+            XCTAssertEqual(deletion.change, .delete)
+            XCTAssertNil(deletion.revision)
+            XCTAssertEqual(deletion.at, 5)
+        }
+    }
+
+    func testWritingsMediaMovesToFormatFoursFolder() throws {
+        let documents = FileManager.default.temporaryDirectory
+            .appendingPathComponent("writing-media-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: documents) }
+        func put(_ path: String, _ text: String) throws {
+            let url = documents.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        try put("DevotionalMedia/devotionals/w1/a.jpg", "a")
+        try put("DevotionalMedia/sermons/s1/b.jpg", "b")
+        // Already moved by a launch cut short.
+        try put("WritingMedia/writing/w1/c.jpg", "c")
+        try put("DevotionalMedia/devotionals/w1/c.jpg", "c")
+        try put("NoteMedia/notes/43011035/n.png", "n")
+
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: false, documents: documents)
+
+        func text(_ path: String) -> String? {
+            (try? Data(contentsOf: documents.appendingPathComponent(path))).map { String(decoding: $0, as: UTF8.self) }
+        }
+        XCTAssertEqual(text("WritingMedia/writing/w1/a.jpg"), "a")
+        XCTAssertEqual(text("WritingMedia/writing/w1/c.jpg"), "c")
+        XCTAssertEqual(text("WritingMedia/sermons/s1/b.jpg"), "b")
+        XCTAssertEqual(text("NoteMedia/notes/43011035/n.png"), "n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: documents.appendingPathComponent("DevotionalMedia").path))
+        // Again, nothing to do.
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: false, documents: documents)
+        XCTAssertEqual(text("WritingMedia/writing/w1/a.jpg"), "a")
+    }
+
+    func testTheCollectionsMediaKeepsItsFolderWhileTheCollectionKeepsItsName() throws {
+        let documents = FileManager.default.temporaryDirectory
+            .appendingPathComponent("writing-media-kept-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let url = documents.appendingPathComponent("DevotionalMedia/devotionals/w1/a.jpg")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("a".utf8).write(to: url)
+
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: true, documents: documents)
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: documents.appendingPathComponent("WritingMedia/devotionals/w1/a.jpg").path
+        ))
+    }
+
+    @MainActor
+    func testTheServerFoldersAreFormatFours() {
+        let storage = ICloudModuleStorage()
+        XCTAssertEqual(storage.directoryName(for: .devotional), "Writing")
+        XCTAssertEqual(storage.directoryName(for: .notes), "Notes")
+        XCTAssertEqual(WritingCollection.id, "writing")
+        XCTAssertEqual(LibrarySyncPass.modulePath(forMedia: "WritingMedia/writing/w1/a.jpg"), "Writing/writing.lamp")
+    }
+}

@@ -13,7 +13,7 @@ struct DevotionalPickerView: View {
     // Configuration
     var isFullScreen: Bool = false
     var showNewProminent: Bool = false
-    var initialModuleId: String = "devotionals"
+    var initialModuleId: String = WritingCollection.id
     var onSelect: ((Devotional) -> Void)?
     var onBack: (() -> Void)?
 
@@ -697,7 +697,7 @@ struct DevotionalPickerView: View {
                     // If the selected module doesn't exist, fall back to first available
                     let moduleId = modules.contains(where: { $0.id == requestedModuleId })
                         ? requestedModuleId
-                        : (modules.first?.id ?? "devotionals")
+                        : (modules.first?.id ?? WritingCollection.id)
                     return LoadedWritings(
                         modules: modules,
                         moduleId: moduleId,

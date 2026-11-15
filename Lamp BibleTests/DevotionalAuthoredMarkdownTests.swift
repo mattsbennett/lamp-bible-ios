@@ -51,7 +51,7 @@ final class DevotionalAuthoredMarkdownTests: XCTestCase {
     func testTheStoredEntryKeepsTheBodyCharacterForCharacter() throws {
         let entry = DevotionalEntry(
             from: MarkdownDevotionalConverter.unwrappingAuthoredMarkdown(wrapped(body)),
-            moduleId: "devotionals"
+            moduleId: WritingCollection.id
         )
         XCTAssertEqual(entry.contentJson, body)
 
@@ -59,7 +59,7 @@ final class DevotionalAuthoredMarkdownTests: XCTestCase {
         // every sync that changes nothing does.
         let reread = try XCTUnwrap(entry.toDevotional())
         XCTAssertEqual(reread.markdownContent, body)
-        let republished = DevotionalEntry(from: reread, moduleId: "devotionals")
+        let republished = DevotionalEntry(from: reread, moduleId: WritingCollection.id)
         XCTAssertEqual(republished.contentJson, body)
         XCTAssertEqual(republished.lastModified, entry.lastModified)
     }
@@ -69,13 +69,13 @@ final class DevotionalAuthoredMarkdownTests: XCTestCase {
     /// carry the same change time, because nobody edited anything — which is
     /// the disagreement that cannot be settled.
     func testWithoutTheUnwrapTheStoredTextIsNoLongerWhatArrived() throws {
-        let asBlocks = DevotionalEntry(from: wrapped(body), moduleId: "devotionals")
+        let asBlocks = DevotionalEntry(from: wrapped(body), moduleId: WritingCollection.id)
         XCTAssertNotEqual(asBlocks.contentJson, body)
         XCTAssertTrue(asBlocks.contentJson.hasPrefix("["), "stored as a block tree")
 
         let unwrapped = DevotionalEntry(
             from: MarkdownDevotionalConverter.unwrappingAuthoredMarkdown(wrapped(body)),
-            moduleId: "devotionals"
+            moduleId: WritingCollection.id
         )
         XCTAssertEqual(unwrapped.contentJson, body)
         XCTAssertEqual(unwrapped.lastModified, asBlocks.lastModified)

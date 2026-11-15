@@ -51,7 +51,7 @@ struct ReaderNavigationToolbarView: View {
     // Tool module selection (shared with ToolPanelView via AppStorage)
     @AppStorage("selectedNotesModuleId") private var notesModuleId: String = "notes"
     @AppStorage("selectedCommentarySeries") private var selectedCommentarySeries: String = ""
-    @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = "devotionals"
+    @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = WritingCollection.id
 
     // Available modules (passed from parent)
     var notesModules: [Module] = []

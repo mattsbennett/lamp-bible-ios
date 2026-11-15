@@ -360,9 +360,9 @@ struct LibrarySyncPass {
     static func modulePath(forMedia path: String) -> String? {
         guard let id = LampSyncFolderLayout.remoteModuleID(of: path) else { return nil }
         switch LampSyncFolderLayout.kind(of: path) {
-        case .devotionalMedia: return "\(LampSyncContentKind.devotionals.rawValue)/\(id).lamp"
-        case .noteMedia: return "\(LampSyncContentKind.notes.rawValue)/\(id).lamp"
-        case .bookMedia: return "\(LampSyncContentKind.books.rawValue)/\(id).lamp"
+        case .devotionalMedia: return "\(LampSyncContentKind.devotionals.folder)/\(id).lamp"
+        case .noteMedia: return "\(LampSyncContentKind.notes.folder)/\(id).lamp"
+        case .bookMedia: return "\(LampSyncContentKind.books.folder)/\(id).lamp"
         default: return nil
         }
     }
@@ -892,7 +892,7 @@ extension LibrarySyncPass {
     /// library agrees the set has gone rather than offering it back.
     static func settleEmptiedHighlightModules(source: String) throws {
         for id in try ModuleDatabase.shared.removeHighlightModulesWithoutSets() {
-            let path = "\(LampSyncContentKind.highlights.rawValue)/\(id).lamp"
+            let path = "\(LampSyncContentKind.highlights.folder)/\(id).lamp"
             if try ModuleDatabase.shared.syncFileRecord(source: source, path: path) != nil {
                 try ModuleDatabase.shared.recordSyncLocalDeletion(source: source, path: path)
             }

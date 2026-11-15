@@ -2546,7 +2546,7 @@ extension Devotional {
                     DevotionalContentBlock(type: .paragraph, content: DevotionalAnnotatedText(text: "This is a sample devotional with some content."))
                 ])
             ),
-            moduleId: "devotionals"
+            moduleId: WritingCollection.id
         )
     }
 }

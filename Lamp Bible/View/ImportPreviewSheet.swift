@@ -11,7 +11,7 @@ import SwiftUI
 struct ImportPreviewSheet: View {
     let preview: LampFilePreview
     var devotionalModules: [Module] = []
-    var defaultModuleId: String = "devotionals"
+    var defaultModuleId: String = WritingCollection.id
     let onImport: (String) -> Void  // Takes selected module ID
     let onCancel: () -> Void
 

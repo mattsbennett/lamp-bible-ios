@@ -1347,7 +1347,7 @@ struct ToolPanelView: View {
     @State private var selectedDevotional: Devotional? = nil
     @State private var devotionalViewMode: DevotionalViewMode = .read
     @State private var devotionalsModules: [(id: String, name: String)] = []
-    @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = "devotionals"
+    @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = WritingCollection.id
 
     var bookName: String {
         canonicalBookName(book) ?? "Unknown"
@@ -2449,7 +2449,7 @@ struct ToolPanelView: View {
             // If no modules exist yet, the default will be created on first use
             // If current selection is not in list, select first available
             if !devotionalsModules.isEmpty && !devotionalsModules.contains(where: { $0.id == devotionalsModuleId }) {
-                devotionalsModuleId = devotionalsModules.first?.id ?? "devotionals"
+                devotionalsModuleId = devotionalsModules.first?.id ?? WritingCollection.id
             }
 
             // If still empty, try to create default module

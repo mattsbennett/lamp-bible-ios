@@ -1974,7 +1974,7 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Create Default Devotionals Module
 
-    /// Create the default "devotionals" module if it doesn't exist
+    /// Create the default WritingCollection.id module if it doesn't exist
     func ensureDefaultDevotionalsModule() async throws {
         // Coalesce the first pull and default creation. A failed creation or
         // export must leave the whole operation available for a later retry.
@@ -1983,11 +1983,11 @@ class ModuleSyncManager: ObservableObject {
             guard !devotionalModules.contains(where: { $0.isEditable }) else { return }
 
             let defaultModule = Module(
-                id: "devotionals",
+                id: WritingCollection.id,
                 type: .devotional,
                 name: "My Devotionals",
                 description: "Personal devotional writings",
-                filePath: "devotionals.lamp",
+                filePath: "\(WritingCollection.id).lamp",
                 isEditable: true,
                 createdAt: Int(Date().timeIntervalSince1970)
             )

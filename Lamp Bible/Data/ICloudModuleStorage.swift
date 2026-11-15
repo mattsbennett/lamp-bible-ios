@@ -126,7 +126,9 @@ class ICloudModuleStorage: ModuleStorage {
             "Translations",
             "Dictionaries",
             "Commentaries",
+            // Writing's folder by both names: before bundle format 4 and after.
             "Devotionals",
+            "Writing",
             "Notes",
             "Plans",
             "Highlights",

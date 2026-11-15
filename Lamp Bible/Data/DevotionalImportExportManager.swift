@@ -50,7 +50,7 @@ class DevotionalImportExportManager {
 
     /// Process all markdown files in the Import/Devotionals directory
     /// Returns list of imported devotionals, deletes files after successful import
-    func processImports(moduleId: String = "devotionals") async throws -> [ImportResult] {
+    func processImports(moduleId: String = WritingCollection.id) async throws -> [ImportResult] {
         guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
             return []
         }
@@ -243,7 +243,7 @@ class DevotionalImportExportManager {
     // MARK: - Export
 
     /// Export a single devotional to markdown (with media if present)
-    func exportDevotional(_ devotional: Devotional, moduleId: String = "devotionals") async throws -> URL {
+    func exportDevotional(_ devotional: Devotional, moduleId: String = WritingCollection.id) async throws -> URL {
         guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments else {
             throw ExportError.directoryNotAvailable
         }

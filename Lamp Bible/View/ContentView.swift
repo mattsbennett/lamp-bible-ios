@@ -164,7 +164,7 @@ struct ContentView: View {
 
     /// Module used when the recipient has only one place to put the devotional
     private var defaultDevotionalModuleId: String {
-        devotionalModules.first(where: { $0.isEditable })?.id ?? "devotionals"
+        devotionalModules.first(where: { $0.isEditable })?.id ?? WritingCollection.id
     }
 
     @MainActor

@@ -25,6 +25,67 @@ class DevotionalMediaStorage {
         self.scope = scope
     }
 
+    // MARK: - Bundle format 4
+
+    /// Moves writings' media from format 3's folder, `Documents/DevotionalMedia`,
+    /// to format 4's, `Documents/WritingMedia`, which the sync pass mirrors
+    /// path for path. The writing collection's folder takes its new name,
+    /// `writing`, unless the collection is still called `devotionals` here
+    /// (`ModuleDatabase.nameWritingCollectionAsFormatFourDoes` leaves it when
+    /// a module is already called `writing`).
+    ///
+    /// Safe to run on every launch: it does nothing once the old folder is
+    /// gone, and finishes a move cut short. A file already at the new path
+    /// is kept, since a media file's name is its content's. Never throws:
+    /// it runs where a throw would cost the database.
+    static func moveFormatThreeWritingMedia(
+        collectionKeepsItsOldName: Bool,
+        documents: URL? = nil,
+        fileManager: FileManager = .default
+    ) {
+        let docs = documents ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let old = docs.appendingPathComponent(LampSyncFolderLayout.FormatThree.writingMediaDirectory, isDirectory: true)
+        let new = docs.appendingPathComponent(LampSyncFolderLayout.devotionalMediaDirectory, isDirectory: true)
+        guard fileManager.fileExists(atPath: old.path),
+              let modules = try? fileManager.contentsOfDirectory(at: old, includingPropertiesForKeys: nil)
+        else { return }
+        for module in modules {
+            var name = module.lastPathComponent
+            if name == LampSyncFolderLayout.FormatThree.writingCollectionID, !collectionKeepsItsOldName {
+                name = LampSyncLocalDeletion.writingCollectionID
+            }
+            merge(module, into: new.appendingPathComponent(name), fileManager: fileManager)
+        }
+        removeIfEmpty(old, fileManager: fileManager)
+    }
+
+    private static func merge(_ source: URL, into destination: URL, fileManager: FileManager) {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: destination.path, isDirectory: &isDirectory) else {
+            try? fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try? fileManager.moveItem(at: source, to: destination)
+            return
+        }
+        var sourceIsDirectory: ObjCBool = false
+        fileManager.fileExists(atPath: source.path, isDirectory: &sourceIsDirectory)
+        if sourceIsDirectory.boolValue, isDirectory.boolValue {
+            for child in (try? fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)) ?? [] {
+                merge(child, into: destination.appendingPathComponent(child.lastPathComponent), fileManager: fileManager)
+            }
+            removeIfEmpty(source, fileManager: fileManager)
+        } else if !sourceIsDirectory.boolValue, !isDirectory.boolValue {
+            // The same name is the same file: the copy there already is it.
+            try? fileManager.removeItem(at: source)
+        }
+    }
+
+    private static func removeIfEmpty(_ folder: URL, fileManager: FileManager) {
+        let left = (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? []
+        if left.allSatisfy({ $0 == ".DS_Store" }) { try? fileManager.removeItem(at: folder) }
+    }
+
     // MARK: - Directory Management
 
     /// Get the base media directory in Documents: the folder the scope syncs

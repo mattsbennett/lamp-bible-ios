@@ -46,7 +46,7 @@ struct SplitReaderView: View {
     @AppStorage("toolFontSize") private var toolFontSize: Int = 16
     @AppStorage("selectedNotesModuleId") private var notesModuleId: String = "notes"
     @AppStorage("selectedCommentarySeries") private var selectedCommentarySeries: String = ""
-    @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = "devotionals"
+    @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = WritingCollection.id
     @State private var hasUserScrolled: Bool = false
     @State private var toolbarsHidden: Bool = false
     /// Shared by both panes so a scroll in either collapses both headers.

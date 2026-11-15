@@ -68,6 +68,16 @@ class ModuleDatabase {
 
             // Post-migration: Ensure media_json column exists (belt and suspenders)
             try ensureMediaJsonColumn()
+            // Writings' media to format 4's folder. Every launch, since it
+            // finishes a move cut short, and never throws: nothing here may
+            // cost the database.
+            let keepsOldName = (try? dbQueue.read { db in
+                try Bool.fetchOne(
+                    db, sql: "SELECT EXISTS(SELECT 1 FROM modules WHERE id = ?)",
+                    arguments: [LampSyncFolderLayout.FormatThree.writingCollectionID]
+                )
+            }) ?? nil
+            DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: keepsOldName ?? false)
         } catch {
             print("[ModuleDatabase] Failed to open database: \(error)")
             print("[ModuleDatabase] Attempting to delete and recreate database...")
@@ -1589,7 +1599,108 @@ class ModuleDatabase {
             }
         }
 
+        // Bundle format 4 calls the writing collection `writing` and keeps it
+        // at `Writing/writing.lamp`, its media at `WritingMedia/`. The
+        // collection takes that name here too, and what this device was yet
+        // to tell the server about format 3's paths is carried to format 4's.
+        migrator.registerMigration("v43_writing_collection_named_writing") { db in
+            try ModuleDatabase.carryPendingSyncToFormatFourPaths(in: db)
+            try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: db)
+            let selectedKey = "selectedDevotionalsModuleId"
+            if UserDefaults.standard.string(forKey: selectedKey) == LampSyncFolderLayout.FormatThree.writingCollectionID {
+                UserDefaults.standard.set(LampSyncLocalDeletion.writingCollectionID, forKey: selectedKey)
+            }
+        }
+
         return migrator
+    }
+
+    /// Renames the writing collection from format 3's `devotionals` to
+    /// `writing`, with every row that names it. The module row is copied
+    /// under the new ID, its writings and everything else that names it moved
+    /// to that, and the old row removed: the writings' foreign key would
+    /// refuse the ID changing under them. Its file hash and sync time are
+    /// cleared, since the file it was read from was named for the old ID.
+    ///
+    /// Nothing, when there is no collection under the old name, or a module
+    /// is already called `writing`: an installed writing module of that name
+    /// also stops the server's move, which says to remove it. Never throws
+    /// for a library it doesn't apply to, because a migration that throws
+    /// costs the whole database.
+    static func nameWritingCollectionAsFormatFourDoes(in db: Database) throws {
+        let old = LampSyncFolderLayout.FormatThree.writingCollectionID
+        let new = LampSyncLocalDeletion.writingCollectionID
+        let exists = "SELECT EXISTS(SELECT 1 FROM modules WHERE id = ?)"
+        guard try Bool.fetchOne(db, sql: exists, arguments: [old]) == true,
+              try Bool.fetchOne(db, sql: exists, arguments: [new]) == false
+        else { return }
+
+        let columns = try db.columns(in: "modules").map(\.name)
+        var selected: [String] = []
+        var arguments = StatementArguments()
+        for column in columns {
+            switch column {
+            case "id":
+                selected.append("?")
+                arguments += [new]
+            case "file_path":
+                selected.append("?")
+                arguments += ["\(new).lamp"]
+            case "file_hash", "last_synced":
+                selected.append("NULL")
+            default:
+                selected.append(column)
+            }
+        }
+        arguments += [old]
+        try db.execute(
+            sql: "INSERT INTO modules (\(columns.joined(separator: ", "))) SELECT \(selected.joined(separator: ", ")) FROM modules WHERE id = ?",
+            arguments: arguments
+        )
+        for table in [
+            "devotional_entries", "devotional_publications", "devotional_media",
+            "sync_pending_module_publications", "sync_pending_module_conflicts",
+        ] where try db.tableExists(table) {
+            try db.execute(sql: "UPDATE \(table) SET module_id = ? WHERE module_id = ?", arguments: [new, old])
+        }
+        try db.execute(sql: "DELETE FROM modules WHERE id = ?", arguments: [old])
+    }
+
+    /// This device's sync state at format 3's writing paths, carried to
+    /// format 4's.
+    ///
+    /// A record of what was installed or uploaded at an old path is the old
+    /// path's revision, which means nothing at the new one, so it goes: the
+    /// next pass compares by value, as for any file it has no record of. A
+    /// write still to reach a bundle goes with it, for the same reason; the
+    /// file it wrote is still here, and the pass publishes it. A deletion
+    /// still to reach a bundle is carried, without the revision of the copy
+    /// it deleted, which was at the old path: the tombstone then deletes
+    /// whatever copy the move made.
+    static func carryPendingSyncToFormatFourPaths(in db: Database) throws {
+        func isFormatThreeWriting(_ path: String) -> Bool {
+            guard let target = LampSyncFolderLayout.formatFourPath(ofFormatThree: path) else { return false }
+            return target != path
+        }
+        if try db.tableExists("sync_file_records") {
+            for (source, path) in try Row.fetchAll(db, sql: "SELECT source, path FROM sync_file_records")
+                .map({ (String($0["source"]) ?? "", String($0["path"]) ?? "") }) where isFormatThreeWriting(path) {
+                try db.execute(
+                    sql: "DELETE FROM sync_file_records WHERE source = ? AND path = ?", arguments: [source, path]
+                )
+            }
+        }
+        guard try db.tableExists("sync_pending_manifest_changes") else { return }
+        for change in try SyncPendingManifestChange.fetchAll(db) where isFormatThreeWriting(change.path) {
+            _ = try SyncPendingManifestChange.deleteOne(db, key: ["source": change.source, "path": change.path])
+            guard change.change == .delete,
+                  let target = LampSyncFolderLayout.formatFourPath(ofFormatThree: change.path) else { continue }
+            var carried = change
+            carried.path = target
+            carried.revision = nil
+            carried.replacing = nil
+            try carried.save(db)
+        }
     }
 
     /// Renames the reader's own notes from `notes:<verse>` to the Mac's

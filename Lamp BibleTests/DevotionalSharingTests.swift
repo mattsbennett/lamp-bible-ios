@@ -320,7 +320,7 @@ final class DevotionalSharingTests: XCTestCase {
         let devotional = try XCTUnwrap(manager.importFromFile(url).first)
 
         XCTAssertEqual(devotional.markdownContent, Self.authoredBody)
-        let entry = DevotionalEntry(from: devotional, moduleId: "devotionals")
+        let entry = DevotionalEntry(from: devotional, moduleId: WritingCollection.id)
         XCTAssertEqual(entry.contentJson, Self.authoredBody)
         XCTAssertEqual(try XCTUnwrap(entry.toDevotional()).markdownContent, Self.authoredBody)
     }
@@ -385,7 +385,7 @@ final class DevotionalSharingTests: XCTestCase {
     /// A writing with an attachment travels as a ZIP holding the writing and
     /// its media. This is the whole trip: out and back, with the image.
     func testASharedBundleComesBackWithItsWritingAndItsImage() throws {
-        let moduleId = "devotionals"
+        let moduleId = WritingCollection.id
         var devotional = makeDevotional(id: "bundle-source-0001")
         devotional.content = .blocks([.paragraph(Self.authoredBody)])
         let reference = DevotionalMediaReference(
@@ -423,7 +423,7 @@ final class DevotionalSharingTests: XCTestCase {
 
     /// Previewing a bundle must report it without unpacking it into the library.
     func testABundleCanBePreviewedBeforeImporting() throws {
-        let moduleId = "devotionals"
+        let moduleId = WritingCollection.id
         var devotional = makeDevotional(id: "bundle-preview-0001")
         let reference = DevotionalMediaReference(
             id: "A1", type: .image, filename: "A1.png", mimeType: "image/png"
@@ -448,7 +448,7 @@ final class DevotionalSharingTests: XCTestCase {
     /// The archive is a real ZIP, not merely one this app can read: other
     /// tools have to be able to open what someone shares.
     func testABundleIsAnArchiveOtherToolsCanRead() throws {
-        let moduleId = "devotionals"
+        let moduleId = WritingCollection.id
         var devotional = makeDevotional(id: "bundle-shape-0001")
         let reference = DevotionalMediaReference(
             id: "A1", type: .image, filename: "A1.png", mimeType: "image/png"
@@ -609,7 +609,7 @@ final class DevotionalSharingTests: XCTestCase {
             )
         ]
 
-        let exported = try track(manager.exportForSharing(devotional, moduleId: "devotionals"))
+        let exported = try track(manager.exportForSharing(devotional, moduleId: WritingCollection.id))
 
         XCTAssertEqual(manager.detectFileFormat(exported), .bundle)
     }

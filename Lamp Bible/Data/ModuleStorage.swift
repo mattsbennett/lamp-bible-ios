@@ -112,27 +112,28 @@ extension ModuleStorage {
 // MARK: - Module Storage Extensions
 
 extension ModuleStorage {
-    /// Directory name for each module type
+    /// The folder each module type syncs under: the per-file layout's,
+    /// which for writing is `Writing` since bundle format 4.
     func directoryName(for type: ModuleType) -> String {
         switch type {
         case .translation:
-            return LampSyncContentKind.translations.rawValue
+            return LampSyncContentKind.translations.folder
         case .dictionary:
-            return LampSyncContentKind.dictionaries.rawValue
+            return LampSyncContentKind.dictionaries.folder
         case .commentary:
-            return LampSyncContentKind.commentaries.rawValue
+            return LampSyncContentKind.commentaries.folder
         case .book:
-            return LampSyncContentKind.books.rawValue
+            return LampSyncContentKind.books.folder
         case .devotional:
-            return LampSyncContentKind.devotionals.rawValue
+            return LampSyncContentKind.devotionals.folder
         case .notes:
-            return LampSyncContentKind.notes.rawValue
+            return LampSyncContentKind.notes.folder
         case .plan:
-            return LampSyncContentKind.plans.rawValue
+            return LampSyncContentKind.plans.folder
         case .highlights:
-            return LampSyncContentKind.highlights.rawValue
+            return LampSyncContentKind.highlights.folder
         case .quiz:
-            return LampSyncContentKind.quizzes.rawValue
+            return LampSyncContentKind.quizzes.folder
         }
     }
 }

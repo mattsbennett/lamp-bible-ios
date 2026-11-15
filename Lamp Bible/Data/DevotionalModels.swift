@@ -10,6 +10,13 @@ import GRDB
 import LampCore
 import LampModuleKit
 
+/// The writing collection: the module every writing made here lives in.
+enum WritingCollection {
+    /// `writing` since bundle format 4, as core names it; `devotionals`
+    /// before (`ModuleDatabase.nameWritingCollectionAsFormatFourDoes`).
+    static let id = LampSyncLocalDeletion.writingCollectionID
+}
+
 // MARK: - Devotional Annotation Types
 
 enum DevotionalAnnotationType: String, Codable {
@@ -1100,7 +1107,7 @@ struct DevotionalPublication: Codable, Identifiable, FetchableRecord, Persistabl
         description: String? = nil,
         filterType: PublicationFilterType = .all,
         filterValues: [String] = [],
-        moduleId: String = "devotionals",
+        moduleId: String = WritingCollection.id,
         lastPublished: Date? = nil,
         subscriberCount: Int? = nil
     ) {
