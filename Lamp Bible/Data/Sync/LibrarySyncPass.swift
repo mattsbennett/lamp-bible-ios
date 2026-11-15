@@ -62,6 +62,10 @@ enum LibrarySyncError: LocalizedError, Equatable {
     /// A picture that arrived with nowhere here core lets it be kept, such
     /// as through a link: never recorded as taken, so it is tried again.
     case mediaNotKept(String)
+    /// The writing collection is still called `devotionals` here, because
+    /// another module is already called `writing`, the collection's name on
+    /// the server since bundle format 4.
+    case writingCollectionNotRenamed
 
     var errorDescription: String? {
         switch self {
@@ -74,6 +78,8 @@ enum LibrarySyncError: LocalizedError, Equatable {
             return "\(path) holds a whole collection, so it is kept here."
         case .mediaNotKept(let path):
             return "\(path) has nowhere on this device it can be kept."
+        case .writingCollectionNotRenamed:
+            return "Your writing couldn’t take its new name, “writing”, because another module on this device already has it. Remove the module called “writing”, then sync. Nothing was changed."
         }
     }
 }
@@ -163,6 +169,12 @@ struct LibrarySyncPass {
     private var modules: ModuleSyncManager { .shared }
 
     func run(knownArchiveRevision: String? = nil) async throws -> Outcome {
+        // The server calls the writing collection `writing`. Until it has that
+        // name here too, what arrives as `Writing/writing.lamp` would be taken
+        // into whatever module is called `writing`, so nothing syncs.
+        guard database.nameWritingCollectionIfItCan() else {
+            throw LibrarySyncError.writingCollectionNotRenamed
+        }
         // Whether the library has moved, asked first and cheaply: while the
         // archive is still there, at the revision this device imported, one
         // HEAD says so without the library being downloaded to learn it. A

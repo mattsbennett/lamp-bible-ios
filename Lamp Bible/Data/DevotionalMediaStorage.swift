@@ -46,6 +46,15 @@ class DevotionalMediaStorage {
         let docs = documents ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let old = docs.appendingPathComponent(LampSyncFolderLayout.FormatThree.writingMediaDirectory, isDirectory: true)
         let new = docs.appendingPathComponent(LampSyncFolderLayout.devotionalMediaDirectory, isDirectory: true)
+        // Moved on a launch when the collection could not yet take its new
+        // name, under its old one: renamed now it has.
+        let keptName = new.appendingPathComponent(LampSyncFolderLayout.FormatThree.writingCollectionID, isDirectory: true)
+        if !collectionKeepsItsOldName, fileManager.fileExists(atPath: keptName.path) {
+            merge(
+                keptName, into: new.appendingPathComponent(LampSyncLocalDeletion.writingCollectionID),
+                fileManager: fileManager
+            )
+        }
         guard fileManager.fileExists(atPath: old.path),
               let modules = try? fileManager.contentsOfDirectory(at: old, includingPropertiesForKeys: nil)
         else { return }

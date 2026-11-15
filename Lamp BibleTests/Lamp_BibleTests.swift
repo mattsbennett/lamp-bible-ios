@@ -8637,15 +8637,50 @@ final class WritingCollectionRenameTests: XCTestCase {
         XCTAssertEqual(try queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM devotional_entries") }, 3)
     }
 
-    func testAModuleAlreadyCalledWritingLeavesTheCollectionAsItWas() throws {
+    /// A module of any kind already called `writing` holds the collection's
+    /// new name, so the collection keeps its old one until that module goes,
+    /// and then takes it.
+    func testAModuleAlreadyCalledWritingMakesTheCollectionWait() throws {
         let queue = try database()
         try queue.write { db in
-            try db.execute(sql: "INSERT INTO modules VALUES ('writing', 'devotional', 'Writing', NULL, 'writing.lamp', NULL, NULL, 0)")
+            try db.execute(sql: "INSERT INTO modules VALUES ('writing', 'book', 'Writing', NULL, 'writing.lamp', NULL, NULL, 0)")
             try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: db)
         }
+        XCTAssertTrue(try queue.read { try ModuleDatabase.writingCollectionKeepsItsOldName(in: $0) })
         XCTAssertEqual(try queue.read {
             try String.fetchAll($0, sql: "SELECT module_id FROM devotional_entries WHERE id LIKE 'w%' ORDER BY id")
         }, ["devotionals", "devotionals"])
+
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM modules WHERE id = 'writing'")
+            try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: db)
+        }
+        XCTAssertFalse(try queue.read { try ModuleDatabase.writingCollectionKeepsItsOldName(in: $0) })
+        XCTAssertEqual(try queue.read {
+            try String.fetchAll($0, sql: "SELECT module_id FROM devotional_entries WHERE id LIKE 'w%' ORDER BY id")
+        }, ["writing", "writing"])
+    }
+
+    /// A module called `devotionals` that is not this device's writing, an
+    /// installed dictionary say, is not renamed: its rows are not the
+    /// writings', and the old row's removal would take them with it.
+    func testAModuleCalledDevotionalsOfAnotherKindIsLeftAlone() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE modules (id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL,
+                    file_path TEXT NOT NULL, is_editable INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE dictionary_entries (id TEXT PRIMARY KEY,
+                    module_id TEXT NOT NULL REFERENCES modules(id) ON DELETE CASCADE);
+                INSERT INTO modules VALUES ('devotionals', 'dictionary', 'A Dictionary', 'devotionals.lamp', 0);
+                INSERT INTO dictionary_entries VALUES ('e1', 'devotionals');
+                """)
+            try ModuleDatabase.nameWritingCollectionAsFormatFourDoes(in: db)
+        }
+        try queue.read { db in
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM modules"), ["devotionals"])
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM dictionary_entries"), 1)
+        }
     }
 
     func testAFreshDatabaseHasNothingToRename() throws {
@@ -8727,6 +8762,15 @@ final class WritingCollectionRenameTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: documents.appendingPathComponent("WritingMedia/devotionals/w1/a.jpg").path
+        ))
+
+        // Renamed on a later launch: its media follows.
+        DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: false, documents: documents)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: documents.appendingPathComponent("WritingMedia/writing/w1/a.jpg").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: documents.appendingPathComponent("WritingMedia/devotionals").path
         ))
     }
 

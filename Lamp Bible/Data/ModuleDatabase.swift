@@ -71,13 +71,10 @@ class ModuleDatabase {
             // Writings' media to format 4's folder. Every launch, since it
             // finishes a move cut short, and never throws: nothing here may
             // cost the database.
-            let keepsOldName = (try? dbQueue.read { db in
-                try Bool.fetchOne(
-                    db, sql: "SELECT EXISTS(SELECT 1 FROM modules WHERE id = ?)",
-                    arguments: [LampSyncFolderLayout.FormatThree.writingCollectionID]
-                )
-            }) ?? nil
-            DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: keepsOldName ?? false)
+            // The collection's new name, again: v43 runs once, and a module
+            // already called `writing` makes it wait until that is removed.
+            let renamed = nameWritingCollectionIfItCan()
+            DevotionalMediaStorage.moveFormatThreeWritingMedia(collectionKeepsItsOldName: !renamed)
         } catch {
             print("[ModuleDatabase] Failed to open database: \(error)")
             print("[ModuleDatabase] Attempting to delete and recreate database...")
@@ -1622,17 +1619,20 @@ class ModuleDatabase {
     /// refuse the ID changing under them. Its file hash and sync time are
     /// cleared, since the file it was read from was named for the old ID.
     ///
-    /// Nothing, when there is no collection under the old name, or a module
-    /// is already called `writing`: an installed writing module of that name
-    /// also stops the server's move, which says to remove it. Never throws
-    /// for a library it doesn't apply to, because a migration that throws
-    /// costs the whole database.
+    /// Nothing, when there is no collection under the old name: a module
+    /// called `devotionals` that is not this device's own writing, an
+    /// installed one or one of another kind, is left alone, since its rows
+    /// are not the writings'. Nothing either while a module of any kind is
+    /// called `writing`, since this device keeps one module per ID; sync
+    /// says so and stops (`LibrarySyncError.writingCollectionNotRenamed`),
+    /// and this runs again at each launch and each sync, so removing that
+    /// module lets it through. Never throws for a library it doesn't apply
+    /// to, because a migration that throws costs the whole database.
     static func nameWritingCollectionAsFormatFourDoes(in db: Database) throws {
         let old = LampSyncFolderLayout.FormatThree.writingCollectionID
         let new = LampSyncLocalDeletion.writingCollectionID
-        let exists = "SELECT EXISTS(SELECT 1 FROM modules WHERE id = ?)"
-        guard try Bool.fetchOne(db, sql: exists, arguments: [old]) == true,
-              try Bool.fetchOne(db, sql: exists, arguments: [new]) == false
+        guard try writingCollectionKeepsItsOldName(in: db),
+              try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM modules WHERE id = ?)", arguments: [new]) == false
         else { return }
 
         let columns = try db.columns(in: "modules").map(\.name)
@@ -1664,6 +1664,29 @@ class ModuleDatabase {
             try db.execute(sql: "UPDATE \(table) SET module_id = ? WHERE module_id = ?", arguments: [new, old])
         }
         try db.execute(sql: "DELETE FROM modules WHERE id = ?", arguments: [old])
+    }
+
+    /// Whether this device's writing collection is still called `devotionals`:
+    /// the editable writing module of that name. A database without the
+    /// columns to say so has no such collection, rather than an error.
+    static func writingCollectionKeepsItsOldName(in db: Database) throws -> Bool {
+        guard try db.tableExists("modules") else { return false }
+        let columns = Set(try db.columns(in: "modules").map(\.name))
+        guard columns.isSuperset(of: ["id", "type", "is_editable"]) else { return false }
+        return try Bool.fetchOne(
+            db, sql: "SELECT EXISTS(SELECT 1 FROM modules WHERE id = ? AND type = ? AND is_editable = 1)",
+            arguments: [LampSyncFolderLayout.FormatThree.writingCollectionID, ModuleType.devotional.rawValue]
+        ) == true
+    }
+
+    /// The rename, run where nothing may throw: at launch and before a sync.
+    /// True when the collection has its new name, or there is none to rename.
+    @discardableResult
+    func nameWritingCollectionIfItCan() -> Bool {
+        (try? write { db in
+            try Self.nameWritingCollectionAsFormatFourDoes(in: db)
+            return try !Self.writingCollectionKeepsItsOldName(in: db)
+        }) ?? false
     }
 
     /// This device's sync state at format 3's writing paths, carried to
