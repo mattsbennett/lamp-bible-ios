@@ -37,6 +37,9 @@ struct DevotionalPickerView: View {
     @State private var showingImportPreview: Bool = false
     @State private var importPreview: LampFilePreview? = nil
     @State private var pendingImportURL: URL? = nil
+    /// Markdown files or a folder, planned and waiting to be chosen from.
+    @State private var pendingWritingImport: PendingWritingImport? = nil
+    @State private var importToast: LampToast? = nil
     @State private var devotionalModules: [Module] = []
     @State private var selectedImportModuleId: String = ""
     @State private var lastLoadedModuleId: String = ""
@@ -290,11 +293,23 @@ struct DevotionalPickerView: View {
         }
         .fileImporter(
             isPresented: $showingFileImporter,
-            allowedContentTypes: [.lampFile, .json, .plainText],
-            allowsMultipleSelection: false
+            allowedContentTypes: [.lampFile, .json, .plainText, .folder]
+                + [UTType(filenameExtension: "md")].compactMap { $0 },
+            allowsMultipleSelection: true
         ) { result in
             handleFileImport(result)
         }
+        .sheet(item: $pendingWritingImport) { pending in
+            WritingImportSheet(
+                pending: pending,
+                modules: devotionalModules,
+                defaultModuleID: selectedModuleId.isEmpty ? WritingCollection.id : selectedModuleId,
+                onImport: { itemIDs, moduleID in
+                    applyWritingImport(pending, selecting: itemIDs, into: moduleID)
+                }
+            )
+        }
+        .lampToast($importToast)
         .alert("Import Error", isPresented: $showingImportError) {
             Button("OK") { }
         } message: {
@@ -328,7 +343,22 @@ struct DevotionalPickerView: View {
     private func handleFileImport(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
-            guard let url = urls.first else { return }
+            // Markdown and folders of it go through the writing import, which
+            // updates what an earlier import made; a shared .lamp writing
+            // arrives as a copy of its own.
+            if !urls.isEmpty, urls.allSatisfy(Self.isWritingSource) {
+                planWritingImport(urls)
+                return
+            }
+            // One shared file at a time: rather than import one and drop the
+            // rest unsaid.
+            guard urls.count == 1, let url = urls.first else {
+                importError = urls.contains(where: Self.isWritingSource)
+                    ? "Import Markdown files and .lamp files separately."
+                    : "Import one .lamp file at a time."
+                showingImportError = true
+                return
+            }
 
             // Start accessing the security-scoped resource
             guard url.startAccessingSecurityScopedResource() else {
@@ -392,6 +422,47 @@ struct DevotionalPickerView: View {
                 showingImportError = true
             }
             DevotionalSharingManager.shared.discardStagedImport(staged)
+        }
+    }
+
+    /// A folder, or a Markdown file.
+    static func isWritingSource(_ url: URL) -> Bool {
+        url.hasDirectoryPath || ["md", "markdown"].contains(url.pathExtension.lowercased())
+    }
+
+    private func planWritingImport(_ urls: [URL]) {
+        let access = SecurityScopedAccess(urls)
+        Task {
+            do {
+                let pending = try await WritingImporter.plan(urls, access: access)
+                if let modules = try? ModuleDatabase.shared.getAllModules(type: .devotional) {
+                    devotionalModules = modules
+                }
+                pendingWritingImport = pending
+            } catch {
+                importError = error.localizedDescription
+                showingImportError = true
+            }
+        }
+    }
+
+    private func applyWritingImport(_ pending: PendingWritingImport, selecting itemIDs: Set<String>, into moduleID: String) {
+        Task {
+            do {
+                let result = try await WritingImporter.apply(pending, selecting: itemIDs, into: moduleID)
+                let summary = WritingImporter.summary(of: result)
+                importToast = LampToast(title: summary.title, message: summary.message)
+                if selectedModuleId != moduleID,
+                   result.imported.contains(where: { $0.action == .create }) {
+                    selectedModuleId = moduleID
+                }
+                loadDevotionals()
+            } catch {
+                importError = error.localizedDescription
+                showingImportError = true
+                // What went in before the failure is shown.
+                loadDevotionals()
+            }
         }
     }
 

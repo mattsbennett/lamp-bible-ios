@@ -45,6 +45,7 @@
 		B85B89882F19F216004B4F61 /* DevotionalConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89822F19F216004B4F61 /* DevotionalConflictView.swift */; };
 		B85B898C2F19F230004B4F61 /* DevotionalStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B898B2F19F230004B4F61 /* DevotionalStorage.swift */; };
 		B85B898D2F19F230004B4F61 /* DevotionalImportExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89892F19F230004B4F61 /* DevotionalImportExportManager.swift */; };
+		A10C3B811024789EB9FF7B79 /* WritingImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78CC24D532B03155018BD70B /* WritingImporter.swift */; };
 		B85B898E2F19F230004B4F61 /* DevotionalModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B898A2F19F230004B4F61 /* DevotionalModels.swift */; };
 		B85B89902F19F248004B4F61 /* MarkdownDevotionalConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B898F2F19F248004B4F61 /* MarkdownDevotionalConverter.swift */; };
 		B85B89982F1C73D7004B4F61 /* SyncProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89932F1C73D7004B4F61 /* SyncProvider.swift */; };
@@ -58,6 +59,7 @@
 		B85B89A52F1F11CC004B4F61 /* ImagePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */; };
 		B85B89A62F1F11CC004B4F61 /* ModuleMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */; };
 		B85B89A72F1F11CC004B4F61 /* ImportPreviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */; };
+		CDA1E32228776EBF5A6EE987 /* WritingImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAEDCEA88681D325DBD7B7D6 /* WritingImportSheet.swift */; };
 		B85B89A92F1F11E1004B4F61 /* WaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A82F1F11E1004B4F61 /* WaveformView.swift */; };
 		B85B89AC2F1F1206004B4F61 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89AB2F1F1206004B4F61 /* AudioRecorder.swift */; };
 		B85B89AD2F1F1206004B4F61 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89AA2F1F1206004B4F61 /* AudioPlayer.swift */; };
@@ -225,6 +227,7 @@
 		B85B89832F19F216004B4F61 /* DevotionalPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalPickerView.swift; sourceTree = "<group>"; };
 		B85B89842F19F216004B4F61 /* DevotionalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalView.swift; sourceTree = "<group>"; };
 		B85B89892F19F230004B4F61 /* DevotionalImportExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalImportExportManager.swift; sourceTree = "<group>"; };
+		78CC24D532B03155018BD70B /* WritingImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WritingImporter.swift; sourceTree = "<group>"; };
 		B85B898A2F19F230004B4F61 /* DevotionalModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalModels.swift; sourceTree = "<group>"; };
 		B85B898B2F19F230004B4F61 /* DevotionalStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevotionalStorage.swift; sourceTree = "<group>"; };
 		B85B898F2F19F248004B4F61 /* MarkdownDevotionalConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownDevotionalConverter.swift; sourceTree = "<group>"; };
@@ -238,6 +241,7 @@
 		B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageBlockView.swift; sourceTree = "<group>"; };
 		B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePickerSheet.swift; sourceTree = "<group>"; };
 		B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportPreviewSheet.swift; sourceTree = "<group>"; };
+		BAEDCEA88681D325DBD7B7D6 /* WritingImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WritingImportSheet.swift; sourceTree = "<group>"; };
 		B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleMediaView.swift; sourceTree = "<group>"; };
 		B85B89A82F1F11E1004B4F61 /* WaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformView.swift; sourceTree = "<group>"; };
 		B85B89AA2F1F1206004B4F61 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
@@ -394,6 +398,7 @@
 				B84968DD2AFB3D4000955089 /* ExternalBibleApp.swift */,
 				B892295A2F05FE3C00A58F81 /* ICloudModuleStorage.swift */,
 				B85B89892F19F230004B4F61 /* DevotionalImportExportManager.swift */,
+				78CC24D532B03155018BD70B /* WritingImporter.swift */,
 				B85B898A2F19F230004B4F61 /* DevotionalModels.swift */,
 				B85B898B2F19F230004B4F61 /* DevotionalStorage.swift */,
 				B892295C2F05FE4200A58F81 /* ModuleDatabase.swift */,
@@ -462,6 +467,7 @@
 				B85B89A02F1F11CC004B4F61 /* ImageBlockView.swift */,
 				B85B89A12F1F11CC004B4F61 /* ImagePickerSheet.swift */,
 				B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */,
+				BAEDCEA88681D325DBD7B7D6 /* WritingImportSheet.swift */,
 				B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */,
 				B85B89812F19F216004B4F61 /* DevotionalBlockRenderer.swift */,
 				B85B89822F19F216004B4F61 /* DevotionalConflictView.swift */,
@@ -830,6 +836,7 @@
 				B85B89A92F1F11E1004B4F61 /* WaveformView.swift in Sources */,
 				B85B898C2F19F230004B4F61 /* DevotionalStorage.swift in Sources */,
 				B85B898D2F19F230004B4F61 /* DevotionalImportExportManager.swift in Sources */,
+				A10C3B811024789EB9FF7B79 /* WritingImporter.swift in Sources */,
 				B85B898E2F19F230004B4F61 /* DevotionalModels.swift in Sources */,
 				B85B896C2F1740E1004B4F61 /* RealmMigrator.swift in Sources */,
 				B85B89602F14BE73004B4F61 /* BundledModuleDatabase.swift in Sources */,
@@ -857,6 +864,7 @@
 				B85B89A52F1F11CC004B4F61 /* ImagePickerSheet.swift in Sources */,
 				B85B89A62F1F11CC004B4F61 /* ModuleMediaView.swift in Sources */,
 				B85B89A72F1F11CC004B4F61 /* ImportPreviewSheet.swift in Sources */,
+				CDA1E32228776EBF5A6EE987 /* WritingImportSheet.swift in Sources */,
 				B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */,
 				B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */,
 				80795CED3EF8DE8F3904D038 /* TranslationImportView.swift in Sources */,

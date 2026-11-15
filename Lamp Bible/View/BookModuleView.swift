@@ -969,6 +969,10 @@ struct BookModuleView: View {
             showPassage(reference, through: endReference, translationID: nil)
         case .strongs(let key):
             selectedStrongs = BookStrongsDestination(key: key)
+        case .writing:
+            // A book can't name one reader's own writing; and the app's sheet
+            // couldn't show over the book anyway.
+            break
         case .external:
             return .systemAction
         }
@@ -2115,6 +2119,8 @@ private struct BookFootnoteSheet: View {
                 showPassage(reference, through: endReference, translationID: nil)
             case .strongs(let key)?:
                 strongs = BookStrongsDestination(key: key)
+            case .writing?:
+                break
             case .external?, nil:
                 // A marker for another footnote, inside this one, goes nowhere.
                 return url.host == "book-footnote" ? .handled : .systemAction

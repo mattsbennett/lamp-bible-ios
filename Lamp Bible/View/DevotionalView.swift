@@ -37,6 +37,45 @@ struct FullScreenImageItem: Identifiable {
 
 // MARK: - Main View
 
+/// A writing opened from a link in another.
+struct LinkedWriting: Identifiable {
+    var id: String { devotional.meta.id }
+    let devotional: Devotional
+    let moduleId: String
+
+    /// The writing of this id, read off the main thread; nil if it's gone.
+    static func load(id: String) async -> LinkedWriting? {
+        let entry = await Task.detached { try? ModuleDatabase.shared.getDevotionalEntry(id: id) }.value
+        guard let entry, let devotional = entry.toDevotional() else { return nil }
+        return LinkedWriting(devotional: devotional, moduleId: entry.moduleId)
+    }
+}
+
+/// A linked writing in a sheet, with the navigation bar its controls live in.
+struct LinkedWritingSheet: View {
+    let linked: LinkedWriting
+    var onNavigateToVerse: ((Int) -> Void)? = nil
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            // No `onBack`: the view calls it whenever it disappears, which a
+            // full-screen picture or deck opened from it makes it do, and
+            // that would close the sheet under them.
+            DevotionalView(
+                devotional: linked.devotional,
+                moduleId: linked.moduleId,
+                onNavigateToVerse: onNavigateToVerse
+            )
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
 struct DevotionalView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -81,6 +120,8 @@ struct DevotionalView: View {
 
     // Preview sheet navigation (for scripture/strongs references)
     @State private var previewState: PreviewSheetState? = nil
+    /// Another writing a link in this one opened.
+    @State private var linkedWriting: LinkedWriting? = nil
     @State private var allDevotionalItems: [PreviewItem] = []
 
     // Link editor state
@@ -235,6 +276,9 @@ struct DevotionalView: View {
             MetadataEditorSheet(devotional: $devotional) {
                 scheduleAutoSave()
             }
+        }
+        .sheet(item: $linkedWriting) { linked in
+            LinkedWritingSheet(linked: linked, onNavigateToVerse: onNavigateToVerse)
         }
         .sheet(item: $previewState) { state in
             let itemTranslationId = state.currentItem.translationId
@@ -1351,9 +1395,18 @@ struct DevotionalView: View {
             handleScriptureTap(sv: verseId, ev: endVerseId, translationId: nil)
         case .strongs(let key):
             handleStrongsTap(key: key)
+        case .writing(let id):
+            openLinkedWriting(id: id)
         case .external(let externalUrl):
             UIApplication.shared.open(externalUrl)
         }
+    }
+
+    /// Opens the writing a link names, read off the main thread; a link to
+    /// one no longer here does nothing.
+    private func openLinkedWriting(id: String) {
+        guard id != devotional.meta.id else { return }
+        Task { linkedWriting = await LinkedWriting.load(id: id) }
     }
 
     /// Handle image tap to show full screen viewer

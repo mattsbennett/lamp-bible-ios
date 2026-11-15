@@ -543,6 +543,45 @@ struct Devotional: Codable, Identifiable, Equatable, Hashable {
         markdownContent = try container.decodeIfPresent(String.self, forKey: .markdownContent)
     }
 
+    /// The footnotes column as either app writes it: this app's `[{id,
+    /// content}]`, or the Mac's, which core writes as one JSON string of
+    /// `[^id]: text` definitions, and which arrives by sync and by import.
+    static func footnotes(fromStoredJSON json: String) -> [DevotionalFootnote]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        if let footnotes = try? JSONDecoder().decode([DevotionalFootnote].self, from: data) {
+            return footnotes
+        }
+        let blocks: [String]
+        if let block = try? JSONDecoder().decode(String.self, from: data) {
+            blocks = [block]
+        } else if let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            blocks = decoded
+        } else {
+            return nil
+        }
+        let parsed = blocks.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .enumerated().flatMap { index, block in
+                definitions(in: block)
+                    ?? [DevotionalFootnote(id: "\(index + 1)", content: .plain(block))]
+            }
+        return parsed.isEmpty ? nil : parsed
+    }
+
+    /// `[^label]: text` definitions, each with its indented continuation
+    /// lines, as core reads them, in the order they're written.
+    private static func definitions(in block: String) -> [DevotionalFootnote]? {
+        let definitions = LampPersonalMarkdownDocument.extractFootnoteDefinitions(in: "---\n" + block).definitions
+        guard !definitions.isEmpty else { return nil }
+        let order = block.components(separatedBy: "\n").compactMap { line -> String? in
+            guard line.hasPrefix("[^"), let closing = line.range(of: "]:") else { return nil }
+            return String(line[line.index(line.startIndex, offsetBy: 2)..<closing.lowerBound])
+        }
+        var seen: Set<String> = []
+        return order.filter { definitions[$0] != nil && seen.insert($0).inserted }.map {
+            DevotionalFootnote(id: $0, content: .plain(definitions[$0] ?? ""))
+        }
+    }
+
     private static func decodeFootnotes(
         from container: KeyedDecodingContainer<CodingKeys>
     ) throws -> [DevotionalFootnote]? {
@@ -810,10 +849,7 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
             return try? JSONDecoder().decode(DevotionalTextField.self, from: data)
         }
 
-        let footnotes: [DevotionalFootnote]? = footnotesJson.flatMap { json in
-            guard let data = json.data(using: .utf8) else { return nil }
-            return try? JSONDecoder().decode([DevotionalFootnote].self, from: data)
-        }
+        let footnotes = footnotesJson.flatMap(Devotional.footnotes(fromStoredJSON:))
 
         let media: [DevotionalMediaReference]? = mediaJson.flatMap { json in
             guard let data = json.data(using: .utf8) else {

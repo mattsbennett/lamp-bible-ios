@@ -1827,20 +1827,7 @@ class ModuleSyncManager: ObservableObject {
                 ?? false
         }
         return try LampPersonalWritingFile.archive(
-            rows: ordered.map { entry in
-                LampPersonalWritingFile.Row(
-                    id: entry.id, moduleID: moduleID, title: entry.title,
-                    subtitle: entry.subtitle, author: entry.author, date: entry.date,
-                    tags: entry.tags, category: entry.category,
-                    seriesID: entry.seriesId, seriesName: entry.seriesName, seriesOrder: entry.seriesOrder,
-                    keyScripturesJSON: entry.keyScripturesJson, summaryJSON: entry.summaryJson,
-                    contentJSON: entry.contentJson, footnotesJSON: entry.footnotesJson,
-                    relatedIDs: entry.relatedIds, created: entry.created, lastModified: entry.lastModified,
-                    recordChangeTag: entry.recordChangeTag,
-                    subscriptionID: entry.subscriptionId, isReadOnly: entry.isReadOnly,
-                    mediaJSON: entry.mediaJson
-                )
-            },
+            rows: ordered.map { $0.writingFileRow(moduleID: moduleID) },
             moduleID: moduleID, name: name, description: description, author: author, version: version
         )
     }

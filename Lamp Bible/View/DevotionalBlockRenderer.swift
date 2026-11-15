@@ -17,6 +17,8 @@ enum LampbibleURL {
     case verse(verseId: Int, endVerseId: Int?, translationId: String?)
     case reading(verseId: Int, endVerseId: Int?, openExternal: Bool)
     case strongs(key: String)
+    /// Another of the reader's writings, as an import links its own files.
+    case writing(id: String)
     case external(url: URL)
 
     /// Parse a URL into a LampbibleURL
@@ -34,6 +36,8 @@ enum LampbibleURL {
             return .reading(verseId: reference, endVerseId: endReference, openExternal: openExternal)
         case .strongs(let key):
             return .strongs(key: key)
+        case .writing(let id):
+            return .writing(id: id)
         case .reader(let reference?, let translationID):
             return .verse(verseId: reference, endVerseId: nil, translationId: translationID)
         case .reader, .book, .section, .moduleFile, .dataFile:

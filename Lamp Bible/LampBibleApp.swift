@@ -31,6 +31,8 @@ class DeepLinkManager: ObservableObject {
     @Published var pendingPlanMode: Bool = false
     @Published var pendingFileImportURL: URL? = nil
     @Published var pendingDeckImportURL: URL? = nil
+    /// A writing a lampbible://writing link asked for.
+    @Published var pendingWritingID: String? = nil
 
     private init() {}
 
@@ -74,6 +76,8 @@ class DeepLinkManager: ObservableObject {
             }
         case .strongs(let key):
             print("DeepLinkManager: Strongs link \(key) not yet supported for deep linking")
+        case .writing(let id):
+            pendingWritingID = id
         case .external(let externalUrl):
             print("DeepLinkManager: External URL not handled: \(externalUrl)")
         }

@@ -24,6 +24,12 @@ struct ContentView: View {
     @State private var showingDevotionalImport = false
     /// A finished import, said without an alert to dismiss.
     @State private var importToast: LampToast?
+    /// What the iCloud Import/Devotionals folder holds that's new, offered
+    /// for review.
+    @State private var dropFolderImport: PendingWritingImport?
+    /// A writing a link opened from anywhere but another writing.
+    @State private var linkedWriting: LinkedWriting?
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         PlanView()
@@ -74,6 +80,42 @@ struct ContentView: View {
                 }
             } message: {
                 Text("\"\(duplicateModuleName)\" is already installed. Overwrite it?")
+            }
+            .onChange(of: deepLinkManager.pendingWritingID) { _, id in
+                guard let id else { return }
+                deepLinkManager.pendingWritingID = nil
+                Task { linkedWriting = await LinkedWriting.load(id: id) }
+            }
+            .sheet(item: $linkedWriting) { linked in
+                LinkedWritingSheet(linked: linked)
+            }
+            .task { await offerDropFolderImport() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await offerDropFolderImport() } }
+            }
+            .sheet(item: $dropFolderImport) { pending in
+                WritingImportSheet(
+                    pending: pending,
+                    modules: devotionalModules,
+                    defaultModuleID: defaultDevotionalModuleId,
+                    onImport: { itemIDs, moduleID in
+                        Task {
+                            do {
+                                let result = try await WritingImporter.apply(pending, selecting: itemIDs, into: moduleID)
+                                // Seen only once it went in: a writing left out
+                                // because it changed meanwhile is offered again.
+                                if WritingImporter.isComplete(result) { WritingDropFolder.reviewed(pending) }
+                                let summary = WritingImporter.summary(of: result)
+                                importToast = LampToast(title: summary.title, message: summary.message)
+                            } catch {
+                                importAlertMessage = "Import failed: \(error.localizedDescription)"
+                                showingImportAlert = true
+                            }
+                        }
+                    },
+                    onCancel: { WritingDropFolder.reviewed(pending) }
+                )
+                .interactiveDismissDisabled()
             }
             .sheet(isPresented: $showingDevotionalImport, onDismiss: cleanupStagedDevotional) {
                 if let preview = devotionalImportPreview {
@@ -161,6 +203,22 @@ struct ContentView: View {
     }
 
     // MARK: - Devotional Import
+
+    /// Offers what's new in the drop folder, unless something is already
+    /// being shown.
+    @MainActor
+    private func offerDropFolderImport() async {
+        guard dropFolderImport == nil, !showingDevotionalImport,
+              let pending = await WritingDropFolder.pendingImport(),
+              dropFolderImport == nil, !showingDevotionalImport else { return }
+        do {
+            try await ModuleSyncManager.shared.ensureDefaultDevotionalsModule()
+            devotionalModules = try ModuleDatabase.shared.getAllModules(type: .devotional)
+        } catch {
+            devotionalModules = []
+        }
+        dropFolderImport = pending
+    }
 
     /// Module used when the recipient has only one place to put the devotional
     private var defaultDevotionalModuleId: String {
