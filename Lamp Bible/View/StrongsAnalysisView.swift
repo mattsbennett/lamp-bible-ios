@@ -433,7 +433,6 @@ struct StrongsAnalysisView: View {
                 // subject, read after the first.
                 if !septuagint.words.isEmpty || septuagint.own != nil {
                     septuagintSection
-                        .id(Jump.septuagint.anchor)
                 }
             }
             .toolbar {
@@ -511,9 +510,10 @@ struct StrongsAnalysisView: View {
     /// heights. Where that isn't to hand, the section's first row at the top.
     private func go(to jump: Jump, in analysis: LampStrongsAnalysis, proxy: ScrollViewProxy) {
         let shown = jumps(analysis)
-        // The card above them all is the list's first section.
+        // The card above them all is the list's first section, and the
+        // Hebrew words' own cards come after the last the menu goes to.
         guard let list = analysisList, let index = shown.firstIndex(of: jump),
-              list.numberOfSections == shown.count + 1
+              list.numberOfSections >= shown.count + 1
         else {
             proxy.scrollTo(jump == .compare ? Self.compareAnchor : jump.anchor, anchor: .top)
             return
@@ -1986,9 +1986,10 @@ struct StrongsAnalysisView: View {
     ///
     /// Open, as every other section is: with the Jump To menu a reader
     /// reaches it in a tap, so folding it away only cost another.
+    @ViewBuilder
     private var septuagintSection: some View {
         let own = septuagint.own
-        return Section {
+        Section {
             // The figures first and nothing said around them: the section's
             // explanations are all under "How this is counted", and a row's
             // doubt is one tap on that row. As open prose it read as a wall
@@ -1997,7 +1998,7 @@ struct StrongsAnalysisView: View {
                 ownUseRows(own)
             }
             if !septuagint.words.isEmpty {
-                hebrewRows(own: own)
+                hebrewControls(own: own)
             }
         } header: {
             sectionHeader(own == nil ? LampSeptuagintSection.title : LampSeptuagintSection.ownUseTitle)
@@ -2007,6 +2008,31 @@ struct StrongsAnalysisView: View {
             if own == nil {
                 Text(LampSeptuagintSection.note(greek: headword.lemma, septuagint: septuagint.tagging))
                     .lampFootnote()
+            }
+        }
+        .id(Jump.septuagint.anchor)
+        // Each Hebrew word a card of its own, headed by the word and how many
+        // of its verses are listed: its verses are then plainly its, where in
+        // the one card they ran on from the controls above. The heading names
+        // the word, so a separate row of the words above went.
+        ForEach(septuagint.words) { word in
+            let references = hebrewVerses(of: word) ?? []
+            // A word with no verse listed still has its card while no book is
+            // chosen: it is still what the Greek translates, as the lexicon
+            // says, even with no number to count its verses by. Narrowed to
+            // a book it hasn't, it goes, as the sentence in the card above says.
+            if word.references != nil, !references.isEmpty || septuagintBook == nil {
+                SeptuagintWordGroup(
+                    word: word,
+                    usingGreek: septuagint.renderedVerses[word.id] == nil ? nil : headword.lemma,
+                    total: hebrewVerseTotal(of: word),
+                    references: references,
+                    translationId: translationId,
+                    showsGreek: showsSeptuagintGreek,
+                    loader: septuagint
+                ) { reference, key in
+                    septuagintPreview = SeptuagintPreview(id: reference, key: key)
+                }
             }
         }
     }
@@ -2142,17 +2168,18 @@ struct StrongsAnalysisView: View {
 
     // MARK: The Hebrew it translates
 
+    /// What the Hebrew words' cards below are read with: which English,
+    /// whether the Greek, and how far they are narrowed.
     @ViewBuilder
-    private func hebrewRows(own: LampStrongsAnalysis?) -> some View {
+    private func hebrewControls(own: LampStrongsAnalysis?) -> some View {
         if own != nil {
             rowCaption(LampSeptuagintSection.title)
-        }
-        ForEach(septuagint.words) { word in
-            translatesRow(word)
         }
         englishChoice
         Toggle("\(LampSeptuagintSection.OriginalLanguage.title) under each verse", isOn: $showsSeptuagintGreek)
             .font(.subheadline)
+            // The accent, as the app's other switches are, not the system green.
+            .tint(.accentColor)
             .accessibilityHint(LampSeptuagintSection.OriginalLanguage.note)
         // No paragraph above the lists: each heading says "14 of 35 verses
         // using ἀγάπη", and how far they are narrowed is one press away.
@@ -2177,21 +2204,6 @@ struct StrongsAnalysisView: View {
             Text("None of these Hebrew words’ verses is in \(septuagint.own?.books.first { $0.id == book }?.name ?? "that book").")
                 .font(.subheadline)
                 .foregroundStyle(LampTheme.caption)
-        }
-        ForEach(septuagint.words) { word in
-            if let references = hebrewVerses(of: word), !references.isEmpty {
-                SeptuagintWordGroup(
-                    word: word,
-                    usingGreek: septuagint.renderedVerses[word.id] == nil ? nil : headword.lemma,
-                    total: hebrewVerseTotal(of: word),
-                    references: references,
-                    translationId: translationId,
-                    showsGreek: showsSeptuagintGreek,
-                    loader: septuagint
-                ) { reference, key in
-                    septuagintPreview = SeptuagintPreview(id: reference, key: key)
-                }
-            }
         }
     }
 
@@ -2282,59 +2294,6 @@ struct StrongsAnalysisView: View {
         let total = septuagint.words.reduce(0) { $0 + inBook($1.references) }
         let shown = septuagint.words.reduce(0) { $0 + inBook(septuagint.renderedVerses[$1.id]) }
         return total > 0 ? (shown, total) : nil
-    }
-
-    /// A Hebrew word the Greek renders, with its meaning, followable to its
-    /// own analysis where it has a number. A word the lexicon couldn't pin to
-    /// one number is still shown: it is still what the Greek translates.
-    @ViewBuilder
-    private func translatesRow(_ word: SeptuagintLoader.Word) -> some View {
-        if let strongs = word.hebrew.strongs {
-            NavigationLink(value: StrongsAnalysisItem(key: strongs)) {
-                hebrewWord(word, number: strongs)
-            }
-        } else {
-            hebrewWord(word, number: nil)
-        }
-    }
-
-    /// The Hebrew with its number, and under it the word as someone with no
-    /// Hebrew reads it: its transliteration and the English the translation
-    /// being read renders it by, else the lexicons' meaning.
-    private func hebrewWord(_ word: SeptuagintLoader.Word, number: String?) -> some View {
-        let rendering = septuagint.renderings[word.id]
-        let transliteration = word.transliteration.flatMap { $0.isEmpty ? nil : $0 }
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(LampSeptuagintSection.word(word.hebrew))
-                    .font(.title3)
-                if let number {
-                    Text(number)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if transliteration != nil || rendering != nil {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    if let transliteration {
-                        Text(transliteration)
-                            .italic()
-                    }
-                    if let rendering {
-                        Text("“\(rendering)”")
-                    }
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            }
-            if rendering == nil, let gloss = word.gloss, !gloss.isEmpty {
-                Text(gloss)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
     }
 
     // MARK: Verses
@@ -4041,22 +4000,70 @@ private struct SeptuagintWordGroup: View {
             + "|\(loader.readsSeptuagintInEnglish)|\(loader.forgets)|\(loader.hasCrossed)"
     }
 
-    /// Open, as the section is: the word's heading, then its first verses,
-    /// read when the heading scrolls into view rather than with the page.
+    /// A card of its own: the word as its heading, then its first verses,
+    /// read when the card scrolls into view rather than with the page, and
+    /// the way to the word's own analysis at its foot.
     var body: some View {
-        Text(LampSeptuagintSection.heading(
-            word.hebrew,
-            transliteration: word.transliteration,
-            rendering: loader.renderings[word.id],
-            verses: references.count,
-            of: total,
-            usingGreek: usingGreek
-        ))
-        .font(.body.weight(.semibold))
-        .foregroundStyle(.primary)
-        .padding(.top, 6)
+        Section {
+            if references.isEmpty {
+                // None of its verses is one the Septuagint uses this Greek
+                // word in; the word's own analysis has all of them. Without
+                // a number there's nothing to count them by, and it says so.
+                if word.hebrew.strongs == nil {
+                    note("The lexicon names this word without a Strong’s number, so its verses can’t be counted.")
+                } else {
+                    analyse
+                }
+            } else {
+                verses
+            }
+        } header: {
+            header
+                .task(id: loadID) { if !references.isEmpty { read(shownVerses) } }
+        }
+    }
+
+    /// The word in Hebrew, then as someone with no Hebrew says it and how
+    /// many of its verses are listed: core's heading, which names it again
+    /// in Hebrew only where it has nothing else to name it by.
+    private var header: some View {
+        let rendering = loader.renderings[word.id]
+        let transliteration = word.transliteration.flatMap { $0.isEmpty ? nil : $0 }
+        return VStack(alignment: .leading, spacing: 3) {
+            // In the label colour by name, as `sectionHeader` is: a list's
+            // section header greys whatever it is given otherwise.
+            if transliteration != nil || rendering != nil {
+                Text(LampSeptuagintSection.word(word.hebrew))
+                    .font(.title2)
+                    .foregroundStyle(Color(uiColor: .label))
+            }
+            Text(LampSeptuagintSection.heading(
+                word.hebrew,
+                transliteration: transliteration,
+                rendering: rendering,
+                verses: references.count,
+                of: total,
+                usingGreek: usingGreek
+            ))
+            .font(.headline)
+            .foregroundStyle(Color(uiColor: .label))
+            // What it means, where the translation being read gives no
+            // English of its own to name it by.
+            if rendering == nil, let gloss = word.gloss, !gloss.isEmpty {
+                Text(gloss)
+                    .font(.subheadline)
+                    .foregroundStyle(LampTheme.caption)
+                    .lineLimit(2)
+            }
+        }
+        .textCase(nil)
+        .padding(.top, 10)
+        .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
-        .task(id: loadID) { read(shownVerses) }
+    }
+
+    @ViewBuilder
+    private var verses: some View {
         switch loader.verses[word.id] {
         case .rows(let listed):
             ForEach(listed) { verse in
@@ -4096,8 +4103,9 @@ private struct SeptuagintWordGroup: View {
         }
     }
 
-    /// The next page, read in place, and the word's own analysis for all of
-    /// them, where more stand than are shown.
+    /// The next page, read in place, where more stand than are shown, and
+    /// the word's own analysis for all of them: the one way to it now that
+    /// the words have no rows of their own above.
     @ViewBuilder
     private func more(beyond listed: Int) -> some View {
         if references.count > listed {
@@ -4117,8 +4125,8 @@ private struct SeptuagintWordGroup: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            analyse
         }
+        analyse
     }
 
     @ViewBuilder
