@@ -168,6 +168,7 @@ struct StrongsAnalysisView: View {
     /// words' verses to it. Book numbers are the same in both texts.
     @State private var septuagintBook: Int?
     @State private var isShowingSeptuagintMethod = false
+    @State private var isShowingSeptuagintNarrowing = false
     /// Which English the verses read where a Septuagint in English is
     /// installed: that, or the reader's own Bible. Kept, as on the Mac.
     @AppStorage("strongs.analysis.septuagintEnglishIsDirect") private var readsSeptuagintInEnglish = true
@@ -916,7 +917,7 @@ struct StrongsAnalysisView: View {
         } footer: {
             Text(asRing.wrappedValue
                 ? "How it is translated, the commonest first. Tap one to filter the verse list below."
-                : "What translators reached for, not what the word means. Tap one to filter the verse list below.")
+                : "Tap one to filter the verse list below.")
                 .lampFootnote()
         }
     }
@@ -1121,6 +1122,8 @@ struct StrongsAnalysisView: View {
                 bookRange: bookRange
             )) {
                 Text("Open in \(name)")
+                    // Apart from the disclosure above it, which it isn't part of.
+                    .padding(.top, 8)
             }
             .accessibilityHint("Analyses \(analysis.key) in \(name), whose tags give each spelling and its grammar")
         }
@@ -2022,10 +2025,13 @@ struct StrongsAnalysisView: View {
             ForEach([contrast.newTestament, contrast.septuagint], id: \.label) { side in
                 contrastRow(side, share: contrast.share(of: side))
             }
-            Text(LampSeptuagintSection.contrastCaption(contrast))
-                .font(.footnote)
-                .foregroundStyle(LampTheme.caption)
-                .listRowSeparator(.hidden, edges: .top)
+            let caption = LampSeptuagintSection.contrastCaption(contrast)
+            if !caption.isEmpty {
+                Text(caption)
+                    .font(.footnote)
+                    .foregroundStyle(LampTheme.caption)
+                    .listRowSeparator(.hidden, edges: .top)
+            }
         }
         let books = own.books.filter { $0.occurrenceCount > 0 }
         if !books.isEmpty {
@@ -2089,10 +2095,6 @@ struct StrongsAnalysisView: View {
         DisclosureGroup(isExpanded: $isShowingSeptuagintMethod) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(LampSeptuagintSection.ownUseAbout)
-                // Only where the lists are in fact narrowed.
-                if septuagintCrossing != nil {
-                    Text(LampSeptuagintSection.renderedCaveat(greek: headword.lemma))
-                }
                 // Only a text that declares its tags were matched rather than
                 // printed, in the words its builder wrote.
                 if !septuagint.septuagintSources.isEmpty {
@@ -2132,13 +2134,18 @@ struct StrongsAnalysisView: View {
                 .font(.footnote)
                 .foregroundStyle(LampTheme.caption)
         }
-        // Whose verses these are, and what they have been narrowed to. The
-        // footer says the first half where the Septuagint doesn't count
-        // the word, and nothing is narrowed then.
+        // No paragraph above the lists: each heading says "14 of 35 verses
+        // using ἀγάπη", and how far they are narrowed is one press away.
+        // Core's note says something only of a Septuagint that isn't tagged,
+        // which the footer gives where the Septuagint doesn't count the word.
         if own != nil {
-            Text(hebrewIntroduction)
-                .font(.subheadline)
-                .foregroundStyle(LampTheme.caption)
+            let note = LampSeptuagintSection.note(greek: headword.lemma, septuagint: septuagint.tagging)
+            if !note.isEmpty {
+                Text(note)
+                    .font(.subheadline)
+                    .foregroundStyle(LampTheme.caption)
+            }
+            septuagintNarrowing
         }
         // Until the Hebrew text has been counted there are no lists to show,
         // and an empty space reads as none.
@@ -2156,6 +2163,7 @@ struct StrongsAnalysisView: View {
                 SeptuagintWordGroup(
                     word: word,
                     usingGreek: septuagint.renderedVerses[word.id] == nil ? nil : headword.lemma,
+                    total: hebrewVerseTotal(of: word),
                     references: references,
                     translationId: translationId,
                     showsGreek: showsSeptuagintGreek,
@@ -2203,16 +2211,36 @@ struct StrongsAnalysisView: View {
         }
     }
 
-    /// Whose verses these are, and what the list has been narrowed to when
-    /// it has. Before the crossing lands there is only the first: the list
-    /// is every verse then, and saying it was narrowed would be untrue.
-    private var hebrewIntroduction: String {
-        let note = LampSeptuagintSection.note(greek: headword.lemma, septuagint: septuagint.tagging)
-        guard let crossing = septuagintCrossing else { return note }
-        let narrowed = LampSeptuagintSection.renderedHeading(
-            greek: headword.lemma, shown: crossing.shown, of: crossing.total
-        )
-        return narrowed.isEmpty ? note : note + " " + narrowed
+    /// How far the lists below are narrowed, collapsed: they hold the verses
+    /// where the Septuagint uses this Greek word, not all the Hebrew word's.
+    /// Only once crossed; said of an unnarrowed list it would be untrue.
+    @ViewBuilder
+    private var septuagintNarrowing: some View {
+        if let crossing = septuagintCrossing {
+            let narrowed = LampSeptuagintSection.renderedHeading(
+                greek: headword.lemma, shown: crossing.shown, of: crossing.total
+            )
+            if !narrowed.isEmpty {
+                DisclosureGroup(isExpanded: $isShowingSeptuagintNarrowing) {
+                    Text(narrowed)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 2)
+                } label: {
+                    Text(LampSeptuagintSection.narrowingTitle)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// Every verse a Hebrew word stands in, within the Septuagint book
+    /// chosen: what a narrowed list was narrowed from.
+    private func hebrewVerseTotal(of word: SeptuagintLoader.Word) -> Int? {
+        guard let all = word.references else { return nil }
+        guard let book = septuagintBook else { return all.count }
+        return all.filter { $0 / 1_000_000 == book }.count
     }
 
     /// A Hebrew word's verses as listed: those the Septuagint renders with
@@ -3972,6 +4000,9 @@ private struct SeptuagintWordGroup: View {
     let word: SeptuagintLoader.Word
     /// The Greek word the list was narrowed by, when it was, for the count.
     var usingGreek: String?
+    /// How many verses the word stands in all told, for a narrowed list's
+    /// heading to say "of" how many.
+    var total: Int?
     /// The verses listed: the word's own, narrowed or not. Their count is
     /// the heading's even when only the first page is read.
     let references: [Int]
@@ -4001,6 +4032,7 @@ private struct SeptuagintWordGroup: View {
             transliteration: word.transliteration,
             rendering: loader.renderings[word.id],
             verses: references.count,
+            of: total,
             usingGreek: usingGreek
         ))
         .font(.body.weight(.semibold))
