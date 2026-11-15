@@ -1977,7 +1977,9 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         if shouldReportMatchOffset, let callback = onFirstMatchOffset, !searchTerms.isEmpty {
             DispatchQueue.main.async {
                 textView.layoutIfNeeded()
-                if let matchRange = self.findFirstMatchRange(in: annotatedText.text) {
+                // Searched in the text as drawn, which isolated script runs and
+                // footnote markers have moved off the module text's offsets.
+                if let matchRange = self.findFirstMatchRange(in: textView.attributedText?.string ?? annotatedText.text) {
                     // Calculate rect for the match
                     if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
                        let end = textView.position(from: start, offset: matchRange.length),
@@ -2036,7 +2038,9 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         style.findsAnnotationsByText = true
 
         // Get the base attributed string from CommentaryRenderer
-        let baseAttrString = CommentaryRenderer.renderUIKit(annotatedText, style: style)
+        // Its Greek and Hebrew runs are isolated last, below, since the
+        // tappable ranges here are laid on by the text's own offsets.
+        let baseAttrString = CommentaryRenderer.renderUIKit(annotatedText, style: style, isolatesScriptRuns: false)
         let mutableAttrString = NSMutableAttributedString(attributedString: baseAttrString)
 
         // Add tappable index attributes and collect items
@@ -2103,6 +2107,7 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
             }
         }
 
+        CommentaryRenderer.isolateScriptRuns(in: mutableAttrString)
         return (mutableAttrString, tappableItems)
     }
 

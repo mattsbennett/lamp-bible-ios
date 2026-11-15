@@ -12,13 +12,18 @@ import UIKit
 
 /// Custom attribute key for indexed tappable items (avoids iOS URL resolution delay)
 private let CommentaryTappableIndexKey = NSAttributedString.Key("commentaryTappableIndex")
+/// Marks a Greek or Hebrew run, so the run can be isolated once the text is
+/// otherwise done; see `CommentaryRenderer.isolateScriptRuns(in:)`.
+private let CommentaryScriptRunKey = NSAttributedString.Key("commentaryScriptRun")
 
 /// Custom attribute key for direct tap action data (for non-indexed rendering)
 private let CommentaryTapActionKey = NSAttributedString.Key("commentaryTapAction")
 
 /// Tap action data stored in attributed string for non-indexed rendering
 private enum CommentaryTapAction {
-    case verse(sv: Int, ev: Int?)
+    /// `start` is the annotation's offset in its text, so a tap can say which
+    /// of several references to the same passage it was.
+    case verse(sv: Int, ev: Int?, start: Int)
     case strongs(key: String)
     case footnote(id: String)
     case lexicon(id: String)
@@ -253,7 +258,14 @@ struct CommentaryRenderer {
 
     // MARK: - UIKit Rendering (Robust)
 
-    static func renderUIKit(_ annotatedText: AnnotatedText, style: Style = defaultStyle) -> NSAttributedString {
+    /// `isolatesScriptRuns: false` leaves the Greek and Hebrew runs for the
+    /// caller to isolate, for a caller that still lays attributes on by the
+    /// text's own offsets; it then calls `isolateScriptRuns(in:)` last.
+    static func renderUIKit(
+        _ annotatedText: AnnotatedText,
+        style: Style = defaultStyle,
+        isolatesScriptRuns: Bool = true
+    ) -> NSAttributedString {
         let text = annotatedText.text
         let result = NSMutableAttributedString(string: text)
         let fullRange = NSRange(location: 0, length: result.length)
@@ -275,7 +287,7 @@ struct CommentaryRenderer {
                         let ev = annotation.data?.ev
                         result.addAttribute(.foregroundColor, value: UIColor(style.scriptureColor), range: range)
                         // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
-                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.verse(sv: sv, ev: ev), range: range)
+                        result.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.verse(sv: sv, ev: ev, start: annotation.start), range: range)
                     }
 
                 case .strongs:
@@ -289,6 +301,7 @@ struct CommentaryRenderer {
                     }
 
                 case .greek:
+                    result.addAttribute(CommentaryScriptRunKey, value: true, range: range)
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
@@ -299,6 +312,7 @@ struct CommentaryRenderer {
                     }
 
                 case .hebrew:
+                    result.addAttribute(CommentaryScriptRunKey, value: true, range: range)
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
                     // Add tap action if strongs data is present
                     if let key = annotation.data?.strongs {
@@ -406,7 +420,33 @@ struct CommentaryRenderer {
             }
         }
 
+        if isolatesScriptRuns { isolateScriptRuns(in: result) }
         return result
+    }
+
+    /// Sets each Greek or Hebrew run between a first-strong isolate and a pop
+    /// (U+2068 … U+2069), so the run neither reorders with nor drags in
+    /// what's beside it. Without it, a reference starting with a digit after
+    /// Hebrew ("גֵּבִים 1Kgs 6:9") draws its "1" on the far side of the Hebrew,
+    /// since a number after a right-to-left word joins it.
+    ///
+    /// Display only, and done last, since it moves every later offset: the
+    /// module's text and annotation offsets stay as they are, and attributes
+    /// already laid on travel with their characters.
+    static func isolateScriptRuns(in result: NSMutableAttributedString) {
+        var runs: [NSRange] = []
+        result.enumerateAttribute(
+            CommentaryScriptRunKey,
+            in: NSRange(location: 0, length: result.length)
+        ) { value, range, _ in
+            if value as? Bool == true, range.length > 0 { runs.append(range) }
+        }
+        for run in runs.reversed() {
+            let endAttributes = result.attributes(at: run.upperBound - 1, effectiveRange: nil)
+            result.insert(NSAttributedString(string: "\u{2069}", attributes: endAttributes), at: run.upperBound)
+            let startAttributes = result.attributes(at: run.location, effectiveRange: nil)
+            result.insert(NSAttributedString(string: "\u{2068}", attributes: startAttributes), at: run.location)
+        }
     }
 
     // MARK: - UIKit Rendering with Tappable Items (for prev/next navigation)
@@ -487,6 +527,7 @@ struct CommentaryRenderer {
                     }
 
                 case .greek:
+                    result.addAttribute(CommentaryScriptRunKey, value: true, range: range)
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
                     if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
                         result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
@@ -503,6 +544,7 @@ struct CommentaryRenderer {
                     }
 
                 case .hebrew:
+                    result.addAttribute(CommentaryScriptRunKey, value: true, range: range)
                     result.addAttribute(.foregroundColor, value: UIColor(style.strongsColor).withAlphaComponent(0.8), range: range)
                     // Add tappable item if strongs data is present
                     if let key = annotation.data?.strongs {
@@ -636,6 +678,7 @@ struct CommentaryRenderer {
             }
         }
 
+        isolateScriptRuns(in: result)
         return RenderResult(attributedString: result, tappableItems: tappableItems)
     }
 
@@ -676,6 +719,9 @@ struct AnnotatedTextView: View {
     let onFootnoteTap: ((String) -> Void)?
     let onLexiconTap: ((String) -> Void)?  // lexicon entry ID
     let onMediaTap: ((String) -> Void)?  // media ID
+    /// (sv, ev?, start): which reference was tapped, by its annotation's
+    /// offset in this text. Called instead of `onScriptureTap` when set.
+    var onScriptureOccurrenceTap: ((Int, Int?, Int) -> Void)? = nil
 
     // Scroll-to-match support
     var shouldReportMatchOffset: Bool = false
@@ -691,10 +737,12 @@ struct AnnotatedTextView: View {
         onFootnoteTap: ((String) -> Void)? = nil,
         onLexiconTap: ((String) -> Void)? = nil,
         onMediaTap: ((String) -> Void)? = nil,
+        onScriptureOccurrenceTap: ((Int, Int?, Int) -> Void)? = nil,
         shouldReportMatchOffset: Bool = false,
         scrollCoordinateSpace: String = "commentaryScroll"
     ) {
         self.annotatedText = annotatedText
+        self.onScriptureOccurrenceTap = onScriptureOccurrenceTap
         self.style = style
         self.onScriptureTap = onScriptureTap
         self.onStrongsTap = onStrongsTap
@@ -714,6 +762,7 @@ struct AnnotatedTextView: View {
             onFootnoteTap: onFootnoteTap,
             onLexiconTap: onLexiconTap,
             onMediaTap: onMediaTap,
+            onScriptureOccurrenceTap: onScriptureOccurrenceTap,
             shouldReportMatchOffset: shouldReportMatchOffset,
             onFirstMatchOffset: shouldReportMatchOffset ? { offset in
                 localMatchOffset = offset
@@ -743,6 +792,9 @@ private class TappableCommentaryTextView: UITextView {
 
     // For direct action taps (renderUIKit)
     var onScriptureTap: ((Int, Int?) -> Void)?
+    /// Takes the place of `onScriptureTap` when set: (sv, ev?, the
+    /// annotation's start offset in its text).
+    var onScriptureOccurrenceTap: ((Int, Int?, Int) -> Void)?
     var onStrongsTap: ((String) -> Void)?
     var onFootnoteTap: ((String) -> Void)?
     var onLexiconTap: ((String) -> Void)?
@@ -804,8 +856,12 @@ private class TappableCommentaryTextView: UITextView {
         // Handle direct action taps (non-indexed)
         if let action = attributes[CommentaryTapActionKey] as? CommentaryTapAction {
             switch action {
-            case .verse(let sv, let ev):
-                onScriptureTap?(sv, ev)
+            case .verse(let sv, let ev, let start):
+                if let onScriptureOccurrenceTap {
+                    onScriptureOccurrenceTap(sv, ev, start)
+                } else {
+                    onScriptureTap?(sv, ev)
+                }
             case .strongs(let key):
                 onStrongsTap?(key)
             case .footnote(let id):
@@ -833,6 +889,7 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
     let onFootnoteTap: ((String) -> Void)?
     let onLexiconTap: ((String) -> Void)?
     let onMediaTap: ((String) -> Void)?
+    var onScriptureOccurrenceTap: ((Int, Int?, Int) -> Void)? = nil
 
     // Scroll-to-match support
     var shouldReportMatchOffset: Bool = false
@@ -862,6 +919,7 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
     func updateUIView(_ textView: TappableCommentaryTextView, context: Context) {
         // Set up tap handlers
         textView.onScriptureTap = onScriptureTap
+        textView.onScriptureOccurrenceTap = onScriptureOccurrenceTap
         textView.onStrongsTap = onStrongsTap
         textView.onFootnoteTap = onFootnoteTap
         textView.onLexiconTap = onLexiconTap
@@ -886,7 +944,9 @@ private struct AnnotatedUITextViewRepresentable: UIViewRepresentable {
         if shouldReportMatchOffset, let callback = onFirstMatchOffset, !style.searchTerms.isEmpty {
             DispatchQueue.main.async {
                 textView.layoutIfNeeded()
-                if let matchRange = self.findFirstMatchRange(in: annotatedText.text) {
+                // Searched in the text as drawn, which isolated script runs and
+                // footnote markers have moved off the module text's offsets.
+                if let matchRange = self.findFirstMatchRange(in: textView.attributedText?.string ?? annotatedText.text) {
                     // Calculate rect for the match
                     if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
                        let end = textView.position(from: start, offset: matchRange.length),
@@ -1068,7 +1128,9 @@ private struct AnnotatedUITextViewWithItemsRepresentable: UIViewRepresentable {
         if shouldReportMatchOffset, let callback = onFirstMatchOffset, !style.searchTerms.isEmpty {
             DispatchQueue.main.async {
                 textView.layoutIfNeeded()
-                if let matchRange = self.findFirstMatchRange(in: annotatedText.text) {
+                // Searched in the text as drawn, which isolated script runs and
+                // footnote markers have moved off the module text's offsets.
+                if let matchRange = self.findFirstMatchRange(in: textView.attributedText?.string ?? annotatedText.text) {
                     if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
                        let end = textView.position(from: start, offset: matchRange.length),
                        let textRange = textView.textRange(from: start, to: end) {
@@ -1144,6 +1206,15 @@ struct CommentaryUnitTitle: View {
     }
 }
 
+/// Which part of a commentary unit a reference was tapped in, and where in
+/// that part's text its annotation starts: enough to tell apart two
+/// references to the same passage.
+struct CommentaryScriptureOccurrence: Hashable {
+    enum Field: Hashable { case introduction, translation, commentary }
+    let field: Field
+    let start: Int
+}
+
 struct CommentaryUnitView: View {
     let unit: CommentaryUnit
     let abbreviations: [CommentaryAbbreviation]?
@@ -1151,6 +1222,9 @@ struct CommentaryUnitView: View {
     let onScriptureTap: ((Int, Int?) -> Void)?  // (sv, ev?) for verse ranges
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String, CommentaryFootnote) -> Void)?
+    /// Called instead of `onScriptureTap` when set, saying which reference
+    /// was tapped as well as where it points.
+    var onScriptureOccurrenceTap: ((Int, Int?, CommentaryScriptureOccurrence) -> Void)? = nil
 
     // Display options
     var hideVerseReference: Bool = false  // Hide "v. X" when context already shows it
@@ -1166,11 +1240,13 @@ struct CommentaryUnitView: View {
         onScriptureTap: ((Int, Int?) -> Void)? = nil,
         onStrongsTap: ((String) -> Void)? = nil,
         onFootnoteTap: ((String, CommentaryFootnote) -> Void)? = nil,
+        onScriptureOccurrenceTap: ((Int, Int?, CommentaryScriptureOccurrence) -> Void)? = nil,
         hideVerseReference: Bool = false,
         shouldReportMatchOffset: Bool = false,
         scrollCoordinateSpace: String = "commentaryScroll"
     ) {
         self.unit = unit
+        self.onScriptureOccurrenceTap = onScriptureOccurrenceTap
         self.abbreviations = abbreviations
         self.style = style
         self.onScriptureTap = onScriptureTap
@@ -1202,6 +1278,7 @@ struct CommentaryUnitView: View {
                     onScriptureTap: onScriptureTap,
                     onStrongsTap: onStrongsTap,
                     onFootnoteTap: { id in handleFootnoteTap(id) },
+                    onScriptureOccurrenceTap: occurrenceTap(in: .introduction),
                     shouldReportMatchOffset: shouldReportMatchOffset,
                     scrollCoordinateSpace: scrollCoordinateSpace
                 )
@@ -1220,7 +1297,8 @@ struct CommentaryUnitView: View {
                         style: translationStyle,
                         onScriptureTap: onScriptureTap,
                         onStrongsTap: onStrongsTap,
-                        onFootnoteTap: { id in handleFootnoteTap(id) }
+                        onFootnoteTap: { id in handleFootnoteTap(id) },
+                        onScriptureOccurrenceTap: occurrenceTap(in: .translation)
                     )
                     // Set off as a quotation: the commentator's own rendering,
                     // apart from his discussion of it.
@@ -1242,11 +1320,21 @@ struct CommentaryUnitView: View {
                     onScriptureTap: onScriptureTap,
                     onStrongsTap: onStrongsTap,
                     onFootnoteTap: { id in handleFootnoteTap(id) },
+                    onScriptureOccurrenceTap: occurrenceTap(in: .commentary),
                     shouldReportMatchOffset: shouldReportMatchOffset,
                     scrollCoordinateSpace: scrollCoordinateSpace
                 )
             }
 
+        }
+    }
+
+    private func occurrenceTap(
+        in field: CommentaryScriptureOccurrence.Field
+    ) -> ((Int, Int?, Int) -> Void)? {
+        guard let onScriptureOccurrenceTap else { return nil }
+        return { sv, ev, start in
+            onScriptureOccurrenceTap(sv, ev, CommentaryScriptureOccurrence(field: field, start: start))
         }
     }
 

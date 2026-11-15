@@ -956,6 +956,9 @@ struct CommentaryUnitCell: View {
     let onScriptureTap: ((Int, Int?) -> Void)?
     let onStrongsTap: ((String) -> Void)?
     let onFootnoteTap: ((String, CommentaryFootnote) -> Void)?
+    /// Called instead of `onScriptureTap` when set, with which reference in
+    /// which unit was tapped.
+    var onScriptureOccurrenceTap: ((Int, Int?, CommentaryItemOccurrence) -> Void)? = nil
 
     var body: some View {
         if data.outlineTrail.isEmpty {
@@ -987,9 +990,22 @@ struct CommentaryUnitCell: View {
             ),
             onScriptureTap: onScriptureTap,
             onStrongsTap: onStrongsTap,
-            onFootnoteTap: onFootnoteTap
+            onFootnoteTap: onFootnoteTap,
+            onScriptureOccurrenceTap: onScriptureOccurrenceTap.map { tap in
+                let unitIndex = data.index
+                return { sv, ev, occurrence in
+                    tap(sv, ev, CommentaryItemOccurrence(unit: unitIndex, occurrence: occurrence))
+                }
+            }
         )
     }
+}
+
+/// A reference's place in a chapter's commentary: its unit's index in the
+/// loaded units, and where in that unit it sits.
+struct CommentaryItemOccurrence: Hashable {
+    let unit: Int
+    let occurrence: CommentaryScriptureOccurrence
 }
 
 // MARK: - Notes Cell Data
@@ -1341,6 +1357,8 @@ struct ToolPanelView: View {
     @State private var commentarySeriesHasCoverage: Bool = false
     @State private var isCommentaryLoading: Bool = false
     @State private var allCommentaryItems: [PreviewItem] = []  // All tappable items for prev/next navigation
+    /// Each reference in `allCommentaryItems` by where it sits, for a tap.
+    @State private var commentaryItemByOccurrence: [CommentaryItemOccurrence: PreviewItem] = [:]
 
     // Devotionals state
     @State private var showingDevotionalPicker: Bool = true
@@ -2259,31 +2277,16 @@ struct ToolPanelView: View {
                     data: data,
                     fontSize: toolFontSize,
                     onScriptureTap: { sv, ev in
-                        // Find matching item in allCommentaryItems for prev/next navigation
-                        if let matchingItem = allCommentaryItems.first(where: {
-                            if case .verse(let itemSv, let itemEv, _, _) = $0.type {
-                                return itemSv == sv && itemEv == ev
-                            }
-                            return false
-                        }) {
-                            // Use all verse items for prev/next navigation
-                            let verseItems = allCommentaryItems.filter {
-                                if case .verse = $0.type { return true }
-                                return false
-                            }
-                            commentaryPreviewState = PreviewSheetState(currentItem: matchingItem, allItems: verseItems.isEmpty ? [matchingItem] : verseItems)
-                        } else {
-                            // Fallback: create single item
-                            let displayText = formatVerseRangeReference(sv, endVerseId: ev)
-                            let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
-                            commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
-                        }
+                        openCommentaryReference(sv: sv, ev: ev, at: nil)
                     },
                     onStrongsTap: { strongsKey in
                         commentaryStrongsKey = strongsKey
                     },
                     onFootnoteTap: { _, footnote in
                         commentaryFootnote = footnote
+                    },
+                    onScriptureOccurrenceTap: { sv, ev, occurrence in
+                        openCommentaryReference(sv: sv, ev: ev, at: occurrence)
                     }
                 )
                 .padding(.horizontal, 20)
@@ -2353,43 +2356,82 @@ struct ToolPanelView: View {
         commentaryUnits = units
 
         // Parse all tappable items for prev/next navigation
-        allCommentaryItems = parseCommentaryItems(from: units)
+        let parsed = parseCommentaryItems(from: units)
+        allCommentaryItems = parsed.items
+        commentaryItemByOccurrence = parsed.byOccurrence
     }
 
     /// Parse all tappable items (verse refs, strongs) from commentary units for prev/next navigation
-    private func parseCommentaryItems(from units: [CommentaryUnit]) -> [PreviewItem] {
+    /// Opens the preview for a tapped reference, with prev/next running
+    /// through the chapter's references from that one. The tap's place
+    /// finds it; without one (or if the units changed under it) the first
+    /// reference to the same passage stands in.
+    private func openCommentaryReference(sv: Int, ev: Int?, at occurrence: CommentaryItemOccurrence?) {
+        let tapped = occurrence.flatMap { commentaryItemByOccurrence[$0] }
+            .flatMap { item -> PreviewItem? in
+                if case .verse(let itemSv, let itemEv, _, _) = item.type, itemSv == sv, itemEv == ev {
+                    return item
+                }
+                return nil
+            }
+        let matchingItem = tapped ?? allCommentaryItems.first(where: {
+            if case .verse(let itemSv, let itemEv, _, _) = $0.type {
+                return itemSv == sv && itemEv == ev
+            }
+            return false
+        })
+        if let matchingItem {
+            let verseItems = allCommentaryItems.filter {
+                if case .verse = $0.type { return true }
+                return false
+            }
+            commentaryPreviewState = PreviewSheetState(currentItem: matchingItem, allItems: verseItems.isEmpty ? [matchingItem] : verseItems)
+        } else {
+            let displayText = formatVerseRangeReference(sv, endVerseId: ev)
+            let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
+            commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
+        }
+    }
+
+    /// Every tappable item in the chapter's commentary, in reading order,
+    /// and where each reference sits, so a tap opens the one tapped rather
+    /// than the first reference anywhere in the chapter to the same passage.
+    private func parseCommentaryItems(
+        from units: [CommentaryUnit]
+    ) -> (items: [PreviewItem], byOccurrence: [CommentaryItemOccurrence: PreviewItem]) {
         var items: [PreviewItem] = []
+        var byOccurrence: [CommentaryItemOccurrence: PreviewItem] = [:]
         var index = 0
 
-        for unit in units {
-            // Parse from introduction
-            if let intro = unit.introduction {
-                for item in parseAnnotatedTextItems(intro, startIndex: &index) {
+        for (unitIndex, unit) in units.enumerated() {
+            let fields: [(CommentaryScriptureOccurrence.Field, AnnotatedText?)] = [
+                (.introduction, unit.introduction),
+                (.translation, unit.translation),
+                (.commentary, unit.commentary),
+            ]
+            for case let (field, text?) in fields {
+                for (item, start) in parseAnnotatedTextItems(text, startIndex: &index) {
                     items.append(item)
-                }
-            }
-            // Parse from translation
-            if let translation = unit.translation {
-                for item in parseAnnotatedTextItems(translation, startIndex: &index) {
-                    items.append(item)
-                }
-            }
-            // Parse from commentary
-            if let commentary = unit.commentary {
-                for item in parseAnnotatedTextItems(commentary, startIndex: &index) {
-                    items.append(item)
+                    if case .verse = item.type {
+                        let key = CommentaryItemOccurrence(
+                            unit: unitIndex,
+                            occurrence: CommentaryScriptureOccurrence(field: field, start: start)
+                        )
+                        byOccurrence[key] = item
+                    }
                 }
             }
         }
 
-        return items
+        return (items, byOccurrence)
     }
 
-    /// Parse tappable items from annotated text
-    private func parseAnnotatedTextItems(_ annotatedText: AnnotatedText, startIndex: inout Int) -> [PreviewItem] {
+    /// Parse tappable items from annotated text, each with its annotation's
+    /// start offset.
+    private func parseAnnotatedTextItems(_ annotatedText: AnnotatedText, startIndex: inout Int) -> [(PreviewItem, Int)] {
         guard let annotations = annotatedText.annotations else { return [] }
 
-        var items: [PreviewItem] = []
+        var items: [(PreviewItem, Int)] = []
         let text = annotatedText.text
 
         for annotation in annotations {
@@ -2405,15 +2447,18 @@ struct ToolPanelView: View {
             let displayText = String(text[startStringIdx..<endStringIdx])
 
             switch annotation.type {
-            case .scripture:
+            // A cross-reference that names its passage opens as a reference
+            // does (see CommentaryRenderer), so it takes its place in the
+            // run too.
+            case .scripture, .crossref:
                 if let sv = annotation.data?.sv {
                     let ev = annotation.data?.ev
-                    items.append(PreviewItem.verse(index: startIndex, verseId: sv, endVerseId: ev, displayText: displayText))
+                    items.append((PreviewItem.verse(index: startIndex, verseId: sv, endVerseId: ev, displayText: displayText), annotation.start))
                     startIndex += 1
                 }
             case .strongs:
                 if let key = annotation.data?.strongs ?? annotation.id {
-                    items.append(PreviewItem.strongs(index: startIndex, key: key, displayText: displayText))
+                    items.append((PreviewItem.strongs(index: startIndex, key: key, displayText: displayText), annotation.start))
                     startIndex += 1
                 }
             default:
@@ -2553,23 +2598,13 @@ struct ToolPanelView: View {
                         ),
                         onScriptureTap: { sv, ev in
                             commentaryFootnote = nil
-                            // Find matching item in allCommentaryItems for prev/next navigation
-                            if let matchingItem = allCommentaryItems.first(where: {
-                                if case .verse(let itemSv, let itemEv, _, _) = $0.type {
-                                    return itemSv == sv && itemEv == ev
-                                }
-                                return false
-                            }) {
-                                let verseItems = allCommentaryItems.filter {
-                                    if case .verse = $0.type { return true }
-                                    return false
-                                }
-                                commentaryPreviewState = PreviewSheetState(currentItem: matchingItem, allItems: verseItems.isEmpty ? [matchingItem] : verseItems)
-                            } else {
-                                let displayText = formatVerseRangeReference(sv, endVerseId: ev)
-                                let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
-                                commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
-                            }
+                            // A footnote's references aren't in the chapter's
+                            // run, so the passage opens on its own: matching
+                            // it to the first reference elsewhere to the same
+                            // verse would start prev/next from that one.
+                            let displayText = formatVerseRangeReference(sv, endVerseId: ev)
+                            let item = PreviewItem.verse(index: 0, verseId: sv, endVerseId: ev, displayText: displayText)
+                            commentaryPreviewState = PreviewSheetState(currentItem: item, allItems: [item])
                         },
                         onStrongsTap: { strongsKey in
                             commentaryFootnote = nil

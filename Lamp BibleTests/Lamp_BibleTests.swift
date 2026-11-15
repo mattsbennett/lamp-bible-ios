@@ -8819,3 +8819,55 @@ final class WritingCollectionRenameTests: XCTestCase {
         XCTAssertEqual(LibrarySyncPass.modulePath(forMedia: "WritingMedia/writing/w1/a.jpg"), "Writing/writing.lamp")
     }
 }
+
+/// Hebrew or Greek beside a reference keeps its order: the run is isolated,
+/// so a reference starting with a digit ("1Kgs") isn't drawn with its "1" on
+/// the far side of the Hebrew.
+final class CommentaryScriptIsolationTests: XCTestCase {
+    private let hebrew = "גֵּבִים"
+
+    private func entry() -> AnnotatedText {
+        let text = "singular \(hebrew) 1Kgs 6:9 and he covered"
+        let hebrewStart = "singular ".unicodeScalars.count
+        let hebrewEnd = hebrewStart + hebrew.unicodeScalars.count
+        let refStart = hebrewEnd + 1
+        return AnnotatedText(text: text, annotations: [
+            CommentaryAnnotation(type: .hebrew, start: hebrewStart, end: hebrewEnd),
+            CommentaryAnnotation(
+                type: .scripture, start: refStart, end: refStart + "1Kgs 6:9".unicodeScalars.count,
+                data: CommentaryAnnotationData(sv: 11006009)
+            ),
+        ])
+    }
+
+    func testTheHebrewRunIsSetBetweenAnIsolateAndItsPop() {
+        let rendered = CommentaryRenderer.renderUIKit(entry()).string
+        XCTAssertEqual(rendered, "singular \u{2068}\(hebrew)\u{2069} 1Kgs 6:9 and he covered")
+    }
+
+    func testTheIndexedRendererIsolatesTheRunToo() {
+        let rendered = CommentaryRenderer.renderUIKitWithItems(entry()).attributedString.string
+        XCTAssertEqual(rendered, "singular \u{2068}\(hebrew)\u{2069} 1Kgs 6:9 and he covered")
+    }
+
+    /// Isolation comes last, so what was laid on by offset stays on its own
+    /// characters: the reference's colour still covers exactly "1Kgs 6:9".
+    func testAttributesStayOnTheirCharacters() {
+        let style = CommentaryRenderer.defaultStyle
+        let rendered = CommentaryRenderer.renderUIKit(entry(), style: style)
+        let string = rendered.string as NSString
+        let refRange = string.range(of: "1Kgs 6:9")
+        var effective = NSRange()
+        let colour = rendered.attribute(.foregroundColor, at: refRange.location, effectiveRange: &effective)
+        XCTAssertEqual(colour as? UIColor, UIColor(style.scriptureColor))
+        XCTAssertEqual(effective, refRange)
+    }
+
+    func testACallerCanLeaveIsolationForLast() {
+        let plain = CommentaryRenderer.renderUIKit(entry(), isolatesScriptRuns: false)
+        XCTAssertEqual(plain.string, entry().text)
+        let mutable = NSMutableAttributedString(attributedString: plain)
+        CommentaryRenderer.isolateScriptRuns(in: mutable)
+        XCTAssertEqual(mutable.string, "singular \u{2068}\(hebrew)\u{2069} 1Kgs 6:9 and he covered")
+    }
+}
