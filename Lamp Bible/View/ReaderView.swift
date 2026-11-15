@@ -1968,6 +1968,20 @@ struct ReaderView: View {
     @State private var isHistoryNavigation: Bool = false
     /// Incremented per load so a slow background read can't clobber a newer one
     @State private var loadGeneration: Int = 0
+    /// Bumped by each read of the day's plan readings and of a reading's
+    /// quiz, so a slower earlier one can't overwrite a newer one.
+    @State private var planReadingsGeneration: Int = 0
+    @State private var quizGeneration: Int = 0
+    /// The plan and reading the quiz shown is for, so moving to another
+    /// reading clears it at once rather than when the new one is read.
+    @State private var quizReadingKey: String?
+    /// Opening is waiting on the day's plan readings. Whichever load of them
+    /// wins, the first or one a date change starts, finishes it.
+    @State private var isAppearancePending = false
+    /// The day's plan readings are being read. The ones held are the last
+    /// day's until then, so moving among them waits: a reading opened is
+    /// marked read.
+    @State private var isPlanReadingsPending = false
     /// True while a background content read is in flight. Scroll position is
     /// meaningless against soon-to-be-replaced content, so verse commits and the
     /// scroll spy stay suppressed until the new content lands.
@@ -3386,9 +3400,79 @@ struct ReaderView: View {
             // Load highlight sets for this translation
             HighlightManager.shared.loadSetsForTranslation(translationId)
 
-            // Load plan readings for plan mode
-            loadPlanReadings()
+            // Load plan readings for plan mode, off the main actor; the rest
+            // of opening waits for them, since it picks the mode by them.
+            isAppearancePending = true
+            Task {
+                guard await loadPlanReadings(), isAppearancePending else { return }
+                isAppearancePending = false
+                finishAppearing()
+            }
+        }
+        .onChange(of: toolbarMode) { _, newMode in
+            if newMode == .plan {
+                if !plansWithReadings.isEmpty {
+                    // Switch to plan reading
+                    loadPlanReading(at: planReadingIndex)
+                } else {
+                    // No plan readings available, switch back to search
+                    toolbarMode = .search
+                }
+            } else if readingMetaData == nil {
+                planSpeech.stop()
+                // Switch back to chapter view
+                loadVerses(loadingCase: LOADING_CURRENT)
+            }
+        }
+        .onChange(of: date) { _, _ in
+            planSpeech.stop()
+            // The last day's quiz goes with its readings.
+            quizGeneration &+= 1
+            quizModule = nil
+            quizQuestions = []
+            quizReadingKey = nil
+            // Reload plan readings when date changes
+            Task {
+                guard await loadPlanReadings() else { return }
+                if isAppearancePending {
+                    isAppearancePending = false
+                    finishAppearing()
+                    return
+                }
+                if toolbarMode == .plan {
+                    if !plansWithReadings.isEmpty {
+                        loadPlanReading(at: 0)
+                    } else {
+                        // No readings for this date, switch back to search
+                        toolbarMode = .search
+                    }
+                }
+            }
+        }
+        .onChange(of: planSpeechInputs, initial: true) { _, inputs in
+            rebuildPlanSpeechRequest(for: inputs)
+        }
+        .onChange(of: spokenVerseId) { _, verseId in
+            if let verseId {
+                followSpokenVerse(verseId)
+            }
+        }
+        .onDisappear {
+            planSpeech.stop()
+            // A load of the day's readings or of a quiz still out would land
+            // on a reader no longer shown, and opening a reading marks it
+            // read. Appearing again reads them afresh.
+            planReadingsGeneration &+= 1
+            quizGeneration &+= 1
+            isAppearancePending = false
+            isPlanReadingsPending = false
+        }
+    }
 
+    /// The part of opening that depends on the day's plan readings: the
+    /// toolbar mode asked for, a deep link's translation and verse, and what
+    /// to show first.
+    private func finishAppearing() {
             // Apply initial toolbar mode if provided (must be after loadPlanReadings)
             if !hasAppliedInitialMode, let mode = requestedToolbarMode {
                 // Only apply plan mode if there are readings
@@ -3457,46 +3541,6 @@ struct ReaderView: View {
                 // Always scroll to top since headers are now part of ChapterTextView
                 initialScrollItem = "top"
             }
-        }
-        .onChange(of: toolbarMode) { _, newMode in
-            if newMode == .plan {
-                if !plansWithReadings.isEmpty {
-                    // Switch to plan reading
-                    loadPlanReading(at: planReadingIndex)
-                } else {
-                    // No plan readings available, switch back to search
-                    toolbarMode = .search
-                }
-            } else if readingMetaData == nil {
-                planSpeech.stop()
-                // Switch back to chapter view
-                loadVerses(loadingCase: LOADING_CURRENT)
-            }
-        }
-        .onChange(of: date) { _, _ in
-            planSpeech.stop()
-            // Reload plan readings when date changes
-            loadPlanReadings()
-            if toolbarMode == .plan {
-                if !plansWithReadings.isEmpty {
-                    loadPlanReading(at: 0)
-                } else {
-                    // No readings for this date, switch back to search
-                    toolbarMode = .search
-                }
-            }
-        }
-        .onChange(of: planSpeechInputs, initial: true) { _, inputs in
-            rebuildPlanSpeechRequest(for: inputs)
-        }
-        .onChange(of: spokenVerseId) { _, verseId in
-            if let verseId {
-                followSpokenVerse(verseId)
-            }
-        }
-        .onDisappear {
-            planSpeech.stop()
-        }
     }
 
     private func commitVisibleVerseIfNeeded(_ verseId: Int) {
@@ -3569,43 +3613,65 @@ struct ReaderView: View {
         }
     }
 
-    /// Loads today's readings from the user's selected plans
-    private func loadPlanReadings() {
-        let plans = ReadingPlanLibrary.allPlans()
-        let plansMetaData = PlansMetaData(plans: plans, date: date)
+    /// Loads today's readings from the user's selected plans, off the main
+    /// actor: each reading's metadata is a few queries. Only the followed
+    /// plans are built, as PlanView builds them, so they come from its cache.
+    /// Returns false when a later load overtook this one, which then owns
+    /// what follows.
+    @discardableResult
+    private func loadPlanReadings() async -> Bool {
+        planReadingsGeneration &+= 1
+        let generation = planReadingsGeneration
+        isPlanReadingsPending = true
+        let date = self.date
+        let selection = userSettings
+        // The settings PlanView builds with, so the cache keys match.
+        let settings = UserDatabase.shared.getSettings()
+        let built = await Task.detached(priority: .userInitiated) {
+            Self.plansWithReadings(date: date, selection: selection, settings: settings)
+        }.value
+        guard generation == planReadingsGeneration else { return false }
 
-        // Build list of plans with their readings
-        var plansWithReadingsTemp: [PlanWithReadings] = []
-        for planMeta in plansMetaData.planMetaData {
-            if userSettings.isPlanSelected(planMeta.id) && !planMeta.readingMetaData.isEmpty {
-                plansWithReadingsTemp.append(PlanWithReadings(
-                    id: planMeta.id,
-                    name: planMeta.plan.name,
-                    readings: planMeta.readingMetaData
-                ))
-            }
-        }
-
-        plansWithReadings = plansWithReadingsTemp
+        isPlanReadingsPending = false
+        plansWithReadings = built
         // Reset indices, keeping selectedPlanIndex if still valid
         if selectedPlanIndex >= plansWithReadings.count {
             selectedPlanIndex = 0
         }
         planReadingIndex = 0
         currentReadingIndex = 0
+        return true
+    }
+
+    private nonisolated static func plansWithReadings(
+        date: Date, selection: UserSettings, settings: UserSettings
+    ) -> [PlanWithReadings] {
+        let plans = ReadingPlanLibrary.allPlans().filter { selection.isPlanSelected($0.id) }
+        return PlansMetaData(plans: plans, date: date, userSettings: settings).planMetaData
+            .filter { !$0.readingMetaData.isEmpty }
+            .map { PlanWithReadings(id: $0.id, name: $0.plan.name, readings: $0.readingMetaData) }
     }
 
     /// Loads verses for the specified plan reading index within the selected plan.
     /// `scrollToEnd` lands on the reading's last verse instead of its first, which
     /// is what backwards scroll-trigger navigation wants.
     private func loadPlanReading(at index: Int, scrollToEnd: Bool = false) {
-        guard selectedPlanIndex >= 0 && selectedPlanIndex < plansWithReadings.count else { return }
+        guard !isPlanReadingsPending,
+              selectedPlanIndex >= 0 && selectedPlanIndex < plansWithReadings.count else { return }
         let planReadings = plansWithReadings[selectedPlanIndex].readings
         guard index >= 0 && index < planReadings.count else { return }
 
         planSpeech.stop()
 
         let reading = planReadings[index]
+        // The quiz shown belongs to the reading being left: drop it now, as
+        // the new one's is read only once the verses are in.
+        if quizReadingKey != Self.quizKey(planId: plansWithReadings[selectedPlanIndex].id, readingId: reading.id) {
+            quizGeneration &+= 1
+            quizModule = nil
+            quizQuestions = []
+            quizReadingKey = nil
+        }
         planReadingIndex = index
         // The bottom toolbar renders from currentReadingIndex, so keep the two in
         // step here rather than relying on callers to do it. Safe in plan mode:
@@ -3691,6 +3757,10 @@ struct ReaderView: View {
 
     /// Loads quiz questions for the current plan reading if a quiz module exists
     private func loadQuizForCurrentReading() {
+        // Any earlier read in flight is superseded, even by a reading with no
+        // quiz, which clears the card below.
+        quizGeneration &+= 1
+        let generation = quizGeneration
         guard toolbarMode == .plan,
               selectedPlanIndex >= 0,
               selectedPlanIndex < plansWithReadings.count else {
@@ -3716,23 +3786,38 @@ struct ReaderView: View {
             return
         }
 
-        // Find quiz module for this plan (bundled first, then user)
-        let module = (try? BundledModuleDatabase.shared.getQuizModulesForPlan(planId: plan.id))?.first
-            ?? (try? ModuleDatabase.shared.getQuizModulesForPlan(planId: plan.id))?.first
-
-        guard let module else {
-            quizModule = nil
-            quizQuestions = []
-            return
-        }
-
-        quizModule = module
         // Read the age group live: `userSettings` is captured at init, and the
         // quiz sheet can change this preference while the reader is on screen.
         let ageGroup = UserDatabase.shared.getSettings().defaultQuizAgeGroup
-        quizQuestions = module.questionsForReading(
-            day: dayNum, sv: reading.sv, ev: reading.ev, ageGroup: ageGroup
-        )
+        let planId = plan.id
+        let sv = reading.sv
+        let ev = reading.ev
+        let key = Self.quizKey(planId: planId, readingId: reading.id)
+        if quizReadingKey != key {
+            // Another reading's quiz mustn't open against this one's verses
+            // while this one's is read.
+            quizModule = nil
+            quizQuestions = []
+            quizReadingKey = key
+        }
+        // Several quiz queries, so off the main actor; the card shows when
+        // they land, and a newer reading's quiz wins.
+        Task {
+            let found = await Task.detached(priority: .userInitiated) { () -> (QuizModule, [QuizQuestion])? in
+                // Find quiz module for this plan (bundled first, then user)
+                guard let module = (try? BundledModuleDatabase.shared.getQuizModulesForPlan(planId: planId))?.first
+                    ?? (try? ModuleDatabase.shared.getQuizModulesForPlan(planId: planId))?.first
+                else { return nil }
+                return (module, module.questionsForReading(day: dayNum, sv: sv, ev: ev, ageGroup: ageGroup))
+            }.value
+            guard generation == quizGeneration else { return }
+            quizModule = found?.0
+            quizQuestions = found?.1 ?? []
+        }
+    }
+
+    private static func quizKey(planId: String, readingId: String) -> String {
+        "\(planId)|\(readingId)"
     }
 }
 

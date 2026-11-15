@@ -20,16 +20,88 @@ struct PlanPickerView: View {
     @State private var deleteError: String?
     @State private var editMode: EditMode = .inactive
     /// Readings ticked this week, by plan, for the strip on a followed plan.
-    @State private var completedReadingIds: Set<String> = UserDatabase.shared.getCompletedReadingIds()
+    @State private var completedReadingIds: Set<String> = []
+    /// How many readings each plan has on each day of this week, Monday
+    /// first, read with the plans rather than with every render of a card.
+    @State private var weekReadingCounts: [String: [Int]] = [:]
+    /// The Monday the counts are for: a picker left open into a new week
+    /// mustn't lay last week's counts over this week's days.
+    @State private var weekReadingCountsStart: Date?
+    @State private var hasLoaded = false
+    @State private var loadGeneration = 0
+    /// Bumped by every read of the ticks, the full reload's included, so
+    /// the newest set of them always wins.
+    @State private var completedGeneration = 0
 
-    init() {
-        let plans = ReadingPlanLibrary.plansBySource()
-        _bundledPlans = State(initialValue: plans.bundled)
-        _userPlans = State(initialValue: plans.user)
-    }
+    // Nothing is read here: Plans and Settings build this view with every
+    // render of theirs, in a NavigationLink, long before it is shown.
 
     var body: some View {
         // Pushed onto Plans' or Settings' stack, so New Plan is pushed there too.
+        Group {
+            if hasLoaded {
+                planList
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            if Self.weekDates().dates.first != weekReadingCountsStart {
+                Task { await reload() }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
+            userSettings = UserDatabase.shared.getSettings()
+            Task { await reloadCompletedReadings() }
+        }
+        .navigationDestination(isPresented: $showsNewPlan) {
+            NewPlanView { _ in
+                Task { await reload() }
+                showsNewPlan = false
+            }
+        }
+        .sheet(item: $infoPlan) { plan in
+            PlanInfoSheet(plan: plan)
+        }
+        .confirmationDialog(
+            "Delete “\(planToDelete?.name ?? "")”?",
+            isPresented: Binding(get: { planToDelete != nil }, set: { if !$0 { planToDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: planToDelete
+        ) { plan in
+            Button("Delete Plan", role: .destructive) {
+                Task { await delete(plan) }
+            }
+        } message: { _ in
+            Text("The plan is deleted here and on any device you sync with.")
+        }
+        .alert("Couldn't Delete the Plan", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+            Button("OK") { deleteError = nil }
+        } message: {
+            Text(deleteError ?? "")
+        }
+        .navigationBarBackButtonHidden(true)
+        .navigationTitle("Reading Plans")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button { dismiss() } label: {
+                    Image(systemName: "arrow.backward")
+                }
+            }
+            if !userPlans.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(editMode.isEditing ? "Done" : "Edit") {
+                        withAnimation { editMode = editMode.isEditing ? .inactive : .active }
+                    }
+                }
+            }
+        }
+    }
+
+    private var planList: some View {
         List {
             // Worded and marked as modules and search mark them.
             Section {
@@ -82,53 +154,6 @@ struct PlanPickerView: View {
         .listRowSpacing(12)
         .listSectionSpacing(20)
         .environment(\.editMode, $editMode)
-        .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
-            userSettings = UserDatabase.shared.getSettings()
-            completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
-        }
-        .navigationDestination(isPresented: $showsNewPlan) {
-            NewPlanView { _ in
-                reload()
-                showsNewPlan = false
-            }
-        }
-        .sheet(item: $infoPlan) { plan in
-            PlanInfoSheet(plan: plan)
-        }
-        .confirmationDialog(
-            "Delete “\(planToDelete?.name ?? "")”?",
-            isPresented: Binding(get: { planToDelete != nil }, set: { if !$0 { planToDelete = nil } }),
-            titleVisibility: .visible,
-            presenting: planToDelete
-        ) { plan in
-            Button("Delete Plan", role: .destructive) {
-                Task { await delete(plan) }
-            }
-        } message: { _ in
-            Text("The plan is deleted here and on any device you sync with.")
-        }
-        .alert("Couldn't Delete the Plan", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
-            Button("OK") { deleteError = nil }
-        } message: {
-            Text(deleteError ?? "")
-        }
-        .navigationBarBackButtonHidden(true)
-        .navigationTitle("Reading Plans")
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button { dismiss() } label: {
-                    Image(systemName: "arrow.backward")
-                }
-            }
-            if !userPlans.isEmpty {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(editMode.isEditing ? "Done" : "Edit") {
-                        withAnimation { editMode = editMode.isEditing ? .inactive : .active }
-                    }
-                }
-            }
-        }
     }
 
     /// A plan's card: its art, name, ages and pace, its description, and
@@ -281,17 +306,33 @@ struct PlanPickerView: View {
         return (clamped, total, Double(clamped) / Double(total))
     }
 
-    /// This week, Monday first: each day's readings and how many are ticked.
-    private func week(of plan: Plan) -> [PlanWeekStrip.Day] {
+    /// This week's dates, Monday first, and today.
+    private nonisolated static func weekDates() -> (dates: [Date], today: Date) {
         var calendar = Calendar.current
         calendar.firstWeekday = 2
         let today = calendar.startOfDay(for: .now)
-        guard let start = calendar.dateInterval(of: .weekOfYear, for: today)?.start else { return [] }
-        return (0..<7).compactMap { offset in
-            guard let date = calendar.date(byAdding: .day, value: offset, to: start) else { return nil }
+        guard let start = calendar.dateInterval(of: .weekOfYear, for: today)?.start else { return ([], today) }
+        let dates = (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+        return (dates, today)
+    }
+
+    /// How many readings a plan has on each of this week's days: a query a
+    /// day, so read off the main actor with the plans.
+    private nonisolated static func weekReadingCounts(of plan: Plan, dates: [Date]) -> [Int] {
+        dates.map { date in
+            ((try? ReadingPlanLibrary.planDay(planId: plan.id, day: plan.getPlanDay(date: date))) ?? nil)?
+                .readings.count ?? 0
+        }
+    }
+
+    /// This week, Monday first: each day's readings and how many are ticked.
+    private func week(of plan: Plan) -> [PlanWeekStrip.Day] {
+        let (dates, today) = Self.weekDates()
+        let counts = dates.first == weekReadingCountsStart ? weekReadingCounts[plan.id] ?? [] : []
+        return dates.enumerated().map { offset, date in
             let dayNum = plan.getPlanDay(date: date)
             let year = Calendar.iso8601.component(.year, from: date)
-            let total = ((try? ReadingPlanLibrary.planDay(planId: plan.id, day: dayNum)) ?? nil)?.readings.count ?? 0
+            let total = offset < counts.count ? counts[offset] : 0
             let read = (0..<total).filter { completedReadingIds.contains("\(plan.id)_\(dayNum)_\($0)_\(year)") }.count
             return PlanWeekStrip.Day(date: date, read: read, total: total, isToday: date == today, isAhead: date > today)
         }
@@ -323,18 +364,47 @@ struct PlanPickerView: View {
         } catch {
             deleteError = error.localizedDescription
         }
-        reload()
+        await reload()
     }
 
     /// Every plan and setting read again: a plan just made is followed in
-    /// the settings, and one just deleted no longer is.
-    private func reload() {
+    /// the settings, and one just deleted no longer is. Read off the main
+    /// actor (every plan, the whole completed-readings table, and a week of
+    /// plan days for each plan); a read that a later one overtakes is dropped.
+    private func reload() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         userSettings = UserDatabase.shared.getSettings()
-        completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
-        let plans = ReadingPlanLibrary.plansBySource()
-        bundledPlans = plans.bundled
-        userPlans = plans.user
+        completedGeneration &+= 1
+        let completedRead = completedGeneration
+        let weekDays = Self.weekDates().dates
+        let loaded = await Task.detached(priority: .userInitiated) {
+            let plans = ReadingPlanLibrary.plansBySource()
+            let counts = Dictionary(
+                (plans.bundled + plans.user).map { ($0.id, Self.weekReadingCounts(of: $0, dates: weekDays)) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            return (plans, counts, UserDatabase.shared.getCompletedReadingIds())
+        }.value
+        guard generation == loadGeneration else { return }
+        bundledPlans = loaded.0.bundled
+        userPlans = loaded.0.user
+        weekReadingCounts = loaded.1
+        weekReadingCountsStart = weekDays.first
+        if completedRead == completedGeneration { completedReadingIds = loaded.2 }
+        hasLoaded = true
         if userPlans.isEmpty { editMode = .inactive }
+    }
+
+    /// The ticks alone, after a reading is marked somewhere else.
+    private func reloadCompletedReadings() async {
+        completedGeneration &+= 1
+        let generation = completedGeneration
+        let ids = await Task.detached(priority: .userInitiated) {
+            UserDatabase.shared.getCompletedReadingIds()
+        }.value
+        guard generation == completedGeneration else { return }
+        completedReadingIds = ids
     }
 }
 

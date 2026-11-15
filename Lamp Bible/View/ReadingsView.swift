@@ -18,7 +18,8 @@ import SwiftUI
 /// than ticking it off.
 struct ReadingsView: View {
     @State private var userSettings: UserSettings = UserDatabase.shared.getSettings()
-    @State private var completedReadingIds: Set<String> = UserDatabase.shared.getCompletedReadingIds()
+    @State private var completedReadingIds: Set<String> = CompletedReadingsCache.ids
+    @State private var syncGeneration = 0
     @State private var readerCount: Int = UserDatabase.shared.getSettings().planReaderCount
     /// The opening verse of the next reading not yet read, for the card
     /// that invites the reader in.
@@ -82,10 +83,10 @@ struct ReadingsView: View {
             await loadUpNext()
         }
         .onAppear {
-            syncFromDatabase()
+            Task { await syncFromDatabase() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
-            syncFromDatabase()
+            Task { await syncFromDatabase() }
         }
         .onChange(of: readerCount) { _, newValue in
             // Guard against writing back a value we just read from the database
@@ -557,6 +558,7 @@ struct ReadingsView: View {
             try? UserDatabase.shared.addCompletedReading(reading.id)
             completedReadingIds.insert(reading.id)
         }
+        CompletedReadingsCache.ids = completedReadingIds
         WidgetDataService.shared.refreshWidget()
     }
 
@@ -567,16 +569,47 @@ struct ReadingsView: View {
         if !completedReadingIds.contains(reading.id) {
             try? UserDatabase.shared.addCompletedReading(reading.id)
             completedReadingIds.insert(reading.id)
+            CompletedReadingsCache.ids = completedReadingIds
             WidgetDataService.shared.refreshWidget()
         }
     }
 
-    private func syncFromDatabase() {
+    /// The settings (held in memory) at once, and the ticks read off the
+    /// main actor: the whole completed-readings table, for each plan's view.
+    /// A read that a later one overtakes is dropped.
+    private func syncFromDatabase() async {
         let settings = UserDatabase.shared.getSettings()
         userSettings = settings
-        completedReadingIds = UserDatabase.shared.getCompletedReadingIds()
         // Keep every plan's control in step — each ReadingsView holds its own copy
         readerCount = settings.planReaderCount
+        syncGeneration &+= 1
+        let generation = syncGeneration
+        let ids = await Task.detached(priority: .userInitiated) {
+            UserDatabase.shared.getCompletedReadingIds()
+        }.value
+        guard generation == syncGeneration else { return }
+        CompletedReadingsCache.ids = ids
+        completedReadingIds = ids
+    }
+}
+
+/// The ticks last read, which a new ReadingsView starts from. PlanView makes
+/// one for each plan with every render of its own, and each read the whole
+/// completed-readings table as it was made. The table is read here only the
+/// first time, so the first view's readings aren't shown unticked until the
+/// read in `syncFromDatabase` lands; after that it is kept by those reads.
+@MainActor
+private enum CompletedReadingsCache {
+    private static var cached: Set<String>?
+
+    static var ids: Set<String> {
+        get {
+            if let cached { return cached }
+            let ids = UserDatabase.shared.getCompletedReadingIds()
+            cached = ids
+            return ids
+        }
+        set { cached = newValue }
     }
 }
 
