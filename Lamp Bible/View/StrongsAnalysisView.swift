@@ -379,12 +379,7 @@ struct StrongsAnalysisView: View {
                             if analysisList !== found { analysisList = found }
                         })
                 } footer: {
-                    // The rate, outside the card: the card keeps to the figures
-                    // and the chart, unless one of its figures is the rate.
                     VStack(alignment: .leading, spacing: 6) {
-                        if !cardChoice.showsRate {
-                            Text(rateLine(analysis))
-                        }
                         // Every figure counts these numbers, so where they were
                         // matched to the text is said under the figures.
                         ForEach(disclosures(.strongs, for: analysis), id: \.self) { disclosure in
@@ -659,33 +654,6 @@ struct StrongsAnalysisView: View {
 
     // MARK: Summary
 
-    /// "3.3 in every 1,000", or for a word too rare to show there, in every
-    /// 10,000 or more, so a word that occurs never reads as "About 0".
-    static func rate(perThousand: Double) -> String {
-        var rate = perThousand
-        var per = 1_000
-        while rate > 0, rate < 0.95, per < 1_000_000 {
-            rate *= 10
-            per *= 10
-        }
-        let figure = rate.formatted(.number.precision(.fractionLength(0...1)))
-        return "\(figure) in every \(per.formatted())"
-    }
-
-    /// The rate against every tagged word, of either language, in the books
-    /// that tag the key's: in the Septuagint a name numbered by its Hebrew
-    /// is counted among the Greek around it, so no one language is named.
-    private func rateLine(_ analysis: LampStrongsAnalysis) -> String {
-        let rate = Self.rate(perThousand: analysis.ratePerThousandWords)
-        let books = bookRange.map { range -> String in
-            let name = rangeName(range)
-            let takesThe = ["Gospels", "General Letters", "Major Prophets", "Minor Prophets", "Law",
-                            "New Testament", "Old Testament"].contains(name)
-            return " in \(takesThe ? "the " : "")\(name)"
-        } ?? ""
-        return "About \(rate) tagged words of the \(analysis.translationAbbreviation ?? analysis.translationName)\(books)."
-    }
-
     private func summary(_ analysis: LampStrongsAnalysis) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
@@ -852,12 +820,7 @@ struct StrongsAnalysisView: View {
                 StrongsDefinitionPage(key: key, translationId: translationId, onNavigateToVerse: onNavigateToVerse)
             } label: {
                 Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Definition")
-                        Text("The whole entry, in each dictionary that has the word")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("Definition")
                 } icon: {
                     Image(systemName: "character.book.closed")
                         .foregroundStyle(.tint)
