@@ -169,6 +169,7 @@ struct StrongsAnalysisView: View {
     @State private var septuagintBook: Int?
     @State private var isShowingSeptuagintMethod = false
     @State private var isShowingSeptuagintNarrowing = false
+    @State private var isShowingEnglishNote = false
     /// Which English the verses read where a Septuagint in English is
     /// installed: that, or the reader's own Bible. Kept, as on the Mac.
     @AppStorage("strongs.analysis.septuagintEnglishIsDirect") private var readsSeptuagintInEnglish = true
@@ -1426,9 +1427,10 @@ struct StrongsAnalysisView: View {
         guard spreadGrouping.usesMeasure else {
             return "A square for each chapter, darker where the word is commoner. Tap one to filter the verse list below."
         }
-        // The legend under the bars names the shades; this says, in short,
-        // what they are measured against, which a key can't.
-        return "Measured against what each part’s length would lead you to expect. Tap one to filter the verse list below."
+        // The legend under the bars names the shades; this says in plain
+        // words what they mean, which a key can't.
+        let parts = spreadGrouping == .books ? "books" : "sections"
+        return "↑ and ↓ mark \(parts) that use the word more or less often than their size would suggest. Tap one to filter the verse list below."
     }
 
     /// The figure a bar is drawn to: a count, or a rate to two places.
@@ -1988,28 +1990,49 @@ struct StrongsAnalysisView: View {
     @ViewBuilder
     private var septuagintSection: some View {
         let own = septuagint.own
-        Section {
-            // The figures first and nothing said around them: the section's
-            // explanations are all under "How this is counted", and a row's
-            // doubt is one tap on that row. As open prose it read as a wall
-            // of hedging (owner, Nov 2026).
-            if let own {
+        // The Greek word's own figures, a card to themselves: nothing said
+        // around them, and nothing in it that acts on anything else. Its
+        // explanations are under "How this is counted".
+        if let own {
+            Section {
                 ownUseRows(own)
+            } header: {
+                sectionHeader(LampSeptuagintSection.ownUseTitle)
             }
-            if !septuagint.words.isEmpty {
-                hebrewControls(own: own)
-            }
-        } header: {
-            sectionHeader(own == nil ? LampSeptuagintSection.title : LampSeptuagintSection.ownUseTitle)
-        } footer: {
-            // Where the Septuagint counts the word, the headline says what
-            // the section is, and the Hebrew words are introduced inside.
-            if own == nil {
-                Text(LampSeptuagintSection.note(greek: headword.lemma, septuagint: septuagint.tagging))
-                    .lampFootnote()
-            }
+            .id(Jump.septuagint.anchor)
         }
-        .id(Jump.septuagint.anchor)
+        // The Hebrew it translates, under its own heading: what the lists
+        // are read with, then a card a word. The controls were at the foot of
+        // the figures' card, where they read as the book list's and not the
+        // lists they act on (owner, Nov 2026).
+        if !septuagint.words.isEmpty {
+            Section {
+                hebrewControls(own: own)
+            } header: {
+                // Part of the Septuagint section, not a section beside it: a
+                // sub-heading in the figures' captions' voice, under "In the
+                // Septuagint", with the section's own heading only where there
+                // are no figures above it (owner, Nov 2026).
+                if own == nil {
+                    sectionHeader(LampSeptuagintSection.title)
+                } else {
+                    Text(LampSeptuagintSection.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(LampTheme.caption)
+                        .textCase(nil)
+                        .padding(.top, 2)
+                        .accessibilityAddTraits(.isHeader)
+                }
+            } footer: {
+                // Where the Septuagint doesn't count the word, what can and
+                // can't be said of its Greek.
+                if own == nil {
+                    Text(LampSeptuagintSection.note(greek: headword.lemma, septuagint: septuagint.tagging))
+                        .lampFootnote()
+                }
+            }
+            .id(own == nil ? Jump.septuagint.anchor : "septuagint.hebrew")
+        }
         // Each Hebrew word a card of its own, headed by the word and how many
         // of its verses are listed: its verses are then plainly its, where in
         // the one card they ran on from the controls above. The heading names
@@ -2052,10 +2075,11 @@ struct StrongsAnalysisView: View {
         }
         let books = own.books.filter { $0.occurrenceCount > 0 }
         if !books.isEmpty {
-            // Parallel with "Verses in each Testament" above, as the Mac has
-            // it: "Where it stands in the Septuagint" never said what the
-            // numbers were (owner, Nov 2026).
-            rowCaption("Verses in each book")
+            // Parallel with "Verses in each Testament" above, and saying what
+            // the numbers are, which "Where it stands in the Septuagint"
+            // never did (owner, Nov 2026). Not "Verses": the bars count the
+            // word's occurrences, or its rate, as the spread's measure is set.
+            rowCaption(activeMeasure == .occurrences ? "Occurrences in each book" : "Per 1,000 words in each book")
             // Every book the word stands in. A list saying it hides some of
             // itself read worse than a longer one: λόγος's 35 bars and all
             // (owner, Nov 2026).
@@ -2122,17 +2146,8 @@ struct StrongsAnalysisView: View {
                     Text("The Testaments’ bars are counted apart and never added, each against the larger."
                         + (rates.isEmpty ? "" : " " + rates))
                 }
-                Text("A book’s ↑ or ↓ says the word stands there more or less often than the book’s length would lead you to expect, by more than chance."
+                Text("A book’s ↑ or ↓ says it uses the word more or less often than its size would suggest, by more than chance."
                     + (septuagint.words.isEmpty ? "" : " Tap a book to narrow the Hebrew words’ verses to it."))
-                // What each English gives and costs, where there is a choice.
-                if LampSeptuagintSection.EnglishChoice.isOffered(
-                    septuagintInEnglish: septuagint.septuagintInEnglish,
-                    readersTranslationID: translationId
-                ) {
-                    Text(readsSeptuagintInEnglish
-                        ? LampSeptuagintSection.directEnglishNote
-                        : LampSeptuagintSection.indirectEnglishWarning)
-                }
                 // Only a text that declares its tags were matched rather than
                 // printed, in the words its builder wrote.
                 if !septuagint.septuagintSources.isEmpty {
@@ -2161,9 +2176,6 @@ struct StrongsAnalysisView: View {
     /// whether the Greek, and how far they are narrowed.
     @ViewBuilder
     private func hebrewControls(own: LampStrongsAnalysis?) -> some View {
-        if own != nil {
-            rowCaption(LampSeptuagintSection.title)
-        }
         englishChoice
         Toggle(LampSeptuagintSection.OriginalLanguage.title, isOn: $showsSeptuagintGreek)
             .font(.subheadline)
@@ -2207,16 +2219,16 @@ struct StrongsAnalysisView: View {
             septuagintInEnglish: septuagint.septuagintInEnglish,
             readersTranslationID: translationId
         ) {
+            // Each reading by the module it is, which a reader can check:
+            // "Septuagint in English" and "Your Bible" named neither.
+            let titles = LampSeptuagintSection.EnglishChoice.titles(
+                septuagintInEnglish: septuagint.septuagintInEnglishName,
+                readersBible: analysis.map { $0.translationAbbreviation ?? $0.translationName }
+            )
             VStack(alignment: .leading, spacing: 8) {
                 Text(LampSeptuagintSection.EnglishChoice.title)
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(LampTheme.caption)
-                // Each reading by the module it is, which a reader can check:
-                // "Septuagint in English" and "Your Bible" named neither.
-                let titles = LampSeptuagintSection.EnglishChoice.titles(
-                    septuagintInEnglish: septuagint.septuagintInEnglishName,
-                    readersBible: analysis.map { $0.translationAbbreviation ?? $0.translationName }
-                )
                 Picker(LampSeptuagintSection.EnglishChoice.title, selection: $readsSeptuagintInEnglish) {
                     Text(titles.direct).tag(true)
                     Text(titles.indirect).tag(false)
@@ -2224,6 +2236,19 @@ struct StrongsAnalysisView: View {
                 .pickerStyle(.segmented)
             }
             .padding(.vertical, 4)
+            // What each gives and costs, by the choice it's about.
+            DisclosureGroup(isExpanded: $isShowingEnglishNote) {
+                Text(readsSeptuagintInEnglish
+                    ? LampSeptuagintSection.directEnglishNote
+                    : LampSeptuagintSection.indirectEnglishWarning)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 2)
+            } label: {
+                Text("About \(readsSeptuagintInEnglish ? titles.direct : titles.indirect)")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
