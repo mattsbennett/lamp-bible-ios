@@ -108,9 +108,13 @@ struct SplitReaderView: View {
     /// then lays itself out around the keyboard, so the panel inside it does
     /// not make room for the keyboard a second time.
     private var notesTakeTheSpace: Bool {
-        (noteEditorFocus.isEditing && keyboardHeight > 0 || noteEditorFocus.isAwaitingSheet)
+        notesPanelVisible
+            && (noteEditorFocus.isEditing && keyboardHeight > 0 || noteEditorFocus.isAwaitingSheet)
             && effectiveOrientation != "right"
     }
+
+    private var showsRightPanel: Bool { notesPanelVisible && effectiveOrientation == "right" }
+    private var showsBottomPanel: Bool { notesPanelVisible && effectiveOrientation != "right" }
 
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
 
@@ -148,13 +152,12 @@ struct SplitReaderView: View {
     private let maxPanelRatio: CGFloat = 0.7
 
     var body: some View {
-        Group {
-            if notesPanelVisible {
-                splitView
-            } else {
-                readerContent
-            }
-        }
+        // One layout whether or not the panel shows, with the reader in the
+        // same place in it, so opening, closing or moving the panel keeps the
+        // reader itself: its scroll position, chapter and plan reading. Two
+        // layouts, one with the panel and one without, made a new reader at
+        // each change, which reloaded the chapter at its top.
+        splitView
         // Ensure content/background extends behind any bottom toolbar so we don't
         // see the underlying window's black background.
         .background(LampTheme.readerBackground)
@@ -202,87 +205,82 @@ struct SplitReaderView: View {
     private var splitView: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
-                // Layer 1: Content
-                if effectiveOrientation == "right" {
-                    // Use ZStack overlay approach so tool panel can independently extend to top
-                    ZStack(alignment: .trailing) {
-                        // Tool panel + divider on the right, to the top of the
-                        // window, as the passage runs under the header too.
-                        HStack(spacing: 0) {
-                            // Divider with gradient fade at edges to match toolbar blur effect
-                            Rectangle()
-                                .fill(Color(UIColor.separator))
-                                .frame(width: 1)
-                                .mask(SplitDividerDrag.lineFade)
-                                .padding(.horizontal, 5.5)
-                                .frame(width: 12)
-                                .contentShape(Rectangle())
+                // Under the reader: the right-hand panel and its divider, to
+                // the top of the window, as the passage runs under the header
+                // too.
+                if showsRightPanel {
+                    HStack(spacing: 0) {
+                        // Divider with gradient fade at edges to match toolbar blur effect
+                        Rectangle()
+                            .fill(Color(UIColor.separator))
+                            .frame(width: 1)
+                            .mask(SplitDividerDrag.lineFade)
+                            .padding(.horizontal, 5.5)
+                            .frame(width: 12)
+                            .contentShape(Rectangle())
 
-                            // Its content starts below the reader's header
-                            // and scrolls up under it, as the passage's does
-                            // (`sharedHeaderHeight`). Stopping the panel at
-                            // the header left a dead band once it collapsed.
-                            toolPanelContent
-                                .frame(width: rightPanelWidth)
-                        }
-                        .frame(maxHeight: .infinity)
-                        .ignoresSafeArea(edges: .top)
-
-                        // Over the panel: the reader keeps its passage clear
-                        // of it, and its header spans both, so the header's
-                        // buttons above the panel take the taps there. The
-                        // rest of the reader's width is empty and lets them by.
-                        readerContent
+                        // Its content starts below the reader's header
+                        // and scrolls up under it, as the passage's does
+                        // (`sharedHeaderHeight`). Stopping the panel at
+                        // the header left a dead band once it collapsed.
+                        toolPanelContent
+                            .frame(width: rightPanelWidth)
                     }
-                } else {
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .ignoresSafeArea(edges: .top)
+                }
+
+                // The reader, always here. Over a right-hand panel it keeps
+                // its passage clear of it, and its header spans both, so the
+                // header's buttons above the panel take the taps there; the
+                // rest of its width is empty and lets them by. Over a bottom
+                // panel it takes the space above it, and is kept at no height
+                // while the notes take the space, so it is where it was when
+                // the keyboard goes down.
+                readerContent
+                    .frame(height: showsBottomPanel
+                           ? (notesTakeTheSpace ? 0 : max(0, geometry.size.height - bottomPanelHeight - 12))
+                           : nil)
+                    .opacity(notesTakeTheSpace ? 0 : 1)
+                    .clipShape(SplitReaderClip(clips: showsBottomPanel))
+                    .allowsHitTesting(!notesTakeTheSpace)
+
+                // The bottom panel on a ground of its own, under a hairline
+                // and the handle that resizes it.
+                if showsBottomPanel {
                     VStack(spacing: 0) {
-                        // Kept, at no height, so it is where it was when the
-                        // keyboard goes down.
-                        readerContent
-                            .frame(height: notesTakeTheSpace ? 0 : max(0, geometry.size.height - bottomPanelHeight - 12))
-                            .opacity(notesTakeTheSpace ? 0 : 1)
+                        // Divider with integrated drag handle
+                        if !notesTakeTheSpace {
+                            BottomPanelDivider(
+                                panelHeight: $bottomPanelHeight,
+                                containerHeight: geometry.size.height,
+                                minPanelSize: minPanelSize,
+                                maxPanelRatio: maxPanelRatio,
+                                isClosing: $panelDragWouldClose,
+                                onDragEnd: {
+                                    storedBottomPanelHeight = Double(bottomPanelHeight)
+                                },
+                                onClose: closePanelFromDivider
+                            )
+                        }
+
+                        toolPanelContent
+                            // Off the top edge by a point: touching it, the
+                            // panel's list would run on up under the status bar
+                            // and start behind the panel's own header.
+                            .padding(.top, notesTakeTheSpace ? 1 : 0)
+                            .frame(height: notesTakeTheSpace
+                                   ? max(minPanelSize, geometry.size.height - keyboardHeight)
+                                   : bottomPanelHeight)
                             .clipped()
-                            .allowsHitTesting(!notesTakeTheSpace)
-
-                        // The panel on a ground of its own, under a hairline
-                        // and the handle that resizes it.
-                        VStack(spacing: 0) {
-                            // Divider with integrated drag handle
-                            if !notesTakeTheSpace {
-                                BottomPanelDivider(
-                                    panelHeight: $bottomPanelHeight,
-                                    containerHeight: geometry.size.height,
-                                    minPanelSize: minPanelSize,
-                                    maxPanelRatio: maxPanelRatio,
-                                    isClosing: $panelDragWouldClose,
-                                    onDragEnd: {
-                                        storedBottomPanelHeight = Double(bottomPanelHeight)
-                                    },
-                                    onClose: closePanelFromDivider
-                                )
-                            }
-
-                            toolPanelContent
-                                // Off the top edge by a point: touching it, the
-                                // panel's list would run on up under the status bar
-                                // and start behind the panel's own header.
-                                .padding(.top, notesTakeTheSpace ? 1 : 0)
-                                .frame(height: notesTakeTheSpace
-                                       ? max(minPanelSize, geometry.size.height - keyboardHeight)
-                                       : bottomPanelHeight)
-                                .clipped()
-                        }
-                        .background(LampTheme.panelBackground)
-
-                        if notesTakeTheSpace {
-                            Spacer(minLength: keyboardHeight)
-                        }
                     }
-                    .animation(.easeInOut(duration: 0.25), value: notesTakeTheSpace)
+                    .background(LampTheme.panelBackground)
+                    .padding(.bottom, notesTakeTheSpace ? keyboardHeight : 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 }
 
                 // Layer 2: Interactive Drag Overlay (only for right panel - bottom uses inline handle)
-                if effectiveOrientation == "right" {
+                if showsRightPanel {
                     SplitDragOverlay(
                         panelSize: $rightPanelWidth,
                         containerSize: geometry.size,
@@ -301,6 +299,7 @@ struct SplitReaderView: View {
                     )
                 }
             }
+            .animation(.easeInOut(duration: 0.25), value: notesTakeTheSpace)
             .coordinateSpace(name: "splitContainer")
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
                 guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
@@ -315,26 +314,25 @@ struct SplitReaderView: View {
                 dividerY = value
             }
             // Allow split content (including ToolPanelView) to extend behind the bottom toolbar
-            // so there isn't a blank/black strip under it.
+            // so there isn't a blank/black strip under it. The keyboard too
+            // only with a panel, which lays itself out around it; alone, the
+            // reader makes room for it as it always has.
             .background(LampTheme.readerBackground)
-            .ignoresSafeArea(edges: .bottom)
+            .ignoresSafeArea(notesPanelVisible ? .all : .container, edges: .bottom)
             .onAppear {
-                if effectiveOrientation == "right" {
-                    if storedRightPanelWidth != 0 {
-                        rightPanelWidth = CGFloat(storedRightPanelWidth)
-                    } else {
-                        rightPanelWidth = min(350, geometry.size.width / 3)
-                    }
-                } else {
-                    settleBottomPanelHeight(in: geometry.size.height)
-                }
+                if notesPanelVisible { settlePanelSize(in: geometry.size) }
+            }
+            // The layout no longer reappears when the panel opens, so the
+            // panel takes its size here.
+            .onChange(of: notesPanelVisible) { _, visible in
+                if visible { settlePanelSize(in: geometry.size) }
             }
             // A panel that moves to the bottom without the view reappearing,
             // as an iPad's tools on the right do when the app goes into
             // Split View and turns compact, had no height of its own yet:
             // only its handle showed, too little to drag it up by.
-            .onChange(of: effectiveOrientation) { _, orientation in
-                if orientation != "right" { settleBottomPanelHeight(in: geometry.size.height) }
+            .onChange(of: effectiveOrientation) { _, _ in
+                if notesPanelVisible { settlePanelSize(in: geometry.size) }
             }
             // A change of space only ever raises a panel too small to drag:
             // a keyboard shortens the space for a moment, and capping then
@@ -361,6 +359,21 @@ struct SplitReaderView: View {
             : stored >= minPanelSize ? stored
             : containerHeight / 3
         bottomPanelHeight = min(max(wanted, minPanelSize), containerHeight * maxPanelRatio)
+    }
+
+    /// The panel's size as it opens: a right-hand panel the width last
+    /// dragged to, else a third of the width up to 350; a bottom one as
+    /// `settleBottomPanelHeight(in:)` has it.
+    private func settlePanelSize(in size: CGSize) {
+        if effectiveOrientation == "right" {
+            if storedRightPanelWidth != 0 {
+                rightPanelWidth = CGFloat(storedRightPanelWidth)
+            } else {
+                rightPanelWidth = min(350, size.width / 3)
+            }
+        } else {
+            settleBottomPanelHeight(in: size.height)
+        }
     }
 
     /// The divider was let go well past the panel's smallest size.
@@ -456,6 +469,17 @@ struct SplitReaderView: View {
             // Highlight the verse with the current/default color
             HighlightManager.shared.highlightEntireVerse(verse)
         }
+    }
+}
+
+/// Clips the reader to its frame only while a bottom panel is under it. A
+/// shape rather than a modifier put on and taken off, which would make a new
+/// reader each time; alone, the reader draws past its frame as it always has.
+private struct SplitReaderClip: Shape {
+    var clips: Bool
+
+    func path(in rect: CGRect) -> Path {
+        Path(clips ? rect : rect.insetBy(dx: -10_000, dy: -10_000))
     }
 }
 
