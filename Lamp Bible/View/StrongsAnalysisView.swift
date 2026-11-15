@@ -1034,12 +1034,11 @@ struct StrongsAnalysisView: View {
     /// The sentences saying what the translation declares was matched to it
     /// for `part` when its module was built.
     private func disclosures(_ part: LampTranslationSource.Part, for analysis: LampStrongsAnalysis) -> [String] {
-        tagSources.filter { $0.part == part }.map {
-            $0.disclosure(
-                translationName: analysis.translationAbbreviation ?? analysis.translationName,
-                strongsKey: analysis.key
-            )
-        }
+        LampTranslationSource.disclosures(
+            tagSources.filter { $0.part == part },
+            translationName: analysis.translationAbbreviation ?? analysis.translationName,
+            strongsKey: analysis.key
+        )
     }
 
     /// Where the spellings were matched to the text when its module was
@@ -2115,12 +2114,13 @@ struct StrongsAnalysisView: View {
                 // printed, in the words its builder wrote.
                 if !septuagint.septuagintSources.isEmpty {
                     Text(LampSeptuagintSection.ownUseCaution)
-                    ForEach(septuagint.septuagintSources, id: \.source) { source in
-                        Text(source.disclosure(
-                            translationName: own.translationAbbreviation ?? own.translationName,
-                            strongsKey: own.key
-                        ))
-                    }
+                    // Each part's sources said once, so two of them don't
+                    // read as one sentence begun twice.
+                    ForEach(LampTranslationSource.disclosures(
+                        septuagint.septuagintSources,
+                        translationName: own.translationAbbreviation ?? own.translationName,
+                        strongsKey: own.key
+                    ), id: \.self) { Text($0) }
                 }
             }
             .font(.subheadline)
