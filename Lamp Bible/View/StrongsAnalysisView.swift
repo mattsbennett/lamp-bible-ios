@@ -160,9 +160,6 @@ struct StrongsAnalysisView: View {
     @State private var formReadings: (source: String, byID: [String: LampStrongsFormReading])?
     @State private var showsAllCompanions = false
     @State private var septuagint = SeptuagintLoader()
-    /// Collapsed to begin with: the Septuagint is a second subject, and
-    /// opening it costs a search of the Hebrew text a word.
-    @State private var isShowingSeptuagint = false
     /// Closed to begin with: where the forms' spellings come from, and what
     /// the tags leave out, read once rather than every time.
     @State private var isShowingFormNotes = false
@@ -327,6 +324,15 @@ struct StrongsAnalysisView: View {
         isComparing = true
         await septuagint.loadWords(key: key)
         await loadComparison(key: key, range: range)
+        // The Septuagint's Hebrew, counted in the Hebrew text and crossed
+        // with its tags: shown open, so read with the page, after the
+        // translations the sections above it need. Told the English chosen
+        // before any of its rows is read.
+        septuagint.readsSeptuagintInEnglish = readsSeptuagintInEnglish
+        await septuagint.loadCounts(key: key, translationId: translationId, lemma: headword.lemma)
+        // Asked with every load, since a failed read leaves it unanswered;
+        // it returns at once once answered.
+        await septuagint.resolveSeptuagintInEnglish(key: key)
     }
 
     /// The other translations that tag the key, each worked out in turn
@@ -466,6 +472,12 @@ struct StrongsAnalysisView: View {
                 .allowsHitTesting(false)
         }
         .task(id: formsSource(of: analysis)) { await readForms(analysis) }
+        // The English the Septuagint's rows read: told to the loader, and
+        // the rows read again from the other text.
+        .onChange(of: readsSeptuagintInEnglish) { _, now in
+            septuagint.readsSeptuagintInEnglish = now
+            septuagint.forgetVerses()
+        }
         .sheet(isPresented: $isChoosingCardSlots) {
             StrongsCardSlotsSheet(
                 available: LampStrongsCardChoice.available(for: analysis),
@@ -1958,54 +1970,19 @@ struct StrongsAnalysisView: View {
 
     // MARK: Septuagint
 
-    /// For a Greek word, and collapsed: what it does in the Septuagint, where
-    /// that text tags it — the Testaments side by side and the books it
-    /// stands in — and the Hebrew it renders there, each word followable to
-    /// its own analysis, then each one's verses, narrowed to those where the
+    /// For a Greek word: what it does in the Septuagint, where that text
+    /// tags it — the Testaments side by side and the books it stands in —
+    /// and the Hebrew it renders there, each word followable to its own
+    /// analysis, then each one's verses, narrowed to those where the
     /// Septuagint uses this Greek word. Said for a reader with no Hebrew and
     /// no Greek. Nothing here is added to the counts above.
+    ///
+    /// Open, as every other section is: with the Jump To menu a reader
+    /// reaches it in a tap, so folding it away only cost another.
     private var septuagintSection: some View {
         let own = septuagint.own
         return Section {
-            DisclosureGroup(isExpanded: $isShowingSeptuagint) {
-                if let own {
-                    ownUseRows(own)
-                }
-                if !septuagint.words.isEmpty {
-                    hebrewRows(own: own)
-                }
-            } label: {
-                septuagintLabel(own)
-            }
-            .task(id: isShowingSeptuagint) {
-                guard isShowingSeptuagint else { return }
-                // Told before any row is read.
-                septuagint.readsSeptuagintInEnglish = readsSeptuagintInEnglish
-                await septuagint.loadCounts(key: key, translationId: translationId, lemma: headword.lemma)
-                // Asked whenever the section opens, since a failed read
-                // leaves it unanswered; it returns at once once answered.
-                await septuagint.resolveSeptuagintInEnglish(key: key)
-            }
-            .onChange(of: readsSeptuagintInEnglish) { _, now in
-                septuagint.readsSeptuagintInEnglish = now
-                septuagint.forgetVerses()
-            }
-        } header: {
-            sectionHeader(own == nil ? LampSeptuagintSection.title : LampSeptuagintSection.ownUseTitle)
-        } footer: {
-            // Where the Septuagint counts the word, the heading's line says
-            // what the section is, and the Hebrew words are introduced inside.
-            if own == nil {
-                Text(LampSeptuagintSection.note(greek: headword.lemma, septuagint: septuagint.tagging))
-                    .lampFootnote()
-            }
-        }
-    }
-
-    /// What is inside, before it is opened: the Greek word's use, where the
-    /// Septuagint counts it, then the Hebrew words and how to say them.
-    private func septuagintLabel(_ own: LampStrongsAnalysis?) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+            // What the Greek word comes to there, first: what the rest shows.
             if let own {
                 Text(LampSeptuagintSection.ownUseHeadline(
                     greek: headword.lemma,
@@ -2014,23 +1991,20 @@ struct StrongsAnalysisView: View {
                 ))
                 .font(.subheadline)
                 .foregroundStyle(.primary)
+                .padding(.vertical, 2)
+                ownUseRows(own)
             }
             if !septuagint.words.isEmpty {
-                // Marks either side of each separator keep the words in
-                // the lexicon's order left to right, rather than letting
-                // the Hebrew run them right to left as one phrase.
-                Text("\u{200E}" + septuagint.words
-                    .map { LampSeptuagintSection.word($0.hebrew) }
-                    .joined(separator: "\u{200E}  ·  \u{200E}"))
-                    .font(own == nil ? .title3 : .body)
-                    .lineLimit(1)
-                let said = septuagint.words.compactMap(\.transliteration).filter { !$0.isEmpty }
-                if !said.isEmpty {
-                    Text(said.joined(separator: "  ·  "))
-                        .font(.subheadline.italic())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                hebrewRows(own: own)
+            }
+        } header: {
+            sectionHeader(own == nil ? LampSeptuagintSection.title : LampSeptuagintSection.ownUseTitle)
+        } footer: {
+            // Where the Septuagint counts the word, the headline says what
+            // the section is, and the Hebrew words are introduced inside.
+            if own == nil {
+                Text(LampSeptuagintSection.note(greek: headword.lemma, septuagint: septuagint.tagging))
+                    .lampFootnote()
             }
         }
     }
@@ -3157,10 +3131,11 @@ private struct StrongsExpectationLegend: View {
 /// translation in Hebrew with Strong's tags, and the Septuagint is the Greek
 /// one that numbers its verses the Septuagint's way, as on the Mac.
 enum StrongsSeptuagint {
-    /// The most verses listed under one Hebrew word at a time, as on the Mac.
-    /// דָּבָר stands in over a thousand; "Show 25 More" reads on a page at a
-    /// time, since each verse costs a chapter read in two texts.
-    static let shownVerses = 25
+    /// The verses listed under one Hebrew word at a time, open, as the
+    /// word's own verse list starts at ten. דָּבָר stands in over a thousand;
+    /// "Show 10 More" reads on a page at a time, since each verse costs a
+    /// chapter read in two texts.
+    static let shownVerses = 10
 
     /// The Hebrew a Greek key's entries name, in the order the lexicons
     /// print it, without the same word twice.
@@ -4007,7 +3982,6 @@ private struct SeptuagintWordGroup: View {
     let loader: SeptuagintLoader
     let onPreview: (Int, String) -> Void
 
-    @State private var isExpanded = false
     @State private var shownVerses = StrongsSeptuagint.shownVerses
 
     /// Everything a page is read for. The verses themselves and not only
@@ -4015,48 +3989,60 @@ private struct SeptuagintWordGroup: View {
     /// same length. `forgets`, because forgetting the rows is the moment they
     /// must be read again, and the English chosen, for the same reason.
     private var loadID: String {
-        "\(isExpanded)|\(shownVerses)|\(references.count)|\(references.first ?? 0)|\(references.last ?? 0)"
+        "\(shownVerses)|\(references.count)|\(references.first ?? 0)|\(references.last ?? 0)"
             + "|\(loader.readsSeptuagintInEnglish)|\(loader.forgets)|\(loader.hasCrossed)"
     }
 
+    /// Open, as the section is: the word's heading, then its first verses,
+    /// read when the heading scrolls into view rather than with the page.
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            switch loader.verses[word.id] {
-            case .rows(let listed):
-                ForEach(listed) { verse in
-                    row(verse)
-                }
-                // One spinner for the page, not one per row.
-                if listed.contains(where: { $0.greek == .pending || $0.english == .pending }) {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                }
-                more(beyond: listed.count)
-            case .withoutSeptuagint:
-                note(LampSeptuagintSection.withoutSeptuagint)
-                analyse
-            case .unreadable(let name):
-                note(LampSeptuagintSection.unreadable(name))
-                analyse
-            case nil:
+        Text(LampSeptuagintSection.heading(
+            word.hebrew,
+            transliteration: word.transliteration,
+            rendering: loader.renderings[word.id],
+            verses: references.count,
+            usingGreek: usingGreek
+        ))
+        .font(.body.weight(.semibold))
+        .foregroundStyle(.primary)
+        .padding(.top, 6)
+        .accessibilityAddTraits(.isHeader)
+        .task(id: loadID) { read(shownVerses) }
+        switch loader.verses[word.id] {
+        case .rows(let listed):
+            ForEach(listed) { verse in
+                row(verse)
+            }
+            // One spinner for the page, not one per row.
+            if listed.contains(where: { $0.greek == .pending || $0.english == .pending }) {
                 ProgressView()
                     .frame(maxWidth: .infinity)
             }
-        } label: {
-            Text(LampSeptuagintSection.heading(
-                word.hebrew,
-                transliteration: word.transliteration,
-                rendering: loader.renderings[word.id],
-                verses: references.count,
-                usingGreek: usingGreek
-            ))
-            .font(.body.weight(.semibold))
-            .foregroundStyle(.primary)
+            more(beyond: listed.count)
+        case .withoutSeptuagint:
+            note(LampSeptuagintSection.withoutSeptuagint)
+            analyse
+        case .unreadable(let name):
+            note(LampSeptuagintSection.unreadable(name))
+            analyse
+        case nil:
+            // Asks too, so rows thrown away while the heading was out of view
+            // are read again by whatever of the group is showing.
+            ProgressView()
+                .frame(maxWidth: .infinity)
+                .task(id: loadID) { read(shownVerses) }
         }
-        .task(id: loadID) {
-            guard isExpanded else { return }
+    }
+
+    /// Read a page of the word's verses, in a task the row doesn't own.
+    /// The rows a List shows come and go with the scroll, and a load owned
+    /// by the heading was cancelled as it scrolled away, which forgets the
+    /// rows: the reader was left with a spinner nothing would fill. The
+    /// loader's one-task-per-word keeps a second ask from doubling the work.
+    private func read(_ limit: Int) {
+        Task {
             await loader.loadVerses(
-                for: word, translationId: translationId, showing: shownVerses, references: references
+                for: word, translationId: translationId, showing: limit, references: references
             )
         }
     }
@@ -4067,7 +4053,12 @@ private struct SeptuagintWordGroup: View {
     private func more(beyond listed: Int) -> some View {
         if references.count > listed {
             Button {
-                shownVerses = listed + StrongsSeptuagint.shownVerses
+                let next = listed + StrongsSeptuagint.shownVerses
+                shownVerses = next
+                // Read from here, not left to the heading's task: by the
+                // foot of a long list the heading has scrolled away, and a
+                // List runs no task for a row it isn't showing.
+                read(next)
             } label: {
                 HStack {
                     Text("Show \(min(StrongsSeptuagint.shownVerses, references.count - listed)) More")
