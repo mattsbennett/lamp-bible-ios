@@ -211,7 +211,7 @@ private struct LampSplashView: View {
                 let isShort = proxy.size.height < 560
                 words(includingVerse: !isShort, isCompact: isShort)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .padding(.top, proxy.size.height / 2 + Self.flameHeight / 2 + (isShort ? 20 : 90))
+                    .padding(.top, proxy.size.height / 2 + Self.flameHeight / 2 + (isShort ? 20 : 44))
             }
         }
         .onAppear {
