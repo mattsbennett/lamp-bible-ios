@@ -169,6 +169,8 @@ struct StrongsAnalysisView: View {
     @State private var septuagintBook: Int?
     @State private var isShowingSeptuagintMethod = false
     @State private var isShowingSeptuagintNarrowing = false
+    /// Every book the word stands in, rather than the commonest.
+    @State private var showsAllSeptuagintBooks = false
     /// Which English the verses read where a Septuagint in English is
     /// installed: that, or the reader's own Bible. Kept, as on the Mac.
     @AppStorage("strongs.analysis.septuagintEnglishIsDirect") private var readsSeptuagintInEnglish = true
@@ -200,6 +202,8 @@ struct StrongsAnalysisView: View {
 
     /// How many of the word's verses are listed before Show All.
     static let firstVerses = 10
+    /// How many of the Septuagint's books are barred before Show All.
+    static let septuagintBooksShown = 8
 
     private struct BookRangeChoice: Equatable {
         let range: ClosedRange<Int>?
@@ -1985,16 +1989,11 @@ struct StrongsAnalysisView: View {
     private var septuagintSection: some View {
         let own = septuagint.own
         return Section {
-            // What the Greek word comes to there, first: what the rest shows.
+            // The figures first and nothing said around them: the section's
+            // explanations are all under "How this is counted", and a row's
+            // doubt is one tap on that row. As open prose it read as a wall
+            // of hedging (owner, Nov 2026).
             if let own {
-                Text(LampSeptuagintSection.ownUseHeadline(
-                    greek: headword.lemma,
-                    septuagint: own,
-                    newTestament: septuagint.newTestament
-                ))
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .padding(.vertical, 2)
                 ownUseRows(own)
             }
             if !septuagint.words.isEmpty {
@@ -2025,18 +2024,19 @@ struct StrongsAnalysisView: View {
             ForEach([contrast.newTestament, contrast.septuagint], id: \.label) { side in
                 contrastRow(side, share: contrast.share(of: side))
             }
-            let caption = LampSeptuagintSection.contrastCaption(contrast)
-            if !caption.isEmpty {
-                Text(caption)
-                    .font(.footnote)
-                    .foregroundStyle(LampTheme.caption)
-                    .listRowSeparator(.hidden, edges: .top)
-            }
         }
         let books = own.books.filter { $0.occurrenceCount > 0 }
         if !books.isEmpty {
             rowCaption("Where it stands in the Septuagint")
-            ForEach(LampStrongsSpread.bars(books, measure: activeMeasure)) { bar in
+            // A common word stands in nearly every book, and thirty-odd bars
+            // were most of the section. The books it stands in most, in the
+            // canon's order, and the rest a tap away. A book chosen to narrow
+            // the lists is always among them.
+            let bars = LampStrongsSpread.bars(books, measure: activeMeasure)
+            let most = Set(bars.sorted { $0.occurrenceCount > $1.occurrenceCount }
+                .prefix(Self.septuagintBooksShown).map(\.id))
+            let isFolded = bars.count > Self.septuagintBooksShown + 2 && !showsAllSeptuagintBooks
+            ForEach(bars.filter { !isFolded || most.contains($0.id) || $0.id == septuagintBook }) { bar in
                 // Only where there are Hebrew words' verses to narrow.
                 barRow(
                     bar,
@@ -2047,16 +2047,23 @@ struct StrongsAnalysisView: View {
                     septuagintBook = septuagintBook == bar.id ? nil : bar.id
                 }
             }
+            if bars.count > Self.septuagintBooksShown + 2 {
+                Button(showsAllSeptuagintBooks
+                    ? "Show the \(Self.septuagintBooksShown) Commonest Books"
+                    : "Show All \(bars.count) Books") {
+                    showsAllSeptuagintBooks.toggle()
+                }
+                .font(.subheadline)
+            }
             if let book = septuagintBook {
                 Button("Showing \(books.first { $0.id == book }?.name ?? "One Book") Only · Show Every Book") {
                     septuagintBook = nil
                 }
                 .font(.subheadline)
             }
-            Text("↑ More or ↓ fewer than its length would lead you to expect, by more than chance."
-                + (septuagint.words.isEmpty ? "" : " Tap a book to narrow the Hebrew words’ verses to it."))
-                .font(.footnote)
-                .foregroundStyle(LampTheme.caption)
+            // The card's key for the arrows and shades, in place of a
+            // sentence; what they measure is in the method.
+            StrongsExpectationLegend()
                 .listRowSeparator(.hidden, edges: .top)
         }
         septuagintMethodology(own)
@@ -2095,6 +2102,22 @@ struct StrongsAnalysisView: View {
         DisclosureGroup(isExpanded: $isShowingSeptuagintMethod) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(LampSeptuagintSection.ownUseAbout)
+                if let contrast = LampSeptuagintSection.contrast(newTestament: septuagint.newTestament, septuagint: own) {
+                    let rates = LampSeptuagintSection.contrastCaption(contrast)
+                    Text("The Testaments’ bars are counted apart and never added, each against the larger."
+                        + (rates.isEmpty ? "" : " " + rates))
+                }
+                Text("A book’s ↑ or ↓ says the word stands there more or less often than the book’s length would lead you to expect, by more than chance."
+                    + (septuagint.words.isEmpty ? "" : " Tap a book to narrow the Hebrew words’ verses to it."))
+                // What each English gives and costs, where there is a choice.
+                if LampSeptuagintSection.EnglishChoice.isOffered(
+                    septuagintInEnglish: septuagint.septuagintInEnglish,
+                    readersTranslationID: translationId
+                ) {
+                    Text(readsSeptuagintInEnglish
+                        ? LampSeptuagintSection.directEnglishNote
+                        : LampSeptuagintSection.indirectEnglishWarning)
+                }
                 // Only a text that declares its tags were matched rather than
                 // printed, in the words its builder wrote.
                 if !septuagint.septuagintSources.isEmpty {
@@ -2128,12 +2151,9 @@ struct StrongsAnalysisView: View {
             translatesRow(word)
         }
         englishChoice
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle(LampSeptuagintSection.OriginalLanguage.title, isOn: $showsSeptuagintGreek)
-            Text(LampSeptuagintSection.OriginalLanguage.note)
-                .font(.footnote)
-                .foregroundStyle(LampTheme.caption)
-        }
+        Toggle("\(LampSeptuagintSection.OriginalLanguage.title) under each verse", isOn: $showsSeptuagintGreek)
+            .font(.subheadline)
+            .accessibilityHint(LampSeptuagintSection.OriginalLanguage.note)
         // No paragraph above the lists: each heading says "14 of 35 verses
         // using ἀγάπη", and how far they are narrowed is one press away.
         // Core's note says something only of a Septuagint that isn't tagged,
@@ -2201,11 +2221,6 @@ struct StrongsAnalysisView: View {
                     Text(titles.indirect).tag(false)
                 }
                 .pickerStyle(.segmented)
-                Text(readsSeptuagintInEnglish
-                    ? LampSeptuagintSection.directEnglishNote
-                    : LampSeptuagintSection.indirectEnglishWarning)
-                    .font(.footnote)
-                    .foregroundStyle(LampTheme.caption)
             }
             .padding(.vertical, 4)
         }
@@ -4014,6 +4029,8 @@ private struct SeptuagintWordGroup: View {
     let onPreview: (Int, String) -> Void
 
     @State private var shownVerses = StrongsSeptuagint.shownVerses
+    /// The rows whose doubt is open, by reference.
+    @State private var openDoubts: Set<Int> = []
 
     /// Everything a page is read for. The verses themselves and not only
     /// their count: one book of the Septuagint can give another page of the
@@ -4132,55 +4149,86 @@ private struct SeptuagintWordGroup: View {
         // Hebrew one. Refused in the action rather than disabled, which would
         // dim every row while the page loads.
         let isKnown = verse.english != .pending
-        return Button {
+        let open = {
             guard isKnown else { return }
             onPreview(isTitle ? reference + 1 : reference, word.hebrew.strongs ?? "")
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(isTitle
-                    ? "\(BookOsisCache.shared.displayName(for: reference / 1_000_000)) \((reference % 1_000_000) / 1_000), title"
-                    : StrongsAnalysisView.referenceTitle(reference, bookNames: [:]))
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                // No English where the translation doesn't tag the word here:
-                // shown unmarked it would be a guess at which English it is.
-                if case .read(let english) = verse.english, let text = english.text {
-                    Self.englishLine(
-                        StrongsSeptuagint.englishPieces(text, marks: english.marks, isInterlinear: isInterlinear)
-                    )
-                        .font(.system(size: 16, design: .serif))
-                        .foregroundStyle(LampTheme.readerText)
-                        .lineSpacing(2)
-                }
-                switch showsGreek ? verse.greek : .pending {
-                case .text(let greek):
-                    // The Greek word marked where the tagging puts it, so why
-                    // the verse is in a narrowed list can be seen.
-                    SearchResultRow.snippetText(
-                        fromMarked: StrongsSeptuagint.marked(greek, at: loader.greekMarks[verse.reference] ?? []),
-                        limit: 400
-                    )
-                    .font(.system(size: 15, design: .serif))
+        }
+        // Tapped for the verse, not a Button: a row's doubt is a button of
+        // its own, and a button inside a button's label never gets the tap.
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(isTitle
+                ? "\(BookOsisCache.shared.displayName(for: reference / 1_000_000)) \((reference % 1_000_000) / 1_000), title"
+                : StrongsAnalysisView.referenceTitle(reference, bookNames: [:]))
+                .font(.headline)
+                .foregroundStyle(.primary)
+            // No English where the translation doesn't tag the word here:
+            // shown unmarked it would be a guess at which English it is.
+            if case .read(let english) = verse.english, let text = english.text {
+                Self.englishLine(
+                    StrongsSeptuagint.englishPieces(text, marks: english.marks, isInterlinear: isInterlinear)
+                )
+                    .font(.system(size: 16, design: .serif))
                     .foregroundStyle(LampTheme.readerText)
                     .lineSpacing(2)
-                case .absent:
-                    note(LampSeptuagintSection.missingVerse(in: loader.septuagintName))
-                case .pending:
-                    // The reference is worth reading on its own; anything
-                    // said about the Greek here would be a guess.
-                    EmptyView()
-                }
-                if let doubt = loader.pairingDoubts[word.id]?[verse.reference] {
-                    Text(doubt)
-                        .font(.footnote)
-                        .foregroundStyle(LampTheme.caption)
-                }
             }
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            switch showsGreek ? verse.greek : .pending {
+            case .text(let greek):
+                // The Greek word marked where the tagging puts it, so why
+                // the verse is in a narrowed list can be seen.
+                SearchResultRow.snippetText(
+                    fromMarked: StrongsSeptuagint.marked(greek, at: loader.greekMarks[verse.reference] ?? []),
+                    limit: 400
+                )
+                .font(.system(size: 15, design: .serif))
+                .foregroundStyle(LampTheme.readerText)
+                .lineSpacing(2)
+            case .absent:
+                note(LampSeptuagintSection.missingVerse(in: loader.septuagintName))
+            case .pending:
+                // The reference is worth reading on its own; anything
+                // said about the Greek here would be a guess.
+                EmptyView()
+            }
+            if let doubt = loader.pairingDoubts[word.id]?[verse.reference] {
+                doubtNote(doubt, for: verse.reference)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: open)
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Open \(StrongsAnalysisView.referenceTitle(reference, bookNames: [:]))", open)
+    }
+
+    /// A row that isn't simply one word answering to one word says so in a
+    /// word, and why in full on a tap: as a sentence on every such row the
+    /// list read as hedging from end to end. A row with nothing under it is
+    /// still the strong case.
+    private func doubtNote(_ doubt: String, for reference: Int) -> some View {
+        let isOpen = openDoubts.contains(reference)
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                if isOpen { openDoubts.remove(reference) } else { openDoubts.insert(reference) }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "questionmark.circle")
+                    Text("Uncertain match")
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .rotationEffect(.degrees(isOpen ? 180 : 0))
+                }
+                .font(.footnote)
+                .foregroundStyle(LampTheme.caption)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(isOpen ? "Uncertain match, hide why" : "Uncertain match, show why")
+            if isOpen {
+                Text(doubt)
+                    .font(.footnote)
+                    .foregroundStyle(LampTheme.caption)
+            }
+        }
     }
 
     /// Whether the rows' English is the Septuagint in English, an
