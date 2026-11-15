@@ -429,8 +429,10 @@ struct StrongsAnalysisView: View {
                 // The page's sections, each a tap away: a single column
                 // carrying many subjects, kept on one page rather than split
                 // into tabs that would hide all but one. On the bottom bar,
-                // so the top keeps to Close and the books.
-                ToolbarItem(placement: .bottomBar) {
+                // so the top keeps to Close and the books; at its right,
+                // under the thumb, rather than in the middle of the page.
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Spacer()
                     Menu {
                         ForEach(jumps(analysis), id: \.self) { jump in
                             Button(jumpTitle(jump)) {
