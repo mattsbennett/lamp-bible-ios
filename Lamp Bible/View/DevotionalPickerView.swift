@@ -59,7 +59,11 @@ struct DevotionalPickerView: View {
     /// writing, of which a devotional is one kind.
     static func displayName(of module: Module?) -> String {
         guard let module else { return "Writing" }
-        return module.name == "My Devotionals" ? "My Writing" : module.name
+        return displayName(ofModuleNamed: module.name)
+    }
+
+    static func displayName(ofModuleNamed name: String) -> String {
+        name == "My Devotionals" ? "My Writing" : name
     }
 
     /// Counts each load's writings, so the filtered list is worked out

@@ -139,7 +139,7 @@ struct SplitReaderView: View {
         case .commentary:
             return selectedCommentarySeries.isEmpty ? "Commentary" : selectedCommentarySeries
         case .devotionals:
-            return "Devotionals"
+            return "Writing"
         }
     }
 

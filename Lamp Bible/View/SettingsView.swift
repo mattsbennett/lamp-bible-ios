@@ -762,7 +762,7 @@ struct SettingsView: View {
                         }
                     }
                 } message: {
-                    Text("This will delete all devotionals and user-created content. This cannot be undone.")
+                    Text("This will delete all writing and user-created content. This cannot be undone.")
                 }
 #endif
             }
@@ -814,7 +814,7 @@ struct SettingsView: View {
                     pendingBackendChange = nil
                 }
             } message: {
-                Text("This will permanently delete all your notes, devotionals, and highlights from this device.\n\nThis cannot be undone.")
+                Text("This will permanently delete all your notes, writing, and highlights from this device.\n\nThis cannot be undone.")
             }
             // Migration progress sheet
             .sheet(isPresented: $isMigrating) {
@@ -1416,7 +1416,7 @@ struct WebDAVSetupSheet: View {
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("This will permanently delete all your notes, devotionals, and highlights from this device.\n\nThis cannot be undone.")
+                Text("This will permanently delete all your notes, writing, and highlights from this device.\n\nThis cannot be undone.")
             }
         }
     }

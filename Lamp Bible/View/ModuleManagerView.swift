@@ -2141,7 +2141,7 @@ struct MarkdownImportModuleSelectorView: View {
 
                         Picker("Type", selection: $newModuleType) {
                             Text("Notes").tag(ModuleType.notes)
-                            Text("Devotional").tag(ModuleType.devotional)
+                            Text("Writing").tag(ModuleType.devotional)
                         }
                     }
                 } else {
@@ -2652,7 +2652,7 @@ struct CreateModuleView: View {
                 Section("Module Details") {
                     Picker("Type", selection: $moduleType) {
                         Text("Notes").tag(ModuleType.notes)
-                        Text("Devotional").tag(ModuleType.devotional)
+                        Text("Writing").tag(ModuleType.devotional)
                         Text("Highlights").tag(ModuleType.highlights)
                     }
 
@@ -2886,9 +2886,9 @@ struct ImportModuleSheet: View {
                                 .foregroundStyle(.accent)
                                 .frame(width: 24)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Import Devotionals from Markdown")
+                                Text("Import Writing from Markdown")
                                     .foregroundStyle(.primary)
-                                Text("Import devotional entries")
+                                Text("Import writing entries")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -2909,7 +2909,7 @@ struct ImportModuleSheet: View {
                         Text("• Directory of .md files (one entry per file)")
                             .font(.caption)
 
-                        Text("\nNotes should have verse references like [John 3:16]. Devotionals can include YAML frontmatter for metadata (title, date, tags).")
+                        Text("\nNotes should have verse references like [John 3:16]. Writing can include YAML frontmatter for metadata (title, date, tags).")
                             .font(.caption)
                     }
                 }

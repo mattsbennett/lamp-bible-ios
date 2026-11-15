@@ -3086,7 +3086,7 @@ struct DevotionalEntrySheet: View {
                 module = loadedModule ?? nil
                 hasLoaded = true
             }
-            .navigationTitle(module?.name ?? "Devotional")
+            .navigationTitle(module.map { DevotionalPickerView.displayName(of: $0) } ?? "Writing")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

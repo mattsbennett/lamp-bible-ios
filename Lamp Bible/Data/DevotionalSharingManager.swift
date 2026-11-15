@@ -858,9 +858,9 @@ enum LampFileType {
 
     var displayName: String {
         switch self {
-        case .devotional: return "Devotional"
-        case .devotionalBundle: return "Devotional with Media"
-        case .devotionalModule: return "Devotional Collection"
+        case .devotional: return "Writing"
+        case .devotionalBundle: return "Writing with Media"
+        case .devotionalModule: return "Writing Collection"
         case .unknown: return "Unknown"
         }
     }

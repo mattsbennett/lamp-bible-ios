@@ -471,7 +471,7 @@ class DevotionalImportExportManager {
             case .directoryNotAvailable:
                 return "Export directory not available"
             case .noDevotionalsFound:
-                return "No devotionals found to export"
+                return "No writing found to export"
             }
         }
     }

@@ -1196,6 +1196,16 @@ enum ToolPanelMode: String, CaseIterable {
     case notes = "Notes"
     case commentary = "Commentary"
     case devotionals = "Devotionals"
+
+    /// The name the panel shows. The raw values are what `toolPanelMode`
+    /// stores, so they keep the old "Devotionals" and only this says Writing.
+    var displayName: String {
+        switch self {
+        case .notes: "Notes"
+        case .commentary: "Commentary"
+        case .devotionals: "Writing"
+        }
+    }
 }
 
 enum FootnoteInsertMode: String, CaseIterable {
@@ -1368,9 +1378,10 @@ struct ToolPanelView: View {
         } else if panelMode == .notes {
             return notesModules.first(where: { $0.id == notesModuleId })?.name ?? "Notes"
         } else if panelMode == .devotionals {
-            return devotionalsModules.first(where: { $0.id == devotionalsModuleId })?.name ?? "Devotionals"
+            return devotionalsModules.first(where: { $0.id == devotionalsModuleId })
+                .map { DevotionalPickerView.displayName(ofModuleNamed: $0.name) } ?? "Writing"
         }
-        return panelMode.rawValue
+        return panelMode.displayName
     }
 
     /// The chapter's verse count in the reader's translation, for the note
@@ -1474,9 +1485,9 @@ struct ToolPanelView: View {
                             panelMode = .notes
                         } label: {
                             if panelMode == .notes {
-                                Label(ToolPanelMode.notes.rawValue, systemImage: "checkmark")
+                                Label(ToolPanelMode.notes.displayName, systemImage: "checkmark")
                             } else {
-                                Text(ToolPanelMode.notes.rawValue)
+                                Text(ToolPanelMode.notes.displayName)
                             }
                         }
                     }
@@ -1509,9 +1520,9 @@ struct ToolPanelView: View {
                                 selectedDevotional = nil
                             } label: {
                                 if panelMode == .devotionals && devotionalsModuleId == module.id {
-                                    Label(module.name, systemImage: "checkmark")
+                                    Label(DevotionalPickerView.displayName(ofModuleNamed: module.name), systemImage: "checkmark")
                                 } else {
-                                    Text(module.name)
+                                    Text(DevotionalPickerView.displayName(ofModuleNamed: module.name))
                                 }
                             }
                         }
@@ -1524,9 +1535,9 @@ struct ToolPanelView: View {
                             selectedDevotional = nil
                         } label: {
                             if panelMode == .devotionals {
-                                Label(ToolPanelMode.devotionals.rawValue, systemImage: "checkmark")
+                                Label(ToolPanelMode.devotionals.displayName, systemImage: "checkmark")
                             } else {
-                                Text(ToolPanelMode.devotionals.rawValue)
+                                Text(ToolPanelMode.devotionals.displayName)
                             }
                         }
                     }

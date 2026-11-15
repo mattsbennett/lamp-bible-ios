@@ -1024,7 +1024,7 @@ enum PublicationFilterType: String, Codable, CaseIterable {
         switch self {
         case .tag: return "By Tag"
         case .category: return "By Category"
-        case .all: return "All Devotionals"
+        case .all: return "All Writing"
         }
     }
 }

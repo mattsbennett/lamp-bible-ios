@@ -225,7 +225,7 @@ struct ReaderNavigationToolbarView: View {
                     toolMenuContent
                 } label: {
                     VStack(spacing: 0) {
-                        Text(toolPanelMode.rawValue).bold().font(.system(size: 14))
+                        Text(toolPanelMode.displayName).bold().font(.system(size: 14))
                         Text(toolDisplayName).font(.caption2).lineLimit(1)
                     }
                     .foregroundStyle(Color.primary)
