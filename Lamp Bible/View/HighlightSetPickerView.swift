@@ -15,6 +15,8 @@ struct HighlightSetPickerView: View {
     @State private var setToDelete: HighlightSet?
     @State private var showingDeleteConfirmation = false
     @State private var setForThemes: HighlightSet?
+    /// Bumped when the themes sheet closes, so the rows count again.
+    @State private var countsGeneration = 0
 
     var body: some View {
         NavigationView {
@@ -27,6 +29,7 @@ struct HighlightSetPickerView: View {
                     ForEach(highlightManager.availableSets) { set in
                         HighlightSetRow(
                             set: set,
+                            countsGeneration: countsGeneration,
                             isSelected: highlightManager.activeSetId == set.id,
                             onSelect: {
                                 highlightManager.selectSet(set.id)
@@ -47,7 +50,7 @@ struct HighlightSetPickerView: View {
                     }
                 }
             }
-            .sheet(item: $setForThemes) { set in
+            .sheet(item: $setForThemes, onDismiss: { countsGeneration &+= 1 }) { set in
                 NavigationStack {
                     HighlightThemesListView(set: set)
                 }
@@ -98,6 +101,8 @@ struct HighlightSetPickerView: View {
 
 struct HighlightSetRow: View {
     let set: HighlightSet
+    /// Changed by the picker when the counts may be stale.
+    var countsGeneration = 0
     let isSelected: Bool
     let onSelect: () -> Void
     var onEditThemes: (() -> Void)? = nil
@@ -140,6 +145,7 @@ struct HighlightSetRow: View {
             }
         }
         .buttonStyle(.plain)
+        .task(id: countsKey) { await loadCounts() }
         .contextMenu {
             if let editThemes = onEditThemes {
                 Button {
@@ -151,12 +157,33 @@ struct HighlightSetRow: View {
         }
     }
 
-    private var highlightCount: Int? {
-        try? ModuleDatabase.shared.getHighlightCount(setId: set.id)
+    /// Counted off the main actor when the row appears and when the set or
+    /// its themes change, not with every render: the picker re-renders with
+    /// each change the highlight manager publishes.
+    @State private var highlightCount: Int?
+    @State private var themeCount: Int?
+
+    private struct CountsKey: Equatable {
+        let setId: String
+        let lastModified: Int
+        let generation: Int
     }
 
-    private var themeCount: Int? {
-        try? ModuleDatabase.shared.getHighlightThemes(setId: set.id).count
+    private var countsKey: CountsKey {
+        CountsKey(setId: set.id, lastModified: set.lastModified, generation: countsGeneration)
+    }
+
+    private func loadCounts() async {
+        let setId = set.id
+        let (highlights, themes) = await Task.detached(priority: .userInitiated) {
+            (
+                try? ModuleDatabase.shared.getHighlightCount(setId: setId),
+                try? ModuleDatabase.shared.getHighlightThemes(setId: setId).count
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        highlightCount = highlights
+        themeCount = themes
     }
 }
 

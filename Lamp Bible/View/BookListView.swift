@@ -51,8 +51,7 @@ struct BookListView: View {
     /// the RV1909) where it gives them. A book it lacks (the New Testament
     /// in the Brenton Septuagint) isn't offered, since it would open empty.
     private var books: [BibleBook] {
-        let all = ((try? BundledModuleDatabase.shared.getAllBooks()) ?? [])
-            .filter { chapterCounts[$0.id] != nil }
+        let all = Self.bibleBooks.filter { chapterCounts[$0.id] != nil }
         guard !ownBookNames.isEmpty else { return all }
         return all.map { book in
             var book = book
@@ -64,10 +63,14 @@ struct BookListView: View {
     /// The translation's own book names, read once per opening.
     @State private var ownBookNames: [Int: String] = [:]
 
-    /// Get available translations from GRDB
-    private var availableTranslations: [TranslationModule] {
-        (try? TranslationDatabase.shared.getAllTranslations()) ?? []
-    }
+    /// The 66 books, read from the bundle once: it is read-only, and the
+    /// list asks for them with every render (and every row scrolled in).
+    private static let bibleBooks: [BibleBook] =
+        (try? BundledModuleDatabase.shared.getAllBooks()) ?? []
+
+    /// Every translation, for the toolbar's menu. Read off the main actor
+    /// when the list opens and when the library changes, not with each render.
+    @State private var availableTranslations: [TranslationModule] = []
 
     /// Filter to visible translations based on user preferences
     private var orderedVisibleTranslations: [TranslationModule] {
@@ -159,6 +162,10 @@ struct BookListView: View {
             }
             .task(id: translationId) {
                 loadCounts()
+            }
+            .task { await loadTranslations() }
+            .onReceive(NotificationCenter.default.publisher(for: .translationsDidChange)) { _ in
+                Task { await loadTranslations() }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -272,6 +279,12 @@ struct BookListView: View {
                     .foregroundStyle(LampTheme.caption)
             }
         }
+    }
+
+    private func loadTranslations() async {
+        availableTranslations = await Task.detached(priority: .userInitiated) {
+            (try? TranslationDatabase.shared.getAllTranslations()) ?? []
+        }.value
     }
 
     private func loadCounts() {

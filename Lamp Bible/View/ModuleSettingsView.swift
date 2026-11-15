@@ -15,6 +15,14 @@ struct ModuleSettingsView: View {
 
     private let generator = UINotificationFeedbackGenerator()
 
+    /// The translations and lexicons listed, read once off the main actor
+    /// and again when the library changes, rather than on every access by
+    /// the lists' rows and swipe actions.
+    @State private var translations: [TranslationModule] = []
+    @State private var greekLexicons: [(key: String, name: String)] = []
+    @State private var hebrewLexicons: [(key: String, name: String)] = []
+    @State private var loadGeneration = 0
+
     // Binding helpers that persist to database
     private var hiddenTranslations: Binding<String> {
         Binding(
@@ -81,6 +89,7 @@ struct ModuleSettingsView: View {
             // MARK: - Translations Section
             Section {
                 TranslationList(
+                    translations: translations,
                     userSettings: $userSettings,
                     hiddenString: hiddenTranslations,
                     onSetDefault: { translationId in
@@ -106,9 +115,9 @@ struct ModuleSettingsView: View {
 
             Section {
                 LexiconOrderListWithHiding(
+                    allLexicons: greekLexicons,
                     orderString: greekLexiconOrder,
-                    hiddenString: hiddenGreekLexicons,
-                    language: "greek"
+                    hiddenString: hiddenGreekLexicons
                 )
             } header: {
                 Text("Greek Lexicons")
@@ -118,9 +127,9 @@ struct ModuleSettingsView: View {
 
             Section {
                 LexiconOrderListWithHiding(
+                    allLexicons: hebrewLexicons,
                     orderString: hebrewLexiconOrder,
-                    hiddenString: hiddenHebrewLexicons,
-                    language: "hebrew"
+                    hiddenString: hiddenHebrewLexicons
                 )
             } header: {
                 Text("Hebrew Lexicons")
@@ -130,6 +139,54 @@ struct ModuleSettingsView: View {
         }
         .navigationTitle("Module Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .task { await loadModules() }
+        .onReceive(NotificationCenter.default.publisher(for: .translationsDidChange)) { _ in
+            Task { await loadModules() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .userDatabaseDidChange)) { _ in
+            Task { await loadModules() }
+        }
+    }
+
+    private struct ListedModules {
+        let translations: [TranslationModule]
+        let greek: [(key: String, name: String)]
+        let hebrew: [(key: String, name: String)]
+    }
+
+    private func loadModules() async {
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let listed = await Task.detached(priority: .userInitiated) {
+            ListedModules(
+                translations: (try? TranslationDatabase.shared.getAllTranslations()) ?? [],
+                greek: Self.lexicons(in: "greek"),
+                hebrew: Self.lexicons(in: "hebrew")
+            )
+        }.value
+        guard generation == loadGeneration else { return }
+        translations = listed.translations
+        greekLexicons = listed.greek
+        hebrewLexicons = listed.hebrew
+    }
+
+    /// The bundle's lexicons in a language ("greek" or "hebrew"), and the
+    /// user's dictionaries keyed by its Strong's numbers.
+    private nonisolated static func lexicons(in language: String) -> [(key: String, name: String)] {
+        var available = BundledModuleDatabase.shared.lexicons()
+            .filter { $0.language == language }
+            .map { (key: $0.lexiconKey, name: $0.shortName) }
+
+        // Discover user dictionary modules with matching keyType
+        if let modules = try? ModuleDatabase.shared.getAllModules(type: .dictionary) {
+            for module in modules {
+                if module.keyType == "strongs-\(language)" {
+                    available.append((key: "user-\(module.id)", name: module.name))
+                }
+            }
+        }
+
+        return available
     }
 
     private func setDefaultTranslation(_ translationId: String) {
@@ -142,6 +199,8 @@ struct ModuleSettingsView: View {
 // MARK: - Translation List
 
 struct TranslationList: View {
+    /// Every translation, bundled and installed, as the settings screen read them.
+    let translations: [TranslationModule]
     @Binding var userSettings: UserSettings
     @Binding var hiddenString: String
     let onSetDefault: (String) -> Void
@@ -150,20 +209,16 @@ struct TranslationList: View {
         userSettings.readerTranslationId
     }
 
-    private var allTranslations: [TranslationModule] {
-        (try? TranslationDatabase.shared.getAllTranslations()) ?? []
-    }
-
     private var hiddenIds: Set<String> {
         Set(LampModuleSelection.identifiers(in: hiddenString))
     }
 
     private var visibleTranslationsList: [TranslationModule] {
-        allTranslations.filter { !hiddenIds.contains($0.id) }
+        translations.filter { !hiddenIds.contains($0.id) }
     }
 
     private var hiddenTranslationsList: [TranslationModule] {
-        allTranslations.filter { hiddenIds.contains($0.id) }
+        translations.filter { hiddenIds.contains($0.id) }
     }
 
     var body: some View {
@@ -326,31 +381,14 @@ struct TranslationLanguageSections<Rows: View>: View {
 // MARK: - Lexicon Order List with Hiding
 
 struct LexiconOrderListWithHiding: View {
+    /// The language's lexicons, as the settings screen read them: the
+    /// bundle's, and the user's dictionaries keyed by its Strong's numbers.
+    let allLexicons: [(key: String, name: String)]
     @Binding var orderString: String
     @Binding var hiddenString: String
-    /// "greek" or "hebrew": the bundle's lexicons in it are listed, and the
-    /// user's dictionaries keyed by its Strong's numbers.
-    let language: String
 
     private var hiddenKeys: Set<String> {
         Set(LampModuleSelection.identifiers(in: hiddenString))
-    }
-
-    private var allLexicons: [(key: String, name: String)] {
-        var available = BundledModuleDatabase.shared.lexicons()
-            .filter { $0.language == language }
-            .map { (key: $0.lexiconKey, name: $0.shortName) }
-
-        // Discover user dictionary modules with matching keyType
-        if let modules = try? ModuleDatabase.shared.getAllModules(type: .dictionary) {
-            for module in modules {
-                if module.keyType == "strongs-\(language)" {
-                    available.append((key: "user-\(module.id)", name: module.name))
-                }
-            }
-        }
-
-        return available
     }
 
     private var orderedLexicons: [(key: String, name: String)] {

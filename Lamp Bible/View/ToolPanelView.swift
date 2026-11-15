@@ -1340,7 +1340,7 @@ struct ToolPanelView: View {
     @AppStorage("selectedDevotionalsModuleId") private var devotionalsModuleId: String = "devotionals"
 
     var bookName: String {
-        (try? BundledModuleDatabase.shared.getBook(id: book))?.name ?? "Unknown"
+        canonicalBookName(book) ?? "Unknown"
     }
 
     /// The header shows its compact form for either reason: the tap-driven
@@ -1373,12 +1373,38 @@ struct ToolPanelView: View {
         return panelMode.rawValue
     }
 
-    var maxVerseInChapter: Int {
-        let translationId = UserDatabase.shared.getSettings().readerTranslationId
-        return (try? TranslationDatabase.shared.getVerseCount(translationId: translationId, book: book, chapter: chapter)) ?? 1
+    /// The chapter's verse count in the reader's translation, for the note
+    /// verse pickers: counted off the main actor when the chapter or
+    /// translation changes, not with each render of the pickers.
+    @State private var maxVerseInChapter: Int = 1
+    /// Which `loadNote` is the latest; see there.
+    @State private var noteLoadGeneration = 0
+
+    private struct VerseCountKey: Equatable {
+        let translationId: String
+        let book: Int
+        let chapter: Int
+    }
+
+    private var verseCountKey: VerseCountKey {
+        VerseCountKey(translationId: UserDatabase.shared.getSettings().readerTranslationId, book: book, chapter: chapter)
+    }
+
+    private func loadVerseCount() async {
+        let key = verseCountKey
+        let count = await Task.detached(priority: .utility) {
+            (try? TranslationDatabase.shared.getVerseCount(translationId: key.translationId, book: key.book, chapter: key.chapter)) ?? 1
+        }.value
+        guard !Task.isCancelled else { return }
+        maxVerseInChapter = max(1, count)
     }
 
     var body: some View {
+        panelBody
+            .task(id: verseCountKey) { await loadVerseCount() }
+    }
+
+    private var panelBody: some View {
         ZStack(alignment: .top) {
             // Content layer
             VStack(spacing: 0) {
@@ -2460,7 +2486,7 @@ struct ToolPanelView: View {
         let chapter = (verseId % 1000000) / 1000
         let verse = verseId % 1000
 
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
+        let bookName = canonicalBookName(bookId) ?? "?"
         return "\(bookName) \(chapter):\(verse)"
     }
 
@@ -2470,7 +2496,7 @@ struct ToolPanelView: View {
         let chapter = (verseId % 1000000) / 1000
         let verse = verseId % 1000
 
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
+        let bookName = canonicalBookName(bookId) ?? "?"
 
         if let ev = endVerseId {
             let endChapter = (ev % 1000000) / 1000
@@ -2672,6 +2698,11 @@ struct ToolPanelView: View {
     }
 
     private func loadNote() async {
+        // A load the panel starts later (another chapter, another module)
+        // supersedes this one. Counted in state, which every copy of the view
+        // shares: `book` and `chapter` are this copy's own and can't tell.
+        noteLoadGeneration &+= 1
+        let generation = noteLoadGeneration
         // Notes edited a moment ago are saved to the chapter they belong to
         // before another chapter's take their place.
         if hasUnsavedNotes, let scope = loadedNotes {
@@ -2679,6 +2710,8 @@ struct ToolPanelView: View {
             hasUnsavedNotes = false
             await save(sections, base: savedSections, in: scope)
         }
+        // The save can take seconds; a load begun meanwhile owns the panel.
+        guard generation == noteLoadGeneration else { return }
         editingNoteSectionId = nil
 
         isLoading = true
@@ -2690,7 +2723,14 @@ struct ToolPanelView: View {
 
             // Load notes from SQLite for this chapter
             print("[Notes] Loading notes for book=\(book), chapter=\(chapter), moduleId=\(notesModuleId)")
-            let entries = try moduleDatabase.getNotesForChapter(moduleId: notesModuleId, book: book, chapter: chapter)
+            // Read off the main actor. A chapter or module changed meanwhile
+            // has started its own load, so this one's notes must not land
+            // under that one's scope.
+            let asked = NotesScope(moduleId: notesModuleId, book: book, chapter: chapter)
+            let entries = try await Task.detached(priority: .userInitiated) {
+                try ModuleDatabase.shared.getNotesForChapter(moduleId: asked.moduleId, book: asked.book, chapter: asked.chapter)
+            }.value
+            guard generation == noteLoadGeneration else { return }
             print("[Notes] Found \(entries.count) entries for this chapter")
 
             // Convert NoteEntry records to NoteSection for UI
@@ -2702,6 +2742,7 @@ struct ToolPanelView: View {
                 sections = [.general(content: "")]
             }
         } catch {
+            guard generation == noteLoadGeneration else { return }
             print("[Notes] Failed to load notes: \(error)")
             sections = [.general(content: "")]
             savedSections = []
@@ -4403,17 +4444,58 @@ struct VerseSheetContent: View {
         self.highlightMode = highlightMode
     }
 
+    /// The passage as shown, built once its verses are read, and the
+    /// translation's name: read off the main actor when the sheet shows a
+    /// passage or its context changes, not with every render.
+    @State private var passageText: AttributedString?
+    @State private var translationName: String?
+
+    private struct PassageKey: Equatable {
+        let verseId: Int
+        let endVerseId: Int?
+        let translationId: String?
+        let contextAmount: SearchContextAmount?
+        // The text is styled by these, so a change rebuilds it.
+        let highlightQuery: String?
+        let highlightMode: SearchMode?
+    }
+
+    private var passageKey: PassageKey {
+        PassageKey(
+            verseId: verseId, endVerseId: endVerseId, translationId: translationId,
+            contextAmount: contextAmount, highlightQuery: highlightQuery, highlightMode: highlightMode
+        )
+    }
+
+    private func loadPassage() async {
+        let key = passageKey
+        let (verses, name) = await Task.detached(priority: .userInitiated) {
+            (
+                Self.versesWithContext(
+                    verseId: key.verseId, endVerseId: key.endVerseId,
+                    translationId: key.translationId, contextAmount: key.contextAmount
+                ),
+                key.translationId.flatMap { (try? TranslationDatabase.shared.getTranslation(id: $0))?.name }
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        passageText = versesText(verses)
+        translationName = name
+    }
+
     /// Returns the primary (hit) verses without context
-    private var primaryVerses: [TranslationVerse] {
-        guard let translationId = translationId else { return [] }
+    private nonisolated static func primaryVerses(verseId: Int, endVerseId: Int?, translationId: String) -> [TranslationVerse] {
         let startId = verseId
         let endId = endVerseId ?? verseId
         return (try? TranslationDatabase.shared.getVerseRange(translationId: translationId, startRef: startId, endRef: endId)) ?? []
     }
 
     /// Returns verses with context if contextAmount is set
-    private var versesWithContext: [(verse: TranslationVerse, isContext: Bool)] {
+    private nonisolated static func versesWithContext(
+        verseId: Int, endVerseId: Int?, translationId: String?, contextAmount: SearchContextAmount?
+    ) -> [(verse: TranslationVerse, isContext: Bool)] {
         guard let translationId = translationId else { return [] }
+        let primaryVerses = primaryVerses(verseId: verseId, endVerseId: endVerseId, translationId: translationId)
 
         // If no context requested, just return primary verses
         guard let contextAmount = contextAmount else {
@@ -4460,8 +4542,7 @@ struct VerseSheetContent: View {
         return Array(chapterVerses[windowStart...windowEnd]).map { ($0, !isPrimary($0.ref)) }
     }
 
-    private var versesText: AttributedString {
-        let allVerses = versesWithContext
+    private func versesText(_ allVerses: [(verse: TranslationVerse, isContext: Bool)]) -> AttributedString {
         if allVerses.isEmpty {
             var notFound = AttributedString("Verse not found")
             notFound.foregroundColor = .secondary
@@ -4641,18 +4722,16 @@ struct VerseSheetContent: View {
         return result
     }
 
-
-    /// Get the translation name for display
-    private var translationName: String? {
-        guard let translationId = translationId else { return nil }
-        return (try? TranslationDatabase.shared.getTranslation(id: translationId))?.name
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(versesText)
-                .lineSpacing(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if let passageText {
+                Text(passageText)
+                    .lineSpacing(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+            }
 
             if let name = translationName {
                 Text(name)
@@ -4661,6 +4740,7 @@ struct VerseSheetContent: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
+        .task(id: passageKey) { await loadPassage() }
     }
 }
 
@@ -4706,7 +4786,7 @@ struct PreviewItem: Equatable, Identifiable {
         let chapter = (verseId % 1000000) / 1000
         let verse = verseId % 1000
 
-        let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
+        let bookName = canonicalBookName(bookId) ?? "?"
 
         if let ev = endVerseId {
             let endChapter = (ev % 1000000) / 1000
@@ -4941,4 +5021,15 @@ private struct StrongsSheetContent: View {
         toolbarsCollapsed: .constant(false),
         requestAddNoteForVerse: .constant(nil)
     )
+}
+
+/// The 66 books' names, read once from the bundle, which is read-only: the
+/// panel's header and its references name a book with every render.
+private let canonicalBookNames: [Int: String] = Dictionary(
+    ((try? BundledModuleDatabase.shared.getAllBooks()) ?? []).map { ($0.id, $0.name) },
+    uniquingKeysWith: { first, _ in first }
+)
+
+private func canonicalBookName(_ id: Int) -> String? {
+    canonicalBookNames[id] ?? (try? BundledModuleDatabase.shared.getBook(id: id))?.name
 }

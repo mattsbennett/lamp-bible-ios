@@ -27,9 +27,13 @@ struct ChapterListView: View {
     /// Each chapter's first heading, where the translation has headings.
     @State private var chapterHeadings: [Int: String] = [:]
 
-    /// Get chapter count for the book from GRDB
+    /// The book's chapter count, as the book list shows it: from the
+    /// translation's coverage, which is cached, since this is read several
+    /// times a render. A query only for a book the coverage doesn't list.
     private var chapterCount: Int {
-        (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: book.id)) ?? 0
+        TranslationDatabase.shared.chapterCounts(translationId: translationId)[book.id]
+            ?? (try? TranslationDatabase.shared.getChapterCount(translationId: translationId, book: book.id))
+            ?? 0
     }
 
     /// The chapter being read, when it is in this book. verseId is BBCCCVVV.
