@@ -1503,11 +1503,7 @@ struct StrongsAnalysisView: View {
                 // Its share of every occurrence, which was all a ring of the
                 // same figures said; a part without the word leaves it blank.
                 if activeMeasure == .occurrences {
-                    Text(isEmpty ? "" : LampStrongsSpread.percent(bar.fractionOfOccurrences))
-                        .font(.footnote)
-                        .monospacedDigit()
-                        .foregroundStyle(LampTheme.caption)
-                        .frame(width: 34, alignment: .trailing)
+                    PercentColumn(text: isEmpty ? "" : LampStrongsSpread.percent(bar.fractionOfOccurrences))
                 }
                 Image(systemName: bar.expectation == .fewer ? "arrow.down" : "arrow.up")
                     .font(.caption.weight(.heavy))
@@ -2100,7 +2096,7 @@ struct StrongsAnalysisView: View {
             // Held open, not filled: a share of the two added together is
             // the one figure these counts must never be made into.
             if activeMeasure == .occurrences {
-                Color.clear.frame(width: 34, height: 1)
+                PercentColumn(text: "")
             }
             Color.clear.frame(width: 14, height: 1)
         }
@@ -4257,5 +4253,25 @@ private struct SeptuagintWordGroup: View {
                     .foregroundStyle(LampTheme.caption)
             }
         }
+    }
+}
+
+/// A bar's share of every occurrence, in a column as wide as "100%" at the
+/// reader's text size, so the column lines up from row to row and never
+/// breaks "100%" over two lines, as a fixed 34 points did at larger sizes.
+private struct PercentColumn: View {
+    let text: String
+
+    var body: some View {
+        Text(LampStrongsSpread.percent(1))
+            .hidden()
+            .overlay(alignment: .trailing) {
+                Text(text)
+                    .foregroundStyle(LampTheme.caption)
+            }
+            .font(.footnote)
+            .monospacedDigit()
+            .lineLimit(1)
+            .fixedSize()
     }
 }
