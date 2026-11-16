@@ -3040,6 +3040,24 @@ struct ReaderView: View {
                                 .padding(.top, 24)
                             }
 
+                            // The day's other readings, either side of this
+                            // one, named: on from a reading by a tap rather
+                            // than a pull past its end (owner, Nov 2026).
+                            // Shown when a reading fails to load too, as the
+                            // pull is, or there would be no way on from it.
+                            if isPlanReadingMode, currentPlanReadings.count > 1 {
+                                PlanReadingStepper(
+                                    previous: currentPlanReadings.indices.contains(planReadingIndex - 1)
+                                        ? currentPlanReadings[planReadingIndex - 1].description : nil,
+                                    next: currentPlanReadings.indices.contains(planReadingIndex + 1)
+                                        ? currentPlanReadings[planReadingIndex + 1].description : nil,
+                                    onPrevious: { goToPlanReading(at: planReadingIndex - 1, scrollToEnd: false) },
+                                    onNext: { goToPlanReading(at: planReadingIndex + 1, scrollToEnd: false) }
+                                )
+                                .padding(.horizontal)
+                                .padding(.top, 24)
+                            }
+
                             // The day's last reading ends here rather than at
                             // nothing: back to the day, or on in the reader.
                             if isOnLastPlanReading, !verses.isEmpty {
@@ -3083,7 +3101,10 @@ struct ReaderView: View {
                                     }
                                 )
                                 .padding(.top, 16)
-                                .opacity(bottomButtonAboveViewport || pullProgressBottom > 0 ? 0 : 1)
+                                // In plan mode the stepper above names the next
+                                // reading; this stays, unseen at rest, for the
+                                // pull past the end to measure and draw.
+                                .opacity(bottomButtonAboveViewport || pullProgressBottom > 0 || isPlanReadingMode ? 0 : 1)
                             }
 
                             // Overscroll padding: allows last line to scroll to top for scroll-sync
@@ -4000,6 +4021,72 @@ struct PlanDoneCard: View {
         .padding(20)
         .background(Color.accentColor.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+/// The readings either side of a plan reading, on one row at its foot: the
+/// previous on the left, the next on the right, each named. The first reading
+/// has only a next, the last only a previous.
+struct PlanReadingStepper: View {
+    let previous: String?
+    let next: String?
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let previous {
+                step(.previous, label: previous, action: onPrevious)
+            } else {
+                Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+            }
+            if let next {
+                step(.next, label: next, action: onNext)
+            } else {
+                Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+            }
+        }
+        // Both halves as tall as the taller, when one name wraps.
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func step(_ direction: ChapterNavigationDirection, label: String, action: @escaping () -> Void) -> some View {
+        let isNext = direction == .next
+        return Button(action: action) {
+            HStack(spacing: 8) {
+                if !isNext {
+                    Image(systemName: "chevron.left")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                VStack(alignment: isNext ? .trailing : .leading, spacing: 2) {
+                    Text(isNext ? "Next Reading" : "Previous Reading")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    // One line, shrunk to fit before cut: wrapped, a
+                    // reference broke as "1 Thessalonians" over "1-2".
+                    Text(label)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .frame(maxWidth: .infinity, alignment: isNext ? .trailing : .leading)
+                if isNext {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.accentColor.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isNext ? "Next reading: \(label)" : "Previous reading: \(label)")
     }
 }
 
