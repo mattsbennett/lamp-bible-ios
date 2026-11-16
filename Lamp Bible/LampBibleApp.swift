@@ -262,7 +262,7 @@ private struct LampSplashView: View {
 
     private var verse: some View {
         VStack(spacing: 6) {
-            Text("“Your word is a lamp to my feet\nand a light to my path.”")
+            Text("“Thy word is a lamp unto my feet,\nand a light unto my path.”")
                 .font(.system(size: 15, design: .serif).italic())
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
