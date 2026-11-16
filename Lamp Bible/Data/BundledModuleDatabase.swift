@@ -561,6 +561,8 @@ class BundledModuleDatabase {
         let lemma: String
         let transliteration: String?
         let text: String
+        /// Its senses' glosses, which name it in a search's ranking.
+        var glosses: [String] = []
     }
 
     func searchDictionaryEntries(
@@ -592,7 +594,8 @@ class BundledModuleDatabase {
                     lemma: hit.lemma,
                     transliteration: hit.transliteration,
                     text: hit.searchText.flatMap { $0.isEmpty ? nil : $0 }
-                        ?? DictionarySearchText.text(fromSensesJSON: hit.sensesJSON)
+                        ?? DictionarySearchText.text(fromSensesJSON: hit.sensesJSON),
+                    glosses: LampModuleSearch.glossNames(of: LampDictionarySense.senses(fromJSON: hit.sensesJSON))
                 )
             }
         }

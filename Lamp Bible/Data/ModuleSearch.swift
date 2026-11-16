@@ -32,6 +32,10 @@ struct ModuleSearchResult: Identifiable {
     /// Whether the result's text holds the query's words together, which
     /// core's merge ranks it by after its title.
     var holdsPhrase = false
+    /// A dictionary entry's glosses, which name it as its title does: core's
+    /// `LampModuleSearch.glossNames`, so the entries that mean a word lead,
+    /// in the same order as on the Mac.
+    var glosses: [String] = []
     /// A result one kind's search found without its snippet, which carries
     /// a stand-in to rank by: core's result, to cut one for once kept
     /// (`ModuleSearch.snippets`), and whether it came from the bundled
@@ -524,7 +528,7 @@ class ModuleSearch {
             module: \.moduleId,
             // A quiz result's title is its question, which shows it rather
             // than names it.
-            named: { $0.moduleType == .quiz ? [] : [$0.title] },
+            named: { $0.moduleType == .quiz ? [] : [$0.title] + $0.glosses },
             shown: { $0.moduleType == .quiz ? [$0.title, $0.snippet] : [$0.snippet] },
             holdsPhrase: \.holdsPhrase,
             withSnippet: { result, snippet in
@@ -673,7 +677,8 @@ class ModuleSearch {
                 verseId: nil,
                 rank: 0,
                 strongsKey: hit.key,
-                holdsPhrase: query.holdsPhrase(definition(hit.sensesJSON) ?? "")
+                holdsPhrase: query.holdsPhrase(definition(hit.sensesJSON) ?? ""),
+                glosses: LampModuleSearch.glossNames(of: LampDictionarySense.senses(fromJSON: hit.sensesJSON))
             )
         }
     }
@@ -767,7 +772,8 @@ class ModuleSearch {
                                 key: entry.key,
                                 lemma: entry.lemma,
                                 transliteration: entry.transliteration,
-                                text: DictionarySearchText.text(fromSensesJSON: entry.sensesJson)
+                                text: DictionarySearchText.text(fromSensesJSON: entry.sensesJson),
+                                glosses: LampModuleSearch.glossNames(of: LampDictionarySense.senses(fromJSON: entry.sensesJson))
                             )]
                         } ?? []
                     } else {
@@ -785,7 +791,8 @@ class ModuleSearch {
                             verseId: nil,
                             rank: parsedQuery.textRank(in: [hit.key, hit.lemma, hit.text, hit.transliteration ?? ""]),
                             strongsKey: hit.key,
-                            holdsPhrase: parsedQuery.holdsPhrase(hit.text)
+                            holdsPhrase: parsedQuery.holdsPhrase(hit.text),
+                            glosses: hit.glosses
                         ))
                     }
                 } else if let key = filter.strongsKey {
@@ -853,7 +860,8 @@ class ModuleSearch {
                             verseId: nil,
                             rank: parsedQuery.textRank(in: [hit.lemma, hit.text]),
                             strongsKey: strongsNum.isEmpty ? hit.key : strongsNum,
-                            holdsPhrase: parsedQuery.holdsPhrase(hit.text)
+                            holdsPhrase: parsedQuery.holdsPhrase(hit.text),
+                            glosses: hit.glosses
                         ))
                     }
                 }

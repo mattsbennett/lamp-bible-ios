@@ -6902,6 +6902,21 @@ final class BundledLexiconTests: XCTestCase {
         XCTAssertNil(hebrew?.greekReading)
     }
 
+    /// An entry glossed with the word leads every one that only says it in
+    /// passing: before core's `LampModuleSearch.glossNames`, BDB's וְ ("so,
+    /// then, and") led "grace", as on the Mac.
+    func testADictionaryEntryGlossedWithTheWordLeads() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.dictionary]
+        let results = try ModuleSearch.shared.search(query: "grace", filter: filter, limit: 50)
+        let glossed = results.map { $0.glosses.contains { $0.lowercased() == "grace" } }
+        XCTAssertEqual(glossed.first, true, "\(results.first?.title ?? "none"): \(results.first?.glosses ?? [])")
+        let lastGlossed = try XCTUnwrap(glossed.lastIndex(of: true))
+        let firstUnglossed = glossed.firstIndex(of: false) ?? glossed.count
+        XCTAssertLessThan(lastGlossed, firstUnglossed, "\(results.prefix(12).map { "\($0.title) \($0.glosses)" })")
+    }
+
     func testTBESGIsSearchedOnItsOwnAndListedForTheFilter() throws {
         var filter = ModuleSearchFilter()
         filter.types = [.dictionary]
