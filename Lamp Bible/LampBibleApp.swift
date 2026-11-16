@@ -196,7 +196,6 @@ private struct ContentBootstrapView: View {
 private struct LampSplashView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingSlowStartMessage = false
-    @State private var isShowingVerse = false
 
     /// The launch image's height, at which it is drawn.
     private static let flameHeight: CGFloat = 100
@@ -217,9 +216,6 @@ private struct LampSplashView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .padding(.top, proxy.size.height / 2 + Self.flameHeight / 2 + (isShort ? 20 : 44))
             }
-        }
-        .onAppear {
-            withAnimation(.easeIn(duration: 0.8).delay(reduceMotion ? 0 : 0.5)) { isShowingVerse = true }
         }
         // The bundled modules are unpacked and verified on a first run or after
         // an update, which takes long enough to be worth explaining.
@@ -277,7 +273,6 @@ private struct LampSplashView: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(.top, 24)
-        .opacity(isShowingVerse ? 1 : 0)
         .accessibilityElement(children: .combine)
     }
 
