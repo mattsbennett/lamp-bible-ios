@@ -4026,7 +4026,7 @@ struct PlanDoneCard: View {
 
 /// The readings either side of a plan reading, on one row at its foot: the
 /// previous on the left, the next on the right, each named. The first reading
-/// has only a next, the last only a previous.
+/// has only a next, the last only a previous, and that one has the row.
 struct PlanReadingStepper: View {
     let previous: String?
     let next: String?
@@ -4037,13 +4037,9 @@ struct PlanReadingStepper: View {
         HStack(spacing: 10) {
             if let previous {
                 step(.previous, label: previous, action: onPrevious)
-            } else {
-                Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
             }
             if let next {
                 step(.next, label: next, action: onNext)
-            } else {
-                Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
             }
         }
         // Both halves as tall as the taller, when one name wraps.
