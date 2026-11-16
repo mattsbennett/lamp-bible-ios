@@ -2276,10 +2276,11 @@ struct ReaderView: View {
 
     /// The plan and its readings for the title, in plan mode.
     private var planHeaderContext: PlanHeaderContext? {
-        guard isPlanReadingMode else { return nil }
+        guard isPlanReadingMode, let current = currentPlanReading else { return nil }
         let plan = plansWithReadings[selectedPlanIndex]
         return PlanHeaderContext(
             planName: plan.name,
+            date: date,
             readings: plan.readings.enumerated().map { index, reading in
                 PlanHeaderContext.Reading(
                     id: index,
@@ -2288,7 +2289,21 @@ struct ReaderView: View {
                 )
             },
             currentIndex: planReadingIndex,
+            current: current,
+            plans: plansWithReadings.enumerated().map { index, plan in
+                PlanHeaderContext.Plan(id: index, name: plan.name, readingCount: plan.readings.count)
+            },
+            selectedPlanIndex: selectedPlanIndex,
             onSelectReading: { goToPlanReading(at: $0, scrollToEnd: false) },
+            onSelectPlan: { planIndex in
+                selectedPlanIndex = planIndex
+                planReadingIndex = 0
+                loadPlanReading(at: 0)
+            },
+            // Whenever the reading has a quiz, as the plan bar offered it:
+            // the quiz sheet lets a reader pick an age group that has
+            // questions when the saved one has none.
+            onQuiz: quizModule != nil ? { openQuizSheet() } : nil,
             onExit: { exitPlanMode() }
         )
     }
@@ -3345,7 +3360,6 @@ struct ReaderView: View {
             .toolbar {
                 ReaderBottomToolbarView(
                     readingMetaData: $readingMetaData,
-                    currentReadingIndex: $currentReadingIndex,
                     date: $date,
                     translationId: $translationId,
                     translationAbbreviation: $translationAbbreviation,
@@ -3353,7 +3367,6 @@ struct ReaderView: View {
                     showingSearch: $showingSearch,
                     searchText: $bottomSearchText,
                     toolbarMode: $toolbarMode,
-                    selectedPlanIndex: $selectedPlanIndex,
                     plansWithReadings: plansWithReadings,
                     availableWidth: readerWidth,
                     loadPrev: {
@@ -3372,19 +3385,7 @@ struct ReaderView: View {
                         isHistoryNavigation = true
                         animateScroll = false  // No animation for history navigation
                         loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: verseId)
-                    },
-                    onPlanReadingChanged: { index in
-                        planReadingIndex = index
-                        loadPlanReading(at: index)
-                    },
-                    onPlanChanged: { planIndex in
-                        selectedPlanIndex = planIndex
-                        planReadingIndex = 0
-                        loadPlanReading(at: 0)
-                    },
-                    onQuiz: quizModule != nil ? {
-                        openQuizSheet()
-                    } : nil
+                    }
                 )
             }
             .sheet(isPresented: $showingSpeechTransport) {
@@ -3462,7 +3463,9 @@ struct ReaderView: View {
             // `toolbarsCollapsed` is the lighter scroll-driven one. Either way
             // the bottom bar goes and the header shrinks to the title. The
             // header is the reader's own, in place of the navigation bar.
-            .toolbar(toolbarsHidden || toolbarsCollapsed ? .hidden : .visible, for: .bottomBar)
+            // None in plan mode: the title's sheet has the plan's controls,
+            // and the bar's own ways of moving about don't keep to a plan.
+            .toolbar(toolbarsHidden || toolbarsCollapsed || toolbarMode == .plan ? .hidden : .visible, for: .bottomBar)
             .toolbar(.hidden, for: .navigationBar)
             // Clear of a tool panel beside it, which lies over this side.
             // The header, attached after, keeps the full width, so it spans

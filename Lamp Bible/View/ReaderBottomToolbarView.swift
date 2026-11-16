@@ -411,238 +411,8 @@ struct PlanWithReadings: Equatable {
 // MARK: - Plan Mode Toolbar Items
 
 
-// MARK: - Plan Toolbar Content
-
-struct PlanToolbarContent: View {
-    let date: Date
-    @Binding var currentReadingIndex: Int
-    @Binding var selectedPlanIndex: Int
-    let plansWithReadings: [PlanWithReadings]
-    let onReadingChanged: (Int) -> Void
-    let onPlanChanged: (Int) -> Void
-    var onQuiz: (() -> Void)? = nil
-    @State private var showingPlanPicker: Bool = false
-
-    private var hasMultiplePlans: Bool {
-        plansWithReadings.count > 1
-    }
-
-    private var currentPlan: PlanWithReadings? {
-        guard selectedPlanIndex >= 0 && selectedPlanIndex < plansWithReadings.count else { return nil }
-        return plansWithReadings[selectedPlanIndex]
-    }
-
-    private var currentReadings: [ReadingMetaData] {
-        currentPlan?.readings ?? []
-    }
-
-    private var centerContentMaxWidth: CGFloat {
-        // Scale with screen width: ~35% of screen, clamped between 120-350
-        let screenWidth = UIScreen.main.bounds.width
-        return min(max(screenWidth * 0.35, 120), 350)
-    }
-
-    var body: some View {
-        if plansWithReadings.isEmpty {
-            Text("No readings for today")
-                .font(.subheadline)
-                .frame(height: 36)
-        } else if let plan = currentPlan, !currentReadings.isEmpty {
-            HStack(spacing: 24) {
-                Button {
-                    let newIndex = currentReadingIndex - 1
-                    currentReadingIndex = newIndex
-                    onReadingChanged(newIndex)
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .frame(width: 36, height: 36)
-                }
-                .disabled(currentReadingIndex == 0)
-
-                // Center content - tap to show plan info popover
-                Button {
-                    showingPlanPicker = true
-                } label: {
-                    VStack(spacing: 2) {
-                        HStack(spacing: 4) {
-                            Text(plan.name)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            if currentReadings.count > 1 {
-                                Text("·")
-                                Text("\(currentReadingIndex + 1)/\(currentReadings.count)")
-                                    .monospacedDigit()
-                            }
-                        }
-                        .font(.caption2)
-                        Text(currentReadings[currentReadingIndex].description)
-                            .font(.subheadline.weight(.medium))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    // The bar's text is all primary, told apart by size: on the
-                    // glass bar of iOS 26, over the chapter scrolling beneath
-                    // it, secondary and tertiary text fades nearly to nothing.
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: centerContentMaxWidth)
-                }
-                .popover(isPresented: $showingPlanPicker) {
-                    PlanInfoPopover(
-                        reading: currentReadings[currentReadingIndex],
-                        plansWithReadings: plansWithReadings,
-                        selectedPlanIndex: selectedPlanIndex,
-                        onSelectPlan: { index in
-                            showingPlanPicker = false
-                            selectedPlanIndex = index
-                            currentReadingIndex = 0
-                            onPlanChanged(index)
-                        },
-                        onQuiz: onQuiz != nil ? {
-                            showingPlanPicker = false
-                            Task { @MainActor in
-                                try? await Task.sleep(for: .milliseconds(100))
-                                onQuiz?()
-                            }
-                        } : nil
-                    )
-                }
-
-                Button {
-                    let newIndex = currentReadingIndex + 1
-                    currentReadingIndex = newIndex
-                    onReadingChanged(newIndex)
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .frame(width: 36, height: 36)
-                }
-                .disabled(currentReadingIndex == currentReadings.count - 1)
-            }
-            .frame(height: 36)
-        } else {
-            Text("No readings for today")
-                .font(.subheadline)
-                .frame(height: 36)
-        }
-    }
-}
-
-// MARK: - Plan Info Popover
-
-struct PlanInfoPopover: View {
-    let reading: ReadingMetaData
-    let plansWithReadings: [PlanWithReadings]
-    let selectedPlanIndex: Int
-    let onSelectPlan: (Int) -> Void
-    var onQuiz: (() -> Void)? = nil
-    @State private var readerCount: Int = UserDatabase.shared.getSettings().planReaderCount
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Reading info section
-            VStack(alignment: .leading, spacing: 6) {
-                Text(reading.description)
-                    .font(.headline)
-
-                HStack(spacing: 8) {
-                    Text(reading.isResolved ? "\(reading.verseCount) verses" : "— verses")
-                    Text("·")
-                    Text(reading.isResolved ? "~\(reading.readingTime) min" : "~— min")
-                    Text("·")
-                    Text(reading.genre)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                // Only when reading aloud in turns, as Settings sets.
-                if readerCount > 1 {
-                    ReaderSplitControl(
-                        chapterVerseCounts: reading.chapterVerseCounts,
-                        isResolved: reading.isResolved,
-                        readerCount: $readerCount
-                    )
-                }
-            }
-            .padding()
-            .onChange(of: readerCount) { _, newValue in
-                try? UserDatabase.shared.updateSettings { $0.planReaderCount = newValue }
-            }
-
-            // Quiz button
-            if let onQuiz = onQuiz {
-                Divider()
-
-                Button {
-                    onQuiz()
-                } label: {
-                    HStack {
-                        Label("Quiz", systemImage: "questionmark.circle")
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-
-            // Plan switcher section (when multiple plans)
-            if plansWithReadings.count > 1 {
-                Divider()
-
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Plans")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal)
-                        .padding(.top, 10)
-                        .padding(.bottom, 6)
-
-                    ForEach(Array(plansWithReadings.enumerated()), id: \.element.id) { index, plan in
-                        Button {
-                            onSelectPlan(index)
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(plan.name)
-                                        .foregroundStyle(index == selectedPlanIndex ? .primary : .secondary)
-                                    Text("\(plan.readings.count) reading\(plan.readings.count == 1 ? "" : "s")")
-                                        .font(.caption)
-                                        .foregroundStyle(.tertiary)
-                                }
-                                Spacer()
-                                if index == selectedPlanIndex {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(.tint)
-                                }
-                            }
-                            .padding(.horizontal)
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-
-                        if index < plansWithReadings.count - 1 {
-                            Divider()
-                                .padding(.leading)
-                        }
-                    }
-                }
-            }
-        }
-        .frame(minWidth: 220, maxWidth: 300)
-        .frame(maxHeight: 400)
-        .presentationCompactAdaptation(.popover)
-    }
-}
-
-/// MARK: - Main Toolbar View
-
 struct ReaderBottomToolbarView: ToolbarContent {
     @Binding var readingMetaData: [ReadingMetaData]?
-    @Binding var currentReadingIndex: Int
     @Binding var date: Date
     @Binding var translationId: String
     @Binding var translationAbbreviation: String
@@ -650,7 +420,6 @@ struct ReaderBottomToolbarView: ToolbarContent {
     @Binding var showingSearch: Bool
     @Binding var searchText: String
     @Binding var toolbarMode: BottomToolbarMode
-    @Binding var selectedPlanIndex: Int
     let plansWithReadings: [PlanWithReadings]
     let availableWidth: CGFloat
     let loadPrev: () -> Void
@@ -658,9 +427,6 @@ struct ReaderBottomToolbarView: ToolbarContent {
     let loadPrevBook: () -> Void
     let loadNextBook: () -> Void
     let navigateToVerseId: (Int) -> Void
-    let onPlanReadingChanged: (Int) -> Void
-    let onPlanChanged: (Int) -> Void
-    var onQuiz: (() -> Void)? = nil
 
     private var hasPlanReadings: Bool {
         !plansWithReadings.isEmpty
@@ -753,16 +519,9 @@ struct ReaderBottomToolbarView: ToolbarContent {
             )
             .frame(maxWidth: .infinity)
         case .plan:
-            PlanToolbarContent(
-                date: date,
-                currentReadingIndex: $currentReadingIndex,
-                selectedPlanIndex: $selectedPlanIndex,
-                plansWithReadings: plansWithReadings,
-                onReadingChanged: onPlanReadingChanged,
-                onPlanChanged: onPlanChanged,
-                onQuiz: onQuiz
-            )
-            .frame(maxWidth: .infinity)
+            // The bar is hidden in plan mode; the reader's title carries
+            // the plan's controls (`PlanReadingSheet`).
+            EmptyView()
         }
     }
 }

@@ -70,6 +70,9 @@ struct ReaderNavigationToolbarView: View {
     /// the way out of the mode.
     var planContext: PlanHeaderContext? = nil
     @State private var showingPlanMenu = false
+    /// What the plan sheet asked for that needs another sheet, done once it
+    /// has gone.
+    @State private var planSheetFollowUp: PlanSheetFollowUp?
 
     init(
         userSettings: Binding<UserSettings>,
@@ -180,11 +183,12 @@ struct ReaderNavigationToolbarView: View {
             .padding(.leading, windowControls.leading)
             .padding(.trailing, windowControls.trailing)
             title
-                .popover(isPresented: $showingPlanMenu) {
+                .sheet(isPresented: $showingPlanMenu, onDismiss: runPlanSheetFollowUp) {
                     if let planContext {
-                        planMenuContent(planContext)
-                            .environment(\.colorScheme, colorScheme)
-                            .preferredColorScheme(colorScheme)
+                        PlanReadingSheet(plan: planContext) { followUp in
+                            planSheetFollowUp = followUp
+                            showingPlanMenu = false
+                        }
                     }
                 }
                 // Clear of the buttons either side, and of the window's
@@ -332,69 +336,13 @@ struct ReaderNavigationToolbarView: View {
         return "Plan reading, \(place), reading \(planContext.currentIndex + 1) of \(planContext.readings.count), \(translationAbbreviation)"
     }
 
-    /// The day's readings, each ticked once read, as the Mac's plan bar has
-    /// them; then choosing another passage, and leaving the mode.
-    private func planMenuContent(_ plan: PlanHeaderContext) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            menuCaption(plan.planName)
-            VStack(spacing: 0) {
-                ForEach(plan.readings) { reading in
-                    Button {
-                        showingPlanMenu = false
-                        if reading.id != plan.currentIndex { plan.onSelectReading(reading.id) }
-                    } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: reading.isRead ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 17))
-                                .frame(width: 24)
-                                .foregroundStyle(reading.isRead ? Color.accentColor : Color.secondary)
-                            Text(reading.title)
-                                .fontWeight(reading.id == plan.currentIndex ? .semibold : .regular)
-                                .foregroundStyle(Color.primary)
-                            Spacer(minLength: 0)
-                            if reading.id == plan.currentIndex {
-                                Text("Reading")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read")\(reading.id == plan.currentIndex ? ", reading now" : "")")
-                    if reading.id != plan.readings.last?.id {
-                        Divider().padding(.leading, 52)
-                    }
-                }
-            }
-            .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
-            VStack(spacing: 0) {
-                menuRow("Choose Passage", systemImage: "book") {
-                    showingPlanMenu = false
-                    showingBookPicker = true
-                }
-                Divider().padding(.horizontal, 14)
-                menuRow("Exit Plan Mode", systemImage: "xmark.circle") {
-                    showingPlanMenu = false
-                    plan.onExit()
-                }
-            }
-            .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
-            .padding(.top, 6)
-            Text("Choosing another passage leaves plan mode.")
-                .font(.footnote)
-                .foregroundStyle(LampTheme.caption)
-                .padding(.horizontal, 6)
-                .padding(.top, 2)
+    private func runPlanSheetFollowUp() {
+        defer { planSheetFollowUp = nil }
+        switch planSheetFollowUp {
+        case .choosePassage: showingBookPicker = true
+        case .quiz: planContext?.onQuiz?()
+        case nil: break
         }
-        .font(.body)
-        .padding(12)
-        .frame(width: 320)
-        .background(LampTheme.menuBackground)
-        .presentationCompactAdaptation(.popover)
     }
 
     /// The tools a panel beside the reader can show, for the title's menu.
@@ -970,9 +918,170 @@ struct PlanHeaderContext {
         let isRead: Bool
     }
 
+    struct Plan: Identifiable {
+        /// The plan's index among those with readings on the day.
+        let id: Int
+        let name: String
+        let readingCount: Int
+    }
+
     let planName: String
+    let date: Date
     let readings: [Reading]
     let currentIndex: Int
+    /// The reading on screen, for its length, kind and the readers' split.
+    let current: ReadingMetaData
+    /// Every followed plan with readings on the day; more than one offers a
+    /// choice between them.
+    let plans: [Plan]
+    let selectedPlanIndex: Int
     let onSelectReading: (Int) -> Void
+    let onSelectPlan: (Int) -> Void
+    /// Nil when the reading has no quiz.
+    let onQuiz: (() -> Void)?
     let onExit: () -> Void
+}
+
+/// What the plan sheet hands back to be done once it has closed, since it
+/// opens another sheet.
+enum PlanSheetFollowUp {
+    case choosePassage
+    case quiz
+}
+
+/// Plan reading mode's controls, from the reader's title: what was on the
+/// plan's bottom bar (the reading, the readers' split, the quiz, the plans)
+/// with the day's readings and the way out of the mode. Everything about the
+/// mode in one place, as the Mac's plan bar has it, so the bar can go.
+struct PlanReadingSheet: View {
+    let plan: PlanHeaderContext
+    /// Closes the sheet, then does what it names.
+    let finish: (PlanSheetFollowUp?) -> Void
+    @State private var readerCount = 1
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(plan.current.description)
+                            .font(.title3.weight(.semibold))
+                        Text(details)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        // Only when reading aloud in turns, as Settings sets.
+                        if readerCount > 1 {
+                            ReaderSplitControl(
+                                chapterVerseCounts: plan.current.chapterVerseCounts,
+                                isResolved: plan.current.isResolved,
+                                readerCount: $readerCount
+                            )
+                            .padding(.top, 2)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    if plan.onQuiz != nil {
+                        Button {
+                            finish(.quiz)
+                        } label: {
+                            Label("Quiz", systemImage: "questionmark.circle")
+                        }
+                    }
+                } header: {
+                    Text(plan.readings.count > 1
+                        ? "Reading \(plan.currentIndex + 1) of \(plan.readings.count)"
+                        : "Reading")
+                }
+
+                Section {
+                    ForEach(plan.readings) { reading in
+                        Button {
+                            if reading.id != plan.currentIndex { plan.onSelectReading(reading.id) }
+                            finish(nil)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: reading.isRead ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(reading.isRead ? Color.accentColor : Color.secondary)
+                                Text(reading.title)
+                                    .fontWeight(reading.id == plan.currentIndex ? .semibold : .regular)
+                                    .foregroundStyle(Color.primary)
+                                Spacer(minLength: 0)
+                                if reading.id == plan.currentIndex {
+                                    Text("Reading")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read")\(reading.id == plan.currentIndex ? ", reading now" : "")")
+                    }
+                } header: {
+                    Text(plan.date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                }
+
+                if plan.plans.count > 1 {
+                    Section("Plans") {
+                        ForEach(plan.plans) { other in
+                            Button {
+                                if other.id != plan.selectedPlanIndex { plan.onSelectPlan(other.id) }
+                                finish(nil)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(other.name).foregroundStyle(Color.primary)
+                                        Text("\(other.readingCount) reading\(other.readingCount == 1 ? "" : "s")")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 0)
+                                    if other.id == plan.selectedPlanIndex {
+                                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    Button {
+                        finish(.choosePassage)
+                    } label: {
+                        Label("Choose Passage", systemImage: "book")
+                    }
+                    Button {
+                        plan.onExit()
+                        finish(nil)
+                    } label: {
+                        Label("Exit Plan Mode", systemImage: "xmark.circle")
+                    }
+                } footer: {
+                    Text("Choosing another passage leaves plan mode.")
+                }
+            }
+            .navigationTitle(plan.planName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { finish(nil) }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .task {
+            let count = await Task.detached { UserDatabase.shared.getSettings().planReaderCount }.value
+            readerCount = count
+        }
+        .onChange(of: readerCount) { old, new in
+            guard old != new else { return }
+            // In order, as each change is made: a small write.
+            try? UserDatabase.shared.updateSettings { $0.planReaderCount = new }
+        }
+    }
+
+    private var details: String {
+        let reading = plan.current
+        guard reading.isResolved else { return "— verses · ~— min · \(reading.genre)" }
+        return "\(reading.verseCount) verses · ~\(reading.readingTime) min · \(reading.genre)"
+    }
 }
