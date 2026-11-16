@@ -892,9 +892,7 @@ struct StrongsAnalysisView: View {
         } header: {
             sectionHeader("Translated As")
         } footer: {
-            Text(asRing.wrappedValue
-                ? "How it is translated, the commonest first. Tap one to filter the verse list below."
-                : "Tap one to filter the verse list below.")
+            Text("Tap one to filter the verse list below.")
                 .lampFootnote()
         }
     }
@@ -1001,10 +999,14 @@ struct StrongsAnalysisView: View {
             sectionHeader("Forms")
         } footer: {
             // Why one word has several spellings, for a reader new to the
-            // language, and what each spelling below is shown with.
-            Text(LampStrongsFormReading.note(for: analysis, readings: Array(readings.values))
-                + (analysis.forms.isEmpty ? "" : " Tap one to filter the verse list below."))
-                .lampFootnote()
+            // language, and what each spelling below is shown with: only
+            // where the spellings are listed. Where they aren't, the section
+            // is only the way to the text that lists them (owner, Nov 2026).
+            if !analysis.forms.isEmpty {
+                Text(LampStrongsFormReading.note(for: analysis, readings: Array(readings.values))
+                    + " Tap one to filter the verse list below.")
+                    .lampFootnote()
+            }
         }
     }
 
@@ -1068,7 +1070,19 @@ struct StrongsAnalysisView: View {
         let gaps = isRead
             ? LampStrongsFormReading.gaps(of: analysis, readings: Array(formReadings(of: analysis).values))
             : []
-        if !matched.isEmpty || !gaps.isEmpty {
+        if analysis.forms.isEmpty, !gaps.isEmpty {
+            // With no forms to list, what the tags leave out is all the
+            // section says, so it is said outright rather than folded under
+            // a label (owner, Nov 2026).
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(gaps, id: \.self) { line in
+                    Text(line)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 2)
+        } else if !matched.isEmpty || !gaps.isEmpty {
             // Behind a disclosure, as the Septuagint is, and as on the Mac:
             // set out in full they were several paragraphs of fine print
             // between the reader and the forms. The label stays, so it is
@@ -1098,7 +1112,7 @@ struct StrongsAnalysisView: View {
                 bookRange: bookRange
             )) {
                 Text("Open in \(name)")
-                    // Apart from the disclosure above it, which it isn't part of.
+                    // Apart from the notes above it, which it isn't part of.
                     .padding(.top, 8)
             }
             .accessibilityHint("Analyses \(analysis.key) in \(name), whose tags give each spelling and its grammar")
@@ -1819,7 +1833,7 @@ struct StrongsAnalysisView: View {
         } header: {
             sectionHeader("Found With")
         } footer: {
-            Text("The bar is each word's strength of association with this one, against the strongest here, and the list follows it. The multiple says how much more often than chance the two share a verse: a high multiple over a few shared verses says less than a smaller one over many.")
+            Text(LampStrongsCompanionStrength.explanation)
                 .lampFootnote()
         }
     }
@@ -1908,7 +1922,7 @@ struct StrongsAnalysisView: View {
         } header: {
             sectionHeader("Compare")
         } footer: {
-            Text("Counts depend on how each translation was tagged, so they don’t all measure the same thing.")
+            Text(LampStrongsCompareNote.text)
                 .lampFootnote()
         }
         .id(Self.compareAnchor)
