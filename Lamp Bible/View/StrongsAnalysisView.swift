@@ -152,6 +152,10 @@ struct StrongsAnalysisView: View {
     /// built, said beside what rests on it.
     @State private var tagSources: [LampTranslationSource] = []
     @State private var isComparing = false
+    /// Whether Compare's Hebrew and Greek texts are shown. Folded to begin
+    /// with, for each word: a companion followed is a new page, and coming
+    /// back finds this one as it was left.
+    @State private var showsOriginalLanguages = false
     @State private var showsAllRenderings = false
     @State private var showsAllForms = false
     /// Each form read for someone without the language, by form ID, with
@@ -910,8 +914,13 @@ struct StrongsAnalysisView: View {
         // Compare answers only where another translation tags the word: the
         // English tag a Septuagint's Old Testament word in Hebrew, so it may
         // have none. Said as on the Mac, and no button to an empty answer.
+        // Translations alone: another Hebrew or Greek text tagging it would
+        // promise renderings under Compare, and lead to a fold of texts.
         let othersTagIt = isComparing
-            || compared.contains { $0.translationID != translationId && $0.occurrenceCount > 0 }
+            || compared.contains {
+                $0.translationID != translationId && !originalLanguageIDs.contains($0.translationID)
+                    && $0.occurrenceCount > 0
+            }
         return Section {
             Text(othersTagIt
                 ? "\(name) is the \(language) text itself, so its words are the forms below. How each translation renders it is under Compare."
@@ -1891,25 +1900,16 @@ struct StrongsAnalysisView: View {
     /// Each translation's count and English for the word, each but the one
     /// being read opening the word's analysis in it: the way from one
     /// translation to another, from any of them.
+    ///
+    /// The Hebrew and Greek texts come last, folded: their counts say how
+    /// often the text uses the word, not how a translator rendered it (owner,
+    /// Nov 2026, as on the Mac). The one being read may be among them.
     private func compareSection(_ analysis: LampStrongsAnalysis) -> some View {
         let ordered = LampStrongsAnalysisOrder.ordered([analysis] + compared, activeTranslationID: translationId)
+        let split = LampStrongsComparison.split(ordered, originalLanguageIDs: originalLanguageIDs)
         return Section {
-            ForEach(ordered, id: \.translationID) { other in
-                // One that tags none of the word has nothing to open.
-                if other.translationID == translationId || other.occurrenceCount == 0 {
-                    compareRow(other, isRead: other.translationID == translationId)
-                } else {
-                    let name = other.translationAbbreviation ?? other.translationName
-                    NavigationLink(value: StrongsAnalysisInText(
-                        key: analysis.key,
-                        translationId: other.translationID,
-                        bookRange: bookRange
-                    )) {
-                        compareRow(other, isRead: false)
-                    }
-
-                    .accessibilityHint("Analyses \(analysis.key) in \(name)")
-                }
+            ForEach(split.translations, id: \.translationID) { other in
+                compareEntry(other, key: analysis.key)
             }
             if isComparing {
                 HStack(spacing: 8) {
@@ -1919,6 +1919,19 @@ struct StrongsAnalysisView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if !split.originalLanguages.isEmpty {
+                DisclosureGroup(isExpanded: $showsOriginalLanguages) {
+                    Text(LampStrongsComparison.foldNote)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    ForEach(split.originalLanguages, id: \.translationID) { other in
+                        compareEntry(other, key: analysis.key)
+                    }
+                } label: {
+                    Text(LampStrongsComparison.foldTitle(count: split.originalLanguages.count))
+                        .font(.subheadline)
+                }
+            }
         } header: {
             sectionHeader("Compare")
         } footer: {
@@ -1926,6 +1939,34 @@ struct StrongsAnalysisView: View {
                 .lampFootnote()
         }
         .id(Self.compareAnchor)
+    }
+
+    /// One translation's row, opening the word's analysis in it; the one
+    /// being read, and one that tags none of the word, have nothing to open.
+    @ViewBuilder
+    private func compareEntry(_ other: LampStrongsAnalysis, key: String) -> some View {
+        if other.translationID == translationId || other.occurrenceCount == 0 {
+            compareRow(other, isRead: other.translationID == translationId)
+        } else {
+            let name = other.translationAbbreviation ?? other.translationName
+            NavigationLink(value: StrongsAnalysisInText(
+                key: key,
+                translationId: other.translationID,
+                bookRange: bookRange
+            )) {
+                compareRow(other, isRead: false)
+            }
+            .accessibilityHint("Analyses \(key) in \(name)")
+        }
+    }
+
+    /// The Hebrew and Greek texts among the translations, by the language
+    /// each module declares: never by its name, which an English Bible with
+    /// "Greek" in its title would be folded away by.
+    private var originalLanguageIDs: Set<String> {
+        Set(translationLanguages.compactMap { id, language in
+            LampTranslationLanguages.strongsSide(of: language) == nil ? nil : id
+        })
     }
 
     private func compareRow(_ other: LampStrongsAnalysis, isRead: Bool) -> some View {
