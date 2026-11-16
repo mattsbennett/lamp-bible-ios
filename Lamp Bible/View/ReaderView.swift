@@ -2285,7 +2285,8 @@ struct ReaderView: View {
                 PlanHeaderContext.Reading(
                     id: index,
                     title: reading.description,
-                    isRead: planReadIDs.contains(reading.id)
+                    isRead: planReadIDs.contains(reading.id),
+                    meta: reading
                 )
             },
             currentIndex: planReadingIndex,

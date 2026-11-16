@@ -618,7 +618,7 @@ private enum CompletedReadingsCache {
 /// The day card's ground: a deep, warm red rising into amber at one corner.
 /// Fixed colours rather than the accent's, which lightens in dark mode and
 /// would take white text below a readable contrast.
-private struct HeroBackground: View {
+struct HeroBackground: View {
     var body: some View {
         ZStack {
             LinearGradient(

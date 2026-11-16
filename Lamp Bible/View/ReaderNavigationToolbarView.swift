@@ -916,6 +916,8 @@ struct PlanHeaderContext {
         let id: Int
         let title: String
         let isRead: Bool
+        /// Its length, kind and verses, said when its row is opened.
+        let meta: ReadingMetaData
     }
 
     struct Plan: Identifiable {
@@ -955,45 +957,45 @@ enum PlanSheetFollowUp {
 /// mode in one place, as the Mac's plan bar has it, so the bar can go.
 ///
 /// Laid out so each thing is said once and the way out is always in reach:
-/// the plan and the day are the title, with the other plans in the title's
-/// menu; the reading on screen opens out in the day's list rather than
-/// standing in a card above it as well; and Choose Passage and Exit Plan Mode
-/// sit at the foot, visible at the sheet's half height.
+/// the plan is the title, with the other plans in the title's menu; the day
+/// is a card like the home screen's, with its readings' progress across it;
+/// each reading opens in place to say what it is, without leaving the one
+/// being read; and Choose Passage and Exit Plan Mode sit at the foot.
 struct PlanReadingSheet: View {
     let plan: PlanHeaderContext
     /// Closes the sheet, then does what it names.
     let finish: (PlanSheetFollowUp?) -> Void
     @State private var readerCount = 1
+    /// The readings opened in place, the one being read to begin with.
+    @State private var opened: Set<Int>
+    /// Full height from the start, as the owner asked; it can still be
+    /// pulled down to half.
+    @State private var detent: PresentationDetent = .large
+
+    init(plan: PlanHeaderContext, finish: @escaping (PlanSheetFollowUp?) -> Void) {
+        self.plan = plan
+        self.finish = finish
+        _opened = State(initialValue: [plan.currentIndex])
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
+                    dayCard
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(HeroBackground())
+                }
+                Section {
                     ForEach(plan.readings) { reading in
-                        if reading.id == plan.currentIndex {
-                            currentRow(reading)
-                        } else {
-                            otherRow(reading)
-                        }
-                    }
-                } header: {
-                    VStack(alignment: .leading, spacing: 8) {
-                        // The title's subtitle says the day from iOS 26;
-                        // before it, the list does.
-                        if #unavailable(iOS 26.0) {
-                            Text(dayText)
-                                .textCase(nil)
-                        }
-                        if plan.readings.count > 1 {
-                            progressHeader
-                        }
+                        row(reading)
                     }
                 }
             }
+            .listSectionSpacing(.compact)
             .contentMargins(.top, 4, for: .scrollContent)
             .safeAreaInset(edge: .bottom, spacing: 0) { actions }
             .navigationTitle(plan.planName)
-            .lampNavigationSubtitle(dayText)
             .navigationBarTitleDisplayMode(.inline)
             // The other plans with readings on the day, from the title that
             // names the one being read; no menu where there is only the one.
@@ -1020,7 +1022,7 @@ struct PlanReadingSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.medium, .large], selection: $detent)
         .task {
             let count = await Task.detached { UserDatabase.shared.getSettings().planReaderCount }.value
             readerCount = count
@@ -1032,118 +1034,191 @@ struct PlanReadingSheet: View {
         }
     }
 
-    private var dayText: String {
-        plan.date.formatted(.dateTime.weekday(.wide).month(.wide).day())
-    }
+    // MARK: The day
 
-    /// How far through the day's readings, as a line of segments, one to a
-    /// reading, filled where it's read.
-    private var progressHeader: some View {
-        let read = plan.readings.filter(\.isRead).count
-        return HStack(spacing: 10) {
-            HStack(spacing: 3) {
-                ForEach(plan.readings) { reading in
-                    Capsule()
-                        .fill(reading.isRead ? Color.accentColor : Color.secondary.opacity(0.25))
-                        .frame(height: 4)
+    private var readCount: Int { plan.readings.filter(\.isRead).count }
+
+    /// The day as the home screen's card has it: the date, how many readings
+    /// and how long, how many are read, and a segment for each across the
+    /// card's width.
+    private var dayCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(plan.date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.bottom, 4)
+            HStack(spacing: 6) {
+                Text("^[\(plan.readings.count) reading](inflect: true)")
+                if plan.readings.allSatisfy(\.meta.isResolved) {
+                    Text("·")
+                    Text("\(plan.readings.reduce(0) { $0 + $1.meta.readingTime }) min")
+                }
+                Spacer(minLength: 8)
+                if readCount == plan.readings.count {
+                    Label("All read", systemImage: "checkmark.circle.fill")
+                        .fontWeight(.semibold)
+                } else {
+                    Text("\(readCount) of \(plan.readings.count) read")
+                        .fontWeight(.semibold)
                 }
             }
-            .frame(maxWidth: 120)
-            Text("\(read) of \(plan.readings.count) read")
-                .font(.subheadline)
-                .monospacedDigit()
+            .font(.subheadline)
+            .monospacedDigit()
+            .foregroundStyle(.white.opacity(0.92))
+            HStack(spacing: 5) {
+                ForEach(plan.readings) { reading in
+                    Capsule()
+                        .fill(reading.isRead ? Color.white : Color.white.opacity(0.28))
+                        .frame(height: 6)
+                }
+            }
+            .padding(.top, 14)
+            .accessibilityElement()
+            .accessibilityLabel("Progress")
+            .accessibilityValue("\(readCount) of \(plan.readings.count) read")
         }
-        .textCase(nil)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(read) of \(plan.readings.count) readings read")
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    // MARK: The readings
 
     private func statusIcon(_ reading: PlanHeaderContext.Reading) -> some View {
         Image(systemName: reading.isRead ? "checkmark.circle.fill" : "circle")
             .font(.title3)
             .foregroundStyle(reading.isRead ? Color.accentColor : Color.secondary.opacity(0.6))
+            .frame(width: Self.iconWidth)
     }
 
-    /// The reading on screen, opened out: where it falls in the day, its
-    /// length and kind, the readers' split where reading in turns, and the
-    /// quiz. Not a button itself, so the split and the quiz take their taps.
-    private func currentRow(_ reading: PlanHeaderContext.Reading) -> some View {
-        HStack(alignment: .readingTitle, spacing: 12) {
-            statusIcon(reading)
-                .alignmentGuide(.readingTitle) { $0[VerticalAlignment.center] }
-            VStack(alignment: .leading, spacing: 6) {
-                if plan.readings.count > 1 {
-                    Text("Reading \(plan.currentIndex + 1) of \(plan.readings.count)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tint)
+    private static let iconWidth: CGFloat = 26
+
+    /// A reading of the day: its title, which opens it in place to say its
+    /// length and kind, the readers' split and, for the one being read, the
+    /// quiz; another reading is read from its own Read button there.
+    private func row(_ reading: PlanHeaderContext.Reading) -> some View {
+        let isOpen = opened.contains(reading.id)
+        let isCurrent = reading.id == plan.currentIndex
+        return VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.snappy) {
+                    if isOpen { opened.remove(reading.id) } else { opened.insert(reading.id) }
                 }
-                Text(plan.current.description)
-                    .font(.title3.weight(.semibold))
-                    .alignmentGuide(.readingTitle) { $0[VerticalAlignment.center] }
-                Text(details)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                // Only when reading aloud in turns, as Settings sets.
-                if readerCount > 1 || plan.onQuiz != nil {
-                    HStack(spacing: 8) {
-                        if readerCount > 1 {
-                            ReaderSplitControl(
-                                chapterVerseCounts: plan.current.chapterVerseCounts,
-                                isResolved: plan.current.isResolved,
-                                readerCount: $readerCount,
-                                style: .chip
-                            )
+            } label: {
+                HStack(alignment: .readingTitle, spacing: 12) {
+                    statusIcon(reading)
+                        .alignmentGuide(.readingTitle) { $0[VerticalAlignment.center] }
+                    VStack(alignment: .leading, spacing: 3) {
+                        if isCurrent, plan.readings.count > 1 {
+                            Text("Reading \(plan.currentIndex + 1) of \(plan.readings.count)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tint)
                         }
-                        if plan.onQuiz != nil {
-                            // Drawn as the readers' chip beside it is.
-                            Button {
-                                finish(.quiz)
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Image(systemName: "questionmark.circle.fill")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.tint)
-                                    Text("Quiz")
-                                        .font(.footnote.weight(.medium))
-                                        .foregroundStyle(.primary.opacity(0.8))
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(LampTheme.tileFill, in: Capsule())
-                                .contentShape(Capsule())
-                            }
-                            .accessibilityLabel("Quiz")
-                        }
+                        Text(reading.title)
+                            .font(isCurrent ? .headline : .body)
+                            .foregroundStyle(reading.isRead && !isCurrent ? Color.secondary : Color.primary)
+                            .alignmentGuide(.readingTitle) { $0[VerticalAlignment.center] }
                     }
-                    .buttonStyle(.borderless)
-                    .padding(.top, 2)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down")
+                        .font(.footnote.weight(.semibold))
+                        // Grey, not the borderless button's tint.
+                        .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                        .rotationEffect(.degrees(isOpen ? 180 : 0))
+                        .alignmentGuide(.readingTitle) { $0[VerticalAlignment.center] }
                 }
+                .contentShape(Rectangle())
             }
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read"), reading now")
-    }
+            .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read")\(isCurrent ? ", reading now" : "")")
+            .accessibilityHint(isOpen ? "Hides its details" : "Shows its details")
 
-    private func otherRow(_ reading: PlanHeaderContext.Reading) -> some View {
-        Button {
-            plan.onSelectReading(reading.id)
-            finish(nil)
-        } label: {
-            HStack(spacing: 12) {
-                statusIcon(reading)
-                Text(reading.title)
-                    .foregroundStyle(reading.isRead ? Color.secondary : Color.primary)
-                Spacer(minLength: 0)
+            if isOpen {
+                details(reading, isCurrent: isCurrent)
+                    .padding(.leading, Self.iconWidth + 12)
+                    .transition(.opacity)
             }
         }
-        .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read")")
+        .buttonStyle(.borderless)
+        .padding(.vertical, 4)
+        // Each divider starts under the titles, whatever the row has open.
+        .alignmentGuide(.listRowSeparatorLeading) { _ in Self.iconWidth + 12 }
     }
 
-    /// The ways out of what the plan sets, at the sheet's foot so they show
-    /// at its half height too.
+    private func details(_ reading: PlanHeaderContext.Reading, isCurrent: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(details(of: reading.meta))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            // Chips wrap whole: the second goes under the first where the
+            // two don't fit side by side. Stacked, a chip still too wide for
+            // the row (many chapters at a large text size) may wrap within
+            // itself rather than be cut off.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { chips(reading, isCurrent: isCurrent, whole: true) }
+                VStack(alignment: .leading, spacing: 8) { chips(reading, isCurrent: isCurrent, whole: false) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func chips(_ reading: PlanHeaderContext.Reading, isCurrent: Bool, whole: Bool) -> some View {
+                // Only when reading aloud in turns, as Settings sets.
+                if readerCount > 1 {
+                    ReaderSplitControl(
+                        chapterVerseCounts: reading.meta.chapterVerseCounts,
+                        isResolved: reading.meta.isResolved,
+                        readerCount: $readerCount,
+                        style: .chip
+                    )
+                    .fixedSize(horizontal: whole, vertical: !whole)
+                }
+                if isCurrent {
+                    if plan.onQuiz != nil {
+                        chip("Quiz", systemImage: "questionmark.circle.fill") { finish(.quiz) }
+                    }
+                } else {
+                    Button {
+                        plan.onSelectReading(reading.id)
+                        finish(nil)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "book.fill")
+                                .font(.caption.weight(.semibold))
+                            Text("Read")
+                                .font(.footnote.weight(.semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Color.accentColor, in: Capsule())
+                        .contentShape(Capsule())
+                        .fixedSize()
+                    }
+                    .accessibilityLabel("Read \(reading.title)")
+                }
+    }
+
+    /// Drawn as the readers' chip beside it is.
+    private func chip(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+                Text(title)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.primary.opacity(0.8))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(LampTheme.tileFill, in: Capsule())
+            .contentShape(Capsule())
+            .fixedSize()
+        }
+        .accessibilityLabel(title)
+    }
+
+    /// The ways out of what the plan sets, at the sheet's foot.
     private var actions: some View {
         VStack(spacing: 8) {
             HStack(spacing: 10) {
@@ -1177,8 +1252,7 @@ struct PlanReadingSheet: View {
         .background(LampTheme.groupedBackground)
     }
 
-    private var details: String {
-        let reading = plan.current
+    private func details(of reading: ReadingMetaData) -> String {
         guard reading.isResolved else { return "— verses · ~— min · \(reading.genre)" }
         return "\(reading.verseCount) verses · ~\(reading.readingTime) min · \(reading.genre)"
     }
