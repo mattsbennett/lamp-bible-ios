@@ -36,6 +36,10 @@ struct ModuleSearchResult: Identifiable {
     /// `LampModuleSearch.glossNames`, so the entries that mean a word lead,
     /// in the same order as on the Mac.
     var glosses: [String] = []
+    /// A dictionary entry's transliteration, a name it goes by too, as core
+    /// names the Mac's (owner, Nov 2026): a transliteration typed into
+    /// Search ranks the same on both.
+    var transliteration: String? = nil
     /// A result one kind's search found without its snippet, which carries
     /// a stand-in to rank by: core's result, to cut one for once kept
     /// (`ModuleSearch.snippets`), and whether it came from the bundled
@@ -528,7 +532,7 @@ class ModuleSearch {
             module: \.moduleId,
             // A quiz result's title is its question, which shows it rather
             // than names it.
-            named: { $0.moduleType == .quiz ? [] : [$0.title] + $0.glosses },
+            named: { $0.moduleType == .quiz ? [] : [$0.title] + [$0.transliteration].compactMap { $0 } + $0.glosses },
             shown: { $0.moduleType == .quiz ? [$0.title, $0.snippet] : [$0.snippet] },
             holdsPhrase: \.holdsPhrase,
             withSnippet: { result, snippet in
@@ -678,7 +682,8 @@ class ModuleSearch {
                 rank: 0,
                 strongsKey: hit.key,
                 holdsPhrase: query.holdsPhrase(definition(hit.sensesJSON) ?? ""),
-                glosses: LampModuleSearch.glossNames(of: LampDictionarySense.senses(fromJSON: hit.sensesJSON))
+                glosses: LampModuleSearch.glossNames(of: LampDictionarySense.senses(fromJSON: hit.sensesJSON)),
+                transliteration: hit.transliteration
             )
         }
     }
@@ -792,7 +797,8 @@ class ModuleSearch {
                             rank: parsedQuery.textRank(in: [hit.key, hit.lemma, hit.text, hit.transliteration ?? ""]),
                             strongsKey: hit.key,
                             holdsPhrase: parsedQuery.holdsPhrase(hit.text),
-                            glosses: hit.glosses
+                            glosses: hit.glosses,
+                            transliteration: hit.transliteration
                         ))
                     }
                 } else if let key = filter.strongsKey {
@@ -861,7 +867,8 @@ class ModuleSearch {
                             rank: parsedQuery.textRank(in: [hit.lemma, hit.text]),
                             strongsKey: strongsNum.isEmpty ? hit.key : strongsNum,
                             holdsPhrase: parsedQuery.holdsPhrase(hit.text),
-                            glosses: hit.glosses
+                            glosses: hit.glosses,
+                            transliteration: hit.transliteration
                         ))
                     }
                 }

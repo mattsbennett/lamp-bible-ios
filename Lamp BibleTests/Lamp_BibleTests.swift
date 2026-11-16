@@ -6917,6 +6917,17 @@ final class BundledLexiconTests: XCTestCase {
         XCTAssertLessThan(lastGlossed, firstUnglossed, "\(results.prefix(12).map { "\($0.title) \($0.glosses)" })")
     }
 
+    /// A transliteration typed into Search names its entry, as on the Mac
+    /// (owner, Nov 2026): "charis" opens on χάρις.
+    func testATransliterationNamesItsEntry() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        var filter = ModuleSearchFilter()
+        filter.types = [.dictionary]
+        let results = try ModuleSearch.shared.search(query: "charis", filter: filter, limit: 50)
+        let first = try XCTUnwrap(results.first)
+        XCTAssertEqual(first.strongsKey, "G5485", "\(results.prefix(5).map { "\($0.title) \($0.transliteration ?? "-")" })")
+    }
+
     func testTBESGIsSearchedOnItsOwnAndListedForTheFilter() throws {
         var filter = ModuleSearchFilter()
         filter.types = [.dictionary]
