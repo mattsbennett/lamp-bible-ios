@@ -953,6 +953,12 @@ enum PlanSheetFollowUp {
 /// plan's bottom bar (the reading, the readers' split, the quiz, the plans)
 /// with the day's readings and the way out of the mode. Everything about the
 /// mode in one place, as the Mac's plan bar has it, so the bar can go.
+///
+/// Laid out so each thing is said once and the way out is always in reach:
+/// the plan and the day are the title, with the other plans in the title's
+/// menu; the reading on screen opens out in the day's list rather than
+/// standing in a card above it as well; and Choose Passage and Exit Plan Mode
+/// sit at the foot, visible at the sheet's half height.
 struct PlanReadingSheet: View {
     let plan: PlanHeaderContext
     /// Closes the sheet, then does what it names.
@@ -963,104 +969,51 @@ struct PlanReadingSheet: View {
         NavigationStack {
             List {
                 Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(plan.current.description)
-                            .font(.title3.weight(.semibold))
-                        Text(details)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        // Only when reading aloud in turns, as Settings sets.
-                        if readerCount > 1 {
-                            ReaderSplitControl(
-                                chapterVerseCounts: plan.current.chapterVerseCounts,
-                                isResolved: plan.current.isResolved,
-                                readerCount: $readerCount
-                            )
-                            .padding(.top, 2)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                    if plan.onQuiz != nil {
-                        Button {
-                            finish(.quiz)
-                        } label: {
-                            Label("Quiz", systemImage: "questionmark.circle")
-                        }
-                    }
-                } header: {
-                    Text(plan.readings.count > 1
-                        ? "Reading \(plan.currentIndex + 1) of \(plan.readings.count)"
-                        : "Reading")
-                }
-
-                Section {
                     ForEach(plan.readings) { reading in
-                        Button {
-                            if reading.id != plan.currentIndex { plan.onSelectReading(reading.id) }
-                            finish(nil)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: reading.isRead ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(reading.isRead ? Color.accentColor : Color.secondary)
-                                Text(reading.title)
-                                    .fontWeight(reading.id == plan.currentIndex ? .semibold : .regular)
-                                    .foregroundStyle(Color.primary)
-                                Spacer(minLength: 0)
-                                if reading.id == plan.currentIndex {
-                                    Text("Reading")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
+                        if reading.id == plan.currentIndex {
+                            currentRow(reading)
+                        } else {
+                            otherRow(reading)
                         }
-                        .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read")\(reading.id == plan.currentIndex ? ", reading now" : "")")
                     }
                 } header: {
-                    Text(plan.date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                }
-
-                if plan.plans.count > 1 {
-                    Section("Plans") {
-                        ForEach(plan.plans) { other in
-                            Button {
-                                if other.id != plan.selectedPlanIndex { plan.onSelectPlan(other.id) }
-                                finish(nil)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(other.name).foregroundStyle(Color.primary)
-                                        Text("\(other.readingCount) reading\(other.readingCount == 1 ? "" : "s")")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer(minLength: 0)
-                                    if other.id == plan.selectedPlanIndex {
-                                        Image(systemName: "checkmark").foregroundStyle(.tint)
-                                    }
-                                }
-                            }
+                    VStack(alignment: .leading, spacing: 8) {
+                        // The title's subtitle says the day from iOS 26;
+                        // before it, the list does.
+                        if #unavailable(iOS 26.0) {
+                            Text(dayText)
+                                .textCase(nil)
+                        }
+                        if plan.readings.count > 1 {
+                            progressHeader
                         }
                     }
-                }
-
-                Section {
-                    Button {
-                        finish(.choosePassage)
-                    } label: {
-                        Label("Choose Passage", systemImage: "book")
-                    }
-                    Button {
-                        plan.onExit()
-                        finish(nil)
-                    } label: {
-                        Label("Exit Plan Mode", systemImage: "xmark.circle")
-                    }
-                } footer: {
-                    Text("Choosing another passage leaves plan mode.")
                 }
             }
+            .contentMargins(.top, 4, for: .scrollContent)
+            .safeAreaInset(edge: .bottom, spacing: 0) { actions }
             .navigationTitle(plan.planName)
+            .lampNavigationSubtitle(dayText)
             .navigationBarTitleDisplayMode(.inline)
+            // The other plans with readings on the day, from the title that
+            // names the one being read; no menu where there is only the one.
+            .if(plan.plans.count > 1) { view in
+                view.toolbarTitleMenu {
+                    ForEach(plan.plans) { other in
+                        Button {
+                            if other.id != plan.selectedPlanIndex { plan.onSelectPlan(other.id) }
+                            finish(nil)
+                        } label: {
+                            Label {
+                                Text(other.name)
+                                Text("\(other.readingCount) reading\(other.readingCount == 1 ? "" : "s")")
+                            } icon: {
+                                if other.id == plan.selectedPlanIndex { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { finish(nil) }
@@ -1079,9 +1032,164 @@ struct PlanReadingSheet: View {
         }
     }
 
+    private var dayText: String {
+        plan.date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+    }
+
+    /// How far through the day's readings, as a line of segments, one to a
+    /// reading, filled where it's read.
+    private var progressHeader: some View {
+        let read = plan.readings.filter(\.isRead).count
+        return HStack(spacing: 10) {
+            HStack(spacing: 3) {
+                ForEach(plan.readings) { reading in
+                    Capsule()
+                        .fill(reading.isRead ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .frame(height: 4)
+                }
+            }
+            .frame(maxWidth: 120)
+            Text("\(read) of \(plan.readings.count) read")
+                .font(.subheadline)
+                .monospacedDigit()
+        }
+        .textCase(nil)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(read) of \(plan.readings.count) readings read")
+    }
+
+    private func statusIcon(_ reading: PlanHeaderContext.Reading) -> some View {
+        Image(systemName: reading.isRead ? "checkmark.circle.fill" : "circle")
+            .font(.title3)
+            .foregroundStyle(reading.isRead ? Color.accentColor : Color.secondary.opacity(0.6))
+    }
+
+    /// The reading on screen, opened out: where it falls in the day, its
+    /// length and kind, the readers' split where reading in turns, and the
+    /// quiz. Not a button itself, so the split and the quiz take their taps.
+    private func currentRow(_ reading: PlanHeaderContext.Reading) -> some View {
+        HStack(alignment: .readingTitle, spacing: 12) {
+            statusIcon(reading)
+                .alignmentGuide(.readingTitle) { $0[VerticalAlignment.center] }
+            VStack(alignment: .leading, spacing: 6) {
+                if plan.readings.count > 1 {
+                    Text("Reading \(plan.currentIndex + 1) of \(plan.readings.count)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tint)
+                }
+                Text(plan.current.description)
+                    .font(.title3.weight(.semibold))
+                    .alignmentGuide(.readingTitle) { $0[VerticalAlignment.center] }
+                Text(details)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                // Only when reading aloud in turns, as Settings sets.
+                if readerCount > 1 || plan.onQuiz != nil {
+                    HStack(spacing: 8) {
+                        if readerCount > 1 {
+                            ReaderSplitControl(
+                                chapterVerseCounts: plan.current.chapterVerseCounts,
+                                isResolved: plan.current.isResolved,
+                                readerCount: $readerCount,
+                                style: .chip
+                            )
+                        }
+                        if plan.onQuiz != nil {
+                            // Drawn as the readers' chip beside it is.
+                            Button {
+                                finish(.quiz)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "questionmark.circle.fill")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.tint)
+                                    Text("Quiz")
+                                        .font(.footnote.weight(.medium))
+                                        .foregroundStyle(.primary.opacity(0.8))
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(LampTheme.tileFill, in: Capsule())
+                                .contentShape(Capsule())
+                            }
+                            .accessibilityLabel("Quiz")
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .padding(.top, 2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read"), reading now")
+    }
+
+    private func otherRow(_ reading: PlanHeaderContext.Reading) -> some View {
+        Button {
+            plan.onSelectReading(reading.id)
+            finish(nil)
+        } label: {
+            HStack(spacing: 12) {
+                statusIcon(reading)
+                Text(reading.title)
+                    .foregroundStyle(reading.isRead ? Color.secondary : Color.primary)
+                Spacer(minLength: 0)
+            }
+        }
+        .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read")")
+    }
+
+    /// The ways out of what the plan sets, at the sheet's foot so they show
+    /// at its half height too.
+    private var actions: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                // Words alone: with icons, "Choose Passage" no longer fit
+                // half a phone's width.
+                Button {
+                    finish(.choosePassage)
+                } label: {
+                    Text("Choose Passage")
+                        .frame(maxWidth: .infinity)
+                }
+                Button(role: .destructive) {
+                    plan.onExit()
+                    finish(nil)
+                } label: {
+                    Text("Exit Plan Mode")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            Text("Choosing another passage leaves plan mode.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(LampTheme.groupedBackground)
+    }
+
     private var details: String {
         let reading = plan.current
         guard reading.isResolved else { return "— verses · ~— min · \(reading.genre)" }
         return "\(reading.verseCount) verses · ~\(reading.readingTime) min · \(reading.genre)"
     }
+}
+
+private extension VerticalAlignment {
+    /// A plan reading's title, which its read mark lines up with whatever
+    /// is said above the title.
+    enum ReadingTitle: AlignmentID {
+        static func defaultValue(in context: ViewDimensions) -> CGFloat { context[VerticalAlignment.center] }
+    }
+
+    static let readingTitle = VerticalAlignment(ReadingTitle.self)
 }
