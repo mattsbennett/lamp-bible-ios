@@ -195,18 +195,9 @@ struct LexiconTextRenderer {
             }
         }
 
-        // Apply search term highlighting
-        if !style.searchTerms.isEmpty {
-            let fullString = result.string.lowercased()
-            for term in style.searchTerms {
-                let termLower = term.lowercased()
-                var searchStart = fullString.startIndex
-                while let range = fullString.range(of: termLower, range: searchStart..<fullString.endIndex) {
-                    let nsRange = NSRange(range, in: result.string)
-                    result.markFindMatch(in: nsRange)
-                    searchStart = range.upperBound
-                }
-            }
+        // What the search matched, by core's rule, as its hit's snippet marked it.
+        for range in LexiconSearchMarks.ranges(style.searchTerms, in: result) {
+            result.markFindMatch(in: range)
         }
 
         return RenderResult(attributedString: result, tappableItems: tappableItems)
@@ -284,18 +275,7 @@ struct LexiconTextView: UIViewRepresentable {
 
     /// Find the first match range in the text
     private func findFirstMatchRange(in content: String) -> NSRange? {
-        let contentLower = content.lowercased()
-        var earliestRange: NSRange? = nil
-        for term in style.searchTerms {
-            let termLower = term.lowercased()
-            if let range = contentLower.range(of: termLower) {
-                let nsRange = NSRange(range, in: content)
-                if earliestRange == nil || nsRange.location < earliestRange!.location {
-                    earliestRange = nsRange
-                }
-            }
-        }
-        return earliestRange
+        LexiconSearchMarks.ranges(style.searchTerms, in: content).min { $0.location < $1.location }
     }
 
     @available(iOS 16.0, *)
@@ -1725,18 +1705,7 @@ private struct LinkedTextView: UIViewRepresentable {
 
     /// Find the first match range in the text
     private func findFirstMatchRange(in content: String) -> NSRange? {
-        let contentLower = content.lowercased()
-        var earliestRange: NSRange? = nil
-        for term in searchTerms {
-            let termLower = term.lowercased()
-            if let range = contentLower.range(of: termLower) {
-                let nsRange = NSRange(range, in: content)
-                if earliestRange == nil || nsRange.location < earliestRange!.location {
-                    earliestRange = nsRange
-                }
-            }
-        }
-        return earliestRange
+        LexiconSearchMarks.ranges(searchTerms, in: content).min { $0.location < $1.location }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1810,21 +1779,9 @@ private struct LinkedTextView: UIViewRepresentable {
             }
         }
 
-        // Apply search term highlighting with yellow background
-        if !searchTerms.isEmpty {
-            let fullString = result.string
-            let fullStringLower = fullString.lowercased()
-
-            for term in searchTerms {
-                let termLower = term.lowercased()
-                var searchStartIndex = fullStringLower.startIndex
-
-                while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
-                    let nsRange = NSRange(range, in: fullString)
-                    result.markFindMatch(in: nsRange)
-                    searchStartIndex = range.upperBound
-                }
-            }
+        // What the search matched, by core's rule, as its hit's snippet marked it.
+        for range in LexiconSearchMarks.ranges(searchTerms, in: result) {
+            result.markFindMatch(in: range)
         }
 
         return (result, tappableItems)
@@ -1991,7 +1948,7 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
                 textView.layoutIfNeeded()
                 // Searched in the text as drawn, which left-to-right marks and
                 // footnote markers have moved off the module text's offsets.
-                if let matchRange = self.findFirstMatchRange(in: textView.attributedText?.string ?? annotatedText.text) {
+                if let matchRange = self.firstDrawnMatchRange(in: textView.attributedText ?? NSAttributedString(string: annotatedText.text)) {
                     // Calculate rect for the match
                     if let start = textView.position(from: textView.beginningOfDocument, offset: matchRange.location),
                        let end = textView.position(from: start, offset: matchRange.length),
@@ -2006,20 +1963,9 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
         }
     }
 
-    /// Find the first match range in the text
-    private func findFirstMatchRange(in content: String) -> NSRange? {
-        let contentLower = content.lowercased()
-        var earliestRange: NSRange? = nil
-        for term in searchTerms {
-            let termLower = term.lowercased()
-            if let range = contentLower.range(of: termLower) {
-                let nsRange = NSRange(range, in: content)
-                if earliestRange == nil || nsRange.location < earliestRange!.location {
-                    earliestRange = nsRange
-                }
-            }
-        }
-        return earliestRange
+    /// The first match in the text as drawn, past its footnote markers.
+    private func firstDrawnMatchRange(in drawn: NSAttributedString) -> NSRange? {
+        LexiconSearchMarks.ranges(searchTerms, in: drawn).min { $0.location < $1.location }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -2107,21 +2053,9 @@ private struct AnnotatedDefinitionTextView: UIViewRepresentable {
             }
         }
 
-        // Apply search term highlighting with yellow background
-        if !searchTerms.isEmpty {
-            let fullString = mutableAttrString.string
-            let fullStringLower = fullString.lowercased()
-
-            for term in searchTerms {
-                let termLower = term.lowercased()
-                var searchStartIndex = fullStringLower.startIndex
-
-                while let range = fullStringLower.range(of: termLower, range: searchStartIndex..<fullStringLower.endIndex) {
-                    let nsRange = NSRange(range, in: fullString)
-                    mutableAttrString.markFindMatch(in: nsRange)
-                    searchStartIndex = range.upperBound
-                }
-            }
+        // What the search matched, by core's rule, as its hit's snippet marked it.
+        for range in LexiconSearchMarks.ranges(searchTerms, in: mutableAttrString) {
+            mutableAttrString.markFindMatch(in: range)
         }
 
         CommentaryRenderer.holdNumbersLeftToRight(in: mutableAttrString)
@@ -3107,25 +3041,25 @@ struct LexiconPageView: View {
             if !hasSenses {
                 // Check gloss (shown if no def)
                 if data.entry.def == nil, let gloss = data.entry.gloss, !gloss.isEmpty {
-                    if searchTerms.contains(where: { gloss.lowercased().contains($0.lowercased()) }) {
+                    if LexiconSearchMarks.matches(searchTerms, gloss) {
                         return (data.id, nil, "entry-gloss")
                     }
                 }
                 // Check definition
                 if let def = data.entry.def, !def.isEmpty {
-                    if searchTerms.contains(where: { def.lowercased().contains($0.lowercased()) }) {
+                    if LexiconSearchMarks.matches(searchTerms, def) {
                         return (data.id, nil, "entry-def")
                     }
                 }
                 // Check KJV usage
                 if let kjv = data.entry.kjv, !kjv.isEmpty {
-                    if searchTerms.contains(where: { kjv.lowercased().contains($0.lowercased()) }) {
+                    if LexiconSearchMarks.matches(searchTerms, kjv) {
                         return (data.id, nil, "entry-kjv")
                     }
                 }
                 // Check derivation
                 if let deriv = data.entry.deriv, !deriv.isEmpty {
-                    if searchTerms.contains(where: { deriv.lowercased().contains($0.lowercased()) }) {
+                    if LexiconSearchMarks.matches(searchTerms, deriv) {
                         return (data.id, nil, "entry-deriv")
                     }
                 }
@@ -3135,25 +3069,25 @@ struct LexiconPageView: View {
             for (index, sense) in data.senses.enumerated() {
                 // Check gloss first
                 if let gloss = sense.gloss, !gloss.isEmpty {
-                    if searchTerms.contains(where: { gloss.lowercased().contains($0.lowercased()) }) {
+                    if LexiconSearchMarks.matches(searchTerms, gloss) {
                         return (data.id, index, "gloss")
                     }
                 }
                 // Check definition
                 if let def = sense.definitionText, !def.isEmpty {
-                    if searchTerms.contains(where: { def.lowercased().contains($0.lowercased()) }) {
+                    if LexiconSearchMarks.matches(searchTerms, def) {
                         return (data.id, index, "definition")
                     }
                 }
                 // Check usage
                 if let usage = sense.usage, !usage.isEmpty {
-                    if searchTerms.contains(where: { usage.lowercased().contains($0.lowercased()) }) {
+                    if LexiconSearchMarks.matches(searchTerms, usage) {
                         return (data.id, index, "usage")
                     }
                 }
                 // Check derivation
                 if let deriv = sense.derivationText, !deriv.isEmpty {
-                    if searchTerms.contains(where: { deriv.lowercased().contains($0.lowercased()) }) {
+                    if LexiconSearchMarks.matches(searchTerms, deriv) {
                         return (data.id, index, "derivation")
                     }
                 }
@@ -3161,7 +3095,7 @@ struct LexiconPageView: View {
                 if let usages = sense.translationUsages {
                     for usage in usages {
                         let usageText = usage.translations.map { $0.word }.joined(separator: " ")
-                        if searchTerms.contains(where: { usageText.lowercased().contains($0.lowercased()) }) {
+                        if LexiconSearchMarks.matches(searchTerms, usageText) {
                             return (data.id, index, "translationUsage-\(usage.version)")
                         }
                     }
@@ -3663,6 +3597,106 @@ class LexiconLoader: ObservableObject {
     }
 }
 
+/// Where a search's words fall in a dictionary entry opened from its hit,
+/// by core's rule (`LampSearchQuery.matchRanges`), the one the hit's snippet
+/// was marked by, and the Mac's entry: a typed word where a word starts with
+/// it, else anywhere; a quoted word or phrase whole.
+enum LexiconSearchMarks {
+    /// The direction marks the renderers put round Hebrew and numbers:
+    /// drawn, never searched.
+    private static let directionMarks: Set<unichar> = [
+        0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069,
+    ]
+
+    /// In a text as stored, which holds no footnote markers.
+    static func ranges(_ search: [String], in text: String) -> [NSRange] {
+        ranges(search, in: text, skipping: [])
+    }
+
+    /// In a text as drawn: past the footnote markers the renderer put in, so
+    /// a phrase one splits, "Holy[1] Spirit", still matches, and nothing
+    /// else, so an entry's own brackets are searched as written.
+    static func ranges(_ search: [String], in drawn: NSAttributedString) -> [NSRange] {
+        ranges(search, in: drawn.string, skipping: CommentaryRenderer.footnoteMarkerRanges(in: drawn))
+    }
+
+    static func matches(_ search: [String], _ text: String) -> Bool {
+        !ranges(search, in: text).isEmpty
+    }
+
+    private static func ranges(_ search: [String], in text: String, skipping markers: [NSRange]) -> [NSRange] {
+        let query = LampSearchQuery(search.joined(separator: " "))
+        guard !query.isEmpty, !text.isEmpty else { return [] }
+        let source = text as NSString
+        var skipping = markers
+        for index in 0..<source.length where directionMarks.contains(source.character(at: index)) {
+            skipping.append(NSRange(location: index, length: 1))
+        }
+        // Overlapping matches, as two phrases sharing a word, marked as one.
+        var merged: [NSRange] = []
+        let found = matches(of: query, in: text, skipping: skipping.sorted { $0.location < $1.location })
+        for range in found.sorted(by: { $0.location < $1.location }) {
+            if let last = merged.last, range.location <= NSMaxRange(last) {
+                merged[merged.count - 1] = NSUnionRange(last, range)
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
+    }
+
+    /// Core's matches in `text` without `skipping`, as UTF-16 ranges in
+    /// `text`: every position searched is mapped back, so a mark spans what
+    /// was left out of the search. Core reads a phrase across a line break
+    /// as the snippet does (core 6efbafa).
+    private static func matches(of query: LampSearchQuery, in text: String, skipping: [NSRange]) -> [NSRange] {
+        guard !skipping.isEmpty else { return characterRanges(of: query, in: text) }
+        let source = text as NSString
+        var units: [unichar] = []
+        var origin: [Int] = []
+        units.reserveCapacity(source.length)
+        origin.reserveCapacity(source.length)
+        var index = 0
+        var skip = 0
+        while index < source.length {
+            while skip < skipping.count, NSMaxRange(skipping[skip]) <= index { skip += 1 }
+            if skip < skipping.count, skipping[skip].location <= index {
+                index = NSMaxRange(skipping[skip])
+                skip += 1
+                continue
+            }
+            units.append(source.character(at: index))
+            origin.append(index)
+            index += 1
+        }
+        let searched = String(utf16CodeUnits: units, count: units.count)
+        return characterRanges(of: query, in: searched).compactMap { range in
+            guard range.length > 0, range.location + range.length <= origin.count else { return nil }
+            let lower = origin[range.location]
+            return NSRange(location: lower, length: origin[range.location + range.length - 1] + 1 - lower)
+        }
+    }
+
+    /// Core's matches in `text`, which it counts in Characters, as UTF-16
+    /// ranges. In one walk along the text, in order: from its start for
+    /// each, a long entry with many matches, as BDB's, took a quarter of a
+    /// second.
+    private static func characterRanges(of query: LampSearchQuery, in text: String) -> [NSRange] {
+        var ranges: [NSRange] = []
+        var index = text.startIndex
+        var offset = 0
+        for match in query.matchRanges(in: text).sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            guard match.lowerBound >= offset,
+                  let lower = text.index(index, offsetBy: match.lowerBound - offset, limitedBy: text.endIndex),
+                  let upper = text.index(lower, offsetBy: match.count, limitedBy: text.endIndex) else { continue }
+            ranges.append(NSRange(lower..<upper, in: text))
+            index = lower
+            offset = match.lowerBound
+        }
+        return ranges
+    }
+}
+
 struct LexiconSheetView: View {
     let word: String
     let strongs: [String]
@@ -3696,16 +3730,13 @@ struct LexiconSheetView: View {
         LampToolText.current.size
     }
 
-    /// Extract search terms from the query string for highlighting
+    /// The search as typed, whole, for the entry to mark what it matched:
+    /// split into bare words, its quotes and `*` were lost, and every word
+    /// was marked wherever it fell inside another. Read by
+    /// `LexiconSearchMarks`, by the rule the hit's snippet was marked by.
     private var searchTerms: [String] {
-        guard let query = searchQuery, !query.isEmpty else { return [] }
-        // Remove quotes and wildcards, split into terms
-        let cleanQuery = query
-            .replacingOccurrences(of: "\"", with: "")
-            .replacingOccurrences(of: "*", with: "")
-            .trimmingCharacters(in: .whitespaces)
-        return cleanQuery.components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty && $0.count >= 2 }
+        guard let query = searchQuery?.trimmingCharacters(in: .whitespaces), !query.isEmpty else { return [] }
+        return [query]
     }
 
     /// Opens search sheet for the given Strong's number

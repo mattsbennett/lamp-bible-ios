@@ -6579,6 +6579,23 @@ final class CommentaryEncodedSpanTests: XCTestCase {
         ["type": "scripture", "start": start, "end": end, "data": ["sv": 43_001_001]]
     }
 
+    /// A phrase the renderer's footnote marker splits is still marked in
+    /// the dictionary entry opened from a search, marker and all, for a
+    /// footnote of any id.
+    func testASearchedPhraseIsMarkedAcrossADrawnFootnote() throws {
+        let text = try decoded("the Holy Spirit came", [], footnoteRefs: [["id": "note-2", "offset": 8]])
+        let drawn = CommentaryRenderer.renderUIKit(text)
+        XCTAssertEqual(drawn.string, "the Holy[note-2] Spirit came")
+        let marked = LexiconSearchMarks.ranges(["\"Holy Spirit\" \"Spirit came\""], in: drawn)
+        XCTAssertEqual(marked.map { (drawn.string as NSString).substring(with: $0) }, ["Holy[note-2] Spirit came"])
+        XCTAssertTrue(LexiconSearchMarks.ranges(["\"Holy Spirit\""], in: drawn.string).isEmpty, "Unrendered, a marker is text")
+
+        // A footnote link written in the text is the text, and searched.
+        let linked = try decoded("see note for details", [["type": "footnote", "start": 4, "end": 8, "data": ["id": "1"]]])
+        let drawnLink = CommentaryRenderer.renderUIKit(linked)
+        XCTAssertEqual(LexiconSearchMarks.ranges(["note"], in: drawnLink).map { (drawnLink.string as NSString).substring(with: $0) }, ["note"])
+    }
+
     private func decoded(
         _ text: String, _ annotations: [[String: Any]], footnoteRefs: [[String: Any]] = []
     ) throws -> AnnotatedText {
@@ -6915,6 +6932,46 @@ final class BundledLexiconTests: XCTestCase {
         let lastGlossed = try XCTUnwrap(glossed.lastIndex(of: true))
         let firstUnglossed = glossed.firstIndex(of: false) ?? glossed.count
         XCTAssertLessThan(lastGlossed, firstUnglossed, "\(results.prefix(12).map { "\($0.title) \($0.glosses)" })")
+    }
+
+    /// An entry opened from a hit marks what the search matched, by the
+    /// rule its snippet was marked by: where a word starts with it, quoted
+    /// whole, and at the right place after characters UTF-16 counts twice.
+    func testAnEntryMarksWhatTheSearchMatched() {
+        let text = "disgraceful, grace upon grace"
+        let marked = LexiconSearchMarks.ranges(["grace"], in: text).map { (text as NSString).substring(with: $0) }
+        XCTAssertEqual(marked, ["grace", "grace"])
+        XCTAssertEqual(LexiconSearchMarks.ranges(["grace"], in: text).map(\.location), [13, 24])
+
+        // Nothing starts with it: anywhere, as the snippet does.
+        XCTAssertEqual(LexiconSearchMarks.ranges(["grac"], in: "disgraceful").count, 1)
+
+        let quoted = "gracious grace"
+        XCTAssertEqual(LexiconSearchMarks.ranges(["\"grace\""], in: quoted).map(\.location), [9])
+
+        let wide = "𝔊 χάρις, grace"
+        let found = LexiconSearchMarks.ranges(["grace"], in: wide)
+        XCTAssertEqual(found.map { (wide as NSString).substring(with: $0) }, ["grace"])
+        XCTAssertTrue(LexiconSearchMarks.matches(["χάρις"], wide))
+        XCTAssertFalse(LexiconSearchMarks.matches([], wide))
+
+        // Brackets in the text are the text: "[the]" keeps "Lord God" from
+        // matching there, as the snippet and the search agree.
+        let bracketed = "Lord [the] God; Lord God"
+        XCTAssertEqual(LexiconSearchMarks.ranges(["\"Lord God\""], in: bracketed).map(\.location), [16])
+        let cited = "see Mrk.16:[18] and Acts 28:5"
+        XCTAssertEqual(
+            LexiconSearchMarks.ranges(["\"Mrk.16:[18]\""], in: cited).map { (cited as NSString).substring(with: $0) },
+            ["Mrk.16:[18]"]
+        )
+
+        // The direction marks drawn beside Hebrew are never searched.
+        let hebrew = "גֵּבִים \u{200E}1Kgs 7:3"
+        XCTAssertEqual(LexiconSearchMarks.ranges(["\"גֵּבִים 1Kgs\""], in: hebrew).count, 1)
+
+        // A phrase across a line break matches, as the snippet reads it.
+        let broken = "see\nQal, and see Qal"
+        XCTAssertEqual(LexiconSearchMarks.ranges(["\"see Qal\""], in: broken).map(\.location), [0, 13])
     }
 
     /// A transliteration typed into Search names its entry, as on the Mac

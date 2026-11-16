@@ -16,8 +16,25 @@ private let CommentaryTappableIndexKey = NSAttributedString.Key("commentaryTappa
 
 /// Custom attribute key for direct tap action data (for non-indexed rendering)
 private let CommentaryTapActionKey = NSAttributedString.Key("commentaryTapAction")
+/// On a footnote marker a renderer inserts, and nothing the module wrote.
+private let CommentaryInsertedMarkerKey = NSAttributedString.Key("commentaryInsertedMarker")
 
 /// Tap action data stored in attributed string for non-indexed rendering
+extension CommentaryRenderer {
+    /// Where the renderers put their footnote markers, `[1]`, into the
+    /// text: drawn, not the module's, so a search reads past them. Not a
+    /// footnote link written in the text itself, which is the module's.
+    static func footnoteMarkerRanges(in drawn: NSAttributedString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        drawn.enumerateAttribute(
+            CommentaryInsertedMarkerKey, in: NSRange(location: 0, length: drawn.length)
+        ) { value, range, _ in
+            if value as? Bool == true { ranges.append(range) }
+        }
+        return ranges
+    }
+}
+
 private enum CommentaryTapAction {
     /// `start` is the annotation's offset in its text, so a tap can say which
     /// of several references to the same passage it was.
@@ -392,6 +409,7 @@ struct CommentaryRenderer {
                 marker.addAttribute(.baselineOffset, value: 4, range: range)
                 // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
                 marker.addAttribute(CommentaryTapActionKey, value: CommentaryTapAction.footnote(id: ref.id), range: range)
+                marker.addAttribute(CommentaryInsertedMarkerKey, value: true, range: range)
 
                 result.insert(marker, at: nsRange.location)
             }
@@ -631,6 +649,7 @@ struct CommentaryRenderer {
                 marker.addAttribute(.baselineOffset, value: 4, range: markerRange)
                 // Use custom tappable attribute instead of URL to avoid iOS URL resolution delay
                 marker.addAttribute(CommentaryTappableIndexKey, value: itemIndex, range: markerRange)
+                marker.addAttribute(CommentaryInsertedMarkerKey, value: true, range: markerRange)
                 tappableItems.append(CommentaryTappableItem(
                     index: itemIndex,
                     type: .footnote(id: ref.id)
