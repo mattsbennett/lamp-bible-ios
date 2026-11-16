@@ -64,6 +64,13 @@ struct ReaderNavigationToolbarView: View {
     /// Read aloud stop action, offered only while something is being read. Play and
     /// pause live on their own toolbar button; stop is rare enough to sit in here.
 
+    /// In plan reading mode, the plan and the day's readings. The title then
+    /// says the mode, as the Mac's plan bar does, since it is the one control
+    /// still there once the toolbars hide, and opens the day's readings and
+    /// the way out of the mode.
+    var planContext: PlanHeaderContext? = nil
+    @State private var showingPlanMenu = false
+
     init(
         userSettings: Binding<UserSettings>,
         readingMetaData: Binding<[ReadingMetaData]?>,
@@ -87,7 +94,8 @@ struct ReaderNavigationToolbarView: View {
         notesModules: [Module] = [],
         commentarySeries: [String] = [],
         devotionalsModules: [Module] = [],
-        onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil
+        onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil,
+        planContext: PlanHeaderContext? = nil
     ) {
         _userSettings = userSettings
         _readingMetaData = readingMetaData
@@ -112,6 +120,7 @@ struct ReaderNavigationToolbarView: View {
         self.commentarySeries = commentarySeries
         self.devotionalsModules = devotionalsModules
         self.onEditTheme = onEditTheme
+        self.planContext = planContext
     }
 
     /// A system navigation bar can't get any shorter, so the reader draws its
@@ -171,6 +180,13 @@ struct ReaderNavigationToolbarView: View {
             .padding(.leading, windowControls.leading)
             .padding(.trailing, windowControls.trailing)
             title
+                .popover(isPresented: $showingPlanMenu) {
+                    if let planContext {
+                        planMenuContent(planContext)
+                            .environment(\.colorScheme, colorScheme)
+                            .preferredColorScheme(colorScheme)
+                    }
+                }
                 // Clear of the buttons either side, and of the window's
                 // controls, by the same each side so it stays centred.
                 .padding(.horizontal, isCompact ? 0 : (trailingAccessory == nil ? 52 : 104))
@@ -200,11 +216,15 @@ struct ReaderNavigationToolbarView: View {
             // is the menu of tools.
             HStack(spacing: 0) {
                 Button {
-                    showingBookPicker = true
+                    if planContext != nil {
+                        showingPlanMenu = true
+                    } else {
+                        showingBookPicker = true
+                    }
                 } label: {
                     VStack(spacing: 0) {
-                        Text(translationAbbreviation).bold().font(.system(size: 14))
-                        Text(place).font(.caption2)
+                        planAbbreviation
+                        Text(placeLine(place)).font(.caption2)
                     }
                     .foregroundStyle(Color.primary)
                     .lineLimit(1)
@@ -216,6 +236,7 @@ struct ReaderNavigationToolbarView: View {
                 .buttonStyle(.plain)
                 // A reading plan's passage is set by the plan.
                 .disabled(readingMetaData != nil)
+                .accessibilityLabel(planAccessibilityLabel(place) ?? "\(translationAbbreviation), \(place)")
 
                 Rectangle()
                     .fill(Color.secondary.opacity(0.3))
@@ -246,6 +267,8 @@ struct ReaderNavigationToolbarView: View {
             Button {
                 if isCompact {
                     onExpand?()
+                } else if planContext != nil {
+                    showingPlanMenu = true
                 } else if readingMetaData == nil {
                     showingBookPicker = true
                 }
@@ -253,8 +276,12 @@ struct ReaderNavigationToolbarView: View {
                 Group {
                     if isCompact {
                         HStack(spacing: 4) {
+                            if planContext != nil {
+                                Image(systemName: "checklist")
+                                    .foregroundStyle(.tint)
+                            }
                             Text(translationAbbreviation).bold()
-                            Text("· " + place)
+                            Text("· " + placeLine(place))
                             // Beside a tool panel, what it shows too.
                             if isHorizontalSplit {
                                 Text("· " + toolDisplayName)
@@ -263,8 +290,8 @@ struct ReaderNavigationToolbarView: View {
                         .font(.caption)
                     } else {
                         VStack(spacing: 0) {
-                            Text(translationAbbreviation).bold().font(.system(size: 14))
-                            Text(place).font(.caption2)
+                            planAbbreviation
+                            Text(placeLine(place)).font(.caption2)
                         }
                     }
                 }
@@ -275,10 +302,99 @@ struct ReaderNavigationToolbarView: View {
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .disabled(!isCompact && readingMetaData != nil)
+            .disabled(!isCompact && readingMetaData != nil && planContext == nil)
             .modifier(HeaderGlass(shape: Capsule()))
-            .accessibilityHint(isCompact ? "Shows the toolbars" : "")
+            .accessibilityLabel(planAccessibilityLabel(place) ?? "\(translationAbbreviation), \(place)")
+            .accessibilityHint(isCompact ? "Shows the toolbars" : (planContext != nil ? "Shows the day's readings" : ""))
         }
+    }
+
+    /// The translation, after the plan's mark in plan mode.
+    private var planAbbreviation: some View {
+        HStack(spacing: 4) {
+            if planContext != nil {
+                Image(systemName: "checklist")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tint)
+            }
+            Text(translationAbbreviation).bold().font(.system(size: 14))
+        }
+    }
+
+    /// The place, with which of the day's readings it is in plan mode.
+    private func placeLine(_ place: String) -> String {
+        guard let planContext, planContext.readings.count > 1 else { return place }
+        return "\(place) · \(planContext.currentIndex + 1) of \(planContext.readings.count)"
+    }
+
+    private func planAccessibilityLabel(_ place: String) -> String? {
+        guard let planContext else { return nil }
+        return "Plan reading, \(place), reading \(planContext.currentIndex + 1) of \(planContext.readings.count), \(translationAbbreviation)"
+    }
+
+    /// The day's readings, each ticked once read, as the Mac's plan bar has
+    /// them; then choosing another passage, and leaving the mode.
+    private func planMenuContent(_ plan: PlanHeaderContext) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            menuCaption(plan.planName)
+            VStack(spacing: 0) {
+                ForEach(plan.readings) { reading in
+                    Button {
+                        showingPlanMenu = false
+                        if reading.id != plan.currentIndex { plan.onSelectReading(reading.id) }
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: reading.isRead ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 17))
+                                .frame(width: 24)
+                                .foregroundStyle(reading.isRead ? Color.accentColor : Color.secondary)
+                            Text(reading.title)
+                                .fontWeight(reading.id == plan.currentIndex ? .semibold : .regular)
+                                .foregroundStyle(Color.primary)
+                            Spacer(minLength: 0)
+                            if reading.id == plan.currentIndex {
+                                Text("Reading")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .accessibilityLabel("\(reading.title), \(reading.isRead ? "read" : "not read")\(reading.id == plan.currentIndex ? ", reading now" : "")")
+                    if reading.id != plan.readings.last?.id {
+                        Divider().padding(.leading, 52)
+                    }
+                }
+            }
+            .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+            VStack(spacing: 0) {
+                menuRow("Choose Passage", systemImage: "book") {
+                    showingPlanMenu = false
+                    showingBookPicker = true
+                }
+                Divider().padding(.horizontal, 14)
+                menuRow("Exit Plan Mode", systemImage: "xmark.circle") {
+                    showingPlanMenu = false
+                    plan.onExit()
+                }
+            }
+            .background(LampTheme.menuCard, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+            .padding(.top, 6)
+            Text("Choosing another passage leaves plan mode.")
+                .font(.footnote)
+                .foregroundStyle(LampTheme.caption)
+                .padding(.horizontal, 6)
+                .padding(.top, 2)
+        }
+        .font(.body)
+        .padding(12)
+        .frame(width: 320)
+        .background(LampTheme.menuBackground)
+        .presentationCompactAdaptation(.popover)
     }
 
     /// The tools a panel beside the reader can show, for the title's menu.
@@ -843,4 +959,20 @@ struct ToolTextSettingsCard: View {
             scale: .toolLineSpacing
         )
     }
+}
+
+/// What the reader's title shows and offers in plan reading mode.
+struct PlanHeaderContext {
+    struct Reading: Identifiable {
+        /// The reading's index in the day's readings.
+        let id: Int
+        let title: String
+        let isRead: Bool
+    }
+
+    let planName: String
+    let readings: [Reading]
+    let currentIndex: Int
+    let onSelectReading: (Int) -> Void
+    let onExit: () -> Void
 }

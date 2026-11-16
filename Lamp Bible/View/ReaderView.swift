@@ -1930,6 +1930,11 @@ struct ReaderView: View {
     @State private var plansWithReadings: [PlanWithReadings] = []  // Plans with their readings for plan mode
     @State private var selectedPlanIndex: Int = 0  // Which plan is currently selected
     @State private var planReadingIndex: Int = 0  // Index within the selected plan's readings
+    /// The day's readings already read, for the title's list of them.
+    @State private var planReadIDs: Set<String> = []
+    /// Where "keep reading" goes from the end of the day's last reading, and
+    /// what it says; nil at the end of the Bible.
+    @State private var planContinuation: (label: String, verseId: Int)? = nil
     @State private var requestedToolbarMode: BottomToolbarMode? = nil  // Mode to switch to on appear
     @State private var hasAppliedInitialMode: Bool = false
 
@@ -2160,9 +2165,20 @@ struct ReaderView: View {
             translationId: $translationId,
             translationAbbreviation: $translationAbbreviation,
             loadVersesClosure: {
-                loadVerses(loadingCase: LOADING_CURRENT)
+                // A passage chosen in plan mode is outside the plan: the
+                // reader leaves the mode for it, rather than drawing the
+                // plan's controls around a chapter the plan doesn't have.
+                if isPlanReadingMode {
+                    exitPlanMode()
+                } else {
+                    loadVerses(loadingCase: LOADING_CURRENT)
+                }
             },
             onPickVerse: { verseId in
+                if isPlanReadingMode {
+                    exitPlanMode(at: verseId)
+                    return
+                }
                 // As the lexicon's verse links do: another chapter loads
                 // and scrolls to the verse, and this one only scrolls.
                 requestScrollAnimated = false
@@ -2253,8 +2269,36 @@ struct ReaderView: View {
                 themeEditStyle = style
                 themeEditExisting = existing
                 pendingThemeEdit = true
-            }
+            },
+            planContext: planHeaderContext
         )
+    }
+
+    /// The plan and its readings for the title, in plan mode.
+    private var planHeaderContext: PlanHeaderContext? {
+        guard isPlanReadingMode else { return nil }
+        let plan = plansWithReadings[selectedPlanIndex]
+        return PlanHeaderContext(
+            planName: plan.name,
+            readings: plan.readings.enumerated().map { index, reading in
+                PlanHeaderContext.Reading(
+                    id: index,
+                    title: reading.description,
+                    isRead: planReadIDs.contains(reading.id)
+                )
+            },
+            currentIndex: planReadingIndex,
+            onSelectReading: { goToPlanReading(at: $0, scrollToEnd: false) },
+            onExit: { exitPlanMode() }
+        )
+    }
+
+    /// Leaves plan reading mode for the ordinary reader, at `verseId` if
+    /// given, else where the reading had got to. The reader's own change of
+    /// mode loads the chapter.
+    private func exitPlanMode(at verseId: Int? = nil) {
+        if let verseId { currentVerseId = verseId }
+        toolbarMode = .navigation
     }
 
     /// What to read for a given navigation. Resolving this is cheap; running it
@@ -2547,6 +2591,41 @@ struct ReaderView: View {
     /// True when the reader is showing a plan's readings rather than free chapters.
     private var isPlanReadingMode: Bool {
         toolbarMode == .plan && plansWithReadings.indices.contains(selectedPlanIndex)
+    }
+
+    /// On the selected plan's last reading for the day, in plan mode.
+    private var isOnLastPlanReading: Bool {
+        isPlanReadingMode && planReadingIndex == currentPlanReadings.count - 1
+    }
+
+    /// Where reading on goes from a plan reading's last verse: the rest of
+    /// its chapter, else the next chapter the translation has. With what the
+    /// button says. Reads the database, so off the main thread.
+    nonisolated static func continuation(after endVerseId: Int, translationId: String) -> (label: String, verseId: Int)? {
+        let (verse, chapter, book) = splitVerseId(endVerseId)
+        let database = TranslationDatabase.shared
+        // By the verses the translation has, not their count: some leave
+        // numbers out, so the count can stop short of the last verse.
+        let verses = (try? database.getVerseNumbers(translationId: translationId, book: book, chapter: chapter)) ?? []
+        if let nextVerse = verses.first(where: { $0 > verse }) {
+            let name = database.bookName(book, translationId: translationId) ?? "Book \(book)"
+            return ("Keep Reading from \(name) \(chapter):\(nextVerse)", book * 1_000_000 + chapter * 1000 + nextVerse)
+        }
+        let counts = database.chapterCounts(translationId: translationId)
+        let next: (book: Int, chapter: Int)?
+        if chapter < counts[book] ?? 0 {
+            next = (book, chapter + 1)
+        } else if let nextBook = counts.keys.filter({ $0 > book && (counts[$0] ?? 0) > 0 }).min() {
+            next = (nextBook, 1)
+        } else {
+            next = nil
+        }
+        guard let next else { return nil }
+        let name = database.bookName(next.book, translationId: translationId) ?? "Book \(next.book)"
+        let firstVerse = ((try? database.getVerseNumbers(
+            translationId: translationId, book: next.book, chapter: next.chapter
+        )) ?? []).first ?? 1
+        return ("Keep Reading in \(name) \(next.chapter)", next.book * 1_000_000 + next.chapter * 1000 + firstVerse)
     }
 
     /// Readings of the currently selected plan, empty outside plan mode.
@@ -2943,6 +3022,32 @@ struct ReaderView: View {
                                 )
                                 .padding(.horizontal)
                                 .padding(.top, 24)
+                            }
+
+                            // The day's last reading ends here rather than at
+                            // nothing: back to the day, or on in the reader.
+                            if isOnLastPlanReading, !verses.isEmpty {
+                                PlanDoneCard(
+                                    planName: plansWithReadings[selectedPlanIndex].name,
+                                    continueLabel: planContinuation?.label,
+                                    onDone: { dismiss() },
+                                    onKeepReading: {
+                                        if let target = planContinuation?.verseId {
+                                            exitPlanMode(at: target)
+                                        }
+                                    }
+                                )
+                                .padding(.horizontal)
+                                .padding(.top, 24)
+                                .task(id: "\(currentPlanReading?.ev ?? 0)|\(translationId)") {
+                                    guard let end = currentPlanReading?.ev else { return }
+                                    let translation = translationId
+                                    let next = await Task.detached(priority: .userInitiated) {
+                                        Self.continuation(after: end, translationId: translation)
+                                    }.value
+                                    guard !Task.isCancelled else { return }
+                                    planContinuation = next
+                                }
                             }
 
                             // Next button (inline, hidden when sticky overlay shows)
@@ -3420,8 +3525,10 @@ struct ReaderView: View {
                 }
             } else if readingMetaData == nil {
                 planSpeech.stop()
-                // Switch back to chapter view
-                loadVerses(loadingCase: LOADING_CURRENT)
+                // Back to the chapter view, at the verse the reader was on,
+                // not the top of its chapter.
+                animateScroll = false
+                loadVerses(loadingCase: LOADING_HISTORY, targetVerseId: currentVerseId)
             }
         }
         .onChange(of: date) { _, _ in
@@ -3627,13 +3734,18 @@ struct ReaderView: View {
         let selection = userSettings
         // The settings PlanView builds with, so the cache keys match.
         let settings = UserDatabase.shared.getSettings()
-        let built = await Task.detached(priority: .userInitiated) {
-            Self.plansWithReadings(date: date, selection: selection, settings: settings)
+        let (built, read) = await Task.detached(priority: .userInitiated) {
+            let built = Self.plansWithReadings(date: date, selection: selection, settings: settings)
+            let read = Set(built.flatMap(\.readings).map(\.id).filter {
+                UserDatabase.shared.isReadingCompleted($0)
+            })
+            return (built, read)
         }.value
         guard generation == planReadingsGeneration else { return false }
 
         isPlanReadingsPending = false
         plansWithReadings = built
+        planReadIDs = read
         // Reset indices, keeping selectedPlanIndex if still valid
         if selectedPlanIndex >= plansWithReadings.count {
             selectedPlanIndex = 0
@@ -3690,6 +3802,7 @@ struct ReaderView: View {
         if !UserDatabase.shared.isReadingCompleted(reading.id) {
             try? UserDatabase.shared.addCompletedReading(reading.id)
         }
+        planReadIDs.insert(reading.id)
 
         // Update currentVerseId to the start of the reading so toolbar and tool pane update correctly
         currentVerseId = reading.sv
@@ -3842,6 +3955,49 @@ extension QuizModule {
 }
 
 // MARK: - Quiz Card View (inline after verses)
+
+/// The end of the day's last plan reading: a word that the day is read, and
+/// the two ways on, back to the day or into the ordinary reader.
+struct PlanDoneCard: View {
+    let planName: String
+    let continueLabel: String?
+    let onDone: () -> Void
+    let onKeepReading: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title)
+                .foregroundStyle(.accent)
+            VStack(spacing: 3) {
+                Text("End of the day\u{2019}s readings")
+                    .font(.headline)
+                Text(planName)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .multilineTextAlignment(.center)
+            VStack(spacing: 8) {
+                Button(action: onDone) {
+                    Text("Done").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                if let continueLabel {
+                    Button(action: onKeepReading) {
+                        Text(continueLabel).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Leaves plan mode")
+                }
+            }
+            .controlSize(.large)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(20)
+        .background(Color.accentColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
 
 struct QuizCardView: View {
     let questionCount: Int
