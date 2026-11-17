@@ -273,8 +273,10 @@ private struct LampSplashView: View {
                 .fixedSize(horizontal: false, vertical: !isCompact)
                 // Room for two lines from the start, so nothing shifts when
                 // the longer message replaces the short one; more where a
-                // larger text size needs it.
-                .frame(minHeight: 36, alignment: .top)
+                // larger text size needs it. The short one in the middle of
+                // it, so the group's centre is off by a quarter line, not a
+                // whole one (macos-7f).
+                .frame(minHeight: 36, alignment: .center)
                 .padding(.top, 24)
                 .contentTransition(.opacity)
         }
