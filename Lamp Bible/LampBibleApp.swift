@@ -196,6 +196,11 @@ private struct ContentBootstrapView: View {
 private struct LampSplashView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingSlowStartMessage = false
+    /// The words' height, which sets how far the group's centre is from the
+    /// flame's.
+    @State private var wordsHeight: CGFloat = 0
+    /// Whether the flame has moved from the launch image's place to its own.
+    @State private var hasSettled = false
 
     /// The launch image's height, at which it is drawn.
     private static let flameHeight: CGFloat = 100
@@ -203,19 +208,35 @@ private struct LampSplashView: View {
     var body: some View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
-            flame
-                // Centred on the screen, as the launch image is.
-                .ignoresSafeArea()
             GeometryReader { proxy in
-                // Hung from just under the flame, growing downward. On a
-                // short screen — a small phone on its side — the verse stays
-                // out and the words may shrink, so nothing is pushed off the
-                // bottom at any text size.
+                // The flame and the words centred on the screen as one group
+                // (owner, Nov 2026); they were the flame centred and the words
+                // hung under it, which sat the whole low. On a short screen —
+                // a small phone on its side — the verse stays out and the
+                // words may shrink, so nothing is pushed off at any text size.
                 let isShort = proxy.size.height < 560
-                words(includingVerse: !isShort, isCompact: isShort)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .padding(.top, proxy.size.height / 2 + Self.flameHeight / 2 + (isShort ? 20 : 44))
+                let gap: CGFloat = isShort ? 20 : 44
+                VStack(spacing: gap) {
+                    flame
+                        // From where the launch image left it, the screen's
+                        // centre, up to its place in the group.
+                        .offset(y: hasSettled ? 0 : (gap + wordsHeight) / 2)
+                    words(includingVerse: !isShort, isCompact: isShort)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { wordsHeight = $0 }
+                        .opacity(hasSettled ? 1 : 0)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
             }
+            // The launch image is centred on the whole screen.
+            .ignoresSafeArea()
+        }
+        .task {
+            // Once the words are measured, so the flame starts where the
+            // launch image was.
+            for _ in 0..<30 where wordsHeight == 0 {
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.45)) { hasSettled = true }
         }
         // The bundled modules are unpacked and verified on a first run or after
         // an update, which takes long enough to be worth explaining.
