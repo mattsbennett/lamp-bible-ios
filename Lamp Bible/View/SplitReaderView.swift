@@ -270,12 +270,18 @@ struct SplitReaderView: View {
                             // and start behind the panel's own header.
                             .padding(.top, notesTakeTheSpace ? 1 : 0)
                             .frame(height: notesTakeTheSpace
-                                   ? max(minPanelSize, geometry.size.height - keyboardHeight)
+                                   ? max(minPanelSize, spaceAboveKeyboard(in: geometry))
                                    : bottomPanelHeight)
                             .clipped()
                     }
-                    .background(LampTheme.panelBackground)
                     .padding(.bottom, notesTakeTheSpace ? keyboardHeight : 0)
+                    // The panel's ground behind the keyboard too, and up under
+                    // the status bar while the notes take the space: the
+                    // reader's own ground showed in both, a band of another
+                    // colour above the notes and around the keyboard's corners.
+                    .background(LampTheme.panelBackground.ignoresSafeArea(
+                        edges: notesTakeTheSpace ? .vertical : []
+                    ))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 }
 
@@ -345,6 +351,15 @@ struct SplitReaderView: View {
         }
         // Laid out around the keyboard by hand while the notes take the space.
         .ignoresSafeArea(notesTakeTheSpace ? .keyboard : [], edges: .bottom)
+    }
+
+    /// The height from the top of the split to the keyboard. The split runs
+    /// to the screen's bottom edge, past its safe area, and the keyboard's
+    /// height is from that edge; while the keyboard is up the geometry stops
+    /// at the bottom bar's inset (86 points on an iPhone), which taken alone
+    /// left the notes that much short, under a band of the reader's ground.
+    private func spaceAboveKeyboard(in geometry: GeometryProxy) -> CGFloat {
+        geometry.size.height + geometry.safeAreaInsets.bottom - keyboardHeight
     }
 
     /// The height of the reader's header, which a right-hand panel starts

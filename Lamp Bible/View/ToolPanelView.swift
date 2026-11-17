@@ -1461,8 +1461,10 @@ struct ToolPanelView: View {
             // glass, and everything else is laid out clear of it. Reserving a
             // strip for it instead left the panel's own background showing
             // behind the controls. Horizontal split has no header of its own;
-            // the reader's toolbar holds its controls there.
-            .safeAreaInset(edge: .top, spacing: 0) {
+            // the reader's toolbar holds its controls there. A bar on iOS 26,
+            // as the reader's header is, so a note scrolled beneath it fades
+            // under the controls rather than showing plainly through them.
+            .toolPanelHeaderBar {
             if !hideHeader {
             VStack(spacing: 0) {
                 if isHeaderCollapsed {
@@ -5072,4 +5074,19 @@ private let canonicalBookNames: [Int: String] = Dictionary(
 
 private func canonicalBookName(_ id: Int) -> String? {
     canonicalBookNames[id] ?? (try? BundledModuleDatabase.shared.getBook(id: id))?.name
+}
+
+extension View {
+    /// Pins the tool panel's header to the top, as a bar its list scrolls
+    /// under: on iOS 26 a safe-area bar, which fades what passes beneath it,
+    /// as the reader's header does; before it, a plain inset, with no ground
+    /// of its own (owner, Nov 2026).
+    @ViewBuilder
+    func toolPanelHeaderBar<Header: View>(@ViewBuilder _ header: () -> Header) -> some View {
+        if #available(iOS 26.0, *) {
+            safeAreaBar(edge: .top, spacing: 0, content: header)
+        } else {
+            safeAreaInset(edge: .top, spacing: 0, content: header)
+        }
+    }
 }
