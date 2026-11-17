@@ -3,14 +3,16 @@
 //  Lamp Bible
 //
 
+import LampCore
 import LampModuleKit
 import SwiftUI
 
-/// Everything the library holds about one module: what a reader wants to
-/// know first, and its ID, file and sync record behind a disclosure. Two
-/// modules can share a name ("ESV" and "ESVs" across the translation-ID
-/// rename); the ID below is what tells them apart. The Mac's info window
-/// shows the same, split the same way.
+/// Everything the library holds about one module, read by core
+/// (`LampModuleRecord`) as the Mac's info window reads it: what a reader
+/// wants to know first, and behind a disclosure its ID, where it is kept,
+/// every column of its kind's tables and its sync record. Two modules can
+/// share a name ("ESV" and "ESVs" across the translation-ID rename); the ID
+/// is what tells them apart.
 struct ModuleInfoSheet: View {
     let module: DisplayModule
 
@@ -29,7 +31,7 @@ struct ModuleInfoSheet: View {
                     }
                     Section {
                         DisclosureGroup("Developer Details", isExpanded: $showsDetails) {
-                            ForEach(info.details + info.sync) { row in
+                            ForEach(info.details) { row in
                                 ModuleInfoRow(row: row, isTechnical: true)
                             }
                         }
@@ -63,34 +65,41 @@ private struct ModuleInfoRow: View {
     var isTechnical = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(row.label)
-                .font(.subheadline)
+        if row.isHeading {
+            Text(verbatim: row.label)
+                .font(.footnote.weight(.semibold).monospaced())
                 .foregroundStyle(.secondary)
-            Text(verbatim: row.value ?? "None")
-                .font(isTechnical ? .callout.monospaced() : .body)
-                .foregroundStyle(row.value == nil ? .secondary : .primary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(verbatim: row.label)
+                    .font(isTechnical ? .subheadline.monospaced() : .subheadline)
+                    .foregroundStyle(.secondary)
+                // A column the table has, empty for this module: missing,
+                // as opposed to one its kind doesn't have, which isn't shown.
+                Text(verbatim: row.value ?? "None")
+                    .font(isTechnical ? .callout.monospaced() : .body)
+                    .foregroundStyle(row.value == nil ? .secondary : .primary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 1)
         }
-        .padding(.vertical, 1)
     }
 }
 
-/// A module's record as the sheet shows it. Reader-facing rows are left out
-/// where the module has nothing to say; a technical row that applies to
-/// the module's kind is always shown, "None" where it is empty, so a blank
-/// hash or path reads as missing, not as not applying.
+/// A module's record as the sheet shows it: the reader's facts, where the
+/// module has them, then everything else as core read it, table by table.
 struct ModuleInfo {
     struct Row: Identifiable {
         let label: String
         let value: String?
+        var isHeading = false
         let id = UUID()
     }
 
     var about: [Row] = []
     var details: [Row] = []
-    var sync: [Row] = []
 
     /// The module's own ID: a translation's row is listed under
     /// "translation-<id>".
@@ -102,85 +111,75 @@ struct ModuleInfo {
     }
 
     nonisolated static func read(_ module: DisplayModule, storage: ModuleStorage?) -> ModuleInfo {
-        var info = ModuleInfo()
         let id = moduleID(of: module)
-        var about: [(String, String?)] = [("Name", module.name)]
+        let record = (try? self.record(of: module, id: id)) ?? nil
+        var info = ModuleInfo()
 
-        if module.type == .translation, let translation = try? TranslationDatabase.shared.getTranslation(id: id) {
-            about += [
-                ("Abbreviation", translation.abbreviation),
-                ("Kind", module.type.displayName),
-                ("Language", translation.languageName ?? translation.language),
-                ("Translation Philosophy", translation.translationPhilosophy?.capitalized),
-                ("Year", translation.year.map(String.init)),
-                ("Publisher", translation.publisher),
-                ("Copyright", copyright(translation.copyright, year: translation.copyrightYear)),
-                ("License", translation.license),
-                ("Contents", module.entryCount.map { ModuleListStyle.countText($0, for: .translation) }),
-                ("Strong’s Numbers", module.isStrongsTagged ? "Tagged" : nil),
-                ("Source", translation.isBundled ? "Built in" : "Yours"),
-                ("Description", translation.translationDescription),
-            ]
-            info.details = [
-                Row(label: "ID", value: translation.id),
-                Row(label: "Language Code", value: translation.language),
-                Row(label: "Text Direction", value: translation.textDirection),
-                Row(label: "Versification", value: translation.versification),
-                Row(label: "Features", value: translation.featuresJson),
-                Row(label: "Source Texts", value: translation.sourceTextsJson),
-            ]
-            // A built-in translation has no file or sync of its own.
-            if !translation.isBundled {
-                info.details += [
-                    Row(label: "File", value: translation.filePath),
-                    Row(label: "File Hash", value: translation.fileHash),
-                    Row(label: "Last Synced", value: date(translation.lastSynced.map(Int64.init))),
-                    Row(label: "Created", value: date(translation.createdAt.map(Int64.init))),
-                    Row(label: "Updated", value: date(translation.updatedAt.map(Int64.init))),
-                ]
-            }
-        } else {
-            let user = module.userModule
-            about += [
-                ("Abbreviation", user?.seriesAbbrev),
-                ("Kind", module.type.displayName),
-                ("Series", user?.seriesFull),
-                ("Author", user?.author),
-                ("Version", module.version),
-                ("Contents", module.entryCount.map { ModuleListStyle.countText($0, for: module.type) }),
-                ("Editable", module.isEditable ? "Yes" : nil),
-                ("Source", module.isBundled ? "Built in" : "Yours"),
-                ("Description", module.description),
-            ]
-            info.details = [Row(label: "ID", value: id)]
-            if let user {
-                if module.type == .dictionary {
-                    info.details.append(Row(label: "Key Type", value: user.keyType))
-                }
-                if module.type == .commentary {
-                    info.details.append(Row(label: "Series ID", value: user.seriesId))
-                }
-                info.details += [
-                    Row(label: "File", value: user.filePath),
-                    Row(label: "File Hash", value: user.fileHash),
-                    Row(label: "Last Synced", value: date(user.lastSynced.map(Int64.init))),
-                    Row(label: "Created", value: date(user.createdAt.map(Int64.init))),
-                    Row(label: "Updated", value: date(user.updatedAt.map(Int64.init))),
-                ]
-            }
+        func text(_ column: String) -> String? {
+            record?.value(of: column).flatMap(display)
         }
+        let copyright: String? = switch (text("copyright"), text("copyright_year")) {
+        case let (holder?, year?) where !holder.contains(year): "© \(year) \(holder)"
+        case let (holder?, _): holder
+        case let (nil, year?): "© \(year)"
+        default: nil
+        }
+        let about: [(String, String?)] = [
+            ("Name", module.name),
+            ("Abbreviation", text("abbreviation") ?? text("series_abbrev")),
+            ("Kind", module.type.displayName),
+            ("Language", text("language_name") ?? text("language")),
+            ("Translation Philosophy", text("translation_philosophy")?.capitalized),
+            ("Series", text("series_full")),
+            ("Author", text("author")),
+            ("Year", text("year")),
+            ("Publisher", text("publisher")),
+            ("Copyright", copyright),
+            ("License", text("license")),
+            ("Version", text("version")),
+            ("Contents", module.entryCount.map { ModuleListStyle.countText($0, for: module.type) }),
+            ("Strong’s Numbers", module.isStrongsTagged ? "Tagged" : nil),
+            ("Editable", module.isEditable ? "Yes" : nil),
+            ("Source", module.isBundled ? "Built in" : "Yours"),
+            ("Description", text("translation_description") ?? text("description") ?? module.description),
+        ]
         info.about = about.compactMap { label, value in
             guard let value, !value.isEmpty else { return nil }
             return Row(label: label, value: value)
         }
 
+        info.details = [Row(label: "ID", value: id)]
+        if let record {
+            switch record.storage {
+            case .installed(let moduleFile, let database):
+                if let moduleFile { info.details += rows(describing: moduleFile, as: "Module File") }
+                info.details += rows(describing: database, as: "Database")
+            case .bundled(let database):
+                info.details += rows(describing: database, as: "Built-in Database")
+            case .shared(let database):
+                info.details += rows(describing: database, as: "Library Database")
+            }
+            for table in record.tables {
+                for (index, row) in table.rows.enumerated() {
+                    let heading = table.rows.count > 1 ? "\(table.name) (\(index + 1) of \(table.rows.count))" : table.name
+                    info.details.append(Row(label: heading, value: nil, isHeading: true))
+                    info.details += row.map { Row(label: $0.name, value: display($0.value)) }
+                }
+            }
+        }
+
         // The file this device syncs it as, found as deleting it finds it.
+        // The phone's own record of the sync, beside core's of the module.
         if !module.isBundled, let storage, let endpoint = libraryEndpoint(for: storage) {
             let folder = storage.directoryName(for: module.type)
             let records = ((try? ModuleDatabase.shared.syncFileRecords(source: endpoint.librarySource)) ?? [])
                 .filter { $0.path.hasPrefix(folder + "/") && LampSyncFolderLayout.remoteModuleID(of: $0.path) == id }
+            info.details.append(Row(label: "sync", value: nil, isHeading: true))
+            if records.isEmpty {
+                info.details.append(Row(label: "Library Path", value: nil))
+            }
             for record in records {
-                info.sync += [
+                info.details += [
                     Row(label: "Library Path", value: record.path),
                     Row(label: "Server Revision", value: record.lastRevision),
                     Row(label: "Uploaded SHA-256", value: record.uploadedDigest),
@@ -188,27 +187,67 @@ struct ModuleInfo {
                     Row(label: "Record Updated", value: date(record.updatedAt)),
                 ]
             }
-            if records.isEmpty {
-                info.sync = [Row(label: "Library Path", value: nil)]
-            }
         }
         return info
     }
 
-    private static func copyright(_ holder: String?, year: Int?) -> String? {
-        switch (holder, year) {
-        case let (holder?, year?) where !holder.contains(String(year)): return "© \(year) \(holder)"
-        case let (holder?, _): return holder
-        case let (nil, year?): return "© \(year)"
-        default: return nil
+    /// Core's record of the module: a built-in one from the bundle's
+    /// database, one of the person's from the phone's own, both in the
+    /// shared layout core reads.
+    private nonisolated static func record(of module: DisplayModule, id: String) throws -> LampModuleRecord? {
+        let installed = LampInstalledModule(
+            id: id, kind: module.type, name: module.name,
+            abbreviation: module.type == .translation ? module.version : nil,
+            isBundled: module.isBundled, tagsStrongs: module.isStrongsTagged
+        )
+        if module.isBundled {
+            let bundled = BundledModuleDatabase.shared
+            guard let path = bundled.databasePath else { return nil }
+            // Strong's lexicons are listed by their search IDs
+            // ("strongs-greek"); the bundle keeps them by their own.
+            let stored = module.type == .dictionary
+                ? bundled.lexicons().first { $0.searchId == id }?.moduleId ?? id
+                : id
+            let tables = try bundled.read { try LampModuleRecord.tables(sharedLayoutIn: $0, kind: module.type, id: stored) }
+            return LampModuleRecord(module: installed, storage: .bundled(database: file(at: URL(fileURLWithPath: path))), tables: tables)
+        }
+        let database = ModuleDatabase.shared
+        let tables = try database.read { try LampModuleRecord.tables(sharedLayoutIn: $0, kind: module.type, id: id) }
+        return LampModuleRecord(module: installed, storage: .shared(database: file(at: database.fileURL)), tables: tables)
+    }
+
+    private nonisolated static func file(at url: URL) -> LampModuleRecord.File {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        return LampModuleRecord.File(url: url, byteCount: values?.fileSize, modifiedAt: values?.contentModificationDate, sha256: nil)
+    }
+
+    private static func rows(describing file: LampModuleRecord.File, as label: String) -> [Row] {
+        var rows = [Row(label: label, value: file.url.lastPathComponent)]
+        if let size = file.byteCount {
+            rows.append(Row(label: "\(label) Size", value: ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))
+        }
+        if let modified = file.modifiedAt {
+            rows.append(Row(label: "\(label) Modified", value: modified.formatted(date: .abbreviated, time: .shortened)))
+        }
+        if let sha256 = file.sha256 {
+            rows.append(Row(label: "\(label) SHA-256", value: sha256))
+        }
+        return rows
+    }
+
+    private static func display(_ value: LampModuleRecord.Value) -> String? {
+        switch value {
+        case .null: nil
+        case .integer(let integer): String(integer)
+        case .real(let real): String(real)
+        case .text(let text): text
+        case .blob(let byteCount): "\(byteCount) bytes"
         }
     }
 
-    /// Stored times are seconds in the module tables and milliseconds in
-    /// the sync records.
+    /// Sync records keep milliseconds.
     private static func date(_ stamp: Int64?) -> String? {
         guard let stamp, stamp > 0 else { return nil }
-        let seconds = stamp > 100_000_000_000 ? Double(stamp) / 1000 : Double(stamp)
-        return Date(timeIntervalSince1970: seconds).formatted(date: .abbreviated, time: .shortened)
+        return Date(timeIntervalSince1970: Double(stamp) / 1000).formatted(date: .abbreviated, time: .shortened)
     }
 }

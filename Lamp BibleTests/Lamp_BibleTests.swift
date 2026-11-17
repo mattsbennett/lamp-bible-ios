@@ -9144,3 +9144,35 @@ final class MissingModuleTests: XCTestCase {
         XCTAssertNil(coordinator.uncheckedLibraries[source], "it had checked the files")
     }
 }
+
+/// The info sheet reads core's record of a module: a built-in translation's
+/// every column from the bundle, and one of the person's from the phone's
+/// own database, both in the shared layout.
+final class ModuleInfoTests: XCTestCase {
+    func testABuiltInTranslationsRecordIsReadFromTheBundle() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let id = bundledID("BSBs")
+        let module = DisplayModule(id: "translation-\(id)", name: "Berean Standard Bible", type: .translation, description: nil, version: "BSB")
+        let info = ModuleInfo.read(module, storage: nil)
+        XCTAssertEqual(info.details.first?.label, "ID")
+        XCTAssertEqual(info.details.first?.value, id)
+        XCTAssertTrue(info.details.contains { $0.isHeading && $0.label == "translations" })
+        XCTAssertTrue(info.details.contains { $0.label == "Built-in Database" && $0.value == "bundled_modules.db" })
+        XCTAssertEqual(info.details.first { $0.label == "versification" }?.value, "eng")
+        XCTAssertEqual(info.about.first { $0.label == "Language" }?.value, "English")
+    }
+
+    func testAPersonsModuleIsReadFromThePhonesOwnDatabase() throws {
+        let id = "module-info-test-\(UUID().uuidString)"
+        let database = ModuleDatabase.shared
+        try database.saveModule(Module(id: id, type: .devotional, name: "Info Test", description: "Kept here", author: "A. Reader", filePath: "\(id).lamp", isEditable: true))
+        defer { try? database.deleteModule(id: id) }
+        let module = DisplayModule(from: try XCTUnwrap(database.getModule(id: id)))
+        let info = ModuleInfo.read(module, storage: nil)
+        XCTAssertTrue(info.details.contains { $0.label == "Library Database" && $0.value == "usermodules.db" })
+        XCTAssertTrue(info.details.contains { $0.isHeading && $0.label == "modules" })
+        XCTAssertEqual(info.details.first { $0.label == "file_path" }?.value, "\(id).lamp")
+        XCTAssertEqual(info.about.first { $0.label == "Author" }?.value, "A. Reader")
+        XCTAssertEqual(info.about.first { $0.label == "Description" }?.value, "Kept here")
+    }
+}
