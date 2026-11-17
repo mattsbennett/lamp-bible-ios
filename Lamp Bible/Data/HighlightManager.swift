@@ -8,6 +8,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import LampModuleKit
 
 /// Observable manager for Bible text highlighting
 @MainActor
@@ -176,7 +177,9 @@ class HighlightManager: ObservableObject {
             moduleId: moduleId,
             name: setName,
             description: description,
-            translationId: translationId,
+            // The ID the translation had first, as every device records it,
+            // so a set made here and one made on the Mac agree (core's rule).
+            translationId: LampTranslationID.original(translationId),
             created: now,
             lastModified: now
         )

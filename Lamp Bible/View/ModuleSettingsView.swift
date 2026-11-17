@@ -251,11 +251,18 @@ struct TranslationList: View {
     let onSetDefault: (String) -> Void
 
     private var defaultTranslationId: String {
-        userSettings.readerTranslationId
+        userSettings.readerTranslation
     }
 
+    /// The installed translations hidden, the stored list read through
+    /// the rename of the IDs ending in "s".
     private var hiddenIds: Set<String> {
-        Set(LampModuleSelection.identifiers(in: hiddenString))
+        TranslationDatabase.shared.hiddenTranslationIDs(in: hiddenString)
+    }
+
+    /// The list as stored, which keeps the IDs as they were hidden.
+    private var storedHiddenIds: [String] {
+        LampModuleSelection.identifiers(in: hiddenString)
     }
 
     private var visibleTranslationsList: [TranslationModule] {
@@ -349,15 +356,16 @@ struct TranslationList: View {
     }
 
     private func hideTranslation(_ id: String) {
-        var hidden = hiddenIds
-        hidden.insert(id)
+        var hidden = storedHiddenIds
+        if !hidden.contains(id) { hidden.append(id) }
         hiddenString = hidden.joined(separator: ",")
     }
 
+    /// Every stored entry that hides it goes: "BSBs" hides BSB too.
     private func showTranslation(_ id: String) {
-        var hidden = hiddenIds
-        hidden.remove(id)
-        hiddenString = hidden.joined(separator: ",")
+        hiddenString = storedHiddenIds
+            .filter { TranslationDatabase.shared.held($0) != id }
+            .joined(separator: ",")
     }
 }
 

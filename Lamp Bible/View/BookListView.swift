@@ -43,10 +43,6 @@ struct BookListView: View {
         UserDatabase.shared.getSettings()
     }
 
-    private var hiddenTranslations: String {
-        userSettings.hiddenTranslations
-    }
-
     /// The Bible books this translation has, by its own names ("Génesis" in
     /// the RV1909) where it gives them. A book it lacks (the New Testament
     /// in the Brenton Septuagint) isn't offered, since it would open empty.
@@ -74,7 +70,7 @@ struct BookListView: View {
 
     /// Filter to visible translations based on user preferences
     private var orderedVisibleTranslations: [TranslationModule] {
-        let hiddenIds = Set(hiddenTranslations.split(separator: ",").map(String.init))
+        let hiddenIds = userSettings.hiddenTranslationIDs
         return availableTranslations.filter { !hiddenIds.contains($0.id) }
     }
 

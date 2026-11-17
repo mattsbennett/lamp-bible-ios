@@ -57,7 +57,7 @@ class DeepLinkManager: ObservableObject {
 
         switch parsed {
         case .verse(let verseId, _, let translationId):
-            let availableTranslationId = translationId.flatMap { id in
+            let availableTranslationId = translationId.map(TranslationDatabase.shared.held).flatMap { id in
                 ((try? TranslationDatabase.shared.getTranslation(id: id)) ?? nil) == nil ? nil : id
             }
             print("DeepLinkManager: Navigating to verse \(verseId), translation: \(availableTranslationId ?? "default")")
@@ -440,6 +440,9 @@ struct LampBibleApp: App {
         DispatchQueue.global(qos: .utility).async { _ = SpeechVoiceCatalog.installedVoices }
         SearchIndexMaintenance.start()
         // Indexed once and kept, so a Strong's search is a lookup.
+        // The setting as stored: the index resolves it on its own queue, as
+        // reading the installed translations opens the bundle, which mustn't
+        // happen here on the main thread.
         StrongsIndex.shared.prepare(readerTranslationId: UserDatabase.shared.getSettings().readerTranslationId)
     }
 

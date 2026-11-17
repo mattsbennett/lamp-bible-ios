@@ -1340,8 +1340,11 @@ struct ModuleManagerView: View {
             // kept, and synced, under its own id.
             if module.type == .translation, module.id.hasPrefix("translation-") {
                 let translationId = String(module.id.dropFirst("translation-".count))
+                // Read before the deletion: after it, a default that only
+                // this module answered to resolves to nothing.
+                let wasDefault = UserDatabase.shared.getSettings().readerTranslation == translationId
                 try database.deleteTranslation(id: translationId)
-                if UserDatabase.shared.getSettings().readerTranslationId == translationId {
+                if wasDefault {
                     try? UserDatabase.shared.updateSettings {
                         $0.readerTranslationId = UserSettings().readerTranslationId
                     }

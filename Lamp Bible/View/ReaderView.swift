@@ -2077,7 +2077,7 @@ struct ReaderView: View {
         _userSettings = State(initialValue: settings)
 
         // Load translation metadata (will be updated in onAppear if needed)
-        let metadataId = translationId ?? settings.readerTranslationId
+        let metadataId = translationId ?? settings.readerTranslation
         if let translation = try? TranslationDatabase.shared.getTranslation(id: metadataId) {
             _translationAbbreviation = State(initialValue: translation.abbreviation)
             _translationName = State(initialValue: translation.name)
@@ -2144,7 +2144,7 @@ struct ReaderView: View {
     /// A shown translation that has the book, in the current one's language
     /// where one does.
     private func translationCovering(_ book: Int) -> TranslationModule? {
-        let hidden = Set(userSettings.hiddenTranslations.split(separator: ",").map(String.init))
+        let hidden = userSettings.hiddenTranslationIDs
         let candidates = ((try? TranslationDatabase.shared.getAllTranslations()) ?? [])
             .filter { $0.id != translationId && !hidden.contains($0.id) }
         let language = (try? TranslationDatabase.shared.getTranslation(id: translationId))?.language
@@ -3519,7 +3519,12 @@ struct ReaderView: View {
 
             // Initialize translation from user default if not already set in scene storage
             if translationId.isEmpty {
-                translationId = userSettings.readerTranslationId
+                translationId = userSettings.readerTranslation
+            } else {
+                // A restored scene's translation as installed, as the
+                // settings are read: "BSBs" is "BSB" once the bundle says so.
+                let held = TranslationDatabase.shared.held(translationId)
+                if held != translationId { translationId = held }
             }
             // Always update the display metadata to match the current translationId
             if let translation = try? TranslationDatabase.shared.getTranslation(id: translationId) {
@@ -4866,7 +4871,7 @@ struct QuizSheetView: View {
             .sheet(item: $previewState) { _ in
                 PreviewSheet(
                     state: $previewState,
-                    translationId: UserDatabase.shared.getSettings().readerTranslationId,
+                    translationId: UserDatabase.shared.getSettings().readerTranslation,
                     contextAmount: contextAmount
                 )
             }
@@ -5219,7 +5224,7 @@ struct QuizSheetView: View {
                 return (sv, ev, label)
             }
         let questionID = question.id
-        let translationId = UserDatabase.shared.getSettings().readerTranslationId
+        let translationId = UserDatabase.shared.getSettings().readerTranslation
         let loaded = await Task.detached(priority: .userInitiated) {
             citations.compactMap { citation -> QuizPassage? in
                 // Up to two cited verses, and the one after them as context,

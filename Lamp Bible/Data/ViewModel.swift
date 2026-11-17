@@ -46,7 +46,7 @@ class PlanMetaData {
         self.description = planDay.getReadingsDescription()
         let readings = planDay.readings
 
-        let translationId = userSettings.readerTranslationId
+        let translationId = userSettings.readerTranslation
 
         for (index, reading) in readings.enumerated() {
             let sv = reading.sv
@@ -186,7 +186,7 @@ final class PlanMetaDataCache {
             planId: plan.id,
             dayNum: plan.getPlanDay(date: date),
             year: Calendar.iso8601.component(.year, from: date),
-            translationId: userSettings.readerTranslationId,
+            translationId: userSettings.readerTranslation,
             wpm: userSettings.planWpm
         )
 

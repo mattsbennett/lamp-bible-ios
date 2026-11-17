@@ -1479,6 +1479,8 @@ class TranslationDatabase {
     /// a translation changed isn't kept.
     private var coverageGeneration = 0
     private let coverageLock = NSLock()
+    /// The installed translations' IDs, read once, forgotten with coverage.
+    private var installed: [String]?
 
     private init() {}
 
@@ -1488,24 +1490,28 @@ class TranslationDatabase {
     /// Brenton Septuagint has no New Testament and TAGNT no Old, so a list
     /// or a step to the next book must not offer what would open empty.
     func coveredBooks(translationId: String) -> [Int] {
-        chapterCounts(translationId: translationId).keys.sorted()
+        let translationId = held(translationId)
+        return chapterCounts(translationId: translationId).keys.sorted()
     }
 
     /// Whether the translation holds the whole Bible, all 66 books, by
     /// core's rule; the pickers list such before the parts of the Bible
     /// (the Septuagint, TAHOT, TAGNT) in each language.
     func holdsWholeBible(translationId: String) -> Bool {
-        LampCanonicalBooks.holdsEveryBook(chapterCounts(translationId: translationId).keys)
+        let translationId = held(translationId)
+        return LampCanonicalBooks.holdsEveryBook(chapterCounts(translationId: translationId).keys)
     }
 
     /// Whether the translation has any of this book.
     func covers(_ book: Int, translationId: String) -> Bool {
-        chapterCounts(translationId: translationId)[book] != nil
+        let translationId = held(translationId)
+        return chapterCounts(translationId: translationId)[book] != nil
     }
 
     /// Each covered book's chapter count in the translation, as core reads
     /// it from the books the translation lists, which both apps share.
     func chapterCounts(translationId: String) -> [Int: Int] {
+        let translationId = held(translationId)
         coverageLock.lock()
         if let known = coverage[translationId] {
             coverageLock.unlock()
@@ -1550,8 +1556,56 @@ class TranslationDatabase {
     func forgetCoverage() {
         coverageLock.lock()
         coverage.removeAll()
+        installed = nil
         coverageGeneration &+= 1
         coverageLock.unlock()
+    }
+
+    // MARK: - Renamed Translations
+
+    /// The installed translations' IDs.
+    func installedTranslationIDs() -> [String] {
+        coverageLock.lock()
+        if let installed {
+            coverageLock.unlock()
+            return installed
+        }
+        let generation = coverageGeneration
+        coverageLock.unlock()
+        // A failed read answers nothing and keeps nothing, so the next asks
+        // again rather than finding no translation installed.
+        guard let ids = try? getAllTranslations().map(\.id) else { return [] }
+        coverageLock.lock()
+        if generation == coverageGeneration { installed = ids }
+        coverageLock.unlock()
+        return ids
+    }
+
+    /// The installed translation a stored ID names, by core's rule: that ID
+    /// if it's installed, else its other spelling ("BSBs" and "BSB" across
+    /// the rename), else the ID unchanged. Run on every ID that comes out of
+    /// storage — settings, links, history, a highlight's translation — so
+    /// the IDs in flight are installed ones and compare with ==.
+    func held(_ id: String) -> String {
+        LampTranslationID.held(id, among: installedTranslationIDs()) ?? id
+    }
+
+    /// A stored list of IDs, each resolved, those not installed left out,
+    /// each translation once.
+    func held(_ ids: [String]) -> [String] {
+        LampTranslationID.held(ids, among: installedTranslationIDs())
+    }
+
+    /// The installed translations a stored hidden list hides: each by its
+    /// own ID, or by an ID it is the other spelling of that isn't installed.
+    func hiddenTranslationIDs(in hiddenString: String) -> Set<String> {
+        Self.hiddenTranslationIDs(in: hiddenString, installed: installedTranslationIDs())
+    }
+
+    static func hiddenTranslationIDs(in hiddenString: String, installed: [String]) -> Set<String> {
+        Set(LampModuleSelection.identifiers(in: hiddenString).compactMap {
+            LampTranslationID.held($0, among: installed)
+        })
     }
 
     // MARK: - Unified Translation Queries
@@ -1571,6 +1625,7 @@ class TranslationDatabase {
 
     /// Get a translation by ID (checks bundled first, then user)
     func getTranslation(id: String) throws -> TranslationModule? {
+        let id = held(id)
         // Try bundled first
         if let bundled = try bundledDb.getTranslation(id: id) {
             return bundled
@@ -1581,13 +1636,15 @@ class TranslationDatabase {
 
     /// Check if a translation is bundled
     func isTranslationBundled(id: String) throws -> Bool {
-        try bundledDb.isTranslationBundled(id: id)
+        let id = held(id)
+        return try bundledDb.isTranslationBundled(id: id)
     }
 
     // MARK: - Unified Verse Queries
 
     /// Get verse from appropriate database
     func getVerse(translationId: String, ref: Int) throws -> TranslationVerse? {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getVerse(translationId: translationId, ref: ref)
         } else {
@@ -1597,6 +1654,7 @@ class TranslationDatabase {
 
     /// Get verses from multiple translations (may span both databases)
     func getVerses(translationIds: [String], ref: Int) throws -> [String: TranslationVerse] {
+        let translationIds = translationIds.map(held)
         var results: [String: TranslationVerse] = [:]
 
         // Separate bundled vs user translation IDs
@@ -1628,6 +1686,7 @@ class TranslationDatabase {
 
     /// Get chapter from appropriate database
     func getChapter(translationId: String, book: Int, chapter: Int) throws -> ChapterContent {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getChapter(translationId: translationId, book: book, chapter: chapter)
         } else {
@@ -1637,6 +1696,7 @@ class TranslationDatabase {
 
     /// Get multiple chapters from appropriate database (for continuous scrolling)
     func getChapters(translationId: String, chapters: [(book: Int, chapter: Int)]) throws -> [ChapterContent] {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getChapters(translationId: translationId, chapters: chapters)
         } else {
@@ -1646,6 +1706,7 @@ class TranslationDatabase {
 
     /// Get verse range from appropriate database
     func getVerseRange(translationId: String, startRef: Int, endRef: Int) throws -> [TranslationVerse] {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getVerseRange(translationId: translationId, startRef: startRef, endRef: endRef)
         } else {
@@ -1662,6 +1723,7 @@ class TranslationDatabase {
     /// reports false and the lookup lands here. Returning `.unresolved` keeps
     /// callers from caching or displaying that as an answer.
     func getVerseRangeStats(translationId: String, startRef: Int, endRef: Int) throws -> VerseRangeStats {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getVerseRangeStats(translationId: translationId, startRef: startRef, endRef: endRef)
         }
@@ -1685,6 +1747,7 @@ class TranslationDatabase {
         bookRange: ClosedRange<Int>? = nil,
         limit: Int = 50
     ) throws -> [TranslationSearchResult] {
+        let translationIds = translationIds.map { Set($0.map(held)) }
         var allResults: [TranslationSearchResult] = []
 
         // Separate translation IDs by database if specified
@@ -1753,6 +1816,7 @@ class TranslationDatabase {
 
     /// Get books for a translation
     func getTranslationBooks(translationId: String) throws -> [TranslationBook] {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getTranslationBooks(translationId: translationId)
         } else {
@@ -1762,6 +1826,7 @@ class TranslationDatabase {
 
     /// Get a specific book
     func getTranslationBook(translationId: String, bookNumber: Int) throws -> TranslationBook? {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getTranslationBook(translationId: translationId, bookNumber: bookNumber)
         } else {
@@ -1777,6 +1842,7 @@ class TranslationDatabase {
     /// name. References across the app (notes, cross-references, search)
     /// stay in English, the interface's language.
     func ownBookName(_ book: Int, translationId: String?) -> String? {
+        let translationId = translationId.map(held)
         guard let translationId, !translationId.isEmpty,
               let name = try? getTranslationBook(translationId: translationId, bookNumber: book)?.name,
               !name.isEmpty else { return nil }
@@ -1785,12 +1851,14 @@ class TranslationDatabase {
 
     /// The translation's own name for a book, else the English one.
     func bookName(_ book: Int, translationId: String?) -> String? {
-        ownBookName(book, translationId: translationId)
+        let translationId = translationId.map(held)
+        return ownBookName(book, translationId: translationId)
             ?? (try? BundledModuleDatabase.shared.getBook(id: book))?.name
     }
 
     /// Every book's own name in a translation, by book number, for lists.
     func ownBookNames(translationId: String) -> [Int: String] {
+        let translationId = held(translationId)
         let read = { (db: Database) in
             try LampTranslationCoverage.bookNames(in: db, translationID: translationId)
         }
@@ -1802,6 +1870,7 @@ class TranslationDatabase {
 
     /// Get chapter count for a book
     func getChapterCount(translationId: String, book: Int) throws -> Int {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getChapterCount(translationId: translationId, book: book)
         } else {
@@ -1811,6 +1880,7 @@ class TranslationDatabase {
 
     /// Get verse count for a chapter
     func getVerseCount(translationId: String, book: Int, chapter: Int) throws -> Int {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getVerseCount(translationId: translationId, book: book, chapter: chapter)
         } else {
@@ -1820,6 +1890,7 @@ class TranslationDatabase {
 
     /// The numbers of a chapter's verses, in order
     func getVerseNumbers(translationId: String, book: Int, chapter: Int) throws -> [Int] {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getVerseNumbers(translationId: translationId, book: book, chapter: chapter)
         } else {
@@ -1829,6 +1900,7 @@ class TranslationDatabase {
 
     /// Check if a verse exists
     func verseExists(translationId: String, ref: Int) throws -> Bool {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getVerse(translationId: translationId, ref: ref) != nil
         } else {
@@ -1838,6 +1910,7 @@ class TranslationDatabase {
 
     /// Get total verse count for a translation
     func getTotalVerseCount(translationId: String) throws -> Int {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getTotalVerseCount(translationId: translationId)
         } else {
@@ -1857,6 +1930,7 @@ class TranslationDatabase {
         bookRange: ClosedRange<Int>? = nil,
         includingVerseText: Bool = true
     ) throws -> LampStrongsAnalysis? {
+        let translationId = held(translationId)
         guard let translation = try getTranslation(id: translationId) else { return nil }
         if let analysis = try StrongsIndex.shared.analysis(
             key: key, translation: translation, bookRange: bookRange,
@@ -1877,6 +1951,7 @@ class TranslationDatabase {
         bookRange: ClosedRange<Int>? = nil,
         includingVerseText: Bool = true
     ) throws -> LampStrongsAnalysis? {
+        let translationId = held(translationId)
         guard let translation = try getTranslation(id: translationId) else { return nil }
         var analyzer = LampStrongsAnalyzer(
             key: key,
@@ -1897,7 +1972,8 @@ class TranslationDatabase {
     /// Count Strong's number occurrences in a translation
     /// The database the translation's verses are in.
     func verseSource(for translationId: String) throws -> TranslationVerseSource {
-        try bundledDb.isTranslationBundled(id: translationId) ? bundledDb : userDb
+        let translationId = held(translationId)
+        return try bundledDb.isTranslationBundled(id: translationId) ? bundledDb : userDb
     }
 
     /// From the Strong's index, or, while the translation has none, by
@@ -1907,6 +1983,7 @@ class TranslationDatabase {
         strongsNum: String,
         bookRange: ClosedRange<Int>? = nil
     ) throws -> Int {
+        let translationId = held(translationId)
         if let count = StrongsIndex.shared.count(
             translationId: translationId, key: strongsNum, bookRange: bookRange,
             source: try verseSource(for: translationId)
@@ -1932,6 +2009,7 @@ class TranslationDatabase {
         bookRange: ClosedRange<Int>? = nil,
         limit: Int = 50
     ) throws -> [TranslationSearchResult] {
+        let translationId = held(translationId)
         let source = try verseSource(for: translationId)
         if let refs = StrongsIndex.shared.refs(
             translationId: translationId, key: strongsNum, bookRange: bookRange, limit: limit, source: source
@@ -1966,6 +2044,7 @@ class TranslationDatabase {
         bookRange: ClosedRange<Int>? = nil,
         limit: Int? = nil
     ) throws -> [Int] {
+        let translationId = held(translationId)
         if let refs = StrongsIndex.shared.refs(
             translationId: translationId, key: key, bookRange: bookRange, limit: limit,
             source: try verseSource(for: translationId)
@@ -1989,13 +2068,15 @@ class TranslationDatabase {
     /// built, its Strong's numbers or its Greek and Hebrew spellings, read
     /// as core reads a module's; empty where it declares none.
     func tagSources(of translationId: String) -> [LampTranslationSource] {
-        (try? verseSource(for: translationId).read {
+        let translationId = held(translationId)
+        return (try? verseSource(for: translationId).read {
             try LampTranslationSource.declared(in: $0, translationID: translationId)
         }) ?? []
     }
 
     /// Get the last verse ref in a chapter
     func getLastVerseRef(translationId: String, book: Int, chapter: Int) throws -> Int {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getLastVerseRef(translationId: translationId, book: book, chapter: chapter)
         } else {
@@ -2005,6 +2086,7 @@ class TranslationDatabase {
 
     /// Get headings for a chapter
     func getHeadingsForChapter(translationId: String, book: Int, chapter: Int) throws -> [TranslationHeading] {
+        let translationId = held(translationId)
         if try bundledDb.isTranslationBundled(id: translationId) {
             return try bundledDb.getHeadingsForChapter(translationId: translationId, book: book, chapter: chapter)
         } else {

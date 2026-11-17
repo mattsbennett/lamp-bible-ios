@@ -29,9 +29,11 @@ enum LampbibleURL {
         guard let link = LampApplicationLink(url: url, bookNumberForOSIS: lookupBookId) else {
             return nil
         }
+        // A link names a translation as it was when written: as installed.
+        let installed = { (id: String?) in id.map(TranslationDatabase.shared.held) }
         switch link {
         case .verse(let reference, let endReference, let translationID):
-            return .verse(verseId: reference, endVerseId: endReference, translationId: translationID)
+            return .verse(verseId: reference, endVerseId: endReference, translationId: installed(translationID))
         case .reading(let reference, let endReference, let openExternal):
             return .reading(verseId: reference, endVerseId: endReference, openExternal: openExternal)
         case .strongs(let key):
@@ -39,7 +41,7 @@ enum LampbibleURL {
         case .writing(let id):
             return .writing(id: id)
         case .reader(let reference?, let translationID):
-            return .verse(verseId: reference, endVerseId: nil, translationId: translationID)
+            return .verse(verseId: reference, endVerseId: nil, translationId: installed(translationID))
         case .reader, .book, .section, .moduleFile, .dataFile:
             return nil
         }

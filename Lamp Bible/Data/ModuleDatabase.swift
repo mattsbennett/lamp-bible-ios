@@ -2005,6 +2005,13 @@ class ModuleDatabase {
             guard LampLibrary.canonicalHighlightSetID(flattened, translationID: translation) == id,
                   !held.contains(flattened) else { continue }
             names[flattened] = id
+            // Its translation's other spellings across the rename of the IDs
+            // ending in "s" name the same set: one set per translation.
+            for spelling in LampTranslationID.equivalents(of: translation) where spelling != translation {
+                let safeSpelling = String(spelling.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "-" })
+                let alias = "personal-highlights-\(safeSpelling)"
+                if !held.contains(alias), names[alias] == nil { names[alias] = id }
+            }
         }
         return names
     }
@@ -3580,10 +3587,13 @@ class ModuleDatabase {
     }
 
     /// Get all highlight sets for a translation
+    /// Under either spelling across the rename of the IDs ending in "s": a
+    /// set records its translation's first ID, "BSBs", read as "BSB" too.
     func getHighlightSets(forTranslation translationId: String) throws -> [HighlightSet] {
-        try dbQueue.read { db in
+        let spellings = LampTranslationID.equivalents(of: translationId)
+        return try dbQueue.read { db in
             try HighlightSet
-                .filter(Column("translation_id") == translationId)
+                .filter(spellings.contains(Column("translation_id")))
                 .order(Column("name"))
                 .fetchAll(db)
         }

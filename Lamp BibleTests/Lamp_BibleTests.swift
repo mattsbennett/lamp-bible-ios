@@ -25,7 +25,9 @@ final class Lamp_BibleTests: XCTestCase {
         }
         XCTAssertEqual(start, 43_003_016)
         XCTAssertEqual(end, 43_003_018)
-        XCTAssertEqual(translation, "KJV")
+        // The link's translation, as installed: "KJV" reaches KJVs while
+        // the bundle says KJVs, across the rename of the IDs ending in "s".
+        XCTAssertEqual(translation, TranslationDatabase.shared.held("KJV"))
 
         let reading = try XCTUnwrap(URL(
             string: "lampbible://reading/43003016/43003018?external=1"
@@ -6821,6 +6823,81 @@ final class DictionaryStylingTests: XCTestCase {
 
 /// The bundle's dictionaries, found from its own lexicons table rather than a
 /// list in the app, so one newly bundled (TBESG) is offered everywhere.
+/// The rename of the translation IDs ending in "s" (BSBs → BSB, …), read
+/// through core's `LampTranslationID`: a stored ID of either spelling reaches
+/// the installed translation. This bundle still says "BSBs", so the new ID is
+/// the one that must resolve; after the switch the old one will.
+final class TranslationIDRenameTests: XCTestCase {
+    /// Against the bundle as it is, before the switch or after: the
+    /// spelling it doesn't carry reaches the one it does.
+    func testEitherSpellingReachesTheInstalledTranslation() throws {
+        try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
+        let database = TranslationDatabase.shared
+        let installed = database.installedTranslationIDs()
+        let bsb = try XCTUnwrap(["BSBs", "BSB"].first(where: installed.contains), "BSB under either spelling")
+        try XCTSkipIf(installed.contains("BSBs") && installed.contains("BSB"), "Both installed: covered by the fixtures")
+        let other = bsb == "BSBs" ? "BSB" : "BSBs"
+        XCTAssertEqual(database.held(other), bsb)
+        XCTAssertEqual(database.held(bsb), bsb)
+        XCTAssertEqual(database.held("NotATranslation"), "NotATranslation", "Unknown IDs pass through")
+        XCTAssertEqual(database.held([other, bsb, "Gone"]), [bsb])
+
+        // Read under the other spelling, the same chapter.
+        let byOther = try database.getChapter(translationId: other, book: 43, chapter: 3)
+        let byOwn = try database.getChapter(translationId: bsb, book: 43, chapter: 3)
+        XCTAssertFalse(byOther.verses.isEmpty)
+        XCTAssertEqual(byOther.verses.map(\.text), byOwn.verses.map(\.text))
+        XCTAssertEqual(try database.getTranslation(id: other)?.id, bsb)
+
+        // Settings keep what was stored and read it as installed.
+        var settings = UserSettings()
+        settings.readerTranslationId = other
+        XCTAssertEqual(settings.readerTranslation, bsb)
+        XCTAssertEqual(settings.readerTranslationId, other, "Nothing stored is rewritten")
+    }
+
+    /// The hidden list under each state of the rename: only the old ID
+    /// installed, only the new, and both, which stay apart.
+    func testTheHiddenListHidesByEitherSpellingButKeepsBothApart() {
+        let hidden = { (list: String, installed: [String]) in
+            TranslationDatabase.hiddenTranslationIDs(in: list, installed: installed)
+        }
+        XCTAssertEqual(hidden("BSBs", ["BSBs", "KJVs"]), ["BSBs"])
+        XCTAssertEqual(hidden("BSBs", ["BSB", "KJV"]), ["BSB"], "An old ID hides the new one it became")
+        XCTAssertEqual(hidden("BSB", ["BSBs", "KJVs"]), ["BSBs"])
+        XCTAssertEqual(hidden("ESVs", ["ESVs", "ESV"]), ["ESVs"], "Both installed: each hidden by its own ID")
+        XCTAssertEqual(hidden("ESV,Gone", ["ESVs", "ESV"]), ["ESV"])
+        XCTAssertEqual(hidden("", ["BSB"]), [])
+    }
+
+    /// A legacy selection kept where its translation is installed under
+    /// either spelling, and BSB found as the fallback under either.
+    func testALegacySelectionSurvivesTheRename() {
+        XCTAssertEqual(RealmMigrator.resolveMigratedTranslationId("BSBs", availableIds: ["ASV", "BSB", "KJV"]), "BSB")
+        XCTAssertEqual(RealmMigrator.resolveMigratedTranslationId("KJVs", availableIds: ["ASV", "BSB", "KJV"]), "KJV")
+        XCTAssertEqual(RealmMigrator.resolveMigratedTranslationId("BBE", availableIds: ["ASV", "BSB", "KJV"]), "BSB")
+        XCTAssertEqual(RealmMigrator.resolveMigratedTranslationId("BBE", availableIds: ["ASVs", "BSBs"]), "BSBs")
+        XCTAssertEqual(RealmMigrator.resolveMigratedTranslationId("ESVs", availableIds: ["ESVs", "ESV"]), "ESVs")
+    }
+
+    /// A highlight set records its translation's first ID and is found under
+    /// either spelling.
+    func testAHighlightSetIsFoundUnderEitherSpelling() throws {
+        let database = ModuleDatabase.shared
+        let moduleID = "rename-test-\(UUID().uuidString)"
+        try database.saveModule(Module(id: moduleID, type: .highlights, name: "Rename", filePath: "\(moduleID).lamp", isEditable: true))
+        defer { try? database.deleteModule(id: moduleID) }
+        let setID = UUID().uuidString
+        try database.saveHighlightSet(HighlightSet(id: setID, moduleId: moduleID, name: "Mine", translationId: LampTranslationID.original("BSB")))
+        defer { try? database.deleteHighlightSet(id: setID) }
+
+        XCTAssertTrue(try database.getHighlightSets(forTranslation: "BSB").contains { $0.id == setID })
+        XCTAssertTrue(try database.getHighlightSets(forTranslation: "BSBs").contains { $0.id == setID })
+        XCTAssertFalse(try database.getHighlightSets(forTranslation: "KJVs").contains { $0.id == setID })
+        XCTAssertEqual(try database.getHighlightSets(forModule: moduleID).first?.translationId, "BSBs")
+    }
+}
+
 final class BundledLexiconTests: XCTestCase {
 
     override func setUpWithError() throws {
@@ -8501,14 +8578,14 @@ final class HighlightSetFileTests: XCTestCase {
     /// left as named, not taken for the Mac's default set.
     func testASetComesBackWithItsThemesUnderItsOwnName() async throws {
         let database = ModuleDatabase.shared
-        for setID in ["3F2A-\(UUID().uuidString)", "personal-highlights-ESV"] {
+        for setID in ["3F2A-\(UUID().uuidString)", "personal-highlights-NASB"] {
             let moduleID = "theme-seam-\(UUID().uuidString.lowercased())"
             defer {
                 try? database.deleteAllEntriesForModule(moduleId: moduleID)
                 try? database.deleteModule(id: moduleID)
             }
             try database.saveModule(Module(id: moduleID, type: .highlights, name: "Mine", filePath: "\(moduleID).lamp", isEditable: true))
-            try database.saveHighlightSet(HighlightSet(id: setID, moduleId: moduleID, name: "Mine", translationId: "ESV"))
+            try database.saveHighlightSet(HighlightSet(id: setID, moduleId: moduleID, name: "Mine", translationId: "NASB"))
             try database.saveHighlight(HighlightEntry(setId: setID, ref: 43_003_016, sc: 0, ec: 3, color: HighlightColor(hex: "FFCC00")))
             try database.saveHighlightTheme(HighlightTheme(setId: setID, color: "FFCC00", style: 0, name: "Promise"))
             let body = try ModuleSyncManager.shared.exportHighlightModuleToSQLite(XCTUnwrap(database.getModule(id: moduleID)))
@@ -8558,37 +8635,50 @@ final class HighlightSetFileTests: XCTestCase {
     /// takes the Mac's name for it, and its highlights, themes and ledger
     /// entries go with it, joining any the new name already had. A set the
     /// reader named so in a module of its own is left as named.
+    /// A deletion keyed by the other spelling of a renamed translation's
+    /// flattened name finds the one set held for it.
+    func testAFlattenedNameOfEitherSpellingFindsTheSet() throws {
+        let queue = try DatabaseQueue()
+        try queue.write { db in
+            try db.execute(sql: "CREATE TABLE highlight_sets (id TEXT PRIMARY KEY, module_id TEXT, translation_id TEXT)")
+            try db.execute(sql: "INSERT INTO highlight_sets VALUES ('personal-highlights:ESVs', 'personal-highlights-ESVs', 'ESVs')")
+            let names = try ModuleDatabase.flattenedHighlightSetNames(in: db)
+            XCTAssertEqual(names["personal-highlights-ESVs"], "personal-highlights:ESVs")
+            XCTAssertEqual(names["personal-highlights-ESV"], "personal-highlights:ESVs")
+        }
+    }
+
     func testTheMacsDefaultSetTakesTheMacsName() throws {
         let queue = try DatabaseQueue()
         try queue.write { db in
             try highlightTables(db)
             try db.execute(sql: """
                 INSERT INTO highlight_sets (id, module_id, translation_id) VALUES
-                    ('personal-highlights-ESV', 'personal-highlights-ESV', 'ESV'),
-                    ('3F2A-set', 'mine', 'ESV'),
+                    ('personal-highlights-NASB', 'personal-highlights-NASB', 'NASB'),
+                    ('3F2A-set', 'mine', 'NASB'),
                     ('personal-highlights-KJV', 'my-kjv', 'KJV');
                 INSERT INTO highlights VALUES
-                    (1, 'personal-highlights-ESV', 43003016, 0, 3, 0, 'FFCC00'), (2, '3F2A-set', 43003016, 0, 3, 0, NULL);
+                    (1, 'personal-highlights-NASB', 43003016, 0, 3, 0, 'FFCC00'), (2, '3F2A-set', 43003016, 0, 3, 0, NULL);
                 INSERT INTO highlight_themes (id, set_id, color, style) VALUES
-                    ('personal-highlights-ESV_FFCC00_0', 'personal-highlights-ESV', 'FFCC00', 0);
+                    ('personal-highlights-NASB_FFCC00_0', 'personal-highlights-NASB', 'FFCC00', 0);
                 """)
-            let old = LampPersonalDeletionLedger.highlightKey(setID: "personal-highlights-ESV", reference: 43_003_016, start: 0, end: 3, style: 0, color: "FFCC00")
-            let new = LampPersonalDeletionLedger.highlightKey(setID: "personal-highlights:ESV", reference: 43_003_016, start: 0, end: 3, style: 0, color: "FFCC00")
+            let old = LampPersonalDeletionLedger.highlightKey(setID: "personal-highlights-NASB", reference: 43_003_016, start: 0, end: 3, style: 0, color: "FFCC00")
+            let new = LampPersonalDeletionLedger.highlightKey(setID: "personal-highlights:NASB", reference: 43_003_016, start: 0, end: 3, style: 0, color: "FFCC00")
             try db.execute(sql: """
                 INSERT INTO personal_sync_ledger VALUES
-                    ('highlight', ?, 100, 900), ('highlight', ?, 500, NULL), ('highlightSet', 'personal-highlights-ESV', 50, NULL)
+                    ('highlight', ?, 100, 900), ('highlight', ?, 500, NULL), ('highlightSet', 'personal-highlights-NASB', 50, NULL)
                 """, arguments: [old, new])
 
-            XCTAssertEqual(try ModuleDatabase.nameHighlightSetsAsTheMacDoes(in: db), ["personal-highlights-ESV": "personal-highlights:ESV"])
+            XCTAssertEqual(try ModuleDatabase.nameHighlightSetsAsTheMacDoes(in: db), ["personal-highlights-NASB": "personal-highlights:NASB"])
 
             XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_sets ORDER BY id"), [
-                "3F2A-set", "personal-highlights-KJV", "personal-highlights:ESV",
+                "3F2A-set", "personal-highlights-KJV", "personal-highlights:NASB",
             ])
-            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT set_id FROM highlights ORDER BY id"), ["personal-highlights:ESV", "3F2A-set"])
-            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_themes"), ["personal-highlights:ESV_FFCC00_0"])
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT set_id FROM highlights ORDER BY id"), ["personal-highlights:NASB", "3F2A-set"])
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_themes"), ["personal-highlights:NASB_FFCC00_0"])
             XCTAssertEqual(try ledger(db), [
                 "highlight \(new) 500 900",
-                "highlightSet personal-highlights:ESV 50 -1",
+                "highlightSet personal-highlights:NASB 50 -1",
             ])
         }
     }
@@ -8603,7 +8693,7 @@ final class HighlightSetFileTests: XCTestCase {
             try highlightTables(db)
             try db.execute(sql: """
                 INSERT INTO highlight_sets (id, module_id, translation_id) VALUES
-                    ('personal-highlights:ESV', 'personal-highlights-ESV', 'ESV'),
+                    ('personal-highlights:NASB', 'personal-highlights-NASB', 'NASB'),
                     ('personal-highlights:KJV', 'personal-highlights-KJV', 'KJV'),
                     ('personal-highlights-KJV', 'my-kjv', 'KJV');
                 """)
@@ -8613,10 +8703,10 @@ final class HighlightSetFileTests: XCTestCase {
             try db.execute(sql: """
                 INSERT INTO personal_sync_ledger VALUES
                     ('highlight', ?, NULL, 900), ('highlight', ?, NULL, 900), ('highlight', ?, NULL, 900),
-                    ('highlightSet', 'personal-highlights-ESV', 50, NULL)
-                """, arguments: [flat("personal-highlights-ESV"), flat("personal-highlights-KJV"), flat("personal-highlights-NIV")])
+                    ('highlightSet', 'personal-highlights-NASB', 50, NULL)
+                """, arguments: [flat("personal-highlights-NASB"), flat("personal-highlights-KJV"), flat("personal-highlights-NIV")])
 
-            XCTAssertEqual(try ModuleDatabase.flattenedHighlightSetNames(in: db), ["personal-highlights-ESV": "personal-highlights:ESV"])
+            XCTAssertEqual(try ModuleDatabase.flattenedHighlightSetNames(in: db), ["personal-highlights-NASB": "personal-highlights:NASB"])
             for (flattened, name) in try ModuleDatabase.flattenedHighlightSetNames(in: db) {
                 try ModuleDatabase.moveHighlightLedgerKeys(db, from: flattened, to: name)
             }
@@ -8624,8 +8714,8 @@ final class HighlightSetFileTests: XCTestCase {
             XCTAssertEqual(try ledger(db), [
                 "highlight \(flat("personal-highlights-KJV")) -1 900",
                 "highlight \(flat("personal-highlights-NIV")) -1 900",
-                "highlight \(flat("personal-highlights:ESV")) -1 900",
-                "highlightSet personal-highlights:ESV 50 -1",
+                "highlight \(flat("personal-highlights:NASB")) -1 900",
+                "highlightSet personal-highlights:NASB 50 -1",
             ])
         }
     }
@@ -8639,31 +8729,31 @@ final class HighlightSetFileTests: XCTestCase {
             try highlightTables(db)
             try db.execute(sql: """
                 INSERT INTO highlight_sets VALUES
-                    ('personal-highlights-ESV', 'personal-highlights-ESV', 'ESV', 'Renamed here', 'Newer', 2000),
-                    ('personal-highlights:ESV', 'personal-highlights-ESV', 'ESV', 'Mine', NULL, 1000);
+                    ('personal-highlights-NASB', 'personal-highlights-NASB', 'NASB', 'Renamed here', 'Newer', 2000),
+                    ('personal-highlights:NASB', 'personal-highlights-NASB', 'NASB', 'Mine', NULL, 1000);
                 INSERT INTO highlights VALUES
-                    (1, 'personal-highlights-ESV', 43003016, 0, 3, 0, 'FFCC00'),
-                    (2, 'personal-highlights-ESV', 43003017, 0, 5, 0, NULL),
-                    (3, 'personal-highlights:ESV', 43003016, 0, 3, 0, 'FFCC00');
+                    (1, 'personal-highlights-NASB', 43003016, 0, 3, 0, 'FFCC00'),
+                    (2, 'personal-highlights-NASB', 43003017, 0, 5, 0, NULL),
+                    (3, 'personal-highlights:NASB', 43003016, 0, 3, 0, 'FFCC00');
                 INSERT INTO highlight_themes VALUES
-                    ('personal-highlights-ESV_FFCC00_0', 'personal-highlights-ESV', 'FFCC00', 0, 'Promises kept', NULL),
-                    ('personal-highlights-ESV_00AAFF_1', 'personal-highlights-ESV', '00AAFF', 1, 'Commands', NULL),
-                    ('personal-highlights:ESV_FFCC00_0', 'personal-highlights:ESV', 'FFCC00', 0, 'Promise', NULL);
-                INSERT INTO personal_sync_ledger VALUES ('highlightSet', 'personal-highlights-ESV', 50, NULL);
+                    ('personal-highlights-NASB_FFCC00_0', 'personal-highlights-NASB', 'FFCC00', 0, 'Promises kept', NULL),
+                    ('personal-highlights-NASB_00AAFF_1', 'personal-highlights-NASB', '00AAFF', 1, 'Commands', NULL),
+                    ('personal-highlights:NASB_FFCC00_0', 'personal-highlights:NASB', 'FFCC00', 0, 'Promise', NULL);
+                INSERT INTO personal_sync_ledger VALUES ('highlightSet', 'personal-highlights-NASB', 50, NULL);
                 """)
 
-            XCTAssertEqual(try ModuleDatabase.nameHighlightSetsAsTheMacDoes(in: db), ["personal-highlights-ESV": "personal-highlights:ESV"])
+            XCTAssertEqual(try ModuleDatabase.nameHighlightSetsAsTheMacDoes(in: db), ["personal-highlights-NASB": "personal-highlights:NASB"])
 
-            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_sets"), ["personal-highlights:ESV"])
-            XCTAssertEqual(try Int.fetchAll(db, sql: "SELECT id FROM highlights WHERE set_id = 'personal-highlights:ESV' ORDER BY id"), [2, 3])
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id FROM highlight_sets"), ["personal-highlights:NASB"])
+            XCTAssertEqual(try Int.fetchAll(db, sql: "SELECT id FROM highlights WHERE set_id = 'personal-highlights:NASB' ORDER BY id"), [2, 3])
             XCTAssertEqual(try String.fetchAll(db, sql: "SELECT id || ' ' || name FROM highlight_themes ORDER BY id"), [
-                "personal-highlights:ESV_00AAFF_1 Commands", "personal-highlights:ESV_FFCC00_0 Promises kept",
+                "personal-highlights:NASB_00AAFF_1 Commands", "personal-highlights:NASB_FFCC00_0 Promises kept",
             ], "the old set was changed last, so its words for the theme both have stand")
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT name || ' ' || description || ' ' || last_modified FROM highlight_sets"),
                 "Renamed here Newer 2000"
             )
-            XCTAssertEqual(try ledger(db), ["highlightSet personal-highlights:ESV 50 -1"])
+            XCTAssertEqual(try ledger(db), ["highlightSet personal-highlights:NASB 50 -1"])
         }
     }
 }

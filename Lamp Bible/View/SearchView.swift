@@ -8,6 +8,7 @@
 import SwiftUI
 import LampCore
 import GRDB
+import LampModuleKit
 
 enum SearchScope: String, CaseIterable {
     case bible = "Bible"
@@ -298,7 +299,7 @@ struct SearchView: View {
             return selectedId
         }
         // Fetch from user's readerTranslationId or use default
-        return UserDatabase.shared.getSettings().readerTranslationId
+        return UserDatabase.shared.getSettings().readerTranslation
     }
 
     // GRDB translation module for display purposes
@@ -458,6 +459,9 @@ struct SearchView: View {
     @State private var moduleSearchMode: ModuleSearchMode = .text
     @State private var filterTags: Set<String> = []
     @State private var availableModules: [SearchableModule] = []
+    /// Bumped by each restore from history, so one overtaken while it reads
+    /// the modules doesn't apply its filters over the newer.
+    @State private var restoreGeneration = 0
     @State private var availableTags: [String] = []
     @State private var availableHighlightColors: [HighlightColor] = []
     @State private var filterLoadGeneration = 0
@@ -567,11 +571,13 @@ struct SearchView: View {
 
     /// Puts back the scope and every filter a search ran with, then runs it.
     private func restore(_ entry: LampSearchHistory.Entry) {
+        restoreGeneration += 1
         bookRange = entry.bookRange
         if SearchHistoryStore.isBibleSearch(entry) {
             searchScope = .bible
             if isStandaloneMode, let translationId = entry.translationID {
-                selectedTranslationIdString = translationId
+                // Remembered as it was then: as installed now.
+                selectedTranslationIdString = TranslationDatabase.shared.held(translationId)
             }
             searchMode = entry.strongsKey == nil ? .text : .strongs
             bibleSearchText = entry.strongsKey ?? entry.query
@@ -580,7 +586,7 @@ struct SearchView: View {
             if entry.kinds == [.highlights] {
                 moduleSearchMode = .highlightColor
                 selectedSearchColors = entry.highlightColors ?? []
-                colorSearchTranslationId = entry.translationID
+                colorSearchTranslationId = entry.translationID.map(TranslationDatabase.shared.held)
                 moduleSearchText = entry.query
             } else if let key = entry.strongsKey {
                 moduleSearchMode = .strongsKey
@@ -591,9 +597,41 @@ struct SearchView: View {
                 filterHighlightColors = entry.highlightColors ?? []
                 moduleSearchText = entry.query
             }
-            filterModuleIds = entry.moduleIDs
         }
-        DispatchQueue.main.async {
+        // A module still here by its exact ID stays: a dictionary called
+        // "BSB" is not BSBs. A translation no longer here by that spelling is
+        // the one installed now. Set before the mode's own handler trims the
+        // filter to what's installed, so nothing it keeps is lost.
+        func resolved(_ ids: Set<String>, known: Set<String>) -> Set<String> {
+            Set(ids.map { known.contains($0) ? $0 : TranslationDatabase.shared.held($0) })
+        }
+        guard !SearchHistoryStore.isBibleSearch(entry) else {
+            DispatchQueue.main.async { submitSearch() }
+            return
+        }
+        guard let remembered = entry.moduleIDs else {
+            filterModuleIds = nil
+            DispatchQueue.main.async { submitSearch() }
+            return
+        }
+        if !availableModules.isEmpty {
+            filterModuleIds = resolved(remembered, known: Set(availableModules.map(\.id)))
+            DispatchQueue.main.async { submitSearch() }
+            return
+        }
+        // The filter's list not loaded yet: every searchable module, read off
+        // the main thread. A restore overtaken meanwhile stands down.
+        let generation = restoreGeneration
+        let restoredText = moduleSearchText
+        let restoredScope = searchScope
+        let restoredMode = moduleSearchMode
+        Task { @MainActor in
+            let known = await Task.detached(priority: .userInitiated) {
+                Set(ModuleSearch.shared.getSearchableModules().map(\.id))
+            }.value
+            guard generation == restoreGeneration, moduleSearchText == restoredText,
+                  searchScope == restoredScope, moduleSearchMode == restoredMode else { return }
+            filterModuleIds = resolved(remembered, known: known)
             submitSearch()
         }
     }
@@ -944,6 +982,8 @@ struct SearchView: View {
             }
             .onDisappear {
                 searchTask?.cancel()
+                // A restore still reading the modules stands down too.
+                restoreGeneration += 1
             }
             .navigationDestination(item: $navigateToVerseId) { verseId in
                 // Navigate to reader with the selected verse and translation
@@ -1158,7 +1198,10 @@ struct SearchView: View {
         let highlightSets = (try? ModuleDatabase.shared.getAllHighlightSets()) ?? []
         let translationIds = Set(highlightSets.map { $0.translationId })
         let allTranslations = (try? TranslationDatabase.shared.getAllTranslations()) ?? []
-        return allTranslations.filter { translationIds.contains($0.id) }
+        // A set records its translation's first ID: either spelling counts.
+        return allTranslations.filter { translation in
+            translationIds.contains { LampTranslationID.sameTranslation($0, translation.id) }
+        }
     }
 
     // MARK: - Module Filter Section
@@ -3528,6 +3571,10 @@ enum BibleSearch {
         shown: Int
     ) -> (total: Int, results: [SearchResult], scripture: SearchScripture?) {
         let database = TranslationDatabase.shared
+        // As installed now: a selection kept from before a module was
+        // removed or renamed ("ESVs", with ESV installed) searches ESV,
+        // rather than nothing and then whichever has the most matches.
+        let translationId = database.held(translationId)
         func listed(_ results: some Sequence<TranslationSearchResult>) -> [SearchResult] {
             results.map { SearchResult(searchResult: $0, bookName: BookOsisCache.shared.displayName(for: $0.book)) }
         }

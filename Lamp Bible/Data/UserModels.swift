@@ -170,3 +170,18 @@ struct CompletedReading: Codable, Equatable, FetchableRecord, PersistableRecord,
         }
     }
 }
+
+extension UserSettings {
+    /// The reader's translation as installed. The setting keeps the ID that
+    /// was picked, and syncs as it is, so a device on an older build still
+    /// reads it; read here, "BSBs" is "BSB" once the bundle says BSB (core's
+    /// `LampTranslationID`, the rename of the IDs ending in "s").
+    var readerTranslation: String {
+        TranslationDatabase.shared.held(readerTranslationId)
+    }
+
+    /// The installed translations the hidden list hides, read the same way.
+    var hiddenTranslationIDs: Set<String> {
+        TranslationDatabase.shared.hiddenTranslationIDs(in: hiddenTranslations)
+    }
+}

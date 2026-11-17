@@ -369,7 +369,7 @@ final class TipTapPagePool {
     /// Loads a page ahead of need, so the first editor opened is warm.
     func warmUp(_ kind: TipTapPage.Kind) {
         if idle[kind].map(isUsable) != true { idle[kind] = TipTapPage(kind: kind) }
-        idle[kind]?.useVerseCatalog(translationId: UserDatabase.shared.getSettings().readerTranslationId)
+        idle[kind]?.useVerseCatalog(translationId: UserDatabase.shared.getSettings().readerTranslation)
     }
 
     func take(_ kind: TipTapPage.Kind) -> TipTapPage {
@@ -529,7 +529,7 @@ final class NoteEditorHostView: UIView {
         // Before the text, which finds its pictures as it is loaded.
         page.useMedia(media)
         self.media = media
-        page.useVerseCatalog(translationId: UserDatabase.shared.getSettings().readerTranslationId)
+        page.useVerseCatalog(translationId: UserDatabase.shared.getSettings().readerTranslation)
         if let handle {
             page.showKeyboardBar(for: handle)
             handle.barIsOnKeyboard = page.hasKeyboardBar

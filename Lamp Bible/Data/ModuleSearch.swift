@@ -8,6 +8,7 @@
 import Foundation
 import GRDB
 import LampCore
+import LampModuleKit
 
 // MARK: - Search Result
 
@@ -1202,7 +1203,11 @@ class ModuleSearch {
 
         // Filter by translation IDs (for color search filtering by translation)
         if let translationIds = filter.translationIds {
-            setsToSearch = setsToSearch.filter { translationIds.contains($0.translationId) }
+            // A set records its translation's first ID ("BSBs"): either
+            // spelling is the same translation.
+            setsToSearch = setsToSearch.filter { set in
+                translationIds.contains { LampTranslationID.sameTranslation($0, set.translationId) }
+            }
         }
 
         guard !setsToSearch.isEmpty else { return [] }
@@ -1257,7 +1262,8 @@ class ModuleSearch {
             )
             result.highlightColor = LampHighlightSearch.normalizedColor(highlight.color)
             result.highlightStyle = entries[hit.setID]?[highlight.id]?.highlightStyle ?? .highlight
-            result.translationId = highlight.translationID
+            // Stored as the translation's first ID: as installed.
+            result.translationId = TranslationDatabase.shared.held(highlight.translationID)
             result.holdsPhrase = hit.holdsPhrase
             return result
         }

@@ -1424,7 +1424,7 @@ struct ToolPanelView: View {
     }
 
     private var verseCountKey: VerseCountKey {
-        VerseCountKey(translationId: UserDatabase.shared.getSettings().readerTranslationId, book: book, chapter: chapter)
+        VerseCountKey(translationId: UserDatabase.shared.getSettings().readerTranslation, book: book, chapter: chapter)
     }
 
     private func loadVerseCount() async {
@@ -2198,7 +2198,7 @@ struct ToolPanelView: View {
                 word: "",
                 strongs: [item.key],
                 morphology: nil,
-                translationId: userSettings.readerTranslationId,
+                translationId: userSettings.readerTranslation,
                 onNavigateToVerse: { verseId in
                     commentaryStrongsKey = nil
                     onNavigateToVerse?(verseId)
@@ -2211,7 +2211,7 @@ struct ToolPanelView: View {
         .sheet(item: $commentaryPreviewState) { _ in
             PreviewSheet(
                 state: $commentaryPreviewState,
-                translationId: userSettings.readerTranslationId,
+                translationId: userSettings.readerTranslation,
                 onNavigateToVerse: onNavigateToVerse
             )
         }
@@ -2934,7 +2934,7 @@ struct ToolPanelView: View {
         return NoteSectionCell(
             data: data,
             fontSize: toolFontSize,
-            translationId: userSettings.readerTranslationId,
+            translationId: userSettings.readerTranslation,
             editorKey: editorKey(for: sectionId),
             isEditorOpen: editingNoteSectionId == sectionId,
             noteEditor: noteEditor,
@@ -3008,7 +3008,7 @@ struct ToolPanelView: View {
     private var notePassageSheet: some View {
         PreviewSheet(
             state: $passagePreview,
-            translationId: userSettings.readerTranslationId,
+            translationId: userSettings.readerTranslation,
             onNavigateToVerse: { verseId in
                 if isMaximized { isMaximized = false }
                 onNavigateToVerse?(verseId)
@@ -3938,7 +3938,7 @@ class VerseReferenceParser {
 
             // Validate that the verse exists (using any translation)
             let verseId = bookId * 1000000 + chapter * 1000 + startVerse
-            let translationId = UserDatabase.shared.getSettings().readerTranslationId
+            let translationId = UserDatabase.shared.getSettings().readerTranslation
             let exists = (try? TranslationDatabase.shared.verseExists(translationId: translationId, ref: verseId)) ?? false
 
             if exists {
@@ -4012,7 +4012,7 @@ class VerseReferenceParser {
 
             // Validate that the verse exists (helps filter false positives)
             let verseId = bookId * 1000000 + chapter * 1000 + startVerse
-            let translationId = UserDatabase.shared.getSettings().readerTranslationId
+            let translationId = UserDatabase.shared.getSettings().readerTranslation
             let exists = (try? TranslationDatabase.shared.verseExists(translationId: translationId, ref: verseId)) ?? false
 
             if exists {

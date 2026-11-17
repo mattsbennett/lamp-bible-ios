@@ -628,7 +628,7 @@ struct BookModuleView: View {
     }
 
     private var translationID: String {
-        UserDatabase.shared.getSettings().readerTranslationId
+        UserDatabase.shared.getSettings().readerTranslation
     }
 
     var body: some View {
@@ -654,7 +654,7 @@ struct BookModuleView: View {
                 SplitReaderView(
                     date: $readerDate,
                     initialVerseId: destination.reference,
-                    initialTranslationId: destination.translationID
+                    initialTranslationId: destination.translationID.map(TranslationDatabase.shared.held)
                 )
             }
         }

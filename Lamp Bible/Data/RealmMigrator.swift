@@ -10,6 +10,7 @@
 
 import Foundation
 import RealmSwift
+import LampModuleKit
 
 /// Values read out of a legacy Realm file, detached from Realm so they can be
 /// inspected and asserted on without a live Realm or the shared UserDatabase.
@@ -131,11 +132,13 @@ class RealmMigrator {
         _ preferredId: String,
         availableIds: [String]
     ) -> String {
-        if availableIds.contains(preferredId) {
-            return preferredId
+        // Either spelling across the rename of the IDs ending in "s": a
+        // legacy "BSBs" is the bundle's BSB once it says so.
+        if let held = LampTranslationID.held(preferredId, among: availableIds) {
+            return held
         }
-        if availableIds.contains(fallbackTranslationId) {
-            return fallbackTranslationId
+        if let held = LampTranslationID.held(fallbackTranslationId, among: availableIds) {
+            return held
         }
         return availableIds.sorted().first ?? fallbackTranslationId
     }

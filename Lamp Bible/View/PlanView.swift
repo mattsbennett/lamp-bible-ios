@@ -189,7 +189,7 @@ struct PlanView: View {
         let selectedPlans = plans.filter { settings.isPlanSelected($0.id) }
         let inputs = PlanMetaDataInputs(
             planIds: selectedPlans.map(\.id),
-            translationId: settings.readerTranslationId,
+            translationId: settings.readerTranslation,
             wpm: settings.planWpm,
             date: date
         )

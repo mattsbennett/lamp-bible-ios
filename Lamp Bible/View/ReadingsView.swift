@@ -366,7 +366,7 @@ struct ReadingsView: View {
             return
         }
         if upNext?.ref == reading.sv { return }
-        let translationId = userSettings.readerTranslationId
+        let translationId = userSettings.readerTranslation
         let ref = reading.sv
         let text = await Task.detached(priority: .utility) {
             (try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref))?.text

@@ -282,7 +282,7 @@ struct DevotionalView: View {
         }
         .sheet(item: $previewState) { state in
             let itemTranslationId = state.currentItem.translationId
-            let effectiveTranslationId = itemTranslationId ?? UserDatabase.shared.getSettings().readerTranslationId
+            let effectiveTranslationId = itemTranslationId ?? UserDatabase.shared.getSettings().readerTranslation
             PreviewSheet(
                 state: $previewState,
                 translationId: effectiveTranslationId,
@@ -1813,12 +1813,12 @@ struct LinkEditorSheet: View {
 
     private var chapters: [Int] {
         // Use a default translation to get chapter count
-        let translationId = UserDatabase.shared.getSettings().readerTranslationId
+        let translationId = UserDatabase.shared.getSettings().readerTranslation
         return shape.chapters(translationId: translationId, book: selectedBook)
     }
 
     private var verses: [Int] {
-        let translationId = UserDatabase.shared.getSettings().readerTranslationId
+        let translationId = UserDatabase.shared.getSettings().readerTranslation
         return shape.verses(translationId: translationId, book: selectedBook, chapter: selectedChapter)
     }
 
@@ -2342,8 +2342,8 @@ struct ScriptureQuoteSheet: View {
 
         // Use default translation from settings
         let settings = UserDatabase.shared.getSettings()
-        if availableTranslations.contains(where: { $0.id == settings.readerTranslationId }) {
-            selectedTranslationId = settings.readerTranslationId
+        if availableTranslations.contains(where: { $0.id == settings.readerTranslation }) {
+            selectedTranslationId = settings.readerTranslation
         } else if let first = availableTranslations.first {
             selectedTranslationId = first.id
         }

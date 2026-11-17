@@ -230,6 +230,9 @@ final class StrongsIndex: @unchecked Sendable {
     func prepare(readerTranslationId: String?) {
         buildQueue.async { [self] in
             guard let dbQueue else { return }
+            // As installed, across the rename of the IDs ending in "s"; read
+            // here, so the installed IDs are known before the main thread asks.
+            let readerTranslationId = readerTranslationId.map(TranslationDatabase.shared.held)
             let tagged = ((try? TranslationDatabase.shared.getAllTranslations()) ?? [])
                 .filter { $0.features?.strongs == true }
                 .sorted { ($0.id == readerTranslationId ? 0 : 1) < ($1.id == readerTranslationId ? 0 : 1) }

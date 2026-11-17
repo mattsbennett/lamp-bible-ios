@@ -93,7 +93,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var readAloudSection: some View {
-        ReadAloudSettingsSection(translationId: userSettings.readerTranslationId)
+        ReadAloudSettingsSection(translationId: userSettings.readerTranslation)
     }
 
     func scheduleRecurringNotification(at date: Date) {
