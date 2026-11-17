@@ -1592,13 +1592,10 @@ struct ModuleRow: View {
 
     @State private var showingDeleteConfirmation: Bool = false
     @State private var showingResetConfirmation: Bool = false
+    @State private var showingInfo = false
 
     private var supportsMarkdownExport: Bool {
         !module.isBundled && (module.type == .notes || module.type == .devotional)
-    }
-
-    private var hasActions: Bool {
-        !module.isBundled
     }
 
     private var meta: [String] {
@@ -1626,66 +1623,73 @@ struct ModuleRow: View {
             )
             Spacer(minLength: 0)
 
-            // Only show menu for user modules
-            if hasActions {
-                Menu {
-                    if module.isEditable, onEdit != nil {
-                        Button {
-                            onEdit?()
-                        } label: {
-                            Label("Edit", systemImage: "pencil")
-                        }
+            // Every module has its info; a built-in one has nothing else.
+            Menu {
+                Button {
+                    showingInfo = true
+                } label: {
+                    Label("Info", systemImage: "info.circle")
+                }
+
+                if module.isEditable, onEdit != nil {
+                    Button {
+                        onEdit?()
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
                     }
+                }
 
-                    if onSync != nil {
-                        Button {
-                            onSync?()
-                        } label: {
-                            Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-                        }
+                if onSync != nil {
+                    Button {
+                        onSync?()
+                    } label: {
+                        Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                     }
+                }
 
-                    if supportsMarkdownExport, onMarkdownExport != nil {
-                        Divider()
+                if supportsMarkdownExport, onMarkdownExport != nil {
+                    Divider()
 
-                        Button {
-                            onMarkdownExport?()
-                        } label: {
-                            Label("Export (Markdown)", systemImage: "square.and.arrow.up")
-                        }
+                    Button {
+                        onMarkdownExport?()
+                    } label: {
+                        Label("Export (Markdown)", systemImage: "square.and.arrow.up")
                     }
+                }
 
-                    // Reset for a default collection, Delete for others
-                    if module.isDefaultCollection {
-                        if onReset != nil {
-                            Divider()
-
-                            Button(role: .destructive) {
-                                showingResetConfirmation = true
-                            } label: {
-                                Label("Reset", systemImage: "arrow.counterclockwise")
-                            }
-                        }
-                    } else if onDelete != nil {
+                // Reset for a default collection, Delete for others
+                if module.isDefaultCollection {
+                    if onReset != nil {
                         Divider()
 
                         Button(role: .destructive) {
-                            showingDeleteConfirmation = true
+                            showingResetConfirmation = true
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label("Reset", systemImage: "arrow.counterclockwise")
                         }
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.title3)
-                        .foregroundColor(Color(uiColor: .label))
-                        .padding(8)
-                        .contentShape(Rectangle())
+                } else if onDelete != nil {
+                    Divider()
+
+                    Button(role: .destructive) {
+                        showingDeleteConfirmation = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
                 }
-                .buttonStyle(.borderless)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.title3)
+                    .foregroundColor(Color(uiColor: .label))
+                    .padding(8)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.borderless)
         }
         .padding(.vertical, 4)
+        .sheet(isPresented: $showingInfo) {
+            ModuleInfoSheet(module: module)
+        }
         .confirmationDialog(
             "Delete Module",
             isPresented: $showingDeleteConfirmation,
