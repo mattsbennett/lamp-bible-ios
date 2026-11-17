@@ -13,6 +13,13 @@ import LampModuleKit
 import LampIntelligence
 @testable import Lamp_Bible
 
+/// A bundled translation's ID as the bundle in this build spells it:
+/// "KJVs" before the rename, "KJV" after. Tests that read the bundle hold
+/// either.
+func bundledID(_ id: String) -> String {
+    TranslationDatabase.shared.held(id)
+}
+
 final class Lamp_BibleTests: XCTestCase {
     private var temporaryDirectory: URL!
 
@@ -720,9 +727,9 @@ final class Lamp_BibleTests: XCTestCase {
 
     func testBundledKJVsIsAvailableWithoutStorefrontResolution() throws {
         let database = BundledModuleDatabase.shared
-        XCTAssertTrue(try database.isTranslationBundled(id: "KJVs"))
-        XCTAssertNotNil(try database.getTranslation(id: "KJVs"))
-        XCTAssertGreaterThan(try database.getTotalVerseCount(translationId: "KJVs"), 0)
+        XCTAssertTrue(try database.isTranslationBundled(id: bundledID("KJVs")))
+        XCTAssertNotNil(try database.getTranslation(id: bundledID("KJVs")))
+        XCTAssertGreaterThan(try database.getTotalVerseCount(translationId: bundledID("KJVs")), 0)
     }
 
     func testBookModuleTypeDetectionRequiresBothBookTables() {
@@ -6038,13 +6045,13 @@ final class SearchAuditFixTests: XCTestCase {
         try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
         var filter = ModuleSearchFilter()
         filter.types = [.translation]
-        filter.translationIds = ["KJVs", "ASVs"]
-        filter.moduleIds = ["KJVs"]
+        filter.translationIds = [bundledID("KJVs"), bundledID("ASVs")]
+        filter.moduleIds = [bundledID("KJVs")]
         let overlapping = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 50)
-        XCTAssertEqual(Set(overlapping.results.map(\.moduleId)), ["KJVs", "ASVs"])
+        XCTAssertEqual(Set(overlapping.results.map(\.moduleId)), [bundledID("KJVs"), bundledID("ASVs")])
         filter.moduleIds = ["tske"]
         let apart = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 50)
-        XCTAssertEqual(Set(apart.results.map(\.moduleId)), ["KJVs", "ASVs"])
+        XCTAssertEqual(Set(apart.results.map(\.moduleId)), [bundledID("KJVs"), bundledID("ASVs")])
     }
 
     func testABibleRowMarksEveryWordTheSearchMatched() {
@@ -6138,23 +6145,23 @@ final class SearchFeatureTests: XCTestCase {
 final class ScriptureFallbackTests: XCTestCase {
     func testTheBibleSearchFallsBackToTheTranslationWithTheMostMatches() throws {
         try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
-        let found = BibleSearch.run(query: "LOVINGKINDNESS", strongs: false, translationId: "BSBs", bookRange: nil, shown: 10)
+        let found = BibleSearch.run(query: "LOVINGKINDNESS", strongs: false, translationId: bundledID("BSBs"), bookRange: nil, shown: 10)
         let scripture = try XCTUnwrap(found.scripture)
-        XCTAssertEqual(scripture.choice.translationID, "ASVs")
+        XCTAssertEqual(scripture.choice.translationID, bundledID("ASVs"))
         XCTAssertTrue(scripture.fellBack)
-        XCTAssertTrue(scripture.choice.alsoIn.contains("KJVs"))
-        XCTAssertFalse(scripture.choice.alsoIn.contains("BSBs"))
+        XCTAssertTrue(scripture.choice.alsoIn.contains(bundledID("KJVs")))
+        XCTAssertFalse(scripture.choice.alsoIn.contains(bundledID("BSBs")))
         XCTAssertEqual(found.results.count, 10)
         XCTAssertTrue(found.results.allSatisfy { $0.text.localizedCaseInsensitiveContains("lovingkindness") })
 
         // Its own verses where the translation has the word, and nothing said.
-        let own = BibleSearch.run(query: "LOVINGKINDNESS", strongs: false, translationId: "KJVs", bookRange: nil, shown: 100)
+        let own = BibleSearch.run(query: "LOVINGKINDNESS", strongs: false, translationId: bundledID("KJVs"), bookRange: nil, shown: 100)
         XCTAssertNil(own.scripture)
         XCTAssertGreaterThan(own.total, 0)
         XCTAssertLessThan(own.total, found.total, "KJV's own, not ASV's")
 
         // Where no translation has it, nothing, and none named.
-        let none = BibleSearch.run(query: "QZXWVJ", strongs: false, translationId: "BSBs", bookRange: nil, shown: 10)
+        let none = BibleSearch.run(query: "QZXWVJ", strongs: false, translationId: bundledID("BSBs"), bookRange: nil, shown: 10)
         XCTAssertNil(none.scripture)
         XCTAssertEqual(none.total, 0)
     }
@@ -6164,8 +6171,8 @@ final class ScriptureFallbackTests: XCTestCase {
         // The Hebrew Old Testament has no G26: a tagged translation's verses.
         let found = BibleSearch.run(query: "G26", strongs: true, translationId: "TAHOT", bookRange: nil, shown: 5)
         let scripture = try XCTUnwrap(found.scripture)
-        XCTAssertTrue(["BSBs", "KJVs", "TAGNT"].contains(scripture.choice.translationID))
-        XCTAssertFalse(scripture.choice.alsoIn.contains("ASVs"), "only tagged translations are searched by key")
+        XCTAssertTrue([bundledID("BSBs"), bundledID("KJVs"), "TAGNT"].contains(scripture.choice.translationID))
+        XCTAssertFalse(scripture.choice.alsoIn.contains(bundledID("ASVs")), "only tagged translations are searched by key")
         XCTAssertGreaterThan(found.total, 0)
         XCTAssertEqual(found.results.count, 5)
     }
@@ -6174,21 +6181,21 @@ final class ScriptureFallbackTests: XCTestCase {
         try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
         var filter = ModuleSearchFilter()
         filter.types = [.translation, .commentary]
-        filter.preferredTranslationId = "KJVs"
+        filter.preferredTranslationId = bundledID("KJVs")
         let page = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 10)
         let verses = page.results.filter { $0.moduleType == .translation }
         XCTAssertFalse(verses.isEmpty)
-        XCTAssertTrue(verses.allSatisfy { $0.moduleId == "KJVs" }, "each verse once, from the reading translation")
+        XCTAssertTrue(verses.allSatisfy { $0.moduleId == bundledID("KJVs") }, "each verse once, from the reading translation")
         let scripture = try XCTUnwrap(page.scripture)
         XCTAssertFalse(scripture.fellBack)
-        XCTAssertTrue(scripture.choice.alsoIn.contains("ASVs"))
+        XCTAssertTrue(scripture.choice.alsoIn.contains(bundledID("ASVs")))
 
         // BSB has none: ASV's verses, and the heading says so.
-        filter.preferredTranslationId = "BSBs"
+        filter.preferredTranslationId = bundledID("BSBs")
         let fallen = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 10)
         let fallenVerses = fallen.results.filter { $0.moduleType == .translation }
         XCTAssertFalse(fallenVerses.isEmpty)
-        XCTAssertTrue(fallenVerses.allSatisfy { $0.moduleId == "ASVs" })
+        XCTAssertTrue(fallenVerses.allSatisfy { $0.moduleId == bundledID("ASVs") })
         let note = try XCTUnwrap(fallen.scripture?.note(shortName: SearchScripture.shortName(of:)))
         XCTAssertTrue(note.hasPrefix("None in BSB · also in "), note)
 
@@ -6197,7 +6204,7 @@ final class ScriptureFallbackTests: XCTestCase {
         filter.preferredTranslationId = nil
         let all = try ModuleSearch.shared.searchByKind(query: "lovingkindness", filter: filter, limit: 300)
         XCTAssertNil(all.scripture)
-        XCTAssertTrue(Set(all.results.map(\.moduleId)).isSuperset(of: ["ASVs", "KJVs"]))
+        XCTAssertTrue(Set(all.results.map(\.moduleId)).isSuperset(of: [bundledID("ASVs"), bundledID("KJVs")]))
     }
 
     func testTheHeadingSaysWhereScriptureCameFrom() {
@@ -6353,14 +6360,14 @@ final class StrongsIndexTests: XCTestCase {
         try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
         let source = BundledModuleDatabase.shared
         // The launch queued every tagged translation; wait for the KJV.
-        StrongsIndex.shared.prepare(readerTranslationId: "KJVs")
+        StrongsIndex.shared.prepare(readerTranslationId: bundledID("KJVs"))
         let deadline = Date().addingTimeInterval(180)
-        while StrongsIndex.shared.refs(translationId: "KJVs", key: "G25", source: source) == nil, Date() < deadline {
+        while StrongsIndex.shared.refs(translationId: bundledID("KJVs"), key: "G25", source: source) == nil, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.5)
         }
         let started = Date()
-        let total = try TranslationDatabase.shared.countStrongsOccurrences(translationId: "KJVs", strongsNum: "G25")
-        let verses = try TranslationDatabase.shared.searchVersesByStrongs(translationId: "KJVs", strongsNum: "G25", limit: 100)
+        let total = try TranslationDatabase.shared.countStrongsOccurrences(translationId: bundledID("KJVs"), strongsNum: "G25")
+        let verses = try TranslationDatabase.shared.searchVersesByStrongs(translationId: bundledID("KJVs"), strongsNum: "G25", limit: 100)
         let elapsed = Date().timeIntervalSince(started)
         print("[StrongsIndex] G25 in the KJV: \(total) verses, \(verses.count) shown, in \(Int(elapsed * 1000)) ms")
         XCTAssertEqual(total, 109)
@@ -6386,23 +6393,23 @@ final class StrongsIndexTests: XCTestCase {
         try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
         let source = BundledModuleDatabase.shared
         let index = try StrongsIndex.inMemory()
-        try index.buildAndWait("KJVs", from: source)
+        try index.buildAndWait(bundledID("KJVs"), from: source)
         for key in ["G25", "G26", "G2532", "H430", "H1", "G1", "H996"] {
-            let scanned = try source.read { try StrongsVerseQuery.count(in: $0, translationId: "KJVs", key: key) }
-            XCTAssertEqual(index.refs(translationId: "KJVs", key: key, source: source)?.count, scanned, key)
-            XCTAssertEqual(index.count(translationId: "KJVs", key: key, source: source), scanned, key)
+            let scanned = try source.read { try StrongsVerseQuery.count(in: $0, translationId: bundledID("KJVs"), key: key) }
+            XCTAssertEqual(index.refs(translationId: bundledID("KJVs"), key: key, source: source)?.count, scanned, key)
+            XCTAssertEqual(index.count(translationId: bundledID("KJVs"), key: key, source: source), scanned, key)
         }
 
         // An analysis from the index is the analysis of every verse, over the
         // whole and over a range.
-        let kjv = try XCTUnwrap(TranslationDatabase.shared.getTranslation(id: "KJVs"))
+        let kjv = try XCTUnwrap(TranslationDatabase.shared.getTranslation(id: bundledID("KJVs")))
         for key in ["G26", "H430"] {
             for range in [nil, 1...5, 43...43] as [ClosedRange<Int>?] {
                 let indexed = try index.analysis(
                     key: key, translation: kjv, bookRange: range, includingVerseText: true, source: source
                 )
                 let read = try TranslationDatabase.shared.analyzeStrongsByReadingEveryVerse(
-                    key: key, translationId: "KJVs", bookRange: range
+                    key: key, translationId: bundledID("KJVs"), bookRange: range
                 )
                 XCTAssertEqual(indexed, read, "\(key) \(String(describing: range))")
             }
@@ -7117,12 +7124,12 @@ final class StrongsSeptuagintTests: XCTestCase {
         let love = try XCTUnwrap(loader.words.first { $0.hebrew.strongs == "H160" })
         XCTAssertEqual(love.transliteration, "ʼahăbâh")
 
-        await loader.loadCounts(key: "G26", translationId: "BSBs")
+        await loader.loadCounts(key: "G26", translationId: bundledID("BSBs"))
         XCTAssertEqual(loader.renderings[love.id], "love")
         let counted = try XCTUnwrap(loader.words.first { $0.id == love.id })
         XCTAssertEqual(counted.references?.first, 1_029_020, "Genesis 29:20 comes first")
 
-        await loader.loadVerses(for: counted, translationId: "BSBs")
+        await loader.loadVerses(for: counted, translationId: bundledID("BSBs"))
         guard case .rows(let rows) = loader.verses[love.id] else {
             return XCTFail("No verses: \(String(describing: loader.verses[love.id]))")
         }
@@ -7233,9 +7240,9 @@ final class StrongsSeptuagintTests: XCTestCase {
         try XCTSkipUnless(BundledModuleDatabase.shared.available, "No bundled database in this build")
         let loader = SeptuagintLoader()
         await loader.loadWords(key: "G5457")
-        await loader.loadCounts(key: "G5457", translationId: "BSBs")
+        await loader.loadCounts(key: "G5457", translationId: bundledID("BSBs"))
         let light = try XCTUnwrap(loader.words.first { $0.hebrew.strongs == "H216" })
-        await loader.loadVerses(for: light, translationId: "BSBs", references: [1_001_003])
+        await loader.loadVerses(for: light, translationId: bundledID("BSBs"), references: [1_001_003])
         guard case .rows(let rows) = loader.verses[light.id], let row = rows.first else {
             return XCTFail("No verses: \(String(describing: loader.verses[light.id]))")
         }

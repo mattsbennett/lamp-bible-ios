@@ -1,7 +1,7 @@
 CROSSWIRE KJV v3.1 CONTENT NOTICE
 
-Lamp Bible includes a converted edition identified in the app as KJVs: King James Version with
-Strong's numbers and morphology. It is derived from the CrossWire Bible Society KJV module v3.1.
+Lamp Bible includes a converted edition of the King James Version (KJV) with Strong's numbers and
+morphology. It is derived from the CrossWire Bible Society KJV module v3.1.
 
 Copyright and licence
 
