@@ -213,7 +213,13 @@ class UserSettingsSyncManager {
     // MARK: - Polling
 
     private func pollForRemoteChanges() async {
-        guard let storage = await getStorage() else { return }
+        guard let storage = SyncCoordinator.shared.activeStorage else { return }
+        guard await storage.isAvailable() else {
+            // What the last check found missing is unconfirmed while the
+            // library can't be reached.
+            SyncCoordinator.shared.libraryUnreachable(storage: storage)
+            return
+        }
         await pollForRemoteChanges(storage: storage)
     }
 
@@ -249,9 +255,31 @@ class UserSettingsSyncManager {
         listingProbedAt = Date()
         let source = endpoint.librarySource
         guard let recorded = try? ModuleDatabase.shared.libraryRecords(source: source)
-                .listedRevisions(in: source),
-              let listing = try? await LampSyncFilePlan.listing(in: endpoint, recorded: recorded),
-              !LampSyncFilePlan.remoteChanges(listing: listing, recorded: recorded).isEmpty,
+                .listedRevisions(in: source) else { return false }
+        let listing: [String: String]
+        do {
+            listing = try await LampSyncFilePlan.listing(in: endpoint, recorded: recorded)
+        } catch {
+            // The files couldn't be checked: the missing-module marks are
+            // unconfirmed until a pass gets through.
+            SyncCoordinator.shared.libraryCheckStarted(source: source)
+            SyncCoordinator.shared.libraryCheckFailed(source: source, reason: error.localizedDescription)
+            return false
+        }
+        // A module the last pass didn't find, back as it was, or a library
+        // reachable again after a failed check: no revision moved, but the
+        // marks are settled only by a pass, so neither waits on a change.
+        // A folder that couldn't be listed is tried again by a pass each
+        // time: an empty one listed again looks no different here.
+        let missing = SyncCoordinator.shared.missingModules[source] ?? [:]
+        let reappeared = missing.contains { path, cause in
+            cause == .notOnServer ? listing[path] != nil : true
+        }
+        if reappeared || SyncCoordinator.shared.uncheckedLibraries[source] != nil {
+            listingActedOn = listing
+            return true
+        }
+        guard !LampSyncFilePlan.remoteChanges(listing: listing, recorded: recorded).isEmpty,
               listing != listingActedOn else { return false }
         listingActedOn = listing
         print("[UserSettingsSync] Poll: listed folders changed outside a pass; syncing")

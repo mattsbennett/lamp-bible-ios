@@ -9068,3 +9068,79 @@ final class CommentaryBidiNumberTests: XCTestCase {
         XCTAssertEqual(mutable.string, held)
     }
 }
+
+/// A module the last sync didn't find is looked up by its kind's folder and
+/// ID, at the library being synced and no other, and the report is kept
+/// across launches.
+final class MissingModuleTests: XCTestCase {
+    func testTheReportIsFoundByKindAndIDAtItsOwnLibraryOnly() throws {
+        let storage = WebDAVModuleStorage(baseURL: URL(string: "https://nas.example/lamp/")!, username: "reader", password: nil)
+        let report: [String: [String: LampSyncFilePlan.Missing]] = [
+            storage.syncSourceIdentifier: [
+                "Translations/ESVs.lamp": .notOnServer,
+                "Highlights/my-set.lamp": .folderNotListed,
+            ],
+            "webdav:https://other.example/|": ["Translations/NETs.lamp": .notOnServer],
+        ]
+        let index = MissingModule.index(report, storage: storage)
+        XCTAssertEqual(index.count, 2)
+        // A read-only module held under a file name that isn't its ID is
+        // found by the ID the pass held it as.
+        let renamed = MissingModule.index(
+            report, moduleIDs: [storage.syncSourceIdentifier: ["Translations/ESVs.lamp": "ESV-2011"]], storage: storage
+        )
+        XCTAssertEqual(renamed[MissingModule.key(folder: "Translations", moduleID: "ESV-2011")]?.path, "Translations/ESVs.lamp")
+        let esv = try XCTUnwrap(index[MissingModule.key(folder: ModuleType.translation.libraryFolder, moduleID: "ESVs")])
+        XCTAssertEqual(esv, MissingModule(source: storage.syncSourceIdentifier, path: "Translations/ESVs.lamp", cause: .notOnServer, onICloud: false))
+        XCTAssertEqual(esv.fileName, "ESVs.lamp")
+        XCTAssertEqual(esv.folder, "Translations")
+        XCTAssertEqual(index[MissingModule.key(folder: ModuleType.highlights.libraryFolder, moduleID: "my-set")]?.cause, .folderNotListed)
+        XCTAssertNil(index[MissingModule.key(folder: ModuleType.translation.libraryFolder, moduleID: "NETs")], "another library's report")
+        XCTAssertTrue(MissingModule.index(report, storage: nil).isEmpty, "no sync, no marks")
+    }
+
+    @MainActor
+    func testEachPassReplacesItsLibrarysReportAndItIsKept() {
+        let coordinator = SyncCoordinator.shared
+        let source = "webdav:https://missing-test.example/|"
+        defer { coordinator.recordMissingModules([:], source: source) }
+        coordinator.recordMissingModules(["Translations/ESVs.lamp": .notOnServer], source: source)
+        XCTAssertEqual(coordinator.missingModules[source], ["Translations/ESVs.lamp": .notOnServer])
+        let stored = UserDefaults.standard.dictionary(forKey: "LibrarySync.missingModules.v1") as? [String: [String: String]]
+        XCTAssertEqual(stored?[source], ["Translations/ESVs.lamp": "notOnServer"])
+        coordinator.recordMissingModules(["Translations/NETs.lamp": .folderNotListed], source: source)
+        XCTAssertEqual(coordinator.missingModules[source], ["Translations/NETs.lamp": .folderNotListed], "replaced, not added to")
+        coordinator.recordMissingModules([:], source: source)
+        XCTAssertNil(coordinator.missingModules[source], "found again: no mark")
+    }
+
+    /// A pass that never reached the library's files leaves its report
+    /// standing but unconfirmed, for that library only, and kept across
+    /// launches; one that checked them, even if it failed later, confirms it.
+    @MainActor
+    func testAFailedCheckLeavesTheReportUnconfirmedForItsLibraryOnly() {
+        let coordinator = SyncCoordinator.shared
+        let source = "webdav:https://unchecked-test.example/|"
+        let other = "webdav:https://unchecked-other.example/|"
+        defer {
+            coordinator.recordMissingModules([:], source: source)
+            coordinator.recordMissingModules([:], source: other)
+        }
+        coordinator.recordMissingModules(["Translations/ESVs.lamp": .notOnServer], source: source)
+        coordinator.libraryCheckStarted(source: source)
+        coordinator.libraryCheckFailed(source: source, reason: "offline")
+        XCTAssertEqual(coordinator.uncheckedLibraries[source], "offline")
+        XCTAssertEqual(coordinator.missingModules[source], ["Translations/ESVs.lamp": .notOnServer], "kept, not cleared")
+        let stored = UserDefaults.standard.dictionary(forKey: "LibrarySync.uncheckedLibraries.v1") as? [String: String]
+        XCTAssertEqual(stored?[source], "offline")
+
+        coordinator.libraryCheckStarted(source: other)
+        coordinator.recordMissingModules([:], source: other)
+        XCTAssertEqual(coordinator.uncheckedLibraries[source], "offline", "another library's check confirms nothing here")
+
+        coordinator.libraryCheckStarted(source: source)
+        coordinator.recordMissingModules(["Translations/ESVs.lamp": .notOnServer], source: source)
+        coordinator.libraryCheckFailed(source: source, reason: "one file failed")
+        XCTAssertNil(coordinator.uncheckedLibraries[source], "it had checked the files")
+    }
+}

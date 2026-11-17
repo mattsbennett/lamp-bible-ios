@@ -310,7 +310,10 @@ extension ICloudModuleStorage {
 struct ICloudLibraryStorage: LibraryEndpoint, LampSyncVersionedStore {
     let store: LampSyncDirectoryStore
 
-    var librarySource: String { "icloud:iCloud.com.neus.lamp-bible" }
+    /// The same whether or not the container can be reached now, so what
+    /// was recorded here is still found while signed out.
+    static let librarySource = "icloud:iCloud.com.neus.lamp-bible"
+    var librarySource: String { Self.librarySource }
 
     // MARK: Remote store
 

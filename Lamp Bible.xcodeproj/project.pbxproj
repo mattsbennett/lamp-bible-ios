@@ -61,6 +61,7 @@
 		B85B89A72F1F11CC004B4F61 /* ImportPreviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */; };
 		CDA1E32228776EBF5A6EE987 /* WritingImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAEDCEA88681D325DBD7B7D6 /* WritingImportSheet.swift */; };
 		FD5E34A60D5712D177E76C52 /* ModuleInfoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD750516B927E95527FFA430 /* ModuleInfoSheet.swift */; };
+		C8D5A4DF258F5E38C5F95D05 /* MissingModuleMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = F890AC253A9154AE10A65BFC /* MissingModuleMark.swift */; };
 		B85B89A92F1F11E1004B4F61 /* WaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89A82F1F11E1004B4F61 /* WaveformView.swift */; };
 		B85B89AC2F1F1206004B4F61 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89AB2F1F1206004B4F61 /* AudioRecorder.swift */; };
 		B85B89AD2F1F1206004B4F61 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85B89AA2F1F1206004B4F61 /* AudioPlayer.swift */; };
@@ -244,6 +245,7 @@
 		B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportPreviewSheet.swift; sourceTree = "<group>"; };
 		BAEDCEA88681D325DBD7B7D6 /* WritingImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WritingImportSheet.swift; sourceTree = "<group>"; };
 		BD750516B927E95527FFA430 /* ModuleInfoSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleInfoSheet.swift; sourceTree = "<group>"; };
+		F890AC253A9154AE10A65BFC /* MissingModuleMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MissingModuleMark.swift; sourceTree = "<group>"; };
 		B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleMediaView.swift; sourceTree = "<group>"; };
 		B85B89A82F1F11E1004B4F61 /* WaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformView.swift; sourceTree = "<group>"; };
 		B85B89AA2F1F1206004B4F61 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
@@ -471,6 +473,7 @@
 				B85B89A22F1F11CC004B4F61 /* ImportPreviewSheet.swift */,
 				BAEDCEA88681D325DBD7B7D6 /* WritingImportSheet.swift */,
 				BD750516B927E95527FFA430 /* ModuleInfoSheet.swift */,
+				F890AC253A9154AE10A65BFC /* MissingModuleMark.swift */,
 				B85B89A32F1F11CC004B4F61 /* ModuleMediaView.swift */,
 				B85B89812F19F216004B4F61 /* DevotionalBlockRenderer.swift */,
 				B85B89822F19F216004B4F61 /* DevotionalConflictView.swift */,
@@ -869,6 +872,7 @@
 				B85B89A72F1F11CC004B4F61 /* ImportPreviewSheet.swift in Sources */,
 				CDA1E32228776EBF5A6EE987 /* WritingImportSheet.swift in Sources */,
 				FD5E34A60D5712D177E76C52 /* ModuleInfoSheet.swift in Sources */,
+				C8D5A4DF258F5E38C5F95D05 /* MissingModuleMark.swift in Sources */,
 				B892295B2F05FE3C00A58F81 /* ICloudModuleStorage.swift in Sources */,
 				B89229572F05FE2100A58F81 /* ModuleManagerView.swift in Sources */,
 				80795CED3EF8DE8F3904D038 /* TranslationImportView.swift in Sources */,

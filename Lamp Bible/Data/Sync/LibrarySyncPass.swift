@@ -271,6 +271,12 @@ struct LibrarySyncPass {
         if let unsupplied = try? unsuppliedAttachments(manifest: written.bundle.manifest) {
             SyncCoordinator.shared.unsuppliedAttachments = unsupplied
         }
+        // By the module each path is held as here: a read-only module's file
+        // name need not be its ID.
+        SyncCoordinator.shared.recordMissingModules(
+            outcome.missing, source: source,
+            moduleIDs: outcome.missing.keys.reduce(into: [:]) { ids, path in ids[path] = library.heldModules[path]?.id }
+        )
 
         var failures = outcome.failures
         do {
@@ -445,7 +451,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     private(set) var carriedDeletions: [SyncPendingManifestChange] = []
     /// What each module path held here is, as the database knows it: a
     /// module's file may be named other than by its ID.
-    private var heldModules: [String: (type: ModuleType, id: String)] = [:]
+    private(set) var heldModules: [String: (type: ModuleType, id: String)] = [:]
     /// The IDs held here as modules other than books, gathered with them: a
     /// book's pictures under one of these IDs would share its folder in the
     /// cache, so they're neither sent nor taken in.
@@ -909,7 +915,16 @@ extension LibrarySyncPass {
         // Only WebDAV ever held the archive; a folder library has none.
         let archiveRevision = storage is WebDAVModuleStorage && !isInUse(at: storage)
             ? knownArchiveRevision() : nil
-        let outcome = try await pass.run(knownArchiveRevision: archiveRevision)
+        // Every pass, scheduled and polled ones too, says whether it got as
+        // far as checking the library's files, for the missing-module marks.
+        SyncCoordinator.shared.libraryCheckStarted(source: pass.source)
+        let outcome: Outcome
+        do {
+            outcome = try await pass.run(knownArchiveRevision: archiveRevision)
+        } catch {
+            SyncCoordinator.shared.libraryCheckFailed(source: pass.source, reason: error.localizedDescription)
+            throw error
+        }
         // What it installed or changed is in the indexes, not yet their lists.
         await SearchIndexMaintenance.refreshWordLists()
         switch outcome {

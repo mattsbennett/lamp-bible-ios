@@ -112,10 +112,17 @@ extension ModuleStorage {
 // MARK: - Module Storage Extensions
 
 extension ModuleStorage {
-    /// The folder each module type syncs under: the per-file layout's,
-    /// which for writing is `Writing` since bundle format 4.
+    /// The folder each module type syncs under (`ModuleType.libraryFolder`).
     func directoryName(for type: ModuleType) -> String {
-        switch type {
+        type.libraryFolder
+    }
+}
+
+extension ModuleType {
+    /// The folder this type syncs under: the per-file layout's, which for
+    /// writing is `Writing` since bundle format 4.
+    nonisolated var libraryFolder: String {
+        switch self {
         case .translation:
             return LampSyncContentKind.translations.folder
         case .dictionary:

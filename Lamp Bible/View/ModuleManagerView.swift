@@ -179,6 +179,9 @@ struct ModuleManagerView: View {
     @State private var userPlans: [Plan] = []
     @State private var bundledQuizzes: [QuizModule] = []
     @State private var userQuizzes: [QuizModule] = []
+    /// Modules the last sync did not find in the library, by
+    /// `MissingModule.key(folder:moduleID:)`.
+    @State private var missingModules: [String: MissingModule] = [:]
     @State private var selectedType: ModuleType? = nil
     @State private var selectedSource: ModuleSource = .all
     @State private var isLoading: Bool = true
@@ -358,6 +361,10 @@ struct ModuleManagerView: View {
             .lampToast($toast)
             .task {
                 await loadModules()
+            }
+            // A sync that finished while the screen is open marks or clears.
+            .onReceive(SyncCoordinator.shared.$missingModules.dropFirst()) { _ in
+                Task { await loadModules() }
             }
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .active {
@@ -803,7 +810,8 @@ struct ModuleManagerView: View {
                             },
                             onDelete: {
                                 Task { await deleteHighlightSet(highlightSet) }
-                            }
+                            },
+                            missing: missing(.highlights, highlightSet.module.id)
                         )
                         .listRowSeparator(index == filteredHighlights.count - 1 ? .hidden : .visible, edges: .bottom)
                     }
@@ -820,7 +828,12 @@ struct ModuleManagerView: View {
                     // Dictionary series groups first
                     ForEach(Array(filteredDictionarySeries.enumerated()), id: \.element.id) { index, series in
                         let isLast = filteredDictionaries.isEmpty && index == filteredDictionarySeries.count - 1
-                        DictionarySeriesRow(series: series)
+                        let missingMember = series.modules.first { !$0.isBundled && missing(.dictionary, $0.id) != nil }
+                        DictionarySeriesRow(
+                            series: series,
+                            missing: missingMember.flatMap { missing(.dictionary, $0.id) },
+                            missingName: missingMember?.name
+                        )
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 selectedDictionarySeries = series
@@ -839,7 +852,11 @@ struct ModuleManagerView: View {
             if !filteredCommentarySeries.isEmpty {
                 Section(header: Text("Commentaries").lampSectionHeader()) {
                     ForEach(Array(filteredCommentarySeries.enumerated()), id: \.element.id) { index, series in
-                        CommentarySeriesRow(series: series)
+                        CommentarySeriesRow(
+                            series: series,
+                            missing: series.isBundled ? nil
+                                : Set(series.books.map(\.moduleId)).sorted().lazy.compactMap { missing(.commentary, $0) }.first
+                        )
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 selectedCommentarySeries = series
@@ -857,7 +874,7 @@ struct ModuleManagerView: View {
                     ForEach(Array(filteredPlans.enumerated()), id: \.element.plan.id) { index, item in
                         PlanRow(plan: item.plan, isBundled: item.isBundled, onDelete: item.isBundled ? nil : {
                             Task { await deletePlan(item.plan) }
-                        })
+                        }, missing: item.isBundled ? nil : missing(.plan, item.plan.id))
                         .listRowSeparator(index == filteredPlans.count - 1 ? .hidden : .visible, edges: .bottom)
                     }
                 }
@@ -869,7 +886,7 @@ struct ModuleManagerView: View {
             if !filteredQuizzes.isEmpty {
                 Section(header: Text("Quizzes").lampSectionHeader()) {
                     ForEach(Array(filteredQuizzes.enumerated()), id: \.element.quiz.id) { index, item in
-                        QuizRow(quiz: item.quiz, isBundled: item.isBundled)
+                        QuizRow(quiz: item.quiz, isBundled: item.isBundled, missing: item.isBundled ? nil : missing(.quiz, item.quiz.id))
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 selectedQuiz = item.quiz
@@ -926,6 +943,7 @@ struct ModuleManagerView: View {
     private func moduleRow(for displayModule: DisplayModule) -> some View {
         ModuleRow(
             module: displayModule,
+            missing: displayModule.isBundled ? nil : missing(displayModule.type, ModuleInfo.moduleID(of: displayModule)),
             onEdit: (displayModule.isEditable && !displayModule.isBundled) ? {
                 if let userModule = displayModule.userModule {
                     moduleToEdit = userModule
@@ -960,6 +978,12 @@ struct ModuleManagerView: View {
     }
 
     /// Everything the list shows, read in one pass.
+    /// The last sync's report for a module of `type` with this ID.
+    private func missing(_ type: ModuleType, _ id: String) -> MissingModule? {
+        guard !missingModules.isEmpty else { return nil }
+        return missingModules[MissingModule.key(folder: type.libraryFolder, moduleID: id)]
+    }
+
     private struct LibrarySnapshot {
         var modules: [DisplayModule] = []
         var commentarySeriesGroups: [CommentarySeriesGroup] = []
@@ -969,6 +993,7 @@ struct ModuleManagerView: View {
         var userPlans: [Plan] = []
         var bundledQuizzes: [QuizModule] = []
         var userQuizzes: [QuizModule] = []
+        var missing: [String: MissingModule] = [:]
     }
 
     /// Reads the library off the main actor, so opening the screen (and every
@@ -983,8 +1008,13 @@ struct ModuleManagerView: View {
         if modules.isEmpty { isLoading = true }
 
         let database = self.database
+        let missing = SyncCoordinator.shared.missingModules
+        let missingIDs = SyncCoordinator.shared.missingModuleIDs
+        let storage = SyncCoordinator.shared.activeStorage
         let snapshot = await Task.detached(priority: .userInitiated) {
-            Self.readLibrary(database: database)
+            var snapshot = Self.readLibrary(database: database)
+            snapshot.missing = MissingModule.index(missing, moduleIDs: missingIDs, storage: storage)
+            return snapshot
         }.value
 
         guard generation == loadGeneration else { return }
@@ -996,6 +1026,7 @@ struct ModuleManagerView: View {
         userPlans = snapshot.userPlans
         bundledQuizzes = snapshot.bundledQuizzes
         userQuizzes = snapshot.userQuizzes
+        missingModules = snapshot.missing
         isLoading = false
     }
 
@@ -1584,6 +1615,8 @@ struct FilterChipLabel: View {
 
 struct ModuleRow: View {
     let module: DisplayModule
+    /// Not found in the library by the last sync.
+    var missing: MissingModule? = nil
     var onEdit: (() -> Void)? = nil
     var onMarkdownExport: (() -> Void)? = nil
     var onDelete: (() -> Void)? = nil
@@ -1622,6 +1655,10 @@ struct ModuleRow: View {
                 isStrongsTagged: module.isStrongsTagged
             )
             Spacer(minLength: 0)
+
+            if let missing {
+                MissingModuleMark(missing: missing, name: module.name, onDelete: onDelete)
+            }
 
             // Every module has its info; a built-in one has nothing else.
             Menu {
@@ -1883,6 +1920,7 @@ struct HighlightSetModuleRow: View {
     let highlightSet: HighlightSetDisplay
     var onEdit: (() -> Void)?
     var onDelete: (() -> Void)?
+    var missing: MissingModule? = nil
 
     @State private var showingDeleteConfirmation: Bool = false
 
@@ -1896,6 +1934,10 @@ struct HighlightSetModuleRow: View {
                 description: highlightSet.set.description
             )
             Spacer()
+
+            if let missing {
+                MissingModuleMark(missing: missing, name: highlightSet.set.name, onDelete: onDelete)
+            }
 
             if onEdit != nil || onDelete != nil {
                 Menu {
@@ -1946,6 +1988,7 @@ struct PlanRow: View {
     let plan: Plan
     var isBundled: Bool = true
     var onDelete: (() -> Void)? = nil
+    var missing: MissingModule? = nil
 
     @State private var showingDeleteConfirmation: Bool = false
 
@@ -1959,6 +2002,10 @@ struct PlanRow: View {
                 description: plan.planDescription
             )
             Spacer()
+
+            if let missing {
+                MissingModuleMark(missing: missing, name: plan.name, onDelete: onDelete)
+            }
 
             // Delete action for user plans
             if !isBundled, let onDelete = onDelete {
@@ -1994,6 +2041,7 @@ struct PlanRow: View {
 struct QuizRow: View {
     let quiz: QuizModule
     var isBundled: Bool = true
+    var missing: MissingModule? = nil
 
     var body: some View {
         let ageGroupCount = quiz.ageGroups.count
@@ -2006,6 +2054,10 @@ struct QuizRow: View {
                 description: quiz.description
             )
             Spacer()
+
+            if let missing {
+                MissingModuleMark(missing: missing, name: quiz.name)
+            }
 
             Image(systemName: "chevron.right")
                 .font(.subheadline.weight(.semibold))
@@ -2250,6 +2302,7 @@ struct MarkdownImportModuleSelectorView: View {
 
 struct CommentarySeriesRow: View {
     let series: CommentarySeriesGroup
+    var missing: MissingModule? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -2261,6 +2314,11 @@ struct CommentarySeriesRow: View {
                 description: series.publisher ?? series.bookNames
             )
             Spacer()
+
+            if let missing {
+                // The volume, not the series: the rest of it is there.
+                MissingModuleMark(missing: missing, name: missing.fileName)
+            }
 
             Image(systemName: "chevron.right")
                 .font(.subheadline.weight(.semibold))
@@ -2490,6 +2548,9 @@ struct CommentaryBookRow: View {
 
 struct DictionarySeriesRow: View {
     let series: DictionarySeriesGroup
+    var missing: MissingModule? = nil
+    /// The member that is missing, by name: the rest of the series is there.
+    var missingName: String? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -2501,6 +2562,10 @@ struct DictionarySeriesRow: View {
                 description: series.moduleNames
             )
             Spacer()
+
+            if let missing {
+                MissingModuleMark(missing: missing, name: missingName ?? missing.fileName)
+            }
 
             Image(systemName: "chevron.right")
                 .font(.subheadline.weight(.semibold))

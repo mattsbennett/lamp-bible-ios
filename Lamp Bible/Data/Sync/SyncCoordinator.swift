@@ -44,6 +44,26 @@ class SyncCoordinator: ObservableObject {
     /// holds, by library path. Their writings sync all the same; on other
     /// devices these show as missing until the file is back here.
     @Published var unsuppliedAttachments: [String] = []
+    /// Modules this device holds that the last pass to reach each library
+    /// did not find there, by library source and then path, with why (core's
+    /// `LampSyncFilePlan.missing`). The Module Manager marks them; nothing
+    /// deletes them, since absence is no evidence of a deletion. Kept across
+    /// launches, and replaced by each pass that reaches the library.
+    @Published private(set) var missingModules: [String: [String: LampSyncFilePlan.Missing]] = SyncCoordinator.storedMissingModules()
+    /// The module each missing path is held as here, by source and path,
+    /// where the pass knew it.
+    private(set) var missingModuleIDs: [String: [String: String]] =
+        UserDefaults.standard.dictionary(forKey: SyncCoordinator.missingModuleIDsKey) as? [String: [String: String]] ?? [:]
+    /// The libraries, by source, whose last sync never got as far as
+    /// checking their files (not connected, signed out, the server down),
+    /// with why. A sync that checked them and then failed over one file
+    /// leaves its library out: its report of what is missing is fresh. Kept
+    /// across launches with the reports, so a stale report never reads as
+    /// confirmed.
+    @Published private(set) var uncheckedLibraries: [String: String] =
+        UserDefaults.standard.dictionary(forKey: SyncCoordinator.uncheckedLibrariesKey) as? [String: String] ?? [:]
+    /// Libraries a pass now running has checked the files of.
+    private var checkedThisPass: Set<String> = []
     @Published private(set) var settings: SyncSettings
 
     // MARK: - Storage Provider
@@ -326,6 +346,7 @@ class SyncCoordinator: ObservableObject {
         try recoverPendingBackendTransition()
         guard settings.backend != .none else { return }
         guard let session = activeSession else {
+            libraryUnreachable(storage: nil)
             throw SyncError.notConfigured
         }
         let activeStorage = session.storage
@@ -337,6 +358,7 @@ class SyncCoordinator: ObservableObject {
         // this device, is offered the move here.
         guard let endpoint = libraryEndpoint(for: activeStorage) else {
             syncState = .idle
+            libraryUnreachable(storage: activeStorage)
             throw SyncError.notConfigured
         }
         do {
@@ -385,6 +407,78 @@ class SyncCoordinator: ObservableObject {
                 return await storage?.isAvailable() ?? false
             case .none:
                 return false
+            }
+        }
+    }
+
+    private static let missingModulesKey = "LibrarySync.missingModules.v1"
+    private static let uncheckedLibrariesKey = "LibrarySync.uncheckedLibraries.v1"
+    private static let missingModuleIDsKey = "LibrarySync.missingModuleIDs.v1"
+
+    /// A pass at `source` is starting: whatever it reports replaces the last.
+    func libraryCheckStarted(source: String) {
+        checkedThisPass.remove(source)
+    }
+
+    /// A pass at `source` failed. Unless it had already checked the
+    /// library's files (and failed over one of them), the marks from the
+    /// last check there are now unconfirmed.
+    func libraryCheckFailed(source: String, reason: String) {
+        guard !checkedThisPass.contains(source) else { return }
+        uncheckedLibraries[source] = reason
+        UserDefaults.standard.set(uncheckedLibraries, forKey: Self.uncheckedLibrariesKey)
+    }
+
+    /// A sync or a poll couldn't reach the library to try a pass at all.
+    /// iCloud's library is named without its container, which is what can't
+    /// be reached while signed out.
+    func libraryUnreachable(storage: ModuleStorage?) {
+        let source: String
+        let reason: String
+        if settings.backend == .icloudDrive {
+            source = ICloudLibraryStorage.librarySource
+            reason = "iCloud Drive isn’t available"
+        } else if let storage, let endpoint = libraryEndpoint(for: storage) {
+            source = endpoint.librarySource
+            reason = "your server couldn’t be reached"
+        } else {
+            return
+        }
+        libraryCheckStarted(source: source)
+        libraryCheckFailed(source: source, reason: reason)
+    }
+
+    /// What a pass found missing at `source`, in place of what the last one
+    /// there found. Whichever pass it was, a scheduled one too, it checked
+    /// that library's files.
+    func recordMissingModules(
+        _ missing: [String: LampSyncFilePlan.Missing], source: String, moduleIDs: [String: String] = [:]
+    ) {
+        checkedThisPass.insert(source)
+        if uncheckedLibraries.removeValue(forKey: source) != nil {
+            UserDefaults.standard.set(uncheckedLibraries, forKey: Self.uncheckedLibrariesKey)
+        }
+        if missingModuleIDs[source] ?? [:] != moduleIDs {
+            missingModuleIDs[source] = moduleIDs.isEmpty ? nil : moduleIDs
+            UserDefaults.standard.set(missingModuleIDs, forKey: Self.missingModuleIDsKey)
+        }
+        guard missingModules[source] ?? [:] != missing else { return }
+        missingModules[source] = missing.isEmpty ? nil : missing
+        let stored = missingModules.mapValues { paths in
+            paths.mapValues { $0 == .notOnServer ? "notOnServer" : "folderNotListed" }
+        }
+        UserDefaults.standard.set(stored, forKey: Self.missingModulesKey)
+    }
+
+    private static func storedMissingModules() -> [String: [String: LampSyncFilePlan.Missing]] {
+        let stored = UserDefaults.standard.dictionary(forKey: missingModulesKey) as? [String: [String: String]] ?? [:]
+        return stored.mapValues { paths in
+            paths.compactMapValues { cause in
+                switch cause {
+                case "notOnServer": return .notOnServer
+                case "folderNotListed": return .folderNotListed
+                default: return nil
+                }
             }
         }
     }
