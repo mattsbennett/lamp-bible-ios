@@ -1060,25 +1060,20 @@ struct ChapterTextView: UIViewRepresentable {
 
     /// Apply highlights to the attributed string based on passed-in highlights
     private func applyHighlights(to result: NSMutableAttributedString, coordinator: Coordinator) {
+        let string = result.mutableString
         // Get highlights for each verse from the passed-in dictionary
         for verse in verses {
             guard let highlights = highlightsByVerse[verse.ref], !highlights.isEmpty else { continue }
 
             // Get the text range for this verse
-            guard let verseTextRange = coordinator.verseTextRanges[verse.ref] else { continue }
+            guard let verseTextRange = coordinator.verseTextRanges[verse.ref],
+                  NSMaxRange(verseTextRange) <= string.length else { continue }
+            let verseText = string.substring(with: verseTextRange)
 
             for highlight in highlights {
-                // Calculate the NSRange within the attributed string
-                // highlight.sc and highlight.ec are character offsets within the verse text
-                let highlightStart = verseTextRange.location + highlight.sc
-                let highlightLength = min(highlight.ec - highlight.sc, verseTextRange.length - highlight.sc)
-
-                guard highlightLength > 0 && highlightStart < result.length else { continue }
-
-                let highlightRange = NSRange(
-                    location: highlightStart,
-                    length: min(highlightLength, result.length - highlightStart)
-                )
+                // highlight.sc and highlight.ec count Characters into the verse text
+                guard let inVerse = VerseTextOffsets.utf16Range(characters: highlight.sc, highlight.ec, in: verseText) else { continue }
+                let highlightRange = NSRange(location: verseTextRange.location + inVerse.location, length: inVerse.length)
 
                 // Apply styling based on highlight style
                 switch highlight.highlightStyle {
@@ -1262,8 +1257,20 @@ struct ChapterTextView: UIViewRepresentable {
         func buildKey() -> String {
             // Create a key that uniquely identifies the content (including highlights)
             let verseIds = parent.verses.map { $0.ref }.description
-            let highlightCount = parent.highlightsByVerse.values.reduce(0) { $0 + $1.count }
-            return "\(verseIds)-\(parent.fontSize)-\(parent.lineSpacingChoice ?? -1)-\(parent.typeface.rawValue)-\(parent.chapter)-\(parent.showStrongsHints)-\(highlightCount)"
+            // Every highlight's place and look: a shrunk highlight, or another
+            // set with as many, redraws as much as a new one does.
+            var highlights = Hasher()
+            for ref in parent.highlightsByVerse.keys.sorted() {
+                for highlight in parent.highlightsByVerse[ref] ?? [] {
+                    highlights.combine(highlight.id)
+                    highlights.combine(ref)
+                    highlights.combine(highlight.sc)
+                    highlights.combine(highlight.ec)
+                    highlights.combine(highlight.style)
+                    highlights.combine(highlight.color)
+                }
+            }
+            return "\(verseIds)-\(parent.fontSize)-\(parent.lineSpacingChoice ?? -1)-\(parent.typeface.rawValue)-\(parent.chapter)-\(parent.showStrongsHints)-\(highlights.finalize())"
         }
 
         func markVersePositionsDirty() {
@@ -1447,11 +1454,12 @@ struct ChapterTextView: UIViewRepresentable {
 
         func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration, suggestedActions: [UIMenuElement]) -> UIMenu? {
             guard let verse = currentVerse else { return nil }
+            let target = HighlightManager.shared.target
+            let length = verseTextRanges[verse.ref].flatMap { verseSelections($0).first?.text.count }
 
             let actions: [UIAction] = [
-                UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
-                    guard let self = self else { return }
-                    HighlightManager.shared.highlightEntireVerse(verse.ref)
+                UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { _ in
+                    HighlightManager.shared.highlightEntireVerse(verse.ref, textLength: length, to: target)
                 },
                 UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
                     self?.parent.onAddNote(verse)
@@ -1504,9 +1512,10 @@ struct ChapterTextView: UIViewRepresentable {
                     }
                     actions.insert(removeAction, at: 0)
                 } else {
-                    // Add Highlight action
+                    // Add Highlight action, to the set shown as the words were chosen
+                    let target = HighlightManager.shared.target
                     let highlightAction = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
-                        self?.createHighlightForSelection(range)
+                        self?.createHighlightForSelection(range, to: target)
                     }
                     actions.insert(highlightAction, at: 0)
                 }
@@ -1525,63 +1534,48 @@ struct ChapterTextView: UIViewRepresentable {
             return UIMenu(children: actions)
         }
 
+        /// The part of each verse a text range covers, in verse order, as
+        /// Characters into the verse's text: what highlights count, where the
+        /// text view counts UTF-16 (see `VerseTextOffsets`).
+        func verseSelections(_ range: NSRange) -> [(ref: Int, text: [Character], sc: Int, ec: Int)] {
+            guard let string = textView?.textStorage.string as NSString? else { return [] }
+            var selections: [(ref: Int, text: [Character], sc: Int, ec: Int)] = []
+            for (ref, verseRange) in verseTextRanges.sorted(by: { $0.key < $1.key }) {
+                let start = max(range.location, verseRange.location)
+                let end = min(NSMaxRange(range), NSMaxRange(verseRange))
+                guard start < end, NSMaxRange(verseRange) <= string.length else { continue }
+                let text = string.substring(with: verseRange)
+                selections.append((
+                    ref: ref,
+                    text: Array(text),
+                    sc: VerseTextOffsets.characterOffset(utf16: start - verseRange.location, in: text),
+                    ec: VerseTextOffsets.characterOffset(utf16: end - verseRange.location, in: text, roundingUp: true)
+                ))
+            }
+            return selections
+        }
+
         /// Find highlights that overlap with the given text range
         private func findHighlightsInRange(_ range: NSRange) -> [(verseRef: Int, highlight: HighlightEntry)] {
-            var results: [(verseRef: Int, highlight: HighlightEntry)] = []
-
-            for (verseRef, verseTextRange) in verseTextRanges {
-                let selectionStart = range.location
-                let selectionEnd = range.location + range.length
-                let verseStart = verseTextRange.location
-                let verseEnd = verseTextRange.location + verseTextRange.length
-
-                // Check if selection overlaps with this verse
-                if selectionStart < verseEnd && selectionEnd > verseStart {
-                    // Get highlights for this verse
-                    let highlights = parent.highlightsByVerse[verseRef] ?? []
-
-                    for highlight in highlights {
-                        // Convert highlight character offsets to absolute positions
-                        let highlightAbsStart = verseStart + highlight.sc
-                        let highlightAbsEnd = verseStart + highlight.ec
-
-                        // Check if selection overlaps with this highlight
-                        if selectionStart < highlightAbsEnd && selectionEnd > highlightAbsStart {
-                            results.append((verseRef: verseRef, highlight: highlight))
-                        }
-                    }
-                }
+            verseSelections(range).flatMap { selection in
+                (parent.highlightsByVerse[selection.ref] ?? [])
+                    .filter { selection.sc < $0.ec && selection.ec > $0.sc }
+                    .map { (verseRef: selection.ref, highlight: $0) }
             }
-
-            return results
         }
 
         /// Remove highlights that overlap with the given text range (supports partial removal with whitespace trimming)
         private func removeHighlightsInRange(_ range: NSRange) {
-            let selectionStart = range.location
-            let selectionEnd = range.location + range.length
-
-            guard let text = textView?.text else { return }
+            let selections = verseSelections(range)
 
             Task { @MainActor in
-                for (verseRef, verseTextRange) in verseTextRanges {
-                    let verseStart = verseTextRange.location
-                    let verseEnd = verseTextRange.location + verseTextRange.length
-
-                    // Check if selection overlaps with this verse
-                    guard selectionStart < verseEnd && selectionEnd > verseStart else { continue }
-
-                    // Get verse text for whitespace trimming
-                    let verseTextStart = text.index(text.startIndex, offsetBy: verseStart)
-                    let verseTextEnd = text.index(text.startIndex, offsetBy: min(verseEnd, text.count))
-                    let verseText = String(text[verseTextStart..<verseTextEnd])
-
-                    // Convert selection to verse-relative offsets
-                    let selScInVerse = max(0, selectionStart - verseStart)
-                    let selEcInVerse = min(verseTextRange.length, selectionEnd - verseStart)
+                for selection in selections {
+                    let verseText = selection.text
+                    let selScInVerse = selection.sc
+                    let selEcInVerse = selection.ec
 
                     // Get highlights for this verse
-                    let highlights = parent.highlightsByVerse[verseRef] ?? []
+                    let highlights = parent.highlightsByVerse[selection.ref] ?? []
 
                     for highlight in highlights {
                         // Check if selection overlaps with this highlight
@@ -1589,7 +1583,7 @@ struct ChapterTextView: UIViewRepresentable {
 
                         guard let highlightId = highlight.id else {
                             print("[Highlight] WARNING: Highlight has no ID - reloading...")
-                            let (_, chapter, book) = splitVerseId(verseRef)
+                            let (_, chapter, book) = splitVerseId(selection.ref)
                             HighlightManager.shared.loadHighlightsForChapter(book: book, chapter: chapter)
                             return
                         }
@@ -1598,6 +1592,10 @@ struct ChapterTextView: UIViewRepresentable {
                             // Determine removal type based on overlap
                             let coversStart = selScInVerse <= highlight.sc
                             let coversEnd = selEcInVerse >= highlight.ec
+                            // What is left either side of the selection, without
+                            // the whitespace next to it
+                            let before = VerseTextOffsets.trimmed(highlight.sc, selScInVerse, in: verseText)
+                            let after = VerseTextOffsets.trimmed(selEcInVerse, highlight.ec, in: verseText)
 
                             if coversStart && coversEnd {
                                 // Selection covers entire highlight → remove
@@ -1605,38 +1603,16 @@ struct ChapterTextView: UIViewRepresentable {
                                 try HighlightManager.shared.removeHighlight(highlight)
                             } else if coversStart {
                                 // Selection covers start → shrink highlight to start after selection
-                                var newSc = selEcInVerse
-                                // Trim leading whitespace from new start
-                                while newSc < highlight.ec {
-                                    let charIndex = verseText.index(verseText.startIndex, offsetBy: newSc)
-                                    if verseText[charIndex].isWhitespace {
-                                        newSc += 1
-                                    } else {
-                                        break
-                                    }
-                                }
-                                if newSc < highlight.ec {
-                                    print("[Highlight] Shrinking highlight id=\(highlightId) start: \(highlight.sc) -> \(newSc)")
-                                    try HighlightManager.shared.updateHighlight(highlight, newSc: newSc, newEc: highlight.ec)
+                                if let after {
+                                    try HighlightManager.shared.updateHighlight(highlight, newSc: after.start, newEc: highlight.ec)
                                 } else {
                                     // Nothing left after trimming
                                     try HighlightManager.shared.removeHighlight(highlight)
                                 }
                             } else if coversEnd {
                                 // Selection covers end → shrink highlight to end before selection
-                                var newEc = selScInVerse
-                                // Trim trailing whitespace from new end
-                                while newEc > highlight.sc {
-                                    let charIndex = verseText.index(verseText.startIndex, offsetBy: newEc - 1)
-                                    if verseText[charIndex].isWhitespace {
-                                        newEc -= 1
-                                    } else {
-                                        break
-                                    }
-                                }
-                                if newEc > highlight.sc {
-                                    print("[Highlight] Shrinking highlight id=\(highlightId) end: \(highlight.ec) -> \(newEc)")
-                                    try HighlightManager.shared.updateHighlight(highlight, newSc: highlight.sc, newEc: newEc)
+                                if let before {
+                                    try HighlightManager.shared.updateHighlight(highlight, newSc: highlight.sc, newEc: before.end)
                                 } else {
                                     // Nothing left after trimming
                                     try HighlightManager.shared.removeHighlight(highlight)
@@ -1645,43 +1621,22 @@ struct ChapterTextView: UIViewRepresentable {
                                 // Selection in middle → split into two highlights
                                 print("[Highlight] Splitting highlight id=\(highlightId) at \(selScInVerse)-\(selEcInVerse)")
 
-                                // Calculate trimmed bounds for "before" part (trim trailing whitespace)
-                                var beforeEc = selScInVerse
-                                while beforeEc > highlight.sc {
-                                    let charIndex = verseText.index(verseText.startIndex, offsetBy: beforeEc - 1)
-                                    if verseText[charIndex].isWhitespace {
-                                        beforeEc -= 1
-                                    } else {
-                                        break
-                                    }
-                                }
-
-                                // Calculate trimmed bounds for "after" part (trim leading whitespace)
-                                var afterSc = selEcInVerse
-                                while afterSc < highlight.ec {
-                                    let charIndex = verseText.index(verseText.startIndex, offsetBy: afterSc)
-                                    if verseText[charIndex].isWhitespace {
-                                        afterSc += 1
-                                    } else {
-                                        break
-                                    }
-                                }
-
                                 // Update or remove the "before" part
-                                if beforeEc > highlight.sc {
-                                    try HighlightManager.shared.updateHighlight(highlight, newSc: highlight.sc, newEc: beforeEc)
+                                if let before {
+                                    try HighlightManager.shared.updateHighlight(highlight, newSc: highlight.sc, newEc: before.end)
                                 } else {
                                     try HighlightManager.shared.removeHighlight(highlight)
                                 }
 
-                                // Create the "after" part if it has content
-                                if afterSc < highlight.ec {
+                                // Create the "after" part, in the highlight's own set
+                                if let after {
                                     try HighlightManager.shared.addHighlight(
-                                        ref: verseRef,
-                                        startChar: afterSc,
+                                        ref: selection.ref,
+                                        startChar: after.start,
                                         endChar: highlight.ec,
                                         style: highlight.highlightStyle,
-                                        color: highlight.highlightColor
+                                        color: highlight.highlightColor,
+                                        to: HighlightManager.Target(setId: highlight.setId, translationId: nil)
                                     )
                                 }
                             }
@@ -1696,97 +1651,50 @@ struct ChapterTextView: UIViewRepresentable {
             textView?.selectedRange = NSRange(location: 0, length: 0)
         }
 
-        /// Create a highlight for the given text range (auto-trims whitespace)
-        private func createHighlightForSelection(_ range: NSRange) {
-            print("[Highlight] Creating highlight for range: \(range), verseTextRanges count: \(verseTextRanges.count)")
+        /// Highlight the given text range, each verse it touches, in the
+        /// target's set (auto-trims whitespace)
+        private func createHighlightForSelection(_ range: NSRange, to target: HighlightManager.Target) {
+            let spans = verseSelections(range).compactMap { selection -> (ref: Int, sc: Int, ec: Int)? in
+                guard let trimmed = VerseTextOffsets.trimmed(selection.sc, selection.ec, in: selection.text) else { return nil }
+                return (ref: selection.ref, sc: trimmed.start, ec: trimmed.end)
+            }
+            guard !spans.isEmpty else {
+                print("[Highlight] No matching verse found for selection")
+                return
+            }
 
-            guard let text = textView?.text else { return }
-
-            // Find which verse this selection is in
-            for (verseRef, verseTextRange) in verseTextRanges {
-                // Check if selection overlaps with this verse's text
-                let selectionStart = range.location
-                let selectionEnd = range.location + range.length
-                let verseStart = verseTextRange.location
-                let verseEnd = verseTextRange.location + verseTextRange.length
-
-                // Check for overlap
-                if selectionStart < verseEnd && selectionEnd > verseStart {
-                    // Calculate character offsets within the verse text
-                    var sc = max(0, selectionStart - verseStart)
-                    var ec = min(verseTextRange.length, selectionEnd - verseStart)
-
-                    // Auto-trim whitespace from selection
-                    let verseTextStart = text.index(text.startIndex, offsetBy: verseStart)
-                    let verseTextEnd = text.index(text.startIndex, offsetBy: min(verseEnd, text.count))
-                    let verseText = String(text[verseTextStart..<verseTextEnd])
-
-                    // Trim leading whitespace
-                    while sc < ec {
-                        let charIndex = verseText.index(verseText.startIndex, offsetBy: sc)
-                        if verseText[charIndex].isWhitespace {
-                            sc += 1
-                        } else {
-                            break
-                        }
-                    }
-
-                    // Trim trailing whitespace
-                    while ec > sc {
-                        let charIndex = verseText.index(verseText.startIndex, offsetBy: ec - 1)
-                        if verseText[charIndex].isWhitespace {
-                            ec -= 1
-                        } else {
-                            break
-                        }
-                    }
-
-                    if ec > sc {
-                        print("[Highlight] Adding highlight to verse \(verseRef), sc: \(sc), ec: \(ec) (trimmed)")
-
-                        // Check if highlights are hidden
-                        if HighlightManager.shared.highlightsHidden {
-                            // Check for overlapping highlights
-                            let overlapping = HighlightManager.shared.getOverlappingHighlights(ref: verseRef, startChar: sc, endChar: ec)
-
-                            if overlapping.isEmpty {
-                                // No overlap - silently enable highlights and create
-                                Task { @MainActor in
-                                    HighlightManager.shared.highlightsHidden = false
-                                    do {
-                                        try HighlightManager.shared.addHighlight(ref: verseRef, startChar: sc, endChar: ec)
-                                        print("[Highlight] Highlight added (auto-enabled visibility)")
-                                    } catch {
-                                        print("[Highlight] Error adding highlight: \(error)")
-                                    }
-                                }
-                            } else {
-                                // Has overlap - show dialog
-                                showHighlightConflictDialog(verseRef: verseRef, sc: sc, ec: ec)
-                            }
-                        } else {
-                            // Highlights visible - just add normally
-                            Task { @MainActor in
-                                do {
-                                    try HighlightManager.shared.addHighlight(ref: verseRef, startChar: sc, endChar: ec)
-                                    print("[Highlight] Highlight added successfully")
-                                } catch {
-                                    print("[Highlight] Error adding highlight: \(error)")
-                                }
-                            }
-                        }
-
-                        // Clear selection after highlighting
-                        textView?.selectedRange = NSRange(location: 0, length: 0)
-                        return // Only highlight once per selection
-                    }
+            let manager = HighlightManager.shared
+            let overlapsHidden = manager.highlightsHidden && spans.contains {
+                !manager.getOverlappingHighlights(ref: $0.ref, startChar: $0.sc, endChar: $0.ec).isEmpty
+            }
+            if overlapsHidden {
+                showHighlightConflictDialog(spans: spans, target: target)
+            } else {
+                // Silently show highlights again if they were hidden
+                Task { @MainActor in
+                    manager.highlightsHidden = false
+                    Self.addHighlights(spans, to: target)
                 }
             }
-            print("[Highlight] No matching verse found for selection")
+
+            // Clear selection after highlighting
+            textView?.selectedRange = NSRange(location: 0, length: 0)
+        }
+
+        private static func addHighlights(_ spans: [(ref: Int, sc: Int, ec: Int)], to target: HighlightManager.Target) {
+            do {
+                // One set for the whole selection, made once if there is none
+                let target = try HighlightManager.shared.resolved(target)
+                for span in spans {
+                    try HighlightManager.shared.addHighlight(ref: span.ref, startChar: span.sc, endChar: span.ec, to: target)
+                }
+            } catch {
+                print("[Highlight] Error adding highlight: \(error)")
+            }
         }
 
         /// Show dialog when highlighting would overlap existing highlights while highlights are hidden
-        private func showHighlightConflictDialog(verseRef: Int, sc: Int, ec: Int) {
+        private func showHighlightConflictDialog(spans: [(ref: Int, sc: Int, ec: Int)], target: HighlightManager.Target) {
             guard let viewController = textView?.window?.rootViewController else {
                 print("[Highlight] No view controller found for alert")
                 return
@@ -1813,12 +1721,7 @@ struct ChapterTextView: UIViewRepresentable {
             alert.addAction(UIAlertAction(title: "Modify Existing", style: .destructive) { _ in
                 Task { @MainActor in
                     HighlightManager.shared.highlightsHidden = false
-                    do {
-                        try HighlightManager.shared.addHighlight(ref: verseRef, startChar: sc, endChar: ec)
-                        print("[Highlight] Highlight added (overwrote existing)")
-                    } catch {
-                        print("[Highlight] Error adding highlight: \(error)")
-                    }
+                    Self.addHighlights(spans, to: target)
                 }
             })
 
@@ -1826,6 +1729,45 @@ struct ChapterTextView: UIViewRepresentable {
 
             topController.present(alert, animated: true)
         }
+    }
+}
+
+/// Highlights count Characters into a verse's text, as the Mac and core do;
+/// UIKit counts UTF-16. A letter with combining marks (pointed Hebrew,
+/// accented Greek) is one Character and several UTF-16 units.
+enum VerseTextOffsets {
+    /// The Character offset of a UTF-16 offset in `text`: one inside a
+    /// Character goes to its start, or past it when `roundingUp`.
+    static func characterOffset(utf16 offset: Int, in text: String, roundingUp: Bool = false) -> Int {
+        var count = 0
+        var index = text.startIndex
+        while index < text.endIndex {
+            let next = text.index(after: index)
+            if next.utf16Offset(in: text) > offset {
+                return roundingUp && index.utf16Offset(in: text) < offset ? count + 1 : count
+            }
+            count += 1
+            index = next
+        }
+        return count
+    }
+
+    /// The UTF-16 range of Characters `start..<end` of `text`, clamped to it.
+    static func utf16Range(characters start: Int, _ end: Int, in text: String) -> NSRange? {
+        let lower = text.index(text.startIndex, offsetBy: max(0, start), limitedBy: text.endIndex) ?? text.endIndex
+        let upper = text.index(text.startIndex, offsetBy: max(0, end), limitedBy: text.endIndex) ?? text.endIndex
+        guard lower < upper else { return nil }
+        return NSRange(lower..<upper, in: text)
+    }
+
+    /// `start..<end` of `text` without whitespace at either end, or nil
+    /// when there is nothing else in it.
+    static func trimmed(_ start: Int, _ end: Int, in text: [Character]) -> (start: Int, end: Int)? {
+        var start = max(0, start)
+        var end = min(end, text.count)
+        while start < end, text[start].isWhitespace { start += 1 }
+        while end > start, text[end - 1].isWhitespace { end -= 1 }
+        return end > start ? (start, end) : nil
     }
 }
 
@@ -3881,6 +3823,14 @@ struct ReaderView: View {
                 uncoveredBook = fetchedVerses.isEmpty
                     && !TranslationDatabase.shared.covers(book, translationId: translationId) ? book : nil
                 uncoveredBookIsPlanReading = true
+
+                // The highlights of every chapter the reading takes in
+                var chapters: [HighlightManager.Chapter] = []
+                for verse in fetchedVerses {
+                    let chapter = HighlightManager.Chapter(book: verse.book, chapter: verse.chapter)
+                    if chapters.last != chapter { chapters.append(chapter) }
+                }
+                HighlightManager.shared.loadHighlights(forChapters: chapters)
 
                 verses = fetchedVerses
                 headings = allHeadings

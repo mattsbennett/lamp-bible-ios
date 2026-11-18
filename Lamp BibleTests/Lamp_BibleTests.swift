@@ -9176,3 +9176,48 @@ final class ModuleInfoTests: XCTestCase {
         XCTAssertEqual(info.about.first { $0.label == "Description" }?.value, "Kept here")
     }
 }
+
+/// Highlights count Characters into a verse, as the Mac and core do; the
+/// reader's text view counts UTF-16. Pointed Hebrew is where they part.
+final class VerseTextOffsetsTests: XCTestCase {
+    // "In the beginning created": three words, each letter carrying points.
+    private let hebrew = "בְּרֵאשִׁית בָּרָא אֱלֹהִים"
+
+    func testUTF16PositionsBecomeCharacters() {
+        let text = hebrew
+        XCTAssertNotEqual(text.count, text.utf16.count)
+        let secondWord = (text as NSString).range(of: "בָּרָא")
+        let start = VerseTextOffsets.characterOffset(utf16: secondWord.location, in: text)
+        let end = VerseTextOffsets.characterOffset(utf16: NSMaxRange(secondWord), in: text, roundingUp: true)
+        XCTAssertEqual(String(Array(text)[start..<end]), "בָּרָא")
+        XCTAssertEqual(start, Array(text).firstIndex(of: " ")! + 1)
+    }
+
+    func testAPositionInsideALetterTakesTheWholeLetter() {
+        // Between a consonant and its point: the selection keeps the letter.
+        let text = "בְּ"
+        XCTAssertEqual(text.count, 1)
+        XCTAssertEqual(VerseTextOffsets.characterOffset(utf16: 1, in: text), 0)
+        XCTAssertEqual(VerseTextOffsets.characterOffset(utf16: 1, in: text, roundingUp: true), 1)
+        XCTAssertEqual(VerseTextOffsets.characterOffset(utf16: text.utf16.count, in: text), 1)
+    }
+
+    func testCharactersDrawOverTheirOwnLetters() throws {
+        let text = hebrew
+        let range = try XCTUnwrap(VerseTextOffsets.utf16Range(characters: 0, 6, in: text))
+        XCTAssertEqual((text as NSString).substring(with: range), "בְּרֵאשִׁית")
+        // Past the end is clamped; an empty range draws nothing.
+        XCTAssertEqual(VerseTextOffsets.utf16Range(characters: 11, 99, in: text)?.length,
+                       (text as NSString).length - (text as NSString).range(of: "אֱלֹהִים").location)
+        XCTAssertNil(VerseTextOffsets.utf16Range(characters: 4, 4, in: text))
+        XCTAssertNil(VerseTextOffsets.utf16Range(characters: 99, 120, in: text))
+    }
+
+    func testTrimmingDropsOnlyEdgeWhitespace() throws {
+        let text = Array("  in the beginning ")
+        let trimmed = try XCTUnwrap(VerseTextOffsets.trimmed(0, text.count, in: text))
+        XCTAssertEqual(String(text[trimmed.start..<trimmed.end]), "in the beginning")
+        XCTAssertNil(VerseTextOffsets.trimmed(0, 2, in: text))
+        XCTAssertNil(VerseTextOffsets.trimmed(5, 99, in: Array("abc")))
+    }
+}

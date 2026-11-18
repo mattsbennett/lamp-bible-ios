@@ -345,6 +345,11 @@ class ModuleSyncManager: ObservableObject {
 
         defer {
             try? FileManager.default.removeItem(at: tempURL)
+            // The reader's highlights are cached by chapter: what this
+            // wrote isn't in them.
+            if type == .highlights {
+                Task { @MainActor in HighlightManager.shared.reloadAfterExternalChange() }
+            }
         }
 
         let portableKind = type

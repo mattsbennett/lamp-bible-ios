@@ -47,9 +47,14 @@ class HighlightManager: ObservableObject {
 
     // MARK: - Private State
 
-    private var cachedBook: Int = 0
-    private var cachedChapter: Int = 0
-    private var syncWorkItem: DispatchWorkItem?
+    /// The chapter `highlightsByVerse` holds, and the set it was read from.
+    private var cachedChapters: [Chapter] = []
+    private var cachedSetId: String?
+    /// The chapters the reader shows (a plan reading can take several),
+    /// read again when the set changes.
+    private var shownChapters: [Chapter] = []
+    /// Pending syncs, one per highlights module.
+    private var syncWorkItems: [String: DispatchWorkItem] = [:]
     private let syncDebounceInterval: TimeInterval = 2.0  // Wait 2 seconds before syncing
 
     // MARK: - Initialization
@@ -61,23 +66,24 @@ class HighlightManager: ObservableObject {
 
     // MARK: - Sync
 
-    /// Schedule a debounced sync for the active highlight set's module
-    private func scheduleSyncForActiveSet() {
-        guard let setId = activeSetId else { return }
+    /// Schedule a debounced sync for a highlight set's module
+    private func scheduleSync(setId: String?) {
+        guard let setId else { return }
 
         // Get the module ID for the active set
         guard let set = try? ModuleDatabase.shared.getHighlightSet(id: setId) else { return }
 
-        // Cancel any pending sync
-        syncWorkItem?.cancel()
+        // Cancel any pending sync of the same module
+        syncWorkItems[set.moduleId]?.cancel()
 
         // Schedule new sync
         let workItem = DispatchWorkItem { [weak self] in
             Task { @MainActor in
+                self?.syncWorkItems[set.moduleId] = nil
                 self?.performSync(moduleId: set.moduleId)
             }
         }
-        syncWorkItem = workItem
+        syncWorkItems[set.moduleId] = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + syncDebounceInterval, execute: workItem)
     }
 
@@ -98,6 +104,12 @@ class HighlightManager: ObservableObject {
     /// Load highlight sets for a translation
     func loadSetsForTranslation(_ translationId: String) {
         currentTranslationId = translationId
+        let previousSetId = activeSetId
+        defer {
+            // Another set's highlights don't belong on this translation's
+            // text: the chapter about to load reads the new set's.
+            if activeSetId != previousSetId { clearCache() }
+        }
 
         do {
             availableSets = try ModuleDatabase.shared.getHighlightSets(forTranslation: translationId)
@@ -121,8 +133,8 @@ class HighlightManager: ObservableObject {
     /// - Parameters:
     ///   - name: Optional name for the set. If nil, defaults to "My [ABBREV] Highlights"
     ///   - description: Optional description
-    func createHighlightSet(name: String? = nil, description: String? = nil) throws -> HighlightSet {
-        guard let translationId = currentTranslationId else {
+    func createHighlightSet(name: String? = nil, description: String? = nil, translationId: String? = nil) throws -> HighlightSet {
+        guard let translationId = translationId ?? currentTranslationId else {
             throw HighlightError.noTranslationSelected
         }
 
@@ -186,12 +198,18 @@ class HighlightManager: ObservableObject {
 
         try ModuleDatabase.shared.saveHighlightSet(set)
 
-        // Refresh available sets
-        loadSetsForTranslation(translationId)
-
-        // Set as active
-        activeSetId = set.id
-        savePreferences()
+        // Refresh available sets and make it the active one, if the reader
+        // is still in the translation it was made for
+        if translationId == currentTranslationId {
+            loadSetsForTranslation(translationId)
+            activeSetId = set.id
+            // Nothing in it yet: the shown chapter's highlights are those
+            // added from here on.
+            highlightsByVerse = [:]
+            cachedChapters = shownChapters
+            cachedSetId = set.id
+            savePreferences()
+        }
 
         // Sync the new module to cloud
         Task {
@@ -235,60 +253,96 @@ class HighlightManager: ObservableObject {
         }
     }
 
+    struct Chapter: Equatable {
+        let book: Int
+        let chapter: Int
+    }
+
     /// Load highlights for a chapter
     func loadHighlightsForChapter(book: Int, chapter: Int) {
+        loadHighlights(forChapters: [Chapter(book: book, chapter: chapter)])
+    }
+
+    /// Load highlights for the chapters the reader shows together
+    func loadHighlights(forChapters chapters: [Chapter]) {
+        shownChapters = chapters
         guard let setId = activeSetId else {
             highlightsByVerse = [:]
+            cachedSetId = nil
             return
         }
 
-        // Skip if already cached
-        if cachedBook == book && cachedChapter == chapter && !highlightsByVerse.isEmpty {
+        // Skip if already cached, from this set
+        if cachedChapters == chapters && cachedSetId == setId {
             return
         }
 
         do {
-            let highlights = try ModuleDatabase.shared.getHighlights(setId: setId, book: book, chapter: chapter)
-
             // Group by verse ref
             var grouped: [Int: [HighlightEntry]] = [:]
-            for highlight in highlights {
-                grouped[highlight.ref, default: []].append(highlight)
+            for chapter in chapters {
+                for highlight in try ModuleDatabase.shared.getHighlights(setId: setId, book: chapter.book, chapter: chapter.chapter) {
+                    grouped[highlight.ref, default: []].append(highlight)
+                }
             }
 
             highlightsByVerse = grouped
-            cachedBook = book
-            cachedChapter = chapter
+            cachedChapters = chapters
+            cachedSetId = setId
         } catch {
             print("[HighlightManager] Error loading highlights: \(error)")
-            highlightsByVerse = [:]
+            // Nothing cached: the next visit reads the chapter again.
+            clearCache()
+        }
+    }
+
+    /// Highlights written elsewhere (a sync, an import) may be in the shown
+    /// chapter, or in a set new to this translation: read both again.
+    func reloadAfterExternalChange() {
+        if let translationId = currentTranslationId {
+            loadSetsForTranslation(translationId)
+        }
+        clearCache()
+        if !shownChapters.isEmpty {
+            loadHighlights(forChapters: shownChapters)
         }
     }
 
     /// Clear cached highlights (call when chapter changes)
     func clearCache() {
         highlightsByVerse = [:]
-        cachedBook = 0
-        cachedChapter = 0
+        cachedChapters = []
+        cachedSetId = nil
+    }
+
+    /// Where a new highlight goes: the set and translation as they were
+    /// when its words were chosen. Read later, a translation switched
+    /// mid-save would take the offsets to another translation's text.
+    struct Target {
+        let setId: String?
+        let translationId: String?
+    }
+
+    var target: Target { Target(setId: activeSetId, translationId: currentTranslationId) }
+
+    /// The target with a set to save to, made for its translation if it
+    /// has none: several highlights saved together go to one set.
+    func resolved(_ target: Target) throws -> Target {
+        if target.setId != nil { return target }
+        let set = try createHighlightSet(translationId: target.translationId)
+        return Target(setId: set.id, translationId: target.translationId)
     }
 
     /// Add a highlight to the active set (auto-creates a default set if none exists)
-    func addHighlight(ref: Int, startChar: Int, endChar: Int) throws {
-        try addHighlight(ref: ref, startChar: startChar, endChar: endChar, style: selectedStyle, color: selectedColor)
+    func addHighlight(ref: Int, startChar: Int, endChar: Int, to target: Target? = nil) throws {
+        try addHighlight(ref: ref, startChar: startChar, endChar: endChar, style: selectedStyle, color: selectedColor, to: target)
     }
 
-    /// Add a highlight with explicit style and color (used when splitting highlights)
-    func addHighlight(ref: Int, startChar: Int, endChar: Int, style: HighlightStyle, color: HighlightColor) throws {
+    /// Add a highlight with explicit style and color (used when splitting
+    /// highlights), to the target's set, or the active one
+    func addHighlight(ref: Int, startChar: Int, endChar: Int, style: HighlightStyle, color: HighlightColor, to target: Target? = nil) throws {
         // Auto-create a default highlight set if none exists
-        if activeSetId == nil {
-            guard let translationId = currentTranslationId else {
-                throw HighlightError.noTranslationSelected
-            }
-            let newSet = try createHighlightSet()
-            activeSetId = newSet.id
-        }
-
-        guard let setId = activeSetId else {
+        guard let setId = try resolved(target ?? self.target).setId else {
             throw HighlightError.noActiveSet
         }
 
@@ -305,32 +359,52 @@ class HighlightManager: ObservableObject {
         highlight = try ModuleDatabase.shared.saveHighlight(highlight)
         try ModuleDatabase.shared.updateHighlightSetModified(id: setId)
 
-        // Update cache with the entry that has the ID
-        highlightsByVerse[ref, default: []].append(highlight)
+        // Update cache with the entry that has the ID, if it shows that set
+        // (the active one, before any chapter of it has been read)
+        if setId == (cachedSetId ?? activeSetId) {
+            highlightsByVerse[ref, default: []].append(highlight)
+        }
 
         // Schedule sync
-        scheduleSyncForActiveSet()
+        scheduleSync(setId: highlight.setId)
     }
 
-    /// Highlight an entire verse (used by verse number menu action)
-    func highlightEntireVerse(_ ref: Int) {
-        guard let translationId = currentTranslationId else {
-            print("[HighlightManager] No translation selected for highlighting verse")
-            return
-        }
+    /// Highlight an entire verse (used by verse number menu action).
+    /// `textLength` is the verse's length in Characters as the reader shows
+    /// it; without it, the stored text's.
+    func highlightEntireVerse(_ ref: Int, textLength shownLength: Int? = nil, to target: Target? = nil) {
+        let target = target ?? self.target
+        let textLength: Int
+        if let shownLength {
+            textLength = shownLength
+        } else {
+            guard let translationId = target.translationId else {
+                print("[HighlightManager] No translation selected for highlighting verse")
+                return
+            }
 
-        // Get the verse text to determine its length
-        guard let verse = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref) else {
-            print("[HighlightManager] Could not find verse \(ref)")
-            return
+            // Get the verse text to determine its length
+            guard let verse = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: ref) else {
+                print("[HighlightManager] Could not find verse \(ref)")
+                return
+            }
+            textLength = verse.text.count
         }
-
-        let textLength = verse.text.count
         guard textLength > 0 else { return }
 
         do {
-            // Check for existing highlights on this verse
-            let existing = highlightsByVerse[ref] ?? []
+            // Check for existing highlights on this verse, in the target's
+            // set: the cache may show another by now
+            let resolvedTarget = try resolved(target)
+            let existing: [HighlightEntry]
+            if resolvedTarget.setId == cachedSetId {
+                existing = highlightsByVerse[ref] ?? []
+            } else {
+                let (_, chapter, book) = splitVerseId(ref)
+                existing = try ModuleDatabase.shared
+                    .getHighlights(setId: resolvedTarget.setId ?? "", book: book, chapter: chapter)
+                    .filter { $0.ref == ref }
+            }
             if existing.contains(where: { $0.sc == 0 && $0.ec >= textLength - 1 }) {
                 // Already fully highlighted - remove it (toggle behavior)
                 for highlight in existing.filter({ $0.sc == 0 && $0.ec >= textLength - 1 }) {
@@ -338,7 +412,7 @@ class HighlightManager: ObservableObject {
                 }
             } else {
                 // Add highlight for entire verse
-                try addHighlight(ref: ref, startChar: 0, endChar: textLength)
+                try addHighlight(ref: ref, startChar: 0, endChar: textLength, to: resolvedTarget)
             }
         } catch {
             print("[HighlightManager] Error highlighting verse: \(error)")
@@ -350,10 +424,7 @@ class HighlightManager: ObservableObject {
         guard let id = highlight.id else { return }
 
         try ModuleDatabase.shared.deleteHighlight(id: id)
-
-        if let setId = activeSetId {
-            try ModuleDatabase.shared.updateHighlightSetModified(id: setId)
-        }
+        try ModuleDatabase.shared.updateHighlightSetModified(id: highlight.setId)
 
         // Update cache
         if var verseHighlights = highlightsByVerse[highlight.ref] {
@@ -362,7 +433,7 @@ class HighlightManager: ObservableObject {
         }
 
         // Schedule sync
-        scheduleSyncForActiveSet()
+        scheduleSync(setId: highlight.setId)
     }
 
     /// Update a highlight's character range
@@ -370,10 +441,7 @@ class HighlightManager: ObservableObject {
         guard let id = highlight.id else { return }
 
         try ModuleDatabase.shared.updateHighlight(id: id, sc: newSc, ec: newEc)
-
-        if let setId = activeSetId {
-            try ModuleDatabase.shared.updateHighlightSetModified(id: setId)
-        }
+        try ModuleDatabase.shared.updateHighlightSetModified(id: highlight.setId)
 
         // Update cache
         if var verseHighlights = highlightsByVerse[highlight.ref] {
@@ -387,7 +455,7 @@ class HighlightManager: ObservableObject {
         }
 
         // Schedule sync
-        scheduleSyncForActiveSet()
+        scheduleSync(setId: highlight.setId)
     }
 
     /// Remove all highlights for a verse
@@ -401,7 +469,7 @@ class HighlightManager: ObservableObject {
         highlightsByVerse[ref] = nil
 
         // Schedule sync
-        scheduleSyncForActiveSet()
+        scheduleSync(setId: setId)
     }
 
     /// Toggle highlight mode
@@ -474,6 +542,10 @@ class HighlightManager: ObservableObject {
         activeSetId = setId
         clearCache()
         savePreferences()
+        // The reader doesn't load its chapter again for a set: read it here.
+        if !shownChapters.isEmpty {
+            loadHighlights(forChapters: shownChapters)
+        }
     }
 }
 
