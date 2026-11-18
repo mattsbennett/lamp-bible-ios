@@ -37,6 +37,18 @@ class DevotionalStorage {
         }
     }
 
+    /// Every writing's title, by its ID in capitals, so a deck can name the
+    /// writing it was made from.
+    func getAllWritingTitles() throws -> [String: String] {
+        try db.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT id, title FROM devotional_entries")
+            return Dictionary(
+                rows.map { (($0["id"] as String).uppercased(), $0["title"] as String) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+    }
+
     /// Get all devotionals for a module
     func getAllDevotionals(moduleId: String) throws -> [Devotional] {
         try db.read { db in

@@ -9,9 +9,19 @@ import UniformTypeIdentifiers
 /// published decks onto the device, and a `.lampdeck` opened from Files, Mail,
 /// or AirDrop is kept alongside them.
 struct DeckLibraryView: View {
+    /// Shown over what opened it, with its own way to close; otherwise pushed
+    /// from the home screen's bar, whose stack gives it a back button.
+    var inSheet = true
+
     @Environment(\.dismiss) private var dismiss
 
     @State private var entries: [PresentationDeckEntry] = []
+    /// The same decks as core lists them for the Mac's Presentations section,
+    /// so a search, filter and sort leave the same decks on both.
+    @State private var shelf = LampPresentationShelf(decks: [])
+    @State private var query = ""
+    @State private var filter: LampPresentationShelf.Filter = .all
+    @AppStorage("deckLibrary.sort") private var sort: LampPresentationShelf.Sort = .recent
     @State private var loadGeneration = 0
     @State private var isImporting = false
     @State private var importError: String?
@@ -24,34 +34,66 @@ struct DeckLibraryView: View {
         ?? .json
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if entries.isEmpty {
-                    emptyState
-                } else {
-                    deckList
-                }
+        if inSheet {
+            NavigationStack { library }
+        } else {
+            library
+        }
+    }
+
+    private var library: some View {
+        Group {
+            if entries.isEmpty {
+                emptyState
+            } else {
+                deckList
+                    .searchable(
+                        text: $query,
+                        placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Decks and writings"
+                    )
             }
-            .navigationTitle("Slide Decks")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
+        }
+        .navigationTitle("Slide Decks")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            if inSheet {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { dismiss() }
                         .labelStyle(.iconOnly)
                 }
+            }
+            if entries.count > 1 {
                 ToolbarItem(placement: .topBarTrailing) {
-                    // Labelled: an icon alone didn't say what it brought in.
-                    Button("Import") {
-                        isImporting = true
+                    Menu {
+                        Picker("Sort By", selection: $sort) {
+                            ForEach(LampPresentationShelf.Sort.allCases) { sort in
+                                Text(sort.rawValue).tag(sort)
+                            }
+                        }
+                    } label: {
+                        Label("Sort", systemImage: "arrow.up.arrow.down")
                     }
-                    .accessibilityLabel("Import Deck")
+                    .accessibilityValue(sort.rawValue)
                 }
             }
-            .background(LampTheme.groupedBackground.ignoresSafeArea())
+            ToolbarItem(placement: .topBarTrailing) {
+                // Labelled: an icon alone didn't say what it brought in.
+                Button("Import") {
+                    isImporting = true
+                }
+                .accessibilityLabel("Import Deck")
+            }
         }
+        .background(LampTheme.groupedBackground.ignoresSafeArea())
         .task { await reload() }
         .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
             Task { await reload() }
+        }
+        // A sync can rename a writing without touching any deck, and the
+        // cards show and search their writings' titles.
+        .onReceive(SyncCoordinator.shared.$syncState.dropFirst()) { state in
+            if case .idle = state { Task { await reload() } }
         }
         .fileImporter(
             isPresented: $isImporting,
@@ -78,13 +120,27 @@ struct DeckLibraryView: View {
     /// presentation app shows its documents; a deck's other slides follow in
     /// a strip, so the card says what is inside before it is opened.
     private var deckList: some View {
-        List {
-            ForEach(entries) { entry in
+        let entriesByID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let shown = shelf.shown(filter: filter, sort: sort, query: query)
+            .compactMap { deck in entriesByID[deck.id].map { (deck: deck, entry: $0) } }
+        return List {
+            filterChips
+                .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 8, trailing: 20))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+
+            if shown.isEmpty {
+                noMatches
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+
+            ForEach(shown, id: \.entry.id) { deck, entry in
                 Button {
                     pendingSlideIndex = 0
                     pendingDeckID = entry.id
                 } label: {
-                    DeckLibraryCard(entry: entry)
+                    DeckLibraryCard(entry: entry, listed: deck)
                 }
                 .buttonStyle(DeckCardButtonStyle())
                 .swipeActions(edge: .trailing) {
@@ -102,7 +158,7 @@ struct DeckLibraryView: View {
 
                 // A short library has room to say what is in a deck, in words
                 // that can be read, and to open it at any of them.
-                if entries.count <= 2, entry.visibleSlides.count > 1 {
+                if shown.count <= 2, entry.visibleSlides.count > 1 {
                     DeckOutline(entry: entry) { index in
                         pendingSlideIndex = index
                         pendingDeckID = entry.id
@@ -129,6 +185,42 @@ struct DeckLibraryView: View {
             if let entry = entries.first(where: { $0.id == pendingDeckID }) {
                 DeckViewerView(entry: entry, startingAt: pendingSlideIndex)
             }
+        }
+    }
+
+    /// All, From Writing and Standalone, each with how many decks it shows for
+    /// the search as it stands, wrapping chip by chip at large text sizes.
+    private var filterChips: some View {
+        WrappingHStack(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+            ForEach(LampPresentationShelf.Filter.allCases) { option in
+                DeckFilterChip(
+                    title: option.rawValue,
+                    count: shelf.count(of: option, query: query),
+                    isSelected: filter == option
+                ) {
+                    filter = option
+                }
+            }
+        }
+    }
+
+    /// Nothing the search or filter leaves, said in the list so the chips
+    /// above stay to change it.
+    @ViewBuilder
+    private var noMatches: some View {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            ContentUnavailableView.search(text: trimmed)
+        } else {
+            ContentUnavailableView(
+                filter == .fromWriting ? "No Decks from Writing" : "No Standalone Decks",
+                systemImage: "rectangle.on.rectangle",
+                description: Text(
+                    filter == .fromWriting
+                        ? "Decks built from a writing in Slide Studio appear here."
+                        : "Decks not built from a writing appear here."
+                )
+            )
         }
     }
 
@@ -190,14 +282,28 @@ struct DeckLibraryView: View {
     private func reload() async {
         loadGeneration &+= 1
         let generation = loadGeneration
-        let loaded = await Task.detached(priority: .userInitiated) {
+        let (loaded, listed) = await Task.detached(priority: .userInitiated) {
             let decks = PresentationDeckStorage.shared
+            let titles = try? DevotionalStorage.shared.getAllWritingTitles()
             // Unable to read the writings, list every deck rather than hide one.
-            return (try? DevotionalStorage.shared.getAllWritingIDs())
-                .map(decks.listedEntries(writingIDs:)) ?? decks.entries()
+            let entries = titles.map { decks.listedEntries(writingIDs: Set($0.keys)) } ?? decks.entries()
+            // By the phone's own link to a writing, which also takes the
+            // format's `writing` name for it, and the file date the listing
+            // already read.
+            let shelf = LampPresentationShelf(decks: entries.map { entry in
+                LampPresentationShelf.Deck(
+                    id: entry.id,
+                    title: entry.title,
+                    writingID: entry.linkedWritingID,
+                    writingTitle: entry.linkedWritingID.flatMap { titles?[$0.uppercased()] },
+                    modified: entry.modifiedAt ?? .distantPast
+                )
+            })
+            return (entries, shelf)
         }.value
         guard generation == loadGeneration else { return }
         entries = loaded
+        shelf = listed
         if let pendingDeckID, !entries.contains(where: { $0.id == pendingDeckID }) {
             self.pendingDeckID = nil
         }
@@ -236,9 +342,48 @@ private struct DeckCardButtonStyle: ButtonStyle {
     }
 }
 
+/// A filter, and how many decks it shows. Chosen, it is filled and outlined
+/// in the accent strongly enough to read in dark, as the Mac's are.
+private struct DeckFilterChip: View {
+    let title: String
+    let count: Int
+    let isSelected: Bool
+    let action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(title)
+                Text("\(count)")
+                    .monospacedDigit()
+                    .foregroundStyle(isSelected ? Color(uiColor: .label) : LampTheme.caption)
+            }
+            .font(.subheadline.weight(isSelected ? .semibold : .medium))
+            .foregroundStyle(Color(uiColor: .label))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            // Unchosen, a card on the page's ground, as the deck cards are:
+            // the tile fill all but vanished against it.
+            .background(
+                isSelected ? Color.accentColor.opacity(colorScheme == .dark ? 0.28 : 0.16) : LampTheme.card,
+                in: Capsule()
+            )
+            .overlay {
+                Capsule().strokeBorder(isSelected ? Color.accentColor.opacity(0.85) : LampTheme.hairline)
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(count == 1 ? "1 deck" : "\(count) decks")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
 private struct DeckLibraryCard: View {
     let entry: PresentationDeckEntry
-    @Environment(\.colorScheme) private var colorScheme
+    let listed: LampPresentationShelf.Deck
 
     var body: some View {
         let slides = entry.visibleSlides
@@ -246,10 +391,9 @@ private struct DeckLibraryCard: View {
         VStack(alignment: .leading, spacing: 0) {
             if let first = slides.first {
                 // Framed inside the card rather than bled to its edges, and
-                // taken down a little in dark, where a light slide glares.
+                // never dimmed in dark: a dimmed cover reads as washed out.
                 LampPresentationSlideCanvas(slide: first, deck: entry.deck, store: store, compact: true)
                     .aspectRatio(entry.deck.aspectRatio.ratio, contentMode: .fit)
-                    .overlay(Color.black.opacity(colorScheme == .dark ? 0.16 : 0))
                     .clipShape(RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
                     .overlay {
                         RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous)
@@ -266,15 +410,23 @@ private struct DeckLibraryCard: View {
                             .foregroundStyle(.primary)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
-                        HStack(spacing: 6) {
-                            Text(slideCountLabel)
-                            if entry.origin == .imported {
-                                Text("·")
-                                Text("On this device")
+                        // The writing it was built from, under its title.
+                        if let writingTitle = listed.writingTitle {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Image(systemName: "pencil.line")
+                                    .font(.footnote)
+                                    .accessibilityHidden(true)
+                                Text(writingTitle)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
                             }
+                            .font(.subheadline)
+                            .foregroundStyle(Color(uiColor: .secondaryLabel))
                         }
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(LampTheme.caption)
+                        // One line of words, so it wraps rather than clips.
+                        Text(detailLine)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(LampTheme.caption)
                     }
                     Spacer(minLength: 0)
                     Image(systemName: "play.fill")
@@ -297,9 +449,17 @@ private struct DeckLibraryCard: View {
         .accessibilityHint("Opens the deck")
     }
 
-    private var slideCountLabel: String {
+    /// Its slides, when its file last changed, and whether it was opened here.
+    private var detailLine: String {
         let count = entry.visibleSlides.count
-        return count == 1 ? "1 slide" : "\(count) slides"
+        var parts = [count == 1 ? "1 slide" : "\(count) slides"]
+        if listed.modified != .distantPast {
+            parts.append(listed.modified.formatted(.relative(presentation: .named)))
+        }
+        if entry.origin == .imported {
+            parts.append("On this device")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

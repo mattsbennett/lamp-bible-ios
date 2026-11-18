@@ -263,6 +263,10 @@ struct PlanView: View {
                 )
             }
 
+            bottomBarLink("Decks", systemImage: "rectangle.on.rectangle") {
+                DeckLibraryView(inSheet: false)
+            }
+
             bottomBarLink("Settings", systemImage: "gear") {
                 SettingsView(
                     externalApps: externalBibleApps,
