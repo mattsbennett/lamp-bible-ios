@@ -24,6 +24,7 @@ struct DeckLibraryView: View {
     @AppStorage("deckLibrary.sort") private var sort: LampPresentationShelf.Sort = .recent
     @State private var loadGeneration = 0
     @State private var isImporting = false
+    @State private var showingRemote = false
     @State private var importError: String?
     @State private var pendingDeckID: String?
     /// The slide to open the deck at, from its outline.
@@ -63,6 +64,18 @@ struct DeckLibraryView: View {
                         .labelStyle(.iconOnly)
                 }
             }
+            // The remote for a Mac presenting, with the decks it presents,
+            // whether or not this device holds the one shown.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingRemote = true
+                } label: {
+                    // A remote, not a play key: beside the decks' own play
+                    // buttons, a play glyph read as "play this deck".
+                    Image(systemName: "av.remote")
+                }
+                .accessibilityLabel("Presentation Remote")
+            }
             if entries.count > 1 {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -86,6 +99,10 @@ struct DeckLibraryView: View {
             }
         }
         .background(LampTheme.groupedBackground.ignoresSafeArea())
+        // Full screen: the remote is the one thing in use while presenting.
+        .fullScreenCover(isPresented: $showingRemote) {
+            PresentationRemoteView()
+        }
         .task { await reload() }
         .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
             Task { await reload() }

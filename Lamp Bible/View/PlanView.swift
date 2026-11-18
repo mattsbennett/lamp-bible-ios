@@ -31,7 +31,6 @@ struct PlanView: View {
     /// Inputs currently being built, so concurrent refreshes don't duplicate work.
     @State private var buildingMetaDataInputs: PlanMetaDataInputs?
     @State private var metaDataRetryCount = 0
-    @State private var showingPresentationRemote = false
     @State private var showingDeckLibrary = false
     @State private var deckImportError: String?
     @Environment(\.colorScheme) var colorScheme
@@ -95,15 +94,18 @@ struct PlanView: View {
                         )
                     }
                     .toolbar {
-                        // Slide decks open from the writings they were made
-                        // from; this is only the remote for a Mac presenting.
+                        // Up here so the bar below keeps to five; the remote
+                        // that was here went to the decks it presents.
                         ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                showingPresentationRemote = true
+                            NavigationLink {
+                                SettingsView(
+                                    externalApps: externalBibleApps,
+                                    planViewRefreshId: $planViewRefreshId
+                                )
                             } label: {
-                                Image(systemName: "play.rectangle.on.rectangle")
+                                Image(systemName: "gear")
                             }
-                            .accessibilityLabel("Presentation Remote")
+                            .accessibilityLabel("Settings")
                         }
                     }
                     .planBottomBar {
@@ -135,10 +137,6 @@ struct PlanView: View {
                             initialTranslationId: deepLinkTranslationId,
                             initialToolbarMode: deepLinkPlanMode ? .plan : nil
                         )
-                    }
-                    // Full screen: the remote is the one thing in use while presenting.
-                    .fullScreenCover(isPresented: $showingPresentationRemote) {
-                        PresentationRemoteView()
                     }
                     .sheet(isPresented: $showingDeckLibrary) {
                         DeckLibraryView()
@@ -266,13 +264,6 @@ struct PlanView: View {
             bottomBarLink("Decks", systemImage: "rectangle.on.rectangle") {
                 DeckLibraryView(inSheet: false)
             }
-
-            bottomBarLink("Settings", systemImage: "gear") {
-                SettingsView(
-                    externalApps: externalBibleApps,
-                    planViewRefreshId: $planViewRefreshId
-                )
-            }
         }
         .padding(.horizontal, 8)
         .frame(height: Self.bottomBarHeight)
@@ -296,7 +287,7 @@ struct PlanView: View {
                     .imageScale(.large)
                     .foregroundColor(iOS26OrLater ? .primary : .accentColor)
                     // These glyphs differ in intrinsic height - books.vertical.fill
-                    // and gear are noticeably taller than pencil.line - so without a
+                    // is noticeably taller than pencil.line - so without a
                     // shared box each label sits at its own baseline and the row
                     // reads as ragged.
                     .frame(height: 26)
