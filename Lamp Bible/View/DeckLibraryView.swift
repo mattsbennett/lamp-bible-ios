@@ -91,11 +91,12 @@ struct DeckLibraryView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                // Labelled: an icon alone didn't say what it brought in.
-                Button("Import") {
+                // An icon like its neighbours: a word among icons read as the
+                // remote's label. The footer's button still says it in words.
+                Button("Import Deck", systemImage: "square.and.arrow.down") {
                     isImporting = true
                 }
-                .accessibilityLabel("Import Deck")
+                .labelStyle(.iconOnly)
             }
         }
         .background(LampTheme.groupedBackground.ignoresSafeArea())
