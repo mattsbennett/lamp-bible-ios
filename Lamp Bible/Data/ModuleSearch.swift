@@ -28,6 +28,8 @@ struct ModuleSearchResult: Identifiable {
     var strongsKey: String? = nil
     var highlightColor: String? = nil  // Hex color for highlight results
     var highlightStyle: HighlightStyle? = nil  // Style for highlight results
+    /// A highlight result's own row, in the set `moduleId` names.
+    var highlightId: Int64? = nil
     /// A highlight's own translation, which its offsets count into.
     var translationId: String? = nil
     /// Whether the result's text holds the query's words together, which
@@ -132,6 +134,12 @@ struct ModuleSearchFilter {
     /// Whether the colours alone search highlights, without words. Otherwise
     /// they narrow the highlights a search by words finds.
     var highlightColorOnly: Bool = false
+    /// Styles and themes' marks, chosen with the colours ("Marked as").
+    var highlightStyles: Set<LampHighlightStyle>? = nil
+    var highlightThemes: Set<LampHighlightMark>? = nil
+    /// Highlights listed by their marks, every one when none is chosen, and
+    /// narrowed by words where there are some: Search's Highlights.
+    var listsHighlights: Bool = false
 
     static var `default`: ModuleSearchFilter { ModuleSearchFilter() }
 }
@@ -442,7 +450,10 @@ class ModuleSearch {
             // Colours alone search highlights only where the filter asks for
             // that. With words, they narrow the highlights found, which the
             // highlight search reads from the filter itself.
-            highlightColors: filter.highlightColorOnly ? filter.highlightColors : nil,
+            highlightColors: filter.highlightColorOnly || filter.listsHighlights ? filter.highlightColors : nil,
+            highlightStyles: filter.listsHighlights ? filter.highlightStyles : nil,
+            highlightThemes: filter.listsHighlights ? filter.highlightThemes : nil,
+            listsHighlights: filter.listsHighlights,
             devotionalCriteria: LampDevotionalSearchCriteria(
                 date: filter.devotionalDate,
                 monthDay: filter.monthDay,
@@ -1218,12 +1229,9 @@ class ModuleSearch {
         // colour alone keeps this order.
         let searchQuery = LampSearchQuery(query)
         let hasTextQuery = !searchQuery.isEmpty && !searchQuery.plainText.isEmpty
-        var entries: [String: [Int64: HighlightEntry]] = [:]
         var sets: [(id: String, highlights: [LampVerseHighlight])] = []
         for set in setsToSearch {
             let highlights = try database.getAllHighlights(setId: set.id)
-            entries[set.id] = Dictionary(highlights.compactMap { entry in entry.id.map { ($0, entry) } },
-                                         uniquingKeysWith: { first, _ in first })
             sets.append((set.id, highlights.compactMap { entry in
                 entry.id.map { id in
                     LampVerseHighlight(
@@ -1237,6 +1245,7 @@ class ModuleSearch {
         let names = Dictionary(setsToSearch.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         let hits = try LampModuleSearch.highlights(
             in: sets, query: hasTextQuery ? searchQuery : nil, colors: filter.highlightColors,
+            styles: filter.highlightStyles, themes: filter.highlightThemes,
             bookRange: filter.bookRange, limit: limit
         ) { translationId, references in
             try getVerseTexts(translationId: translationId, refs: Array(references))
@@ -1252,16 +1261,18 @@ class ModuleSearch {
                 moduleName: names[hit.setID] ?? hit.setID,
                 moduleType: .highlights,
                 title: "\(bookName) \(chapter):\(verse)",
-                // The highlighted portion, marked for styling.
-                snippet: LampHighlightSearch.markedSnippet(
-                    text: hit.text, startOffset: highlight.startOffset, endOffset: highlight.endOffset
+                // The verse, its highlighted words marked for styling, as core
+                // shows a highlight found by words or by its marks.
+                snippet: LampHighlightSearch.markedVerse(
+                    text: hit.text, startOffset: highlight.startOffset, endOffset: highlight.endOffset, context: 80
                 ),
                 verseId: highlight.reference,
                 // Core's order, the best highest.
                 rank: -Double(place)
             )
             result.highlightColor = LampHighlightSearch.normalizedColor(highlight.color)
-            result.highlightStyle = entries[hit.setID]?[highlight.id]?.highlightStyle ?? .highlight
+            result.highlightStyle = HighlightStyle(highlight.style)
+            result.highlightId = highlight.id
             // Stored as the translation's first ID: as installed.
             result.translationId = TranslationDatabase.shared.held(highlight.translationID)
             result.holdsPhrase = hit.holdsPhrase

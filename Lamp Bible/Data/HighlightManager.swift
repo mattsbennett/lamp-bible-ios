@@ -45,6 +45,14 @@ class HighlightManager: ObservableObject {
     /// All highlight sets for current translation
     @Published private(set) var availableSets: [HighlightSet] = []
 
+    /// Bumped when a theme is named, renamed or deleted, for what shows
+    /// themes' names to read them again.
+    @Published private(set) var themesRevision = 0
+
+    func themesChanged() {
+        themesRevision += 1
+    }
+
     // MARK: - Private State
 
     /// The chapter `highlightsByVerse` holds, and the set it was read from.
@@ -299,6 +307,7 @@ class HighlightManager: ObservableObject {
     /// Highlights written elsewhere (a sync, an import) may be in the shown
     /// chapter, or in a set new to this translation: read both again.
     func reloadAfterExternalChange() {
+        themesChanged()
         if let translationId = currentTranslationId {
             loadSetsForTranslation(translationId)
         }
@@ -334,13 +343,15 @@ class HighlightManager: ObservableObject {
     }
 
     /// Add a highlight to the active set (auto-creates a default set if none exists)
-    func addHighlight(ref: Int, startChar: Int, endChar: Int, to target: Target? = nil) throws {
+    @discardableResult
+    func addHighlight(ref: Int, startChar: Int, endChar: Int, to target: Target? = nil) throws -> HighlightEntry {
         try addHighlight(ref: ref, startChar: startChar, endChar: endChar, style: selectedStyle, color: selectedColor, to: target)
     }
 
     /// Add a highlight with explicit style and color (used when splitting
     /// highlights), to the target's set, or the active one
-    func addHighlight(ref: Int, startChar: Int, endChar: Int, style: HighlightStyle, color: HighlightColor, to target: Target? = nil) throws {
+    @discardableResult
+    func addHighlight(ref: Int, startChar: Int, endChar: Int, style: HighlightStyle, color: HighlightColor, to target: Target? = nil) throws -> HighlightEntry {
         // Auto-create a default highlight set if none exists
         guard let setId = try resolved(target ?? self.target).setId else {
             throw HighlightError.noActiveSet
@@ -367,6 +378,32 @@ class HighlightManager: ObservableObject {
 
         // Schedule sync
         scheduleSync(setId: highlight.setId)
+        return highlight
+    }
+
+    /// Marks each span in one style and colour, in the target's set. A
+    /// highlight there lying wholly inside a span is replaced rather than
+    /// drawn over; one that only overlaps it stays beneath (the Mac's rule).
+    @discardableResult
+    func mark(_ spans: [HighlightSpan], style: HighlightStyle, color: HighlightColor, to target: Target) throws -> [HighlightEntry] {
+        guard let setId = try resolved(target).setId else { throw HighlightError.noActiveSet }
+        let target = Target(setId: setId, translationId: target.translationId)
+        var made: [HighlightEntry] = []
+        for span in spans {
+            for covered in try highlights(setId: setId, ref: span.ref) where covered.sc >= span.sc && covered.ec <= span.ec {
+                try removeHighlight(covered)
+            }
+            made.append(try addHighlight(ref: span.ref, startChar: span.sc, endChar: span.ec, style: style, color: color, to: target))
+        }
+        return made
+    }
+
+    /// A set's highlights at a verse: the shown chapter's from the cache.
+    func highlights(setId: String, ref: Int) throws -> [HighlightEntry] {
+        if setId == cachedSetId {
+            return highlightsByVerse[ref] ?? []
+        }
+        return try ModuleDatabase.shared.getHighlights(setId: setId, ref: ref)
     }
 
     /// Highlight an entire verse (used by verse number menu action).
@@ -547,6 +584,13 @@ class HighlightManager: ObservableObject {
             loadHighlights(forChapters: shownChapters)
         }
     }
+}
+
+/// Words a highlight covers in one verse, as Characters into its text.
+struct HighlightSpan: Equatable {
+    let ref: Int
+    let sc: Int
+    let ec: Int
 }
 
 // MARK: - Errors

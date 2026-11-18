@@ -738,3 +738,429 @@ struct HighlightToolbar: View {
     .padding()
     .background(Color(UIColor.systemGroupedBackground))
 }
+
+// MARK: - Mark Swatch
+
+/// A highlight's mark drawn small, for menus, which take an image in its
+/// own colours and nothing else: a filled band for a highlight, a line in
+/// its pattern for an underline.
+enum HighlightMarkSwatch {
+    static func image(color: HighlightColor, style: HighlightStyle) -> UIImage {
+        let size = CGSize(width: 22, height: 16)
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
+            let ink = color.uiColor
+            switch style {
+            case .highlight:
+                ink.setFill()
+                UIBezierPath(roundedRect: CGRect(x: 1, y: 2, width: 20, height: 12), cornerRadius: 3).fill()
+            case .underlineSolid, .underlineDashed, .underlineDotted:
+                let line = UIBezierPath()
+                line.move(to: CGPoint(x: 2, y: 13))
+                line.addLine(to: CGPoint(x: 20, y: 13))
+                line.lineWidth = 2.5
+                switch style {
+                case .underlineDashed:
+                    line.setLineDash([4, 2.5], count: 2, phase: 0)
+                case .underlineDotted:
+                    line.lineCapStyle = .round
+                    line.setLineDash([0, 4], count: 2, phase: 0)
+                default:
+                    break
+                }
+                ink.setStroke()
+                line.stroke()
+            }
+        }
+        return image.withRenderingMode(.alwaysOriginal)
+    }
+}
+
+// MARK: - Highlight Panel
+
+/// The highlight panel's state, for the words chosen or the highlight
+/// tapped: a style, colour or theme chosen applies at once, to the set shown
+/// when the words were chosen, and the panel then shows what it made.
+@MainActor
+final class HighlightPanelModel: ObservableObject {
+    let spans: [HighlightSpan]
+    /// The words, as the reader shows them.
+    let text: String
+    let citation: String
+    @Published private(set) var target: HighlightManager.Target
+
+    /// The highlights shown: those the words had, then those made here.
+    @Published private(set) var current: [HighlightEntry]
+    @Published private(set) var color: HighlightColor
+    @Published private(set) var style: HighlightStyle
+    @Published private(set) var colors: [HighlightColor]
+    /// The set's themes, the ones used last first.
+    @Published private(set) var themes: [HighlightTheme]
+    private var madeHere = false
+
+    var onAddNote: () -> Void = {}
+    var onSearch: (() -> Void)?
+    var onLookUp: (() -> Void)?
+    /// Removes what the words had (`current` before anything was made).
+    var onRemove: () -> Void = {}
+    var onNameTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)?
+    /// Closes the panel, then runs what follows.
+    var dismiss: (_ then: (() -> Void)?) -> Void = { then in then?() }
+
+    init(spans: [HighlightSpan], target: HighlightManager.Target, text: String, citation: String, current: [HighlightEntry]) {
+        self.spans = spans
+        self.target = target
+        self.text = text
+        self.citation = citation
+        self.current = current
+        let shown = current.last
+        color = shown?.highlightColor ?? HighlightManager.shared.selectedColor
+        style = shown?.highlightStyle ?? HighlightManager.shared.selectedStyle
+        colors = HighlightColorManager.shared.getColors()
+        themes = Self.themes(setId: shown?.setId ?? target.setId)
+    }
+
+    /// Whether what's shown has one mark, which the panel then ticks.
+    var isMarked: Bool {
+        guard let first = current.first else { return false }
+        return current.allSatisfy { $0.highlightColor == first.highlightColor && $0.highlightStyle == first.highlightStyle }
+    }
+
+    /// The theme that names the mark shown, if one does.
+    var theme: HighlightTheme? {
+        guard isMarked else { return nil }
+        return themes.first { $0.highlightColor == color && $0.highlightStyle == style }
+    }
+
+    func apply(color: HighlightColor, style: HighlightStyle) {
+        do {
+            let manager = HighlightManager.shared
+            manager.highlightsHidden = false
+            current = try manager.mark(spans, style: style, color: color, to: target)
+            madeHere = true
+            // A set made for the first highlight takes the rest.
+            if target.setId == nil, let setId = current.first?.setId {
+                target = HighlightManager.Target(setId: setId, translationId: target.translationId)
+                themes = Self.themes(setId: setId)
+            }
+            self.color = color
+            self.style = style
+            manager.selectColor(color)
+            manager.selectStyle(style)
+        } catch {
+            print("[Highlight] Error highlighting: \(error)")
+        }
+    }
+
+    /// A theme sets colour and style together.
+    func apply(_ theme: HighlightTheme) {
+        apply(color: theme.highlightColor, style: theme.highlightStyle)
+        Self.recordRecent(theme)
+        themes = Self.themes(setId: theme.setId)
+    }
+
+    func addColor(_ color: HighlightColor) {
+        HighlightColorManager.shared.addColor(color)
+        colors = HighlightColorManager.shared.getColors()
+        apply(color: color, style: style)
+    }
+
+    func removeFromPalette(_ color: HighlightColor) {
+        HighlightColorManager.shared.removeColor(color)
+        colors = HighlightColorManager.shared.getColors()
+    }
+
+    /// The set new marks go to from here on.
+    func useSet(_ setId: String) {
+        HighlightManager.shared.selectSet(setId)
+        target = HighlightManager.Target(setId: setId, translationId: target.translationId)
+        themes = Self.themes(setId: setId)
+    }
+
+    func remove() {
+        if madeHere {
+            for highlight in current {
+                try? HighlightManager.shared.removeHighlight(highlight)
+            }
+        } else {
+            onRemove()
+        }
+        current = []
+        dismiss(nil)
+    }
+
+    /// Whether a mark can be named: in a set, which a translation without
+    /// highlights doesn't have until one is made.
+    var canNameTheme: Bool { onNameTheme != nil && target.setId != nil }
+
+    func nameTheme(color: HighlightColor, style: HighlightStyle) {
+        guard let onNameTheme, canNameTheme else { return }
+        let existing = themes.first { $0.highlightColor == color && $0.highlightStyle == style }
+        dismiss { onNameTheme(color, style, existing) }
+    }
+
+    // MARK: Recent themes
+
+    /// The themes used last, on this device only, as the Mac keeps its own.
+    static let recentKey = "reader.recentHighlightThemes"
+
+    private static func recentKeyOf(_ theme: HighlightTheme) -> String {
+        "\(theme.highlightColor.hex)/\(theme.style)"
+    }
+
+    static func recordRecent(_ theme: HighlightTheme) {
+        var recent = UserDefaults.standard.stringArray(forKey: recentKey) ?? []
+        recent.removeAll { $0 == recentKeyOf(theme) }
+        recent.insert(recentKeyOf(theme), at: 0)
+        UserDefaults.standard.set(Array(recent.prefix(40)), forKey: recentKey)
+    }
+
+    static func themes(setId: String?) -> [HighlightTheme] {
+        guard let setId, let themes = try? ModuleDatabase.shared.getHighlightThemes(setId: setId) else { return [] }
+        let recent = UserDefaults.standard.stringArray(forKey: recentKey) ?? []
+        func place(_ theme: HighlightTheme) -> Int { recent.firstIndex(of: recentKeyOf(theme)) ?? Int.max }
+        return themes.sorted {
+            (place($0), $0.name.localizedLowercase) < (place($1), $1.name.localizedLowercase)
+        }
+    }
+}
+
+/// The highlight panel by the words: the four styles drawn in the colour,
+/// the palette, the set's themes, and what else the words can be used for.
+/// Touch's form of the Mac's bar.
+struct HighlightPanel: View {
+    @ObservedObject var model: HighlightPanelModel
+    @ObservedObject private var manager = HighlightManager.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            styleRow
+            colorRow
+            if !model.themes.isEmpty || model.canNameTheme {
+                themesPill
+            }
+            Divider()
+            actionRow
+        }
+        .padding(16)
+        .frame(width: 304)
+    }
+
+    private var styleRow: some View {
+        HStack(spacing: 8) {
+            ForEach(HighlightStyle.allCases, id: \.self) { style in
+                Button {
+                    model.apply(color: model.color, style: style)
+                } label: {
+                    HighlightStyleSample(color: model.color, style: style)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay {
+                            if model.isMarked && model.style == style {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(style.displayName)
+                .accessibilityAddTraits(model.isMarked && model.style == style ? .isSelected : [])
+            }
+        }
+    }
+
+    private var colorRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(model.colors) { color in
+                    let isTicked = model.isMarked && model.color == color
+                    Button {
+                        model.apply(color: color, style: model.style)
+                    } label: {
+                        Circle()
+                            .fill(color.color)
+                            .frame(width: 32, height: 32)
+                            .overlay {
+                                if isTicked {
+                                    Image(systemName: "checkmark")
+                                        .font(.footnote.bold())
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(color.name)
+                    .accessibilityAddTraits(isTicked ? .isSelected : [])
+                    .contextMenu {
+                        if model.canNameTheme {
+                            Button {
+                                model.nameTheme(color: color, style: model.style)
+                            } label: {
+                                Label("Name This Mark…", systemImage: "tag")
+                            }
+                        }
+                        if model.colors.count > 1 {
+                            Button(role: .destructive) {
+                                model.removeFromPalette(color)
+                            } label: {
+                                Label("Remove from Palette", systemImage: "minus.circle")
+                            }
+                        }
+                    }
+                }
+                AddCustomColorButton { color in
+                    model.addColor(color)
+                }
+                .frame(width: 32, height: 32)
+                .scaleEffect(32.0 / 36.0)
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private var themesPill: some View {
+        Menu {
+            ForEach(model.themes) { theme in
+                Button {
+                    model.apply(theme)
+                } label: {
+                    Label {
+                        Text(theme.name)
+                    } icon: {
+                        Image(uiImage: HighlightMarkSwatch.image(color: theme.highlightColor, style: theme.highlightStyle))
+                    }
+                }
+            }
+            if model.canNameTheme {
+                if !model.themes.isEmpty { Divider() }
+                Button {
+                    model.nameTheme(color: model.color, style: model.style)
+                } label: {
+                    Label(model.theme == nil ? "Name This Mark…" : "Edit Theme…", systemImage: "tag")
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if let theme = model.theme {
+                    Image(uiImage: HighlightMarkSwatch.image(color: theme.highlightColor, style: theme.highlightStyle))
+                    Text(theme.name)
+                        .lineLimit(1)
+                } else {
+                    Image(systemName: "tag")
+                    Text("Themes")
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.subheadline)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color.secondary.opacity(0.12), in: Capsule())
+        }
+        .tint(.primary)
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 6) {
+            panelAction("Add Note", systemImage: "note.text.badge.plus") {
+                model.dismiss { model.onAddNote() }
+            }
+            panelAction("Copy as Citation", systemImage: "quote.opening") {
+                UIPasteboard.general.string = model.citation
+                model.dismiss(nil)
+            }
+            Menu {
+                if let lookUp = model.onLookUp {
+                    Button {
+                        model.dismiss { lookUp() }
+                    } label: {
+                        Label("Look Up", systemImage: "character.book.closed")
+                    }
+                }
+                if let search = model.onSearch {
+                    Button {
+                        model.dismiss { search() }
+                    } label: {
+                        Label("Search", systemImage: "magnifyingglass")
+                    }
+                }
+                Button {
+                    UIPasteboard.general.string = model.text
+                    model.dismiss(nil)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                if manager.availableSets.count > 1 {
+                    Divider()
+                    Picker(selection: Binding(
+                        get: { model.target.setId ?? "" },
+                        set: { model.useSet($0) }
+                    )) {
+                        ForEach(manager.availableSets, id: \.id) { set in
+                            Text(set.name).tag(set.id)
+                        }
+                    } label: {
+                        Label("Highlight Set", systemImage: "folder")
+                    }
+                    .pickerStyle(.menu)
+                }
+            } label: {
+                panelActionLabel("More", systemImage: "ellipsis.circle")
+            }
+            .tint(.primary)
+            // The words' highlight, which the panel shows, can go too.
+            if !model.current.isEmpty {
+                panelAction("Remove", systemImage: "trash") {
+                    model.remove()
+                }
+                .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func panelAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            panelActionLabel(title, systemImage: systemImage)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func panelActionLabel(_ title: String, systemImage: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.system(size: 18))
+            // Two lines where four share the row, not cut short
+            Text(title)
+                .font(.caption2)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .top)
+        .contentShape(Rectangle())
+    }
+}
+
+/// "Aa" drawn as a highlight in a style draws it: on a band of the colour,
+/// or over a line of it, as thick as the reader's.
+struct HighlightStyleSample: View {
+    let color: HighlightColor
+    let style: HighlightStyle
+
+    var body: some View {
+        let sample = Text("Aa").font(.system(size: 17, weight: .medium, design: .serif))
+        switch style {
+        case .highlight:
+            sample
+                .padding(.horizontal, 3)
+                .background(color.readerFill, in: RoundedRectangle(cornerRadius: 3))
+        case .underlineSolid, .underlineDashed, .underlineDotted:
+            sample
+                .overlay(alignment: .bottom) {
+                    style.underlineShape(color: color.color)
+                        .frame(width: 24, height: 2.5)
+                        .offset(y: 2)
+                }
+        }
+    }
+}

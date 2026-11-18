@@ -337,6 +337,8 @@ struct ChapterTextView: UIViewRepresentable {
     let onAddNote: (TranslationVerse) -> Void
     let onShowStrongs: (AnnotatedWord) -> Void
     var onSearchText: ((String) -> Void)?
+    /// Names a colour and style as a theme of the set shown.
+    var onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil
     @Binding var scrollToVerseId: Int?
     let positionTracker: VersePositionTracker
     let onScrollToPosition: ((CGFloat) -> Void)?
@@ -1082,17 +1084,18 @@ struct ChapterTextView: UIViewRepresentable {
                     let backgroundColor = UIColor.lampHighlightFill(highlight.highlightColor.uiColor)
                     result.addAttribute(.backgroundColor, value: backgroundColor, range: highlightRange)
 
+                // Thick, as the Mac draws them: a thin one read as a link.
                 case .underlineSolid:
-                    result.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: highlightRange)
+                    result.addAttribute(.underlineStyle, value: NSUnderlineStyle.thick.rawValue, range: highlightRange)
                     result.addAttribute(.underlineColor, value: highlight.highlightColor.uiColor, range: highlightRange)
 
                 case .underlineDashed:
-                    let style = NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDash.rawValue
+                    let style = NSUnderlineStyle.thick.rawValue | NSUnderlineStyle.patternDash.rawValue
                     result.addAttribute(.underlineStyle, value: style, range: highlightRange)
                     result.addAttribute(.underlineColor, value: highlight.highlightColor.uiColor, range: highlightRange)
 
                 case .underlineDotted:
-                    let style = NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue
+                    let style = NSUnderlineStyle.thick.rawValue | NSUnderlineStyle.patternDot.rawValue
                     result.addAttribute(.underlineStyle, value: style, range: highlightRange)
                     result.addAttribute(.underlineColor, value: highlight.highlightColor.uiColor, range: highlightRange)
                 }
@@ -1100,7 +1103,7 @@ struct ChapterTextView: UIViewRepresentable {
         }
     }
 
-    class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
+    class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate, UIPopoverPresentationControllerDelegate {
         var parent: ChapterTextView
         weak var textView: UITextView?
         var verseRanges: [Int: NSRange] = [:]
@@ -1382,6 +1385,13 @@ struct ChapterTextView: UIViewRepresentable {
             var wordRange = NSRange(location: NSNotFound, length: 0)
             let attributes = textView.attributedText.attributes(at: characterIndex, effectiveRange: &wordRange)
 
+            // A highlight tapped opens its panel, which can still look the
+            // word up (More)
+            if let highlight = highlight(at: characterIndex) {
+                showHighlightPanel(on: highlight, lookUp: attributes[.strongsWord] as? AnnotatedWord)
+                return
+            }
+
             // Check if tapped on a Strong's annotated word
             if let annotatedWord = attributes[.strongsWord] as? AnnotatedWord {
                 markLookedUpWord(wordRange)
@@ -1455,11 +1465,11 @@ struct ChapterTextView: UIViewRepresentable {
         func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration, suggestedActions: [UIMenuElement]) -> UIMenu? {
             guard let verse = currentVerse else { return nil }
             let target = HighlightManager.shared.target
-            let length = verseTextRanges[verse.ref].flatMap { verseSelections($0).first?.text.count }
 
             let actions: [UIAction] = [
-                UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { _ in
-                    HighlightManager.shared.highlightEntireVerse(verse.ref, textLength: length, to: target)
+                UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
+                    guard let range = self?.verseTextRanges[verse.ref] else { return }
+                    self?.showHighlightPanel(for: range, to: target)
                 },
                 UIAction(title: "Add Note", image: UIImage(systemName: "note.text.badge.plus")) { [weak self] _ in
                     self?.parent.onAddNote(verse)
@@ -1502,23 +1512,14 @@ struct ChapterTextView: UIViewRepresentable {
             }
 
             if selectionOverlapsVerseText {
-                // Check if selection overlaps with existing highlights
-                let overlappingHighlights = findHighlightsInRange(range)
-
-                if !overlappingHighlights.isEmpty {
-                    // Add Remove Highlight action
-                    let removeAction = UIAction(title: "Remove Highlight", image: UIImage(systemName: "highlighter"), attributes: .destructive) { [weak self] _ in
-                        self?.removeHighlightsInRange(range)
-                    }
-                    actions.insert(removeAction, at: 0)
-                } else {
-                    // Add Highlight action, to the set shown as the words were chosen
-                    let target = HighlightManager.shared.target
-                    let highlightAction = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
-                        self?.createHighlightForSelection(range, to: target)
-                    }
-                    actions.insert(highlightAction, at: 0)
+                // The highlight panel, for the set shown as the words were
+                // chosen: its styles, colours and themes, and Remove where the
+                // words have a highlight already
+                let target = HighlightManager.shared.target
+                let highlightAction = UIAction(title: "Highlight", image: UIImage(systemName: "highlighter")) { [weak self] _ in
+                    self?.showHighlightPanel(for: range, to: target)
                 }
+                actions.insert(highlightAction, at: 0)
             }
 
             // Add Search action
@@ -1564,20 +1565,18 @@ struct ChapterTextView: UIViewRepresentable {
             }
         }
 
-        /// Remove highlights that overlap with the given text range (supports partial removal with whitespace trimming)
-        private func removeHighlightsInRange(_ range: NSRange) {
-            let selections = verseSelections(range)
-
+        /// Remove `shown` where they overlap the parts of verses given
+        /// (supports partial removal with whitespace trimming): the highlights
+        /// the panel showed when it opened, and no other beneath or beside
+        /// them, whichever set the reader shows by now
+        private func removeHighlights(in selections: [(ref: Int, text: [Character], sc: Int, ec: Int)], of shown: [HighlightEntry]) {
             Task { @MainActor in
                 for selection in selections {
                     let verseText = selection.text
                     let selScInVerse = selection.sc
                     let selEcInVerse = selection.ec
 
-                    // Get highlights for this verse
-                    let highlights = parent.highlightsByVerse[selection.ref] ?? []
-
-                    for highlight in highlights {
+                    for highlight in shown where highlight.ref == selection.ref {
                         // Check if selection overlaps with this highlight
                         guard selScInVerse < highlight.ec && selEcInVerse > highlight.sc else { continue }
 
@@ -1651,83 +1650,156 @@ struct ChapterTextView: UIViewRepresentable {
             textView?.selectedRange = NSRange(location: 0, length: 0)
         }
 
-        /// Highlight the given text range, each verse it touches, in the
-        /// target's set (auto-trims whitespace)
-        private func createHighlightForSelection(_ range: NSRange, to target: HighlightManager.Target) {
-            let spans = verseSelections(range).compactMap { selection -> (ref: Int, sc: Int, ec: Int)? in
+        // MARK: - Highlight Panel
+
+        /// The highlight drawn at a character of the text: the last made,
+        /// which is drawn on top.
+        private func highlight(at index: Int) -> HighlightEntry? {
+            guard let (ref, range) = verseTextRanges.first(where: { NSLocationInRange(index, $0.value) }),
+                  let highlights = parent.highlightsByVerse[ref], !highlights.isEmpty,
+                  let selection = verseSelections(range).first else { return nil }
+            let offset = VerseTextOffsets.characterOffset(utf16: index - range.location, in: String(selection.text))
+            return highlights.last { $0.sc <= offset && offset < $0.ec }
+        }
+
+        /// Opens the panel by the words of `range`, each verse's part trimmed
+        /// of the space at its ends, for the set shown as they were chosen.
+        private func showHighlightPanel(for range: NSRange, to target: HighlightManager.Target) {
+            let selections = verseSelections(range)
+            let spans = selections.compactMap { selection -> HighlightSpan? in
                 guard let trimmed = VerseTextOffsets.trimmed(selection.sc, selection.ec, in: selection.text) else { return nil }
-                return (ref: selection.ref, sc: trimmed.start, ec: trimmed.end)
+                return HighlightSpan(ref: selection.ref, sc: trimmed.start, ec: trimmed.end)
             }
-            guard !spans.isEmpty else {
-                print("[Highlight] No matching verse found for selection")
-                return
-            }
-
-            let manager = HighlightManager.shared
-            let overlapsHidden = manager.highlightsHidden && spans.contains {
-                !manager.getOverlappingHighlights(ref: $0.ref, startChar: $0.sc, endChar: $0.ec).isEmpty
-            }
-            if overlapsHidden {
-                showHighlightConflictDialog(spans: spans, target: target)
-            } else {
-                // Silently show highlights again if they were hidden
-                Task { @MainActor in
-                    manager.highlightsHidden = false
-                    Self.addHighlights(spans, to: target)
-                }
-            }
-
-            // Clear selection after highlighting
-            textView?.selectedRange = NSRange(location: 0, length: 0)
-        }
-
-        private static func addHighlights(_ spans: [(ref: Int, sc: Int, ec: Int)], to target: HighlightManager.Target) {
-            do {
-                // One set for the whole selection, made once if there is none
-                let target = try HighlightManager.shared.resolved(target)
-                for span in spans {
-                    try HighlightManager.shared.addHighlight(ref: span.ref, startChar: span.sc, endChar: span.ec, to: target)
-                }
-            } catch {
-                print("[Highlight] Error adding highlight: \(error)")
-            }
-        }
-
-        /// Show dialog when highlighting would overlap existing highlights while highlights are hidden
-        private func showHighlightConflictDialog(spans: [(ref: Int, sc: Int, ec: Int)], target: HighlightManager.Target) {
-            guard let viewController = textView?.window?.rootViewController else {
-                print("[Highlight] No view controller found for alert")
-                return
-            }
-
-            // Find the topmost presented controller
-            var topController = viewController
-            while let presented = topController.presentedViewController {
-                topController = presented
-            }
-
-            let alert = UIAlertController(
-                title: "Highlights Hidden",
-                message: "This selection overlaps with existing highlights that are currently hidden.",
-                preferredStyle: .alert
+            showHighlightPanel(
+                spans: spans,
+                texts: Dictionary(selections.map { ($0.ref, $0.text) }, uniquingKeysWith: { first, _ in first }),
+                target: target,
+                current: findHighlightsInRange(range).map(\.highlight),
+                removing: selections,
+                at: range
             )
+        }
 
-            alert.addAction(UIAlertAction(title: "Show Highlights", style: .default) { _ in
-                Task { @MainActor in
-                    HighlightManager.shared.highlightsHidden = false
-                }
-            })
+        /// Opens the panel on a highlight tapped: its mark ticked, and Remove.
+        private func showHighlightPanel(on highlight: HighlightEntry, lookUp word: AnnotatedWord?) {
+            guard let verseRange = verseTextRanges[highlight.ref],
+                  let verse = verseSelections(verseRange).first,
+                  let inVerse = VerseTextOffsets.utf16Range(characters: highlight.sc, highlight.ec, in: String(verse.text))
+            else { return }
+            let manager = HighlightManager.shared
+            showHighlightPanel(
+                spans: [HighlightSpan(ref: highlight.ref, sc: highlight.sc, ec: highlight.ec)],
+                texts: [highlight.ref: verse.text],
+                // Its own set, which a change of mark stays in
+                target: HighlightManager.Target(setId: highlight.setId, translationId: manager.currentTranslationId),
+                current: [highlight],
+                removing: [(ref: highlight.ref, text: verse.text, sc: highlight.sc, ec: highlight.ec)],
+                lookUp: word,
+                at: NSRange(location: verseRange.location + inVerse.location, length: inVerse.length)
+            )
+        }
 
-            alert.addAction(UIAlertAction(title: "Modify Existing", style: .destructive) { _ in
-                Task { @MainActor in
-                    HighlightManager.shared.highlightsHidden = false
-                    Self.addHighlights(spans, to: target)
-                }
-            })
+        private func showHighlightPanel(
+            spans: [HighlightSpan],
+            texts: [Int: [Character]],
+            target: HighlightManager.Target,
+            current: [HighlightEntry],
+            removing: [(ref: Int, text: [Character], sc: Int, ec: Int)],
+            lookUp word: AnnotatedWord? = nil,
+            at range: NSRange
+        ) {
+            guard !spans.isEmpty, let textView else { return }
+            let words = spans.compactMap { span -> String? in
+                guard let text = texts[span.ref], span.ec <= text.count else { return nil }
+                return String(text[span.sc..<span.ec])
+            }.joined(separator: " ")
+            let model = HighlightPanelModel(
+                spans: spans,
+                target: target,
+                text: words,
+                citation: Self.citation(of: spans, words: words, translationId: target.translationId),
+                current: current
+            )
+            let firstRef = spans[0].ref
+            model.onAddNote = { [weak self] in
+                guard let self, let verse = self.parent.verses.first(where: { $0.ref == firstRef }) else { return }
+                self.parent.onAddNote(verse)
+            }
+            if let search = parent.onSearchText {
+                model.onSearch = { search(words) }
+            }
+            if let word {
+                let lookUp = parent.onShowStrongs
+                model.onLookUp = { lookUp(word) }
+            }
+            model.onRemove = { [weak self] in self?.removeHighlights(in: removing, of: current) }
+            model.onNameTheme = parent.onEditTheme
+            present(HighlightPanel(model: model), from: rect(for: range, in: textView), in: textView, model: model)
+        }
 
-            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        /// The panel as a popover by the words, on a phone too.
+        private func present(_ panel: HighlightPanel, from rect: CGRect, in textView: UITextView, model: HighlightPanelModel) {
+            guard var presenter = textView.window?.rootViewController else { return }
+            while let presented = presenter.presentedViewController { presenter = presented }
+            let host = UIHostingController(rootView: panel)
+            host.sizingOptions = .preferredContentSize
+            host.modalPresentationStyle = .popover
+            if let popover = host.popoverPresentationController {
+                popover.sourceView = textView
+                popover.sourceRect = rect
+                popover.permittedArrowDirections = [.up, .down]
+                popover.delegate = self
+            }
+            // Weakly: the panel's model lives as long as the panel does.
+            model.dismiss = { [weak host, weak self, weak textView] then in
+                if let textView { self?.endSelection(in: textView) }
+                guard let host, host.presentingViewController != nil else { then?(); return }
+                host.dismiss(animated: true) { then?() }
+            }
+            presenter.present(host, animated: true)
+        }
 
-            topController.present(alert, animated: true)
+        func adaptivePresentationStyle(for controller: UIPresentationController, traitCollection: UITraitCollection) -> UIModalPresentationStyle {
+            .none
+        }
+
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+            if let textView { endSelection(in: textView) }
+        }
+
+        /// Where the words of `range` are drawn, in the text view.
+        private func rect(for range: NSRange, in textView: UITextView) -> CGRect {
+            guard let start = textView.position(from: textView.beginningOfDocument, offset: range.location),
+                  let end = textView.position(from: start, offset: range.length),
+                  let textRange = textView.textRange(from: start, to: end) else { return .zero }
+            let rects = textView.selectionRects(for: textRange).map(\.rect).filter { !$0.isEmpty }
+            return rects.dropFirst().reduce(rects.first ?? .zero) { $0.union($1) }
+        }
+
+        /// The words with their reference, as the Mac copies them
+        /// (`ReaderCitationFormatter`): "(John 3:16-17 ESV)", then the words
+        /// in straight quotes, their spaces made single.
+        static func citation(of spans: [HighlightSpan], words: String, translationId: String?) -> String {
+            guard let first = spans.first?.ref, let last = spans.last?.ref else { return words }
+            let (_, chapter, book) = splitVerseId(first)
+            let (_, endChapter, endBook) = splitVerseId(last)
+            let bookName = BookOsisCache.shared.displayName(for: book)
+            var reference = "\(bookName) \(chapter):\(first % 1000)"
+            if endBook != book {
+                reference += "-\(BookOsisCache.shared.displayName(for: endBook)) \(endChapter):\(last % 1000)"
+            } else if endChapter != chapter {
+                // The whole end reference, not one in the first chapter
+                reference += "-\(endChapter):\(last % 1000)"
+            } else if last != first {
+                reference += "-\(last % 1000)"
+            }
+            let translation = translationId.flatMap { try? TranslationDatabase.shared.getTranslation(id: $0) }
+            // The abbreviation, without a Strong's "s" an old one had
+            let abbreviation = translation.map { LampTranslationID.renamed[$0.abbreviation] ?? $0.abbreviation }
+                ?? translation?.name
+            if let abbreviation, !abbreviation.isEmpty { reference += " \(abbreviation)" }
+            let passage = words.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            return "(\(reference))\n\"\(passage)\""
         }
     }
 }
@@ -1901,7 +1973,6 @@ struct ReaderView: View {
     @State private var themeEditStyle: HighlightStyle = .highlight
     @State private var themeEditExisting: HighlightTheme?
     @State private var showingThemeEditor: Bool = false
-    @State private var pendingThemeEdit: Bool = false
 
     let LOADING_NEXT_CHAPTER = "next_chapter"
     let LOADING_PREV_CHAPTER = "prev_chapter"
@@ -2206,12 +2277,6 @@ struct ReaderView: View {
             notesModules: notesModules,
             commentarySeries: commentarySeries,
             devotionalsModules: devotionalsModules,
-            onEditTheme: { color, style, existing in
-                themeEditColor = color
-                themeEditStyle = style
-                themeEditExisting = existing
-                pendingThemeEdit = true
-            },
             planContext: planHeaderContext
         )
     }
@@ -2958,6 +3023,12 @@ struct ReaderView: View {
                                     bottomSearchText = text
                                     showingSearch = true
                                 },
+                                onEditTheme: { color, style, existing in
+                                    themeEditColor = color
+                                    themeEditStyle = style
+                                    themeEditExisting = existing
+                                    showingThemeEditor = true
+                                },
                                 scrollToVerseId: $internalScrollToVerseId,
                                 positionTracker: positionTracker,
                                 onScrollToPosition: { (yPosition: CGFloat) -> Void in
@@ -3363,6 +3434,10 @@ struct ReaderView: View {
             }) {
                 searchSheet
             }
+            // The notes' All Highlights: Search, on every highlight
+            .onReceive(SearchStateManager.shared.$showsAllHighlights) { asked in
+                if asked { showingSearch = true }
+            }
             .sheet(item: $selectedStrongsWord, onDismiss: {
                 NotificationCenter.default.post(name: .lampLookedUpWordDismissed, object: nil)
             }) { word in
@@ -3413,6 +3488,7 @@ struct ReaderView: View {
                         existingTheme: themeEditExisting
                     ) { theme in
                         try? ModuleDatabase.shared.saveHighlightTheme(theme)
+                        HighlightManager.shared.themesChanged()
                         // Trigger sync
                         if let set = try? ModuleDatabase.shared.getHighlightSet(id: setId) {
                             Task {
@@ -3441,16 +3517,6 @@ struct ReaderView: View {
                 readerHeader
             }
             .statusBarHidden(toolbarsHidden)
-            .onChange(of: showingOptionsMenu) { _, isShowing in
-                if !isShowing && pendingThemeEdit {
-                    pendingThemeEdit = false
-                    // Delay to allow popover dismissal animation to complete
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(100))
-                        showingThemeEditor = true
-                    }
-                }
-            }
         }
         .onAppear {
             // Validate currentVerseId - reset to Genesis 1:1 if invalid

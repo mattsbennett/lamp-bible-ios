@@ -107,6 +107,11 @@ struct HighlightThemeEditorSheet: View {
     private func deleteTheme() {
         if let existing = existingTheme {
             try? ModuleDatabase.shared.deleteHighlightTheme(id: existing.id)
+            HighlightManager.shared.themesChanged()
+            // To other devices, as a save goes
+            if let set = try? ModuleDatabase.shared.getHighlightSet(id: setId) {
+                Task { try? await ModuleSyncManager.shared.exportModule(id: set.moduleId) }
+            }
         }
         dismiss()
     }

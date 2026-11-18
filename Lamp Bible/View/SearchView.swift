@@ -65,7 +65,7 @@ enum ModuleSearchMode: String, CaseIterable, Codable {
         switch self {
         case .text: return "Text"
         case .strongsKey: return "Strong's Key"
-        case .highlightColor: return "Highlight Color"
+        case .highlightColor: return "Highlights"
         }
     }
 
@@ -73,7 +73,7 @@ enum ModuleSearchMode: String, CaseIterable, Codable {
         switch self {
         case .text: return "textformat"
         case .strongsKey: return "number"
-        case .highlightColor: return "paintpalette"
+        case .highlightColor: return "highlighter"
         }
     }
 
@@ -81,7 +81,7 @@ enum ModuleSearchMode: String, CaseIterable, Codable {
         switch self {
         case .text: return "Search modules..."
         case .strongsKey: return "H430, G2316..."
-        case .highlightColor: return "Select colors..."
+        case .highlightColor: return "Words in highlighted verses..."
         }
     }
 }
@@ -126,6 +126,9 @@ class SearchStateManager: ObservableObject {
 
     // Shared state
     @Published var isSearching: Bool = false
+    /// Asked for by the notes' All Highlights: Search opened on every
+    /// highlight. The reader opens Search for it; Search takes it on appearing.
+    @Published var showsAllHighlights: Bool = false
     /// The books searched, nil for all: verses in the Bible scope, and
     /// verses and highlights among the modules, as the Mac narrows them.
     @Published var bookRange: ClosedRange<Int>? = nil
@@ -469,6 +472,10 @@ struct SearchView: View {
     // Highlight color search
     @State private var filterHighlightColors: Set<String> = []  // For text search color filtering
     @State private var selectedSearchColors: Set<String> = []  // Colors selected in color search mode
+    /// Styles and themes chosen with the colours: Highlights' "Marked as".
+    @State private var selectedSearchStyles: Set<LampHighlightStyle> = []
+    @State private var selectedSearchThemes: Set<LampHighlightMark> = []
+    @State private var markChoices = HighlightMarkChoices()
     @State private var colorSearchTranslationId: String? = nil  // Filter by translation in color search mode
 
     // Module result sheets
@@ -548,15 +555,17 @@ struct SearchView: View {
                 strongsKey: LampStrongsKey.typedKey(query) ?? query.uppercased()
             )
         case .highlightColor:
-            // No words: the box is hidden in this mode, and what it last held
-            // played no part. Core keeps no search of colours alone.
+            // Core keeps a search with words; a list by marks alone isn't
+            // a search to go back to.
             return LampSearchHistory.Entry(
-                query: "",
+                query: query,
                 kinds: [.highlights],
                 moduleIDs: filterModuleIds,
                 translationID: colorSearchTranslationId,
                 bookRange: bookRange,
-                highlightColors: selectedSearchColors
+                highlightColors: selectedSearchColors.isEmpty ? nil : selectedSearchColors,
+                highlightStyles: selectedSearchStyles,
+                highlightThemes: selectedSearchThemes
             )
         }
     }
@@ -586,6 +595,8 @@ struct SearchView: View {
             if entry.kinds == [.highlights] {
                 moduleSearchMode = .highlightColor
                 selectedSearchColors = entry.highlightColors ?? []
+                selectedSearchStyles = entry.highlightStyles ?? []
+                selectedSearchThemes = entry.highlightThemes ?? []
                 colorSearchTranslationId = entry.translationID.map(TranslationDatabase.shared.held)
                 moduleSearchText = entry.query
             } else if let key = entry.strongsKey {
@@ -701,11 +712,9 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Custom search bar
-                if searchScope == .modules && moduleSearchMode == .highlightColor {
-                    highlightColorSearchBar
-                } else {
-                    textSearchBar
+                textSearchBar
+                if isHighlightsScope {
+                    highlightMarksBar
                 }
 
                 // Module search filters
@@ -719,8 +728,9 @@ struct SearchView: View {
 
                 // Content - frame ensures consistent sizing during state transitions
                 Group {
-                    // Check for valid search input (text or colors in color mode)
-                    let hasValidInput = !currentSearchText.isEmpty || (moduleSearchMode == .highlightColor && !selectedSearchColors.isEmpty)
+                    // Something to search for: words, or Highlights, which
+                    // lists every highlight with nothing typed
+                    let hasValidInput = !currentSearchText.isEmpty || isHighlightsScope
                     if !hasValidInput {
                         emptySearchState
                     } else if isSearching {
@@ -770,14 +780,25 @@ struct SearchView: View {
                         // Scope selection
                         ForEach(SearchScope.allCases, id: \.self) { scope in
                             Button {
+                                if scope == .modules && isHighlightsScope {
+                                    moduleSearchMode = .text
+                                }
                                 searchScope = scope
                             } label: {
-                                if scope == searchScope {
+                                if scope == searchScope && !isHighlightsScope {
                                     Label(scope.rawValue, systemImage: "checkmark")
                                 } else {
                                     Label(scope.rawValue, systemImage: scope.icon)
                                 }
                             }
+                        }
+                        // Highlights is the Modules scope's list of them,
+                        // offered as a scope of its own as the Mac has it.
+                        Button {
+                            showHighlights()
+                        } label: {
+                            Label(ModuleSearchMode.highlightColor.displayName,
+                                  systemImage: isHighlightsScope ? "checkmark" : ModuleSearchMode.highlightColor.icon)
                         }
 
                         // Translation selection (only in standalone mode for Bible scope)
@@ -809,8 +830,9 @@ struct SearchView: View {
                         bookRangeMenu
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: searchScope.icon)
-                            Text(searchScope == .bible ? translationAbbreviation : searchScope.rawValue)
+                            Image(systemName: isHighlightsScope ? ModuleSearchMode.highlightColor.icon : searchScope.icon)
+                            Text(isHighlightsScope ? ModuleSearchMode.highlightColor.displayName
+                                 : searchScope == .bible ? translationAbbreviation : searchScope.rawValue)
                             if let books = SearchBookRange.shortName(of: bookRange) {
                                 Text("· \(books)")
                                     .lineLimit(1)
@@ -915,6 +937,10 @@ struct SearchView: View {
                 guard searchScope == .modules else { return }
                 resultsVisible = false
                 showEveryModuleType()
+                // Without words, Highlights lists them all again.
+                if isHighlightsScope && moduleSearchText.isEmpty {
+                    submitSearch()
+                }
             }
             .onChange(of: searchMode) {
                 // Clear results and auto-submit when switching modes with text
@@ -938,6 +964,7 @@ struct SearchView: View {
                 totalResultCount = 0
                 resultsVisible = false
                 showEveryModuleType()
+                if isHighlightsScope { submitSearch() }
             }
             .onChange(of: searchScope) {
                 // Clear results when switching scope - don't auto-search, let user see their previous text
@@ -946,6 +973,7 @@ struct SearchView: View {
                 totalResultCount = 0
                 resultsVisible = false
                 showEveryModuleType()
+                if isHighlightsScope { submitSearch() }
             }
             .onAppear {
                 // Reload settings in case they changed
@@ -958,6 +986,17 @@ struct SearchView: View {
                 // Override scope if specified (e.g., from lexicon Strong's search)
                 if let scope = initialSearchScope {
                     searchScope = scope
+                }
+                if stateManager.showsAllHighlights {
+                    stateManager.showsAllHighlights = false
+                    // All of them: nothing an earlier search narrowed by
+                    moduleSearchText = ""
+                    bookRange = nil
+                    colorSearchTranslationId = nil
+                    selectedSearchColors = []
+                    selectedSearchStyles = []
+                    selectedSearchThemes = []
+                    showHighlights()
                 }
 
                 // Use initial search text if provided - submit immediately
@@ -1005,17 +1044,19 @@ struct SearchView: View {
         let generation = filterLoadGeneration
         let moduleSearch = moduleSearch
         Task {
-            let (modules, tags, colors) = await Task.detached(priority: .userInitiated) {
+            let (modules, tags, colors, marks) = await Task.detached(priority: .userInitiated) {
                 (
                     moduleSearch.getSearchableModules(),
                     moduleSearch.getAllDevotionalTags(),
-                    moduleSearch.getAllHighlightColors()
+                    moduleSearch.getAllHighlightColors(),
+                    HighlightMarkChoices.load()
                 )
             }.value
             guard generation == filterLoadGeneration else { return }
             availableModules = modules
             availableTags = tags
             availableHighlightColors = colors
+            markChoices = marks
         }
     }
 
@@ -1104,93 +1145,122 @@ struct SearchView: View {
         return .default
     }
 
-    // MARK: - Highlight Color Search Bar
+    // MARK: - Highlights
 
-    /// Color selection bar shown when searching highlights by color
-    private var highlightColorSearchBar: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                // Search mode selector menu
-                Menu {
-                    ForEach(ModuleSearchMode.allCases, id: \.self) { mode in
-                        Button {
-                            moduleSearchMode = mode
-                            // Clear results when switching modes
-                            moduleSearchResults = []
-                            totalResultCount = 0
-                        } label: {
-                            Label(mode.displayName, systemImage: mode.icon)
-                        }
-                    }
-                } label: {
-                    Image(systemName: moduleSearchMode.icon)
-                        .foregroundStyle(Color.accentColor)
-                }
+    /// Search's Highlights: the Modules scope's list of them.
+    private var isHighlightsScope: Bool {
+        searchScope == .modules && moduleSearchMode == .highlightColor
+    }
 
-                Text(selectedSearchColors.isEmpty ? "Select colors to search" : "\(selectedSearchColors.count) color\(selectedSearchColors.count == 1 ? "" : "s") selected")
-                    .foregroundStyle(selectedSearchColors.isEmpty ? .secondary : .primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: 22)  // Match TextField height
+    /// Opens Highlights, which lists every highlight at once.
+    private func showHighlights() {
+        let wasShown = isHighlightsScope
+        searchScope = .modules
+        moduleSearchMode = .highlightColor
+        // Nothing changed for the handlers to list them: list them here.
+        if wasShown { submitSearch() }
+    }
 
-                if !selectedSearchColors.isEmpty {
-                    Button {
-                        selectedSearchColors.removeAll()
-                        moduleSearchResults = []
-                        totalResultCount = 0
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(UIColor.secondarySystemBackground))
-            .cornerRadius(10)
-            .padding(.horizontal)
-            .padding(.top, 8)
+    private var hasHighlightMarks: Bool {
+        !selectedSearchColors.isEmpty || !selectedSearchStyles.isEmpty || !selectedSearchThemes.isEmpty
+    }
 
-            // Color choices
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(availableHighlightColors, id: \.hex) { color in
-                        Button {
-                            if selectedSearchColors.contains(color.hex) {
-                                selectedSearchColors.remove(color.hex)
-                            } else {
-                                selectedSearchColors.insert(color.hex)
-                            }
-                            // Trigger search when colors change
-                            if !selectedSearchColors.isEmpty {
-                                DispatchQueue.main.async { submitSearch() }
-                            } else {
-                                moduleSearchResults = []
-                                totalResultCount = 0
-                            }
-                        } label: {
-                            Circle()
-                                .fill(color.color)
-                                .frame(width: 36, height: 36)
-                                .overlay {
-                                    if selectedSearchColors.contains(color.hex) {
-                                        Image(systemName: "checkmark")
-                                            .font(.body.bold())
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                                .overlay {
-                                    Circle()
-                                        .strokeBorder(selectedSearchColors.contains(color.hex) ? Color.primary : Color.clear, lineWidth: 2)
-                                }
-                        }
-                    }
-                }
-                .padding(.horizontal)
-            }
-
+    /// What the menu's label says is chosen.
+    private var highlightMarksSummary: String {
+        let names = markChoices.themes.filter { selectedSearchThemes.contains($0.mark) }.map(\.name)
+            + markChoices.colors.filter { selectedSearchColors.contains($0.hex) }.map(\.name)
+            + HighlightStyle.allCases.filter { selectedSearchStyles.contains($0.core) }.map(\.displayName)
+        switch names.count {
+        case 0: return "Anything"
+        case 1, 2: return names.joined(separator: ", ")
+        default: return "\(names.count) marks"
         }
+    }
+
+    /// Highlights' "Marked as": themes, colours and styles chosen together,
+    /// as the Mac's picker offers them. Colours and styles narrow each other;
+    /// a theme's highlights are found besides (core's
+    /// `LampHighlightSearch.matches`). Each choice lists again.
+    private var highlightMarksBar: some View {
+        HStack(spacing: 8) {
+            Menu {
+                if !markChoices.themes.isEmpty {
+                    Section("Themes") {
+                        ForEach(markChoices.themes) { theme in
+                            Toggle(isOn: markBinding(theme.mark, in: $selectedSearchThemes)) {
+                                Label {
+                                    Text(theme.name)
+                                } icon: {
+                                    Image(uiImage: HighlightMarkSwatch.image(
+                                        color: HighlightColor(hex: theme.mark.color), style: HighlightStyle(theme.mark.style)
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                }
+                Section("Colors") {
+                    ForEach(markChoices.colors) { color in
+                        Toggle(isOn: markBinding(color.hex, in: $selectedSearchColors)) {
+                            Label {
+                                Text(color.name)
+                            } icon: {
+                                Image(uiImage: HighlightMarkSwatch.image(color: color, style: .highlight))
+                            }
+                        }
+                    }
+                }
+                Section("Styles") {
+                    ForEach(HighlightStyle.allCases, id: \.self) { style in
+                        Toggle(isOn: markBinding(style.core, in: $selectedSearchStyles)) {
+                            Label {
+                                Text(style.displayName)
+                            } icon: {
+                                Image(uiImage: HighlightMarkSwatch.image(color: HighlightColor(hex: "8E8E93"), style: style))
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Marked as")
+                        .foregroundStyle(.secondary)
+                    Text(highlightMarksSummary)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            // Several can be chosen without opening it again.
+            .menuActionDismissBehavior(.disabled)
+            .tint(.primary)
+
+            Spacer(minLength: 0)
+
+            if hasHighlightMarks {
+                Button("Clear") {
+                    selectedSearchColors = []
+                    selectedSearchStyles = []
+                    selectedSearchThemes = []
+                    submitSearch()
+                }
+            }
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 20)
         .padding(.bottom, 8)
+    }
+
+    /// A mark's place in the chosen ones, which lists again when changed.
+    private func markBinding<Mark: Hashable>(_ mark: Mark, in marks: Binding<Set<Mark>>) -> Binding<Bool> {
+        Binding(
+            get: { marks.wrappedValue.contains(mark) },
+            set: { isOn in
+                if isOn { marks.wrappedValue.insert(mark) } else { marks.wrappedValue.remove(mark) }
+                submitSearch()
+            }
+        )
     }
 
     /// Translations that have highlight sets
@@ -1333,9 +1403,7 @@ struct SearchView: View {
                                     } else {
                                         colorSearchTranslationId = translation.id
                                     }
-                                    if !selectedSearchColors.isEmpty {
-                                        DispatchQueue.main.async { submitSearch() }
-                                    }
+                                    DispatchQueue.main.async { submitSearch() }
                                 }
                             }
                         }
@@ -1358,7 +1426,7 @@ struct SearchView: View {
                 case .strongsKey:
                     return ("Strong's Key Search", "number", "Enter a Strong's number (H430, G2316)")
                 case .highlightColor:
-                    return ("Search by Color", "paintpalette", "Select highlight colors to search")
+                    return ("Highlights", "highlighter", "Every highlight, by what it is marked as")
                 }
             } else {
                 if searchMode == .strongs {
@@ -1378,7 +1446,10 @@ struct SearchView: View {
     private var moduleNoResultsState: some View {
         let description: String = {
             if moduleSearchMode == .highlightColor {
-                return "No highlights found with the selected colors"
+                if !currentSearchText.isEmpty {
+                    return "No highlighted verses found matching \"\(currentSearchText)\""
+                }
+                return hasHighlightMarks ? "No highlights are marked that way" : "Nothing has been highlighted yet"
             } else {
                 return "No modules found matching \"\(currentSearchText)\""
             }
@@ -1430,17 +1501,7 @@ struct SearchView: View {
             ForEach(groupedModuleResults, id: \.type) { group in
                 Section {
                     ForEach(group.results) { result in
-                        let isLast = result.id == group.results.last?.id
-                        ModuleSearchResultRow(
-                            result: result,
-                            searchQuery: currentSearchText,
-                            fontSize: fontSize,
-                            onNavigate: {
-                                handleModuleResultTap(result)
-                            }
-                        )
-                        .id(result.id)
-                        .listRowSeparator(isLast ? .hidden : .visible, edges: .bottom)
+                        moduleResultRow(result, isLast: result.id == group.results.last?.id)
                     }
                 } header: {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1551,6 +1612,55 @@ struct SearchView: View {
                     }
                 }
             )
+        }
+    }
+
+    private func moduleResultRow(_ result: ModuleSearchResult, isLast: Bool) -> some View {
+        ModuleSearchResultRow(
+            result: result,
+            searchQuery: currentSearchText,
+            fontSize: fontSize,
+            onNavigate: {
+                handleModuleResultTap(result)
+            }
+        )
+        .id(result.id)
+        .listRowSeparator(isLast ? .hidden : .visible, edges: .bottom)
+        .swipeActions(edge: .trailing) {
+            if result.moduleType == .highlights, result.highlightId != nil {
+                Button(role: .destructive) {
+                    deleteHighlight(result)
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    /// Removes a highlight found, as the reader removes one: only from a set
+    /// of the reader's own, and only the row that set holds under that ID,
+    /// so an ID from elsewhere can never take another highlight with it.
+    private func deleteHighlight(_ result: ModuleSearchResult) {
+        guard let id = result.highlightId,
+              let entry = try? ModuleDatabase.shared.getHighlight(id: id),
+              entry.setId == result.moduleId,
+              let set = try? ModuleDatabase.shared.getHighlightSet(id: entry.setId),
+              (try? ModuleDatabase.shared.getModule(id: set.moduleId))?.isEditable == true
+        else { return }
+        do {
+            try HighlightManager.shared.removeHighlight(entry)
+            withAnimation {
+                moduleSearchResults.removeAll { $0.id == result.id }
+                if totalResultCount > 0 { totalResultCount -= 1 }
+            }
+            // More were found than shown: the page is read again, so those
+            // not shown yet stay within reach.
+            if moduleMoreIn.contains(.highlights) {
+                searchTask?.cancel()
+                searchTask = Task { await performSearchAsync(showLoadingState: false) }
+            }
+        } catch {
+            print("[Search] Could not remove highlight: \(error)")
         }
     }
 
@@ -1816,12 +1926,19 @@ struct SearchView: View {
             }
 
         case .highlightColor:
-            // Color search - only highlights
+            // Every highlight of the marks chosen, of all when none are,
+            // narrowed by any words typed
             filter.types = [.highlights]
+            filter.listsHighlights = true
             if !selectedSearchColors.isEmpty {
                 filter.highlightColors = selectedSearchColors
             }
-            filter.highlightColorOnly = true
+            if !selectedSearchStyles.isEmpty {
+                filter.highlightStyles = selectedSearchStyles
+            }
+            if !selectedSearchThemes.isEmpty {
+                filter.highlightThemes = selectedSearchThemes
+            }
             // Filter by translation if specified
             if let translationId = colorSearchTranslationId {
                 filter.translationIds = [translationId]
@@ -1839,9 +1956,9 @@ struct SearchView: View {
         // Validation
         let hasQuery = query.count >= 2
         let hasKeyFilter = filter.strongsKey != nil
-        let hasColorSearch = moduleSearchMode == .highlightColor && !selectedSearchColors.isEmpty
+        let listsHighlights = filter.listsHighlights
 
-        guard hasQuery || hasKeyFilter || hasColorSearch else {
+        guard hasQuery || hasKeyFilter || listsHighlights else {
             moduleSearchResults = []
             stateManager.moduleScripture = nil
             totalResultCount = 0
@@ -1852,7 +1969,8 @@ struct SearchView: View {
             isSearching = true
         }
 
-        let searchQuery = (moduleSearchMode == .strongsKey || moduleSearchMode == .highlightColor) ? "" : query
+        // Highlights take words of one letter too: they narrow, not search.
+        let searchQuery = moduleSearchMode == .strongsKey ? "" : query
         let moduleSearch = moduleSearch
         let limit = resultLimit
         let filterToSearch = filter
@@ -2407,18 +2525,17 @@ struct ModuleSearchResultRow: View {
 
                             attrText.foregroundColor = .primary
 
+                            // As the reader draws it, not in the search's
+                            // yellow: its own colour and style.
                             switch style {
                             case .highlight:
-                                attrText.backgroundColor = highlightColor.highlightColor
+                                attrText.backgroundColor = highlightColor.readerFill
                             case .underlineSolid:
-                                attrText.underlineStyle = Text.LineStyle(pattern: .solid)
-                                attrText.uiKit.underlineColor = highlightColor.uiColor
+                                attrText.underlineStyle = Text.LineStyle(pattern: .solid, color: highlightColor.color)
                             case .underlineDashed:
-                                attrText.underlineStyle = Text.LineStyle(pattern: .dash)
-                                attrText.uiKit.underlineColor = highlightColor.uiColor
+                                attrText.underlineStyle = Text.LineStyle(pattern: .dash, color: highlightColor.color)
                             case .underlineDotted:
-                                attrText.underlineStyle = Text.LineStyle(pattern: .dot)
-                                attrText.uiKit.underlineColor = highlightColor.uiColor
+                                attrText.underlineStyle = Text.LineStyle(pattern: .dot, color: highlightColor.color)
                             }
                         } else {
                             // A searched word, as `Text.findMatch` marks it
@@ -3838,8 +3955,8 @@ private struct HighlightedVerseContent: View {
                     .font(.body)
                     .lineSpacing(6)
             } else {
-                // Fallback to snippet
-                Text(snippet)
+                // Fallback to snippet, without its marks
+                Text(snippet.replacingOccurrences(of: "<mark>", with: "").replacingOccurrences(of: "</mark>", with: ""))
                     .font(.body)
                     .lineSpacing(6)
             }
@@ -3876,18 +3993,16 @@ private struct HighlightedVerseContent: View {
             let range = attrStart..<attrEnd
             let color = highlight.highlightColor.color
 
+            // As the reader draws it
             switch highlight.highlightStyle {
             case .highlight:
-                attrString[range].backgroundColor = color.opacity(0.4)
+                attrString[range].backgroundColor = highlight.highlightColor.readerFill
             case .underlineSolid:
-                attrString[range].underlineStyle = Text.LineStyle(pattern: .solid)
-                attrString[range].uiKit.underlineColor = UIColor(color)
+                attrString[range].underlineStyle = Text.LineStyle(pattern: .solid, color: color)
             case .underlineDashed:
-                attrString[range].underlineStyle = Text.LineStyle(pattern: .dash)
-                attrString[range].uiKit.underlineColor = UIColor(color)
+                attrString[range].underlineStyle = Text.LineStyle(pattern: .dash, color: color)
             case .underlineDotted:
-                attrString[range].underlineStyle = Text.LineStyle(pattern: .dot)
-                attrString[range].uiKit.underlineColor = UIColor(color)
+                attrString[range].underlineStyle = Text.LineStyle(pattern: .dot, color: color)
             }
         }
 

@@ -1042,6 +1042,127 @@ struct NoteSectionData: Equatable {
     }
 }
 
+/// A row of the notes list: the chapter's highlights, or a note.
+enum NotesListItem: Equatable {
+    case highlights([ChapterHighlightRow])
+    case section(NoteSectionData)
+}
+
+/// A highlight of the chapter, as the notes list it: the words it marks,
+/// cut short with an ellipsis where it starts or ends inside its verse, and
+/// the name of its theme, if its colour and style have one.
+struct ChapterHighlightRow: Identifiable, Equatable {
+    let id: Int64
+    let verseId: Int
+    let color: HighlightColor
+    let style: HighlightStyle
+    let words: String
+    let theme: String?
+
+    var reference: String { "\((verseId / 1000) % 1000):\(verseId % 1000)" }
+
+    /// The rows for a chapter's highlights, in verse order: reads their
+    /// verses and their sets' themes, so off the main thread.
+    nonisolated static func load(_ highlights: [HighlightEntry], translationId: String?) -> [ChapterHighlightRow] {
+        let sorted = highlights.sorted { ($0.ref, $0.sc) < ($1.ref, $1.sc) }
+        var themes: [String: [HighlightTheme]] = [:]
+        var texts: [Int: [Character]] = [:]
+        return sorted.compactMap { highlight in
+            guard let id = highlight.id else { return nil }
+            if texts[highlight.ref] == nil, let translationId,
+               let text = try? TranslationDatabase.shared.getVerse(translationId: translationId, ref: highlight.ref)?.text {
+                // As the reader shows it, which the offsets count into
+                let shown = hasStrongsAnnotations(text) ? parseAnnotatedVerse(text).map(\.text).joined() : text
+                texts[highlight.ref] = Array(shown)
+            }
+            if themes[highlight.setId] == nil {
+                themes[highlight.setId] = (try? ModuleDatabase.shared.getHighlightThemes(setId: highlight.setId)) ?? []
+            }
+            let text = texts[highlight.ref] ?? []
+            let start = min(max(highlight.sc, 0), text.count)
+            let end = min(max(highlight.ec, start), text.count)
+            var words = String(text[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if start > 0 { words = "…" + words }
+            if end < text.count { words += "…" }
+            return ChapterHighlightRow(
+                id: id,
+                verseId: highlight.ref,
+                color: highlight.highlightColor,
+                style: highlight.highlightStyle,
+                words: words,
+                theme: themes[highlight.setId]?.first {
+                    $0.highlightColor == highlight.highlightColor && $0.highlightStyle == highlight.highlightStyle
+                }?.name
+            )
+        }
+    }
+}
+
+/// The chapter's highlights at the head of its notes, as the Mac's study
+/// pane lists them, with the way to all of them in Search.
+struct ChapterHighlightsSection: View {
+    let title: String
+    let rows: [ChapterHighlightRow]
+    let currentVerse: Int
+    let font: Font
+    let onSelect: (Int) -> Void
+    let onShowAll: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("All Highlights", action: onShowAll)
+                    .font(.subheadline)
+            }
+            .padding(.bottom, 2)
+            ForEach(rows) { row in
+                Button {
+                    onSelect(row.verseId)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(row.color.color)
+                            .frame(width: 3, height: 16)
+                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 3 }
+                        Text(row.reference)
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            if let theme = row.theme {
+                                Text(theme)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(row.words)
+                                .font(font)
+                                .foregroundStyle(.primary)
+                                .lineLimit(3)
+                                .multilineTextAlignment(.leading)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(
+                        row.verseId == currentVerse ? Color.accentColor.opacity(0.12) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(row.verseId == currentVerse ? .isSelected : [])
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+    }
+}
+
 /// Cell view for notes in UIKit list - creates binding from callbacks
 struct NoteSectionCell: View {
     let data: NoteSectionData
@@ -1344,6 +1465,10 @@ struct ToolPanelView: View {
 
     // UIKit scroll target (verse to scroll to)
     @State private var scrollToVerseTarget: Int? = nil
+
+    // The chapter's highlights, listed at the head of its notes
+    @ObservedObject private var highlightManager = HighlightManager.shared
+    @State private var chapterHighlights: [ChapterHighlightRow] = []
 
     // Module storage
     private let moduleDatabase = ModuleDatabase.shared
@@ -2082,11 +2207,7 @@ struct ToolPanelView: View {
             ProgressView()
             Spacer()
         } else {
-            let items: [(verse: Int, data: NoteSectionData)] = sections.enumerated().map { index, section in
-                let verseNum = section.verseStart ?? 0
-                let verse = book * 1000000 + chapter * 1000 + verseNum
-                return (verse: verse, data: NoteSectionData(verse: verseNum, section: section, sectionIndex: index))
-            }
+            let items = notesListItems
 
             VStack(spacing: 0) {
                 // Conflict banner (above the list)
@@ -2122,7 +2243,7 @@ struct ToolPanelView: View {
                     // UIKit-based notes list for performance and scroll sync
                     UIKitVerseList(
                         items: items,
-                        cellContent: { data in noteSectionCell(data) },
+                        cellContent: { item in notesListCell(item) },
                         listId: "notes_\(book)_\(chapter)_\(toolTextKey)_\(sections.count)",
                         additionalTopOffset: 0,
                         topInset: hideHeader ? sharedHeaderHeight : headerBarHeight,
@@ -2135,6 +2256,7 @@ struct ToolPanelView: View {
 
                 }
             }
+            .task(id: chapterHighlightsKey) { await loadChapterHighlights() }
         }
     }
 
@@ -2926,6 +3048,75 @@ struct ToolPanelView: View {
             saveState = .error("Save failed")
             print("Failed to save notes: \(error)")
         }
+    }
+
+    /// The notes list: the chapter's highlights first, at their own place
+    /// before verse 1, then each note.
+    private var notesListItems: [(verse: Int, data: NotesListItem)] {
+        var items: [(verse: Int, data: NotesListItem)] = sections.enumerated().map { index, section in
+            let verseNum = section.verseStart ?? 0
+            let verse = book * 1000000 + chapter * 1000 + verseNum
+            return (verse: verse, data: .section(NoteSectionData(verse: verseNum, section: section, sectionIndex: index)))
+        }
+        if !chapterHighlights.isEmpty {
+            items.insert((verse: book * 1000000 + chapter * 1000, data: .highlights(chapterHighlights)), at: 0)
+        }
+        return items
+    }
+
+    @ViewBuilder
+    private func notesListCell(_ item: NotesListItem) -> some View {
+        switch item {
+        case .highlights(let rows):
+            ChapterHighlightsSection(
+                title: "Highlights in \(bookName) \(chapter)",
+                rows: rows,
+                currentVerse: book * 1000000 + chapter * 1000 + currentVerse,
+                font: toolText.font(),
+                onSelect: { verseId in
+                    if isMaximized { isMaximized = false }
+                    onNavigateToVerse?(verseId)
+                },
+                onShowAll: {
+                    // The reader opens Search, which the maximized notes'
+                    // sheet would stand in front of: closed first.
+                    if isMaximized {
+                        isMaximized = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            SearchStateManager.shared.showsAllHighlights = true
+                        }
+                    } else {
+                        SearchStateManager.shared.showsAllHighlights = true
+                    }
+                }
+            )
+        case .section(let data):
+            noteSectionCell(data)
+        }
+    }
+
+    /// What the chapter's highlights are, to read their rows again when it changes.
+    private var chapterHighlightsKey: String {
+        let chapterStart = book * 1000000 + chapter * 1000
+        let marks = highlightManager.highlightsByVerse
+            .filter { $0.key >= chapterStart && $0.key < chapterStart + 1000 }
+            .values.joined()
+            .map { "\($0.id ?? 0):\($0.sc)-\($0.ec):\($0.style):\($0.color ?? "")" }
+            .sorted()
+        return "\(chapterStart)|\(highlightManager.highlightsHidden)|\(highlightManager.themesRevision)|" + marks.joined(separator: ",")
+    }
+
+    private func loadChapterHighlights() async {
+        let chapterStart = book * 1000000 + chapter * 1000
+        let highlights = highlightManager.highlightsHidden ? [] : highlightManager.highlightsByVerse
+            .filter { $0.key >= chapterStart && $0.key < chapterStart + 1000 }
+            .values.flatMap { $0 }
+        let translationId = highlightManager.currentTranslationId
+        let rows = await Task.detached(priority: .userInitiated) {
+            ChapterHighlightRow.load(highlights, translationId: translationId)
+        }.value
+        guard !Task.isCancelled else { return }
+        chapterHighlights = rows
     }
 
     private func noteSectionCell(_ data: NoteSectionData) -> NoteSectionCell {

@@ -3826,6 +3826,13 @@ class ModuleDatabase {
         }
     }
 
+    /// Every set's themes
+    func getAllHighlightThemes() throws -> [HighlightTheme] {
+        try dbQueue.read { db in
+            try HighlightTheme.order(Column("name")).fetchAll(db)
+        }
+    }
+
     /// Get all themes for a highlight set
     func getHighlightThemes(setId: String) throws -> [HighlightTheme] {
         try dbQueue.read { db in

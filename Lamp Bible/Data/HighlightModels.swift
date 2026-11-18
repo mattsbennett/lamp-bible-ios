@@ -55,6 +55,54 @@ enum HighlightStyle: Int, Codable, CaseIterable {
     }
 }
 
+extension HighlightStyle {
+    /// Core's name for the style: the same number.
+    var core: LampHighlightStyle { LampHighlightStyle(rawValue: rawValue) ?? .highlight }
+
+    init(_ style: LampHighlightStyle) {
+        self = HighlightStyle(rawValue: style.rawValue) ?? .highlight
+    }
+}
+
+/// The marks a highlight can be found by, as Search's "Marked as" offers
+/// them: every set's themes, and the colours of the palette, the themes and
+/// the highlights made. Styles are always the four.
+struct HighlightMarkChoices {
+    struct Theme: Identifiable {
+        let mark: LampHighlightMark
+        /// The theme's name, or its names where sets name the mark apart.
+        let name: String
+        var id: LampHighlightMark { mark }
+    }
+
+    var themes: [Theme] = []
+    var colors: [HighlightColor] = []
+
+    /// Reads the themes and colours: database reads, so off the main thread.
+    static func load() -> HighlightMarkChoices {
+        let themes = (try? ModuleDatabase.shared.getAllHighlightThemes()) ?? []
+        var names: [LampHighlightMark: [String]] = [:]
+        for theme in themes {
+            let mark = LampHighlightMark(color: theme.color, style: theme.highlightStyle.core)
+            if names[mark]?.contains(theme.name) != true { names[mark, default: []].append(theme.name) }
+        }
+        let palette = HighlightColorManager.shared.getColors().map(\.hex)
+        let others = Set(themes.map { LampHighlightSearch.normalizedColor($0.color) })
+            .union(((try? ModuleDatabase.shared.getUniqueHighlightColors()) ?? []).map { LampHighlightSearch.normalizedColor($0) })
+            .subtracting(palette)
+        return HighlightMarkChoices(
+            themes: names.map { Theme(mark: $0.key, name: $0.value.joined(separator: " / ")) }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending },
+            colors: (palette + others.sorted()).map { HighlightColor(hex: $0) }
+        )
+    }
+
+    /// A theme's name for a mark, if it has one.
+    func themeName(of mark: LampHighlightMark) -> String? {
+        themes.first { $0.mark == mark }?.name
+    }
+}
+
 // MARK: - Highlight Color
 
 /// Represents a highlight color with hex serialization
@@ -91,6 +139,16 @@ struct HighlightColor: Codable, Equatable, Hashable, Identifiable {
     /// Color for highlight background (with alpha)
     var highlightColor: Color {
         color.opacity(0.4)
+    }
+
+    /// The palette's name for the colour, else its hex.
+    var name: String {
+        LampHighlightPalette.all.first { $0.hex == hex }?.name ?? "#\(hex)"
+    }
+
+    /// The fill the reader draws this colour's highlight with.
+    var readerFill: Color {
+        Color(uiColor: .lampHighlightFill(uiColor))
     }
 
     /// Color for underline

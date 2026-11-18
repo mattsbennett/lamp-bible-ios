@@ -9221,3 +9221,52 @@ final class VerseTextOffsetsTests: XCTestCase {
         XCTAssertNil(VerseTextOffsets.trimmed(5, 99, in: Array("abc")))
     }
 }
+
+/// The reader's highlight panel: what it copies, and how a mark chosen
+/// meets the highlights already there.
+final class HighlightPanelTests: XCTestCase {
+    func testACitationIsTheReferenceThenTheWordsInStraightQuotes() {
+        let spans = [HighlightSpan(ref: 43003016, sc: 0, ec: 3), HighlightSpan(ref: 43003017, sc: 0, ec: 3)]
+        XCTAssertEqual(
+            ChapterTextView.Coordinator.citation(of: spans, words: "For  God\n so", translationId: nil),
+            "(John 3:16-17)\n\"For God so\""
+        )
+        // Across a chapter, the end reference in full
+        let across = [HighlightSpan(ref: 43003036, sc: 0, ec: 3), HighlightSpan(ref: 43004001, sc: 0, ec: 3)]
+        XCTAssertEqual(
+            ChapterTextView.Coordinator.citation(of: across, words: "x", translationId: nil),
+            "(John 3:36-4:1)\n\"x\""
+        )
+    }
+
+    @MainActor
+    func testAMarkReplacesHighlightsWhollyInsideItsWordsAndLeavesOverlapsBeneath() throws {
+        let database = ModuleDatabase.shared
+        let moduleId = "panel-test-\(UUID().uuidString)"
+        let now = Int(Date().timeIntervalSince1970)
+        try database.saveModule(Module(
+            id: moduleId, type: .highlights, name: "Panel Test", description: nil, author: nil, version: nil,
+            filePath: "\(moduleId).lamp", fileHash: nil, lastSynced: nil, isEditable: true, keyType: nil,
+            seriesFull: nil, seriesAbbrev: nil, seriesId: nil, createdAt: now, updatedAt: now
+        ))
+        defer { try? database.deleteModule(id: moduleId) }
+        let set = HighlightSet(
+            id: UUID().uuidString, moduleId: moduleId, name: "Panel Test", description: nil,
+            translationId: "BSBs", created: now, lastModified: now
+        )
+        try database.saveHighlightSet(set)
+
+        let manager = HighlightManager.shared
+        let target = HighlightManager.Target(setId: set.id, translationId: "BSBs")
+        let inside = try manager.addHighlight(ref: 1001001, startChar: 4, endChar: 9, style: .highlight, color: .green, to: target)
+        let across = try manager.addHighlight(ref: 1001001, startChar: 15, endChar: 30, style: .highlight, color: .pink, to: target)
+
+        let made = try manager.mark([HighlightSpan(ref: 1001001, sc: 0, ec: 20)], style: .underlineSolid, color: .blue, to: target)
+
+        let left = try database.getHighlights(setId: set.id, ref: 1001001)
+        XCTAssertFalse(left.contains { $0.id == inside.id }, "a highlight wholly inside is replaced")
+        XCTAssertTrue(left.contains { $0.id == across.id }, "one only overlapping stays beneath")
+        XCTAssertEqual(made.count, 1)
+        XCTAssertEqual(left.first { $0.id == made.first?.id }?.highlightStyle, .underlineSolid)
+    }
+}

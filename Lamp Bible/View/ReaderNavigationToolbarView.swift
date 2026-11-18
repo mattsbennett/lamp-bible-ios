@@ -58,9 +58,6 @@ struct ReaderNavigationToolbarView: View {
     var commentarySeries: [String] = []
     var devotionalsModules: [Module] = []
 
-    // Theme editing callback (to present sheet from parent view)
-    var onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil
-
     /// Read aloud stop action, offered only while something is being read. Play and
     /// pause live on their own toolbar button; stop is rare enough to sit in here.
 
@@ -97,7 +94,6 @@ struct ReaderNavigationToolbarView: View {
         notesModules: [Module] = [],
         commentarySeries: [String] = [],
         devotionalsModules: [Module] = [],
-        onEditTheme: ((HighlightColor, HighlightStyle, HighlightTheme?) -> Void)? = nil,
         planContext: PlanHeaderContext? = nil
     ) {
         _userSettings = userSettings
@@ -122,7 +118,6 @@ struct ReaderNavigationToolbarView: View {
         self.notesModules = notesModules
         self.commentarySeries = commentarySeries
         self.devotionalsModules = devotionalsModules
-        self.onEditTheme = onEditTheme
         self.planContext = planContext
     }
 
@@ -426,7 +421,7 @@ struct ReaderNavigationToolbarView: View {
 
     private var highlightsPage: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Highlights: style, colour, the set they go in, and showing them.
+            // Highlights: the set they go in, and showing them.
             menuCaption("Highlights")
             highlightsSectionContent
 
@@ -609,14 +604,8 @@ struct ReaderNavigationToolbarView: View {
     @ViewBuilder
     private var highlightsSectionContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Style and color picker
-            InlineHighlightPicker(onEditTheme: onEditTheme != nil ? { color, style, existingTheme in
-                onEditTheme?(color, style, existingTheme)
-                showingOptionsMenu = false
-            } : nil)
-
-            Divider()
-                .padding(.horizontal, 14)
+            // Style and colour are chosen by the words, in the highlight
+            // panel; here, the set they go in and whether they show.
 
             // Highlight set chooser
             if !HighlightManager.shared.availableSets.isEmpty {
