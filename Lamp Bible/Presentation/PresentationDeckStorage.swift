@@ -24,15 +24,9 @@ struct PresentationDeckEntry: Identifiable, Sendable {
         deck.slides.filter { !$0.isHidden }
     }
 
-    /// The writing this deck was made from, if it was made from one. The Mac
-    /// links a deck to a writing as a `devotional` source; `writing` is the
-    /// format's other name for the same thing.
-    var linkedWritingID: String? {
-        guard let source = deck.source,
-              source.kind == .devotional || source.kind == .writing
-        else { return nil }
-        return source.id
-    }
+    /// The writing this deck was made from, if it was made from one, under
+    /// either of the format's names for the link, as core reads it.
+    var linkedWritingID: String? { deck.writingID }
 
     /// Writing IDs are UUIDs, which one platform may spell in capitals and
     /// another not.

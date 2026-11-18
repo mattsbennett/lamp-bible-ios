@@ -287,17 +287,11 @@ struct DeckLibraryView: View {
             let titles = try? DevotionalStorage.shared.getAllWritingTitles()
             // Unable to read the writings, list every deck rather than hide one.
             let entries = titles.map { decks.listedEntries(writingIDs: Set($0.keys)) } ?? decks.entries()
-            // By the phone's own link to a writing, which also takes the
-            // format's `writing` name for it, and the file date the listing
-            // already read.
+            // Dated by the file date the listing already read.
             let shelf = LampPresentationShelf(decks: entries.map { entry in
-                LampPresentationShelf.Deck(
-                    id: entry.id,
-                    title: entry.title,
-                    writingID: entry.linkedWritingID,
-                    writingTitle: entry.linkedWritingID.flatMap { titles?[$0.uppercased()] },
-                    modified: entry.modifiedAt ?? .distantPast
-                )
+                LampPresentationShelf.Deck(entry.deck, modified: entry.modifiedAt ?? .distantPast) {
+                    titles?[$0.uppercased()]
+                }
             })
             return (entries, shelf)
         }.value
