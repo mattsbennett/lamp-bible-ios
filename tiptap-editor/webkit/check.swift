@@ -888,7 +888,7 @@ func reviewMarks() {
         })()
         """) { r in
             let parts = r as? [Any] ?? []
-            check(parts.first as? Bool == false && parts.last as? Int == 0, "marks for another document are not drawn (read: \(String(describing: r)))")
+            check(parts.first as? Bool == false && parts.last as? Int == 2, "marks for another document are not drawn, and those shown stay (read: \(String(describing: r)))")
             js("""
         (() => {
                 const rv = window.editorAPI;

@@ -1157,14 +1157,17 @@ window.editorAPI = {
 
   // The writing assistant's changes the writer has not yet read, as the
   // document's Markdown with a marker at each edge (review-marks.js), or
-  // null for none. Says whether they could be placed: a Markdown that is
-  // not this document's draws nothing. Kept through the writer's edits
-  // until the next call.
+  // null for none. Says whether they could be placed. A Markdown that is
+  // not this document's changes nothing: the marks shown stay, carried
+  // through the writer's edits as before, since a host whose copy of the
+  // text is a moment behind the page's would otherwise wipe them on every
+  // try. Kept through the writer's edits until the next call.
   setReviewMarks(markedMarkdown) {
     if (!editor) return false
     const ranges = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
-    editor.view.dispatch(editor.state.tr.setMeta(reviewKey, { ranges: ranges || [] }).setMeta('addToHistory', false))
-    return ranges !== null
+    if (ranges === null) return false
+    editor.view.dispatch(editor.state.tr.setMeta(reviewKey, { ranges }).setMeta('addToHistory', false))
+    return true
   },
 
   // The selection, as the document's Markdown with markers at its edges,
