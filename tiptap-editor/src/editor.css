@@ -600,6 +600,16 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
 .ProseMirror .review-clear:hover {
   background: var(--review-mark-bg, rgba(232, 176, 44, 0.22));
 }
+/* Never on a page being presented, nor its clear buttons: the marks are the
+   writer's, not the audience's. */
+body.mode-present .review-mark {
+  background: none;
+  border-bottom: none;
+}
+body.mode-present .review-point,
+body.mode-present .review-clear {
+  display: none;
+}
 body.dark {
   --review-mark-bg: rgba(240, 190, 70, 0.2);
   --review-mark-rule: rgba(240, 190, 70, 0.75);

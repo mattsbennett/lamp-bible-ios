@@ -921,7 +921,7 @@ func reviewMarks() {
                         const rv = window.editorAPI;
                         rv.load('One deux three.');
                         rv.setReviewMarks('One \\uE000deux\\uE001 three.');
-                        document.querySelector('.review-clear').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                        document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
                         return rv.reviewMarkdownForSelection()
         })()
         """) { r in
@@ -930,7 +930,28 @@ func reviewMarks() {
                         after(200) {
                             let clears = probe.reviewClears
                             check(clears.last == "\u{E000}One deux three.\u{E001}", "the clear button sends its block's Markdown, marked at its edges (read: \(clears))")
-                            exit(failed ? 1 : 0)
+                            js("""
+                            (() => {
+                                const rv = window.editorAPI;
+                                rv.setMode('read');
+                                rv.load('Read deux here.');
+                                rv.setReviewMarks('Read \\uE000deux\\uE001 here.');
+                                document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                                const reading = document.querySelectorAll('.review-mark').length;
+                                rv.setMode('present');
+                                const shown = getComputedStyle(document.querySelector('.review-clear')).display;
+                                rv.setMode('edit');
+                                return [reading, shown]
+                            })()
+                            """) { r in
+                                let parts = r as? [Any] ?? []
+                                check(parts.first as? Int == 1, "marks are drawn in read mode (read: \(String(describing: r)))")
+                                check(parts.last as? String == "none", "and not while presenting")
+                                after(200) {
+                                    check(probe.reviewClears.last == "\u{E000}Read deux here.\u{E001}", "a clear works in read mode (read: \(probe.reviewClears))")
+                                    exit(failed ? 1 : 0)
+                                }
+                            }
                         }
                     }
                 }

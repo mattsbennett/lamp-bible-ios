@@ -738,8 +738,10 @@ function reviewClearButton(start, end) {
   button.setAttribute('aria-label', 'Mark this paragraph as reviewed')
   // Pressed rather than clicked, so the caret does not move into the block
   // first, and the block is found again at press time: the widget's own
-  // positions are only as good as the last redraw.
-  button.addEventListener('mousedown', event => {
+  // positions are only as good as the last redraw. On the pointer's first
+  // event: on a phone a tap's mousedown comes after its touches, by which
+  // time the caret is in the block and the keyboard on its way up.
+  button.addEventListener('pointerdown', event => {
     event.preventDefault()
     event.stopPropagation()
     const pos = editor.view.posAtDOM(button, 0)
