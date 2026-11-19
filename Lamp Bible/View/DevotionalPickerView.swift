@@ -284,6 +284,11 @@ struct DevotionalPickerView: View {
         .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
             Task { await reloadWritingIDsWithSlides() }
         }
+        // A sync, however it ran, can bring writings changed on another
+        // device: a new title, category or tag shows without a relaunch.
+        .onReceive(NotificationCenter.default.publisher(for: .writingsDidChange)) { _ in
+            loadDevotionals()
+        }
         .sheet(isPresented: $showingFilterSheet) {
             DevotionalFilterSheet(
                 filterOptions: $filterOptions,
@@ -696,7 +701,11 @@ struct DevotionalPickerView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .contentMargins(.top, 4, for: .scrollContent)
+        // Pulling asks the library for what other devices changed, then
+        // reads the list again. A pass already running brings its changes
+        // in through `writingsDidChange`.
         .refreshable {
+            try? await SyncCoordinator.shared.syncAll()
             loadDevotionals()
         }
     }
