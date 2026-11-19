@@ -23,6 +23,7 @@ final class Probe: NSObject, WKScriptMessageHandler {
     var tokens: [String: [String?]] = [:]
     var searches: [(count: Int, current: Int, token: String?)] = []
     var footnoteTaps: [(id: String, editing: Bool)] = []
+    var reviewClears: [String] = []
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         guard let body = m.body as? [String: Any], let type = body["type"] as? String else { return }
         tokens[type, default: []].append(body["token"] as? String)
@@ -31,6 +32,7 @@ final class Probe: NSObject, WKScriptMessageHandler {
         if type == "contentHeight" { heights.append(body["height"] as? Int ?? -1) }
         if type == "caret" { carets.append((body["top"] as? Int ?? -1, body["bottom"] as? Int ?? -1)) }
         if type == "footnoteTapped" { footnoteTaps.append((body["id"] as? String ?? "", body["editing"] as? Bool ?? false)) }
+        if type == "reviewClear" { reviewClears.append(body["markdown"] as? String ?? "") }
         if type == "searchChanged" { searches.append((body["count"] as? Int ?? -1, body["current"] as? Int ?? -1, body["token"] as? String)) }
     }
 }
@@ -855,7 +857,83 @@ func addingAndRemoving() {
                 let parts = r as? [Any] ?? []
                 check(parts.first as? Bool == true && (parts.count > 1 && parts[1] as? Bool == true), "the open note's Remove closes it (read: \(String(describing: r)))")
                 check(parts.last as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C.\n\n[^2]: two\n\nEnd.", "and takes the footnote out, marker and note (read: \(String(describing: parts.last).debugDescription))")
-                exit(failed ? 1 : 0)
+                reviewMarks()
+            }
+        }
+    }
+}
+
+// The assistant's changes the writer has not yet read: the host's Markdown
+// with markers at each edge, placed in the document shown, drawn, carried
+// through typing, and sent back for a clear the same way.
+func reviewMarks() {
+    js("""
+        (() => {
+        const rv = window.editorAPI;
+        rv.load('One deux three.\\n\\nFour **bold** five.\\n\\nSix seven.');
+        const placed = rv.setReviewMarks('One \\uE000deux\\uE001 three.\\n\\nFour **\\uE000bold\\uE001** five.\\n\\nSix\\uE002 seven.');
+        return [placed, document.querySelectorAll('.review-mark').length, document.querySelectorAll('.review-point').length,
+         document.querySelectorAll('.review-clear').length, rv.getContent()]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(parts.first as? Bool == true, "review marks are placed (read: \(String(describing: r)))")
+        check(parts.count > 4 && parts[1] as? Int == 2 && parts[2] as? Int == 1, "a mark in plain text and one in bold are drawn, and the point")
+        check(parts.count > 4 && parts[3] as? Int == 3, "a clear button beside each block with marks in it")
+        check(parts.count > 4 && parts[4] as? String == "One deux three.\n\nFour **bold** five.\n\nSix seven.", "and the content has no markers in it")
+        js("""
+        (() => {
+            const rv = window.editorAPI;
+            return [rv.setReviewMarks('Another \\uE000document\\uE001.'), document.querySelectorAll('.review-mark').length]
+        })()
+        """) { r in
+            let parts = r as? [Any] ?? []
+            check(parts.first as? Bool == false && parts.last as? Int == 0, "marks for another document are not drawn (read: \(String(describing: r)))")
+            js("""
+        (() => {
+                const rv = window.editorAPI;
+                rv.load('One alpha beta three.');
+                rv.setReviewMarks('One \\uE000alpha beta\\uE001 three.');
+                window.editorAPI.focus();
+                const view = document.querySelector('.ProseMirror');
+                document.querySelector('.ProseMirror').dispatchEvent(new Event('focus'));
+                return [document.querySelectorAll('.review-mark').length]
+        })()
+        """) { _ in
+                js("""
+        (() => {
+                    const ed = document.querySelector('.ProseMirror').editor;
+                    let marked = null;
+                    if (ed) {
+                        ed.commands.insertContentAt(10, 'mine ');
+                        marked = Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent);
+                    }
+                    return marked
+        })()
+        """) { r in
+                    if let marked = r as? [String] {
+                        check(marked.count == 2 && !marked.contains { $0.contains("mine") }, "what is typed inside a mark is left out of it, and the mark goes on either side (read: \(marked))")
+                    } else {
+                        print("note: the editor instance is not reachable from the page, so typing into a mark is not driven here")
+                    }
+                    js("""
+        (() => {
+                        const rv = window.editorAPI;
+                        rv.load('One deux three.');
+                        rv.setReviewMarks('One \\uE000deux\\uE001 three.');
+                        document.querySelector('.review-clear').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                        return rv.reviewMarkdownForSelection()
+        })()
+        """) { r in
+                        check((r as? String)?.contains("\u{E000}") == true && (r as? String)?.contains("\u{E001}") == true,
+                              "the selection comes back as Markdown with its markers (read: \(String(describing: r).debugDescription))")
+                        after(200) {
+                            let clears = probe.reviewClears
+                            check(clears.last == "\u{E000}One deux three.\u{E001}", "the clear button sends its block's Markdown, marked at its edges (read: \(clears))")
+                            exit(failed ? 1 : 0)
+                        }
+                    }
+                }
             }
         }
     }

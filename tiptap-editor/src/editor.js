@@ -1,8 +1,9 @@
 import './editor.css'
-import { Editor, Extension } from '@tiptap/core'
+import { Editor, Extension, createDocument } from '@tiptap/core'
 import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { Fragment } from '@tiptap/pm/model'
+import { Transform } from '@tiptap/pm/transform'
 import { closeHistory } from '@tiptap/pm/history'
 import { StarterKit } from '@tiptap/starter-kit'
 import { HardBreak } from '@tiptap/extension-hard-break'
@@ -25,6 +26,7 @@ import {
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
 import { searchPattern, findMatches } from './search.js'
+import { MARK_START, MARK_END, readMarkers, withoutSpans } from './review-marks.js'
 import { ImageBlock } from './extensions/image-caption.js'
 
 // Media map for resolving media/id to file URLs
@@ -675,6 +677,147 @@ const LineHardBreak = HardBreak.extend({
 
 // ---- Swift Bridge ----
 
+// ---- Review marks (see review-marks.js) ----
+
+const reviewKey = new PluginKey('reviewMarks')
+
+// The spans a transaction wrote, where they are in the document it made: what
+// the writer typed, which is theirs and not the assistant's.
+function writtenSpans(tr) {
+  const spans = []
+  const maps = tr.mapping.maps
+  maps.forEach((map, index) => {
+    map.forEach((_oldStart, _oldEnd, newStart, newEnd) => {
+      let from = newStart
+      let to = newEnd
+      for (let later = index + 1; later < maps.length; later++) {
+        from = maps[later].map(from, 1)
+        to = maps[later].map(to, -1)
+      }
+      if (to >= from) spans.push([from, to])
+    })
+  })
+  return spans
+}
+
+function reviewDecorations(doc, ranges) {
+  if (ranges.length === 0) return DecorationSet.empty
+  const decorations = []
+  for (const range of ranges) {
+    if (range.from === range.to) {
+      decorations.push(Decoration.widget(range.from, () => {
+        const point = document.createElement('span')
+        point.className = 'review-point'
+        point.setAttribute('aria-hidden', 'true')
+        return point
+      }, { side: 0, ignoreSelection: true, key: `review-point-${range.from}` }))
+    } else {
+      decorations.push(Decoration.inline(range.from, range.to, { class: 'review-mark' }))
+    }
+  }
+  // A clear button beside each block with something in it still to read.
+  doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true
+    const start = pos + 1
+    const end = pos + node.nodeSize - 1
+    if (!ranges.some(range => range.to >= start && range.from <= end)) return false
+    decorations.push(Decoration.widget(start, () => reviewClearButton(start, end), {
+      side: -1, ignoreSelection: true, key: `review-clear-${start}-${end}`,
+    }))
+    return false
+  })
+  return DecorationSet.create(doc, decorations)
+}
+
+function reviewClearButton(start, end) {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'review-clear'
+  button.contentEditable = 'false'
+  button.title = 'Mark as reviewed'
+  button.setAttribute('aria-label', 'Mark this paragraph as reviewed')
+  // Pressed rather than clicked, so the caret does not move into the block
+  // first, and the block is found again at press time: the widget's own
+  // positions are only as good as the last redraw.
+  button.addEventListener('mousedown', event => {
+    event.preventDefault()
+    event.stopPropagation()
+    const pos = editor.view.posAtDOM(button, 0)
+    const $pos = editor.state.doc.resolve(Math.min(pos, editor.state.doc.content.size))
+    const block = $pos.parent.isTextblock ? $pos : null
+    const from = block ? $pos.start() : start
+    const to = block ? $pos.end() : end
+    postToSwift('reviewClear', { markdown: markdownMarking(from, to) })
+  })
+  return button
+}
+
+// The document's Markdown with the markers written at `from` and `to`, for
+// the host to find where they fell in the Markdown it holds.
+function markdownMarking(from, to) {
+  const tr = editor.state.tr
+  tr.insertText(MARK_END, to)
+  tr.insertText(MARK_START, from)
+  return tidyMarkdown(editor.storage.markdown.serializer.serialize(tr.doc))
+}
+
+// Where the host's marks fall in the document shown, or null if they cannot
+// be placed exactly: the Markdown with markers, parsed as any document is,
+// the markers read and taken out, and what is left compared with the
+// document. Anything else, a different document or markers that do not
+// pair, draws nothing.
+function placeReviewMarks(markedMarkdown) {
+  const html = editor.storage.markdown.parser.parse(resolveForEditor(markedMarkdown))
+  const doc = createDocument(html, editor.schema, editor.options.parseOptions)
+  const pieces = []
+  doc.descendants((node, pos) => {
+    if (node.isText) pieces.push({ pos, text: node.text })
+  })
+  let read
+  try {
+    read = readMarkers(pieces)
+  } catch (e) {
+    return null
+  }
+  if (!read) return null
+  const tr = new Transform(doc)
+  for (const pos of [...read.positions].reverse()) tr.delete(pos, pos + 1)
+  return tr.doc.eq(editor.state.doc) ? read.ranges : null
+}
+
+const ReviewMarks = Extension.create({
+  name: 'reviewMarks',
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      key: reviewKey,
+      state: {
+        init: () => ({ ranges: [], decorations: DecorationSet.empty }),
+        apply(tr, old) {
+          const meta = tr.getMeta(reviewKey)
+          if (meta) return { ranges: meta.ranges, decorations: reviewDecorations(tr.doc, meta.ranges) }
+          if (!tr.docChanged || old.ranges.length === 0) return old
+          // Carried through the writer's edit: the marks move with the words,
+          // and what was typed into them is left out.
+          const mapped = old.ranges.flatMap(range => {
+            if (range.from === range.to) {
+              const result = tr.mapping.mapResult(range.from, -1)
+              return result.deleted ? [] : [{ from: result.pos, to: result.pos }]
+            }
+            const from = tr.mapping.map(range.from, 1)
+            const to = tr.mapping.map(range.to, -1)
+            return to > from ? [{ from, to }] : []
+          })
+          const ranges = withoutSpans(mapped, writtenSpans(tr).filter(([from, to]) => to > from))
+          return { ranges, decorations: reviewDecorations(tr.doc, ranges) }
+        },
+      },
+      props: {
+        decorations: state => reviewKey.getState(state).decorations,
+      },
+    })]
+  },
+})
+
 function postToSwift(type, payload) {
   try {
     if (window.webkit?.messageHandlers?.tiptapBridge) {
@@ -735,6 +878,7 @@ function initEditor() {
       LineHardBreak,
       VerseReferences,
       Search,
+      ReviewMarks,
       FootnoteRef,
       FootnoteDefinition,
       AudioBlock,
@@ -920,7 +1064,14 @@ function getMarkdownContent() {
     return markdownTextarea.value
   }
   // Extensions handle markdown serialization with media/id format directly
-  let md = editor.storage.markdown.getMarkdown()
+  return tidyMarkdown(editor.storage.markdown.getMarkdown())
+}
+
+// The serializer's Markdown as the host is given it, by every path that
+// gives it, so a copy with review markers in it differs from the document's
+// own by the markers alone.
+function tidyMarkdown(serialized) {
+  let md = serialized
 
   // Post-process blockquotes: tiptap-markdown may output hard breaks as backslash
   // Convert "> Line 1\\\n> Line 2" or "> Line 1  \n> Line 2" patterns
@@ -1000,6 +1151,27 @@ window.editorAPI = {
 
   getContent() {
     return getMarkdownContent()
+  },
+
+  // The writing assistant's changes the writer has not yet read, as the
+  // document's Markdown with a marker at each edge (review-marks.js), or
+  // null for none. Says whether they could be placed: a Markdown that is
+  // not this document's draws nothing. Kept through the writer's edits
+  // until the next call.
+  setReviewMarks(markedMarkdown) {
+    if (!editor) return false
+    const ranges = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
+    editor.view.dispatch(editor.state.tr.setMeta(reviewKey, { ranges: ranges || [] }).setMeta('addToHistory', false))
+    return ranges !== null
+  },
+
+  // The selection, as the document's Markdown with markers at its edges,
+  // for the host to clear what of the marks it covers. A caret is both
+  // edges at once, and clears the mark it stands in.
+  reviewMarkdownForSelection() {
+    if (!editor || currentMode !== 'richtext') return null
+    const { from, to } = editor.state.selection
+    return markdownMarking(from, to)
   },
 
   // Replaces the document with another, for an editor handed from one note
