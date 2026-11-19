@@ -1548,7 +1548,10 @@ window.editorAPI = {
     document.body.classList.remove('mode-edit', 'mode-read', 'mode-present')
     document.body.classList.add('mode-' + mode)
     const isEditable = mode === 'edit'
-    editor.setEditable(isEditable)
+    // No update for it: none of the document changed, and the host would take
+    // the Markdown it reported (the editor's own way of writing what it was
+    // given) for an edit, and save it over what was stored.
+    editor.setEditable(isEditable, false)
     if (!isEditable) {
       // Force richtext display in non-edit modes and sync currentMode
       currentMode = 'richtext'

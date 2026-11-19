@@ -9358,3 +9358,41 @@ final class WritingConditionalSaveTests: XCTestCase {
         XCTAssertEqual(try database.getDevotionalEntry(id: id)?.lastModified, 300)
     }
 }
+
+/// The writer's ✓ clears, made in the page's text when it's a moment ahead
+/// of the session's: none waits on a report that may never match.
+@MainActor
+final class WritingReviewSessionTests: XCTestCase {
+    func testClearsAheadOfTheirTextLandAsTypingGoesOn() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let first = "The shepherd calls his own sheep by name."
+        let second = "They follow him, for they know his voice."
+        let before = "Opening.\n\nClosing."
+        let saved = "Opening. \(first)\n\nClosing. \(second)"
+        try store.save(LampWritingReview(writingID: id).markingAssistantChange(from: before, to: saved))
+        XCTAssertEqual(try store.review(writingID: id).located(in: saved).count, 2)
+
+        let session = WritingReviewSession()
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where session.count == 0 { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(session.count, 2)
+
+        // Typed ahead of the session's text each time, then a ✓ pressed.
+        let start = String(LampWritingReview.markStart), end = String(LampWritingReview.markEnd)
+        let typedOnce = "Opening. \(first) Truly.\n\nClosing. \(second)"
+        session.clear(markedMarkdown: "\(start)Opening. \(first) Truly.\(end)\n\nClosing. \(second)")
+        let typedTwice = "Opening. \(first) Truly.\n\nClosing. \(second) Amen."
+        session.clear(markedMarkdown: "Opening. \(first) Truly.\n\n\(start)Closing. \(second) Amen.\(end)")
+        let later = typedTwice + "\n\nMore."
+        session.textChanged(later)
+        await WritingReviewWork.shared.drained()
+
+        let review = try store.review(writingID: id)
+        let known = WritingReviewTexts.shared.known(for: id)
+        XCTAssertTrue(known.contains(typedOnce) && known.contains(typedTwice), "each clear's text is kept to carry from")
+        XCTAssertEqual(review.carryingToText(later, from: known).located(in: later).count, 0, "both clears landed")
+    }
+}

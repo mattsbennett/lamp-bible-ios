@@ -208,9 +208,6 @@ final class WritingReviewSession: ObservableObject {
     /// The text a refused set of marks was last sent again for. Refused
     /// again for the same text, they wait for the text to change.
     private var resentFor: String?
-    /// A clear the page sent from text a moment ahead of this one's (typed
-    /// within the editor's report of it): tried again as the text arrives.
-    private var pendingClear: String?
 
     static let checkInterval: Duration = .seconds(1)
     static let settleDelay: Duration = .milliseconds(300)
@@ -229,7 +226,6 @@ final class WritingReviewSession: ObservableObject {
         fileDate = nil
         needsResend = false
         resentFor = nil
-        pendingClear = nil
         store = isShown ? LibrarySyncPass.reviewStore : nil
         publish(count: 0, marked: nil, sendsMarks: true)
         guard isShown else { return }
@@ -254,10 +250,6 @@ final class WritingReviewSession: ObservableObject {
     func textChanged(_ text: String) {
         guard text != self.text else { return }
         self.text = text
-        if let marked = pendingClear, let range = LampWritingReview.markedRange(in: marked, of: text) {
-            pendingClear = nil
-            clear(range: range)
-        }
         guard review != nil else { return }
         scheduleDraw()
     }
@@ -281,7 +273,10 @@ final class WritingReviewSession: ObservableObject {
     /// and the clear would do nothing.
     func clear(range: NSRange) {
         guard let writingID else { return }
-        let text = self.text
+        clear(range: range, in: text, writingID: writingID)
+    }
+
+    private func clear(range: NSRange, in text: String, writingID: String) {
         WritingReviewTexts.shared.remember(text, for: writingID)
         let known = WritingReviewTexts.shared.known(for: writingID)
         change { $0.carryingToText(text, from: known).clearing(range, in: text) }
@@ -290,15 +285,21 @@ final class WritingReviewSession: ObservableObject {
     /// Clears the range the page marked in the Markdown it sent: nothing,
     /// where that isn't the writing as held here, since its range would then
     /// fall on other words.
+    ///
+    /// The page's text can be a moment ahead of this one's (typed into within
+    /// the editor's report of it). Then the clear is made in the text the page
+    /// sent, the markers taken out: the marks carried to it, cleared there,
+    /// and that text remembered, so the draws and saves after carry from it
+    /// like any other. None waits on a report that may never match.
     func clear(markedMarkdown marked: String) {
-        guard let range = LampWritingReview.markedRange(in: marked, of: text) else {
-            // Perhaps typed into a moment ago: tried again once the text the
-            // page holds arrives. Another clear replaces it.
-            pendingClear = marked
+        if let range = LampWritingReview.markedRange(in: marked, of: text) {
+            clear(range: range)
             return
         }
-        pendingClear = nil
-        clear(range: range)
+        let markers: Set<Character> = [LampWritingReview.markStart, LampWritingReview.markEnd, LampWritingReview.markPoint]
+        let sent = String(marked.filter { !markers.contains($0) })
+        guard let writingID, let range = LampWritingReview.markedRange(in: marked, of: sent) else { return }
+        clear(range: range, in: sent, writingID: writingID)
     }
 
     func clearAll() {
@@ -348,9 +349,11 @@ final class WritingReviewSession: ObservableObject {
             try? await Task.sleep(for: Self.settleDelay)
             guard !Task.isCancelled, let self else { return }
             if let writingID = self.writingID { WritingReviewTexts.shared.remember(self.text, for: writingID) }
-            // Sent too while none are: marks that placed nowhere in the text
-            // before (a newer body arrived) may place in this one.
-            self.draw(sendsMarks: self.needsResend || self.markedMarkdown == nil)
+            // Sent too while none are shown and some stand: marks that placed
+            // nowhere in the text before (a newer body arrived) may place in
+            // this one. All cleared, nothing goes to the page each settle.
+            let unplaced = self.markedMarkdown == nil && self.review?.isEmpty == false
+            self.draw(sendsMarks: self.needsResend || unplaced)
         }
     }
 
