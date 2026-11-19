@@ -692,7 +692,7 @@ struct SettingsView: View {
 
                 // Off until someone turns it on, and one choice for every
                 // device. Worded as on the Mac, but for what the phone has:
-                // no chats or drafts to keep.
+                // the Mac's chats to follow, and no drafts to keep.
                 Section {
                     Toggle(isOn: Binding(
                         get: { aiFeatures.isEnabled },
@@ -707,7 +707,7 @@ struct SettingsView: View {
                 } header: {
                     Text("AI Features").lampSectionHeader()
                 } footer: {
-                    Text("Make reading plans from a description. Off hides them all, including the system's writing tools in Lamp's text.")
+                    Text("Make reading plans from a description, and continue your Mac's reader chats from the reader's Chat panel. Off hides them all, including the system's writing tools in Lamp's text.")
                         .foregroundStyle(LampTheme.caption)
                 }
                 .textCase(nil)

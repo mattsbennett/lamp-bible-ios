@@ -42,6 +42,7 @@ struct ReaderNavigationToolbarView: View {
     // Horizontal split integration
     var isHorizontalSplit: Bool = false
     @Binding var toolPanelMode: ToolPanelMode
+    @ObservedObject private var aiFeatures = AIFeatures.shared
     var toolDisplayName: String = ""
     @Binding var isScrollLinked: Bool
     @Binding var toolFontSize: Int
@@ -391,6 +392,20 @@ struct ReaderNavigationToolbarView: View {
                         } else {
                             Text(module.name)
                         }
+                    }
+                }
+            }
+
+            // The Mac's chats, while the AI features are on
+            if aiFeatures.isEnabled {
+                Divider()
+                Button {
+                    toolPanelMode = .chat
+                } label: {
+                    if toolPanelMode == .chat {
+                        Label(ToolPanelMode.chat.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(ToolPanelMode.chat.displayName)
                     }
                 }
             }

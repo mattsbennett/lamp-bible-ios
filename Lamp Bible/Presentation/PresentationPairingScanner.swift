@@ -4,6 +4,9 @@ import Vision
 import VisionKit
 
 struct PresentationPairingScanner: UIViewControllerRepresentable {
+    /// Reads a pairing code out of a QR's payload: the slide remote's by
+    /// default, or the chat remote's, whose QR says what it is for.
+    var parse: (String) -> String? = LampPresentationRemotePairing.code(fromQRPayload:)
     let onCode: (String) -> Void
     let onFailure: (String) -> Void
 
@@ -12,7 +15,7 @@ struct PresentationPairingScanner: UIViewControllerRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onCode: onCode, onFailure: onFailure)
+        Coordinator(parse: parse, onCode: onCode, onFailure: onFailure)
     }
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
@@ -52,11 +55,17 @@ struct PresentationPairingScanner: UIViewControllerRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        private let parse: (String) -> String?
         private let onCode: (String) -> Void
         private let onFailure: (String) -> Void
         private var didFinish = false
 
-        init(onCode: @escaping (String) -> Void, onFailure: @escaping (String) -> Void) {
+        init(
+            parse: @escaping (String) -> String?,
+            onCode: @escaping (String) -> Void,
+            onFailure: @escaping (String) -> Void
+        ) {
+            self.parse = parse
             self.onCode = onCode
             self.onFailure = onFailure
         }
@@ -70,7 +79,7 @@ struct PresentationPairingScanner: UIViewControllerRepresentable {
             for item in addedItems {
                 guard case let .barcode(barcode) = item,
                       let payload = barcode.payloadStringValue,
-                      let code = LampPresentationRemotePairing.code(fromQRPayload: payload) else {
+                      let code = parse(payload) else {
                     continue
                 }
                 didFinish = true

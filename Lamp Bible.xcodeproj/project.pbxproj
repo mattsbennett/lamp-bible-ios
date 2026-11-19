@@ -143,6 +143,11 @@
 		C1A100092FE1000000000001 /* DeckLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100162FE1000000000001 /* DeckLibraryView.swift */; };
 		C1A1000A2FE1000000000001 /* DeckViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A100172FE1000000000001 /* DeckViewerView.swift */; };
 		CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95873C478D642C9B5444C02 /* TipTapEditorView.swift */; };
+		C1A160012FE1000000000056 /* AgentRemoteMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A160022FE1000000000056 /* AgentRemoteMemory.swift */; };
+		C1A160112FE1000000000056 /* AgentRemoteChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A160122FE1000000000056 /* AgentRemoteChat.swift */; };
+		C1A160212FE1000000000056 /* AgentRemoteClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A160222FE1000000000056 /* AgentRemoteClient.swift */; };
+		C1A160312FE1000000000056 /* AgentRemotePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A160322FE1000000000056 /* AgentRemotePanel.swift */; };
+		C1A160412FE1000000000056 /* AgentRemoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A160422FE1000000000056 /* AgentRemoteTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -328,6 +333,11 @@
 		C1A100152FE1000000000001 /* PresentationDeckSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresentationDeckSync.swift; sourceTree = "<group>"; };
 		C1A100162FE1000000000001 /* DeckLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeckLibraryView.swift; sourceTree = "<group>"; };
 		C1A100172FE1000000000001 /* DeckViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeckViewerView.swift; sourceTree = "<group>"; };
+		C1A160022FE1000000000056 /* AgentRemoteMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRemoteMemory.swift; sourceTree = "<group>"; };
+		C1A160122FE1000000000056 /* AgentRemoteChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRemoteChat.swift; sourceTree = "<group>"; };
+		C1A160222FE1000000000056 /* AgentRemoteClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRemoteClient.swift; sourceTree = "<group>"; };
+		C1A160322FE1000000000056 /* AgentRemotePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRemotePanel.swift; sourceTree = "<group>"; };
+		C1A160422FE1000000000056 /* AgentRemoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRemoteTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -446,6 +456,17 @@
 				B87B2AF02F037B3A006DC53D /* StrongsParser.swift */,
 			);
 			path = Utility;
+			sourceTree = "<group>";
+		};
+		C1A1007F2FE1000000000056 /* AgentRemote */ = {
+			isa = PBXGroup;
+			children = (
+				C1A160022FE1000000000056 /* AgentRemoteMemory.swift */,
+				C1A160122FE1000000000056 /* AgentRemoteChat.swift */,
+				C1A160222FE1000000000056 /* AgentRemoteClient.swift */,
+				C1A160322FE1000000000056 /* AgentRemotePanel.swift */,
+			);
+			path = AgentRemote;
 			sourceTree = "<group>";
 		};
 		C1A100202FE1000000000001 /* Presentation */ = {
@@ -577,6 +598,7 @@
 				B8210A9C2B54A4D7008341F0 /* Data */,
 				B8210A9D2B54A508008341F0 /* Utility */,
 				C1A100202FE1000000000001 /* Presentation */,
+				C1A1007F2FE1000000000056 /* AgentRemote */,
 				B8210A9E2B54A58D008341F0 /* View */,
 				9CF26519566447318332A93B /* Resources/TipTapEditor */,
 				B8EF6E43301EF91700ACF12D /* bundled_modules.db.zlib */,
@@ -601,6 +623,7 @@
 				AA11C0DE2F0600000000A001 /* PlanMetaDataResolutionTests.swift */,
 				B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */,
 				C1A100182FE1000000000001 /* PresentationDeckSyncTests.swift */,
+				C1A160422FE1000000000056 /* AgentRemoteTests.swift */,
 				C1A100192FE1000000000002 /* SearchQueryGrammarTests.swift */,
 				C1A1001A2FE1000000000003 /* XcodeProjectSourcesTests.swift */,
 				C1A1001B2FE1000000000003 /* DevotionalAuthoredMarkdownTests.swift */,
@@ -816,6 +839,10 @@
 				C1A100012FE1000000000001 /* PresentationRemoteClient.swift in Sources */,
 				C1A100022FE1000000000001 /* PresentationRemoteView.swift in Sources */,
 				C1A100042FE1000000000001 /* PresentationPairingScanner.swift in Sources */,
+				C1A160012FE1000000000056 /* AgentRemoteMemory.swift in Sources */,
+				C1A160112FE1000000000056 /* AgentRemoteChat.swift in Sources */,
+				C1A160212FE1000000000056 /* AgentRemoteClient.swift in Sources */,
+				C1A160312FE1000000000056 /* AgentRemotePanel.swift in Sources */,
 				C1A100072FE1000000000001 /* PresentationDeckStorage.swift in Sources */,
 				C1A100082FE1000000000001 /* PresentationDeckSync.swift in Sources */,
 				C1A100092FE1000000000001 /* DeckLibraryView.swift in Sources */,
@@ -928,6 +955,7 @@
 				AA11C0DE2F0600000000A002 /* PlanMetaDataResolutionTests.swift in Sources */,
 				B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */,
 				C1A1000B2FE1000000000001 /* PresentationDeckSyncTests.swift in Sources */,
+				C1A160412FE1000000000056 /* AgentRemoteTests.swift in Sources */,
 				C1A1000C2FE1000000000002 /* SearchQueryGrammarTests.swift in Sources */,
 				C1A1000D2FE1000000000003 /* XcodeProjectSourcesTests.swift in Sources */,
 				C1A1000E2FE1000000000003 /* DevotionalAuthoredMarkdownTests.swift in Sources */,

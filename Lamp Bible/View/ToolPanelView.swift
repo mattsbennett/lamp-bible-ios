@@ -1332,6 +1332,9 @@ enum ToolPanelMode: String, CaseIterable {
     case notes = "Notes"
     case commentary = "Commentary"
     case devotionals = "Devotionals"
+    /// The Mac's reader chats, followed and continued from here. Offered only
+    /// while the AI features are on.
+    case chat = "Chat"
 
     /// The name the panel shows. The raw values are what `toolPanelMode`
     /// stores, so they keep the old "Devotionals" and only this says Writing.
@@ -1340,6 +1343,7 @@ enum ToolPanelMode: String, CaseIterable {
         case .notes: "Notes"
         case .commentary: "Commentary"
         case .devotionals: "Writing"
+        case .chat: "Chat"
         }
     }
 }
@@ -1355,6 +1359,9 @@ struct ToolPanelView: View {
     let currentVerse: Int
     var startChapter: Int? = nil  // For multi-chapter plan readings (overrides chapter for commentary range)
     var endChapter: Int? = nil    // For multi-chapter plan readings
+    /// The translation the reader shows in this window, which can differ from
+    /// the saved default; the Chat panel sends it with each message.
+    var readerTranslationId: String? = nil
     var onNavigateToVerse: ((Int) -> Void)?
     @Binding var toolbarsHidden: Bool
     /// Scroll-driven collapse, shared with the reader so both panes' headers
@@ -1374,6 +1381,7 @@ struct ToolPanelView: View {
     private let scrollCoordinator = ScrollSyncCoordinator.shared
 
     @AppStorage("toolPanelMode") private var panelMode: ToolPanelMode = .commentary
+    @ObservedObject private var aiFeatures = AIFeatures.shared
     @AppStorage("notesPanelVisible") private var notesPanelVisible: Bool = false
     @AppStorage("toolPanelScrollLinked") private var isScrollLinked: Bool = true
     @AppStorage("bottomToolbarMode") private var bottomToolbarMode: BottomToolbarMode = .navigation
@@ -1564,6 +1572,44 @@ struct ToolPanelView: View {
     var body: some View {
         panelBody
             .task(id: verseCountKey) { await loadVerseCount() }
+            // The Chat panel goes with the AI features, here or on another device.
+            .onAppear { leaveChatIfAIOff() }
+            .onChange(of: aiFeatures.isEnabled) { leaveChatIfAIOff() }
+    }
+
+    private func leaveChatIfAIOff() {
+        if panelMode == .chat && !aiFeatures.isEnabled { panelMode = .commentary }
+    }
+
+    /// The Mac's reader chats, each message sent with the verse in view.
+    private var chatContent: some View {
+        AgentRemotePanel(
+            reading: LampAgentRemoteReading(
+                verse: book * 1_000_000 + chapter * 1_000 + max(currentVerse, 1),
+                chapter: book * 1_000_000 + chapter * 1_000,
+                translationID: readerTranslationId ?? userSettings.readerTranslation
+            ),
+            referenceLabel: "\(bookName) \(chapter):\(max(currentVerse, 1))",
+            toolText: toolText,
+            topObstruction: hideHeader ? sharedHeaderHeight + windowSafeArea.top : 0,
+            bottomObstruction: chatBottomObscured,
+            besideReader: hideHeader
+        )
+    }
+
+    private var windowSafeArea: UIEdgeInsets {
+        UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first?.safeAreaInsets ?? .zero
+    }
+
+    /// What covers the Chat panel's bottom. Side by side, the reader's bottom
+    /// bar floats across the panel too, so its composer sits above it unless
+    /// the toolbars are away.
+    private var chatBottomObscured: CGFloat {
+        guard hideHeader else { return bottomObscuredHeight }
+        if toolbarsHidden || toolbarsCollapsed { return windowSafeArea.bottom }
+        return max(windowSafeArea.bottom, ReaderView.bottomBarObscuredHeight)
     }
 
     private var panelBody: some View {
@@ -1574,6 +1620,8 @@ struct ToolPanelView: View {
                     notesContent
                 } else if panelMode == .devotionals {
                     devotionalsContent
+                } else if panelMode == .chat {
+                    chatContent
                 } else {
                     commentaryContent
                 }
@@ -1691,6 +1739,20 @@ struct ToolPanelView: View {
                                 Label(ToolPanelMode.devotionals.displayName, systemImage: "checkmark")
                             } else {
                                 Text(ToolPanelMode.devotionals.displayName)
+                            }
+                        }
+                    }
+
+                    // The Mac's chats, while the AI features are on
+                    if aiFeatures.isEnabled {
+                        Divider()
+                        Button {
+                            panelMode = .chat
+                        } label: {
+                            if panelMode == .chat {
+                                Label(ToolPanelMode.chat.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(ToolPanelMode.chat.displayName)
                             }
                         }
                     }

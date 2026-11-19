@@ -144,6 +144,8 @@ struct SplitReaderView: View {
             return selectedCommentarySeries.isEmpty ? "Commentary" : selectedCommentarySeries
         case .devotionals:
             return "Writing"
+        case .chat:
+            return "Chat"
         }
     }
 
@@ -455,6 +457,7 @@ struct SplitReaderView: View {
             currentVerse: currentVerse,
             startChapter: currentReadingChapterRange?.start,
             endChapter: currentReadingChapterRange?.end,
+            readerTranslationId: currentTranslationId,
             onNavigateToVerse: { verseId in
                 // Direct navigation - bypass coordinator, just scroll reader
                 requestScrollAnimated = false
