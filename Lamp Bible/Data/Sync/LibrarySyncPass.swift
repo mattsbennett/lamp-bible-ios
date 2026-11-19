@@ -350,7 +350,8 @@ struct LibrarySyncPass {
     static func isPlanned(_ kind: LampSyncFileKind?) -> Bool {
         switch kind {
         case .module, .devotionalMedia, .noteMedia, .bookMedia, .writingReview: true
-        case .deck, .deckAsset, .workspaceFile, nil: false
+        // A writing's documents, until the phone keeps them.
+        case .deck, .deckAsset, .writingDocument, .workspaceFile, nil: false
         }
     }
 
@@ -367,7 +368,7 @@ struct LibrarySyncPass {
         switch kind {
         case .module(let content): [.notes, .devotionals, .highlights].contains(content)
         case .devotionalMedia, .noteMedia, .bookMedia, .writingReview: true
-        case .deck, .deckAsset, .workspaceFile: false
+        case .deck, .deckAsset, .writingDocument, .workspaceFile: false
         }
     }
 
