@@ -3248,6 +3248,50 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertTrue(LibrarySyncPass.hasUnsentReviews(source: source))
     }
 
+    /// What the assistant's sheet waits on: a writing whose collection, or a
+    /// picture of its own, isn't at this server as it's held here, until a
+    /// pass sends it. Another server hasn't had it, whatever this one has.
+    func testAWritingWaitsToGoUpUntilItAndItsPicturesAreSent() async throws {
+        let writingID = UUID().uuidString
+        try database.saveModule(Module(
+            id: moduleId, type: .devotional, name: "Writings", filePath: "\(moduleId!).lamp", isEditable: true
+        ))
+        func save(_ text: String, at revision: Int) throws {
+            try database.saveDevotionalEntry(DevotionalEntry(
+                from: Devotional(
+                    meta: DevotionalMeta(id: writingID, title: "Waiting", created: 100, lastModified: revision),
+                    markdownContent: text
+                ),
+                moduleId: moduleId
+            ))
+        }
+        try save("Grace abounds.", at: 200)
+        XCTAssertTrue(LibrarySyncPass.hasUnsentWriting(writingID, inModule: moduleId, source: source), "never sent")
+
+        _ = try await pass().run()
+        XCTAssertFalse(LibrarySyncPass.hasUnsentWriting(writingID, inModule: moduleId, source: source))
+        XCTAssertTrue(LibrarySyncPass.hasUnsentWriting(
+            writingID, inModule: moduleId, source: "webdav:https://elsewhere-\(UUID().uuidString).test/LampBible|someone"
+        ), "sent to this server only")
+
+        try save("Grace abounds all the more.", at: 300)
+        XCTAssertTrue(LibrarySyncPass.hasUnsentWriting(writingID, inModule: moduleId, source: source), "edited since")
+        _ = try await pass().run()
+        XCTAssertFalse(LibrarySyncPass.hasUnsentWriting(writingID, inModule: moduleId, source: source))
+
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let folder = documents.appendingPathComponent(
+            "\(LampSyncFolderLayout.devotionalMediaDirectory)/\(moduleId!)", isDirectory: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let own = folder.appendingPathComponent(writingID, isDirectory: true)
+        try FileManager.default.createDirectory(at: own, withIntermediateDirectories: true)
+        try Data("a picture".utf8).write(to: own.appendingPathComponent("picture.png"))
+        XCTAssertTrue(LibrarySyncPass.hasUnsentWriting(writingID, inModule: moduleId, source: source), "its picture isn't up")
+        _ = try await pass().run()
+        XCTAssertFalse(LibrarySyncPass.hasUnsentWriting(writingID, inModule: moduleId, source: source))
+    }
+
     /// A deleted writing's marks go with it: swept here and recorded as a
     /// deletion, so the other devices remove theirs.
     func testADeletedWritingsReviewMarksAreSweptAndDeletedEverywhere() async throws {

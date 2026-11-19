@@ -984,7 +984,7 @@ struct DevotionalView: View {
     /// Opens the writing's chat with the assistant, taking along whatever is
     /// chosen in the writing.
     private func askAssistant() {
-        let writing = AgentRemoteWriting(id: devotional.meta.id, title: devotional.meta.title)
+        let writing = AgentRemoteWriting(id: devotional.meta.id, moduleID: moduleId, title: devotional.meta.title)
         Task { @MainActor in
             // The assistant changes the writing on the Mac: editing it here at
             // the same time would be two hands on one page. So everything
@@ -1052,7 +1052,9 @@ struct DevotionalView: View {
             // The Mac works on its own copy: a sync pass sends what's saved,
             // and each message carries the writing's revision as stored, so
             // the Mac can check it has caught up (AgentRemoteWritingStamp).
-            asked.syncFirst = true
+            // Only when there's something to send: a save, now or earlier,
+            // that hasn't gone up.
+            asked.syncFirst = await asked.isWaitingToGoUp()
             askingAssistant = asked
         }
     }

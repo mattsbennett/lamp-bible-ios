@@ -5,10 +5,28 @@ import SwiftUI
 /// Mac, begun or continued, with the words chosen in it.
 struct AgentRemoteWriting: Equatable, Identifiable {
     let id: String
+    /// The collection it's kept in, which is what sync publishes.
+    let moduleID: String
     let title: String
     var selection: String?
     /// Sent to the Mac by a sync pass before asking.
     var syncFirst = false
+}
+
+extension AgentRemoteWriting {
+    /// Whether this device holds the writing otherwise than the server it
+    /// syncs with does, as the Mac would take it from there: what a sync
+    /// pass is waited on for before asking. A server no pass has finished
+    /// at yet has nothing recorded, so it's waited on too.
+    @MainActor
+    func isWaitingToGoUp() async -> Bool {
+        let id = id, module = moduleID
+        guard let endpoint = libraryEndpoint(for: ModuleSyncManager.shared.getStorage()) else { return false }
+        let source = endpoint.librarySource
+        return await Task.detached(priority: .userInitiated) {
+            LibrarySyncPass.hasUnsentWriting(id, inModule: module, source: source)
+        }.value
+    }
 }
 
 /// The writing's chat with the assistant, over the writing it's about.
@@ -42,23 +60,34 @@ struct AskAssistantSheet: View {
         .presentationDetents([.medium, .large])
     }
 
-    /// A sync pass with what was just saved, so it's on its way before the
-    /// Mac is asked. Best effort: the Mac checks the writing's revision
-    /// itself, pulls if it's behind, and says so if it still is.
+    /// Sync passes until what was saved is published, so it's on its way
+    /// before the Mac is asked. Best effort: the Mac checks the writing's
+    /// revision itself, pulls if it's behind, and says so if it still is.
     private func sendEdits() async {
         guard SyncCoordinator.shared.settings.backend != .none else { return }
         sendingEdits = true
-        // One already running may have begun before the save.
-        for _ in 0..<6 {
+        defer { sendingEdits = false }
+        // What's waited on is the writing going up, not a pass ending well:
+        // one already running may have begun before the save, and one can
+        // fail elsewhere in the library with this sent.
+        var passes = 0
+        for _ in 0..<60 where passes < 3 && !Task.isCancelled {
+            guard await writing.isWaitingToGoUp() else { return }
             do {
                 try await SyncCoordinator.shared.syncAll()
-                break
+                passes += 1
+            } catch SyncError.alreadyRunning, SyncError.backendTransitionInProgress {
+                // The one running is followed by another, which has it.
+            } catch SyncError.notConfigured {
+                return
             } catch {
-                try? await Task.sleep(for: .seconds(2))
+                passes += 1
             }
+            guard await writing.isWaitingToGoUp() else { return }
+            try? await Task.sleep(for: .seconds(2))
         }
-        sendingEdits = false
     }
+
 }
 
 /// The reader's Chat panel: the Mac's reader chats, followed and continued

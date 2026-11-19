@@ -372,7 +372,7 @@ struct LibrarySyncPass {
     /// walk names each file under /private/var though Documents is under
     /// /var, so both are standardized before one is taken from the other, as
     /// core takes a book's pictures.
-    static func mediaFiles(in documents: URL, directory: String) -> [String: URL] {
+    nonisolated static func mediaFiles(in documents: URL, directory: String) -> [String: URL] {
         let root = documents.appendingPathComponent(directory, isDirectory: true)
         guard let files = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: [.isRegularFileKey]
@@ -1091,6 +1091,39 @@ extension LibrarySyncPass {
                   let url = try? reviews.url(writingID: id),
                   let digest = try? LampSyncContentRevision.digest(forFileAt: url) else { return false }
             return records.record(path, in: source)?.uploadedDigest != digest
+        }
+    }
+
+    /// Whether a writing isn't at the endpoint `source` names as this device
+    /// holds it: its collection, or a file kept with it, differs from what
+    /// the records say was sent there or taken from there, or was sent but
+    /// isn't yet in a bundle the other devices read. Judged at that endpoint,
+    /// so a collection sent only to an earlier server, or a picture whose
+    /// upload failed in a pass that sent the rest, still is.
+    nonisolated static func hasUnsentWriting(
+        _ writingID: String, inModule moduleID: String, source: String
+    ) -> Bool {
+        let database = ModuleDatabase.shared
+        guard let module = try? database.getModule(id: moduleID) else { return false }
+        guard let records = try? database.libraryRecords(source: source),
+              let queued = try? database.pendingManifestChanges(source: source),
+              let exported = try? ModuleSyncManager.shared.exportDevotionalModuleToSQLite(module)
+        else { return true }
+        let unlisted = Set(queued.map(\.path))
+        func unsent(_ path: String, digest: String) -> Bool {
+            records.changedSinceUpload(path, in: source, digest: digest)
+                || records.record(path, in: source)?.pendingRevision != nil
+                || unlisted.contains(path)
+        }
+        let collection = "\(ModuleType.devotional.libraryFolder)/\(moduleID).lamp"
+        if unsent(collection, digest: digest(exported)) { return true }
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let directory = LampSyncFolderLayout.devotionalMediaDirectory
+        let own = "\(directory)/\(moduleID)/\(writingID)/"
+        return mediaFiles(in: documents, directory: directory).contains { path, url in
+            guard path.hasPrefix(own) else { return false }
+            guard let digest = try? LampSyncContentRevision.digest(forFileAt: url) else { return true }
+            return unsent(path, digest: digest)
         }
     }
 
