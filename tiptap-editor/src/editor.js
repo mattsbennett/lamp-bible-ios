@@ -882,18 +882,51 @@ function markdownMarking(from, to) {
     }
     return null
   }
-  // Tried on the top-level blocks the markers fall in, which are all a
-  // marker can change the writing of: a long manuscript is written whole
-  // once more, not once for each try. Then the whole is checked.
+  // Tried on the blocks the markers fall in, which are all a marker can
+  // change the writing of: a long manuscript is written whole once more,
+  // not once for each try. Then the whole is checked. The top-level blocks,
+  // narrowed inside a list or a quotation to the item or paragraph holding
+  // both markers, in a copy of what holds it (a numbered list's copy starts
+  // at that item's number). Only the choice is made there, and the tries are
+  // judged against the part itself; the whole decides. A part that's still
+  // most of the document isn't worth it: the whole is tried straight away.
   const plain = getMarkdownContent()
   const first = doc.resolve(from).index(0)
   const last = Math.min(doc.resolve(to).index(0), doc.childCount - 1)
   let offset = 0
   for (let index = 0; index < first; index++) offset += doc.child(index).nodeSize
-  const blocks = []
-  for (let index = first; index <= last; index++) blocks.push(doc.child(index))
-  const part = doc.type.create(doc.attrs, Fragment.fromArray(blocks))
-  const chosen = choose(part, offset, serialize(part))
+  let part
+  if (first === last) {
+    let block = doc.child(first)
+    let start = offset
+    const wrappers = []
+    while (['bulletList', 'orderedList', 'blockquote'].includes(block.type.name) && block.childCount > 1) {
+      let childStart = start + 1
+      let holding = -1
+      for (let index = 0; index < block.childCount; index++) {
+        const child = block.child(index)
+        const childEnd = childStart + child.nodeSize
+        if (from > childStart && to < childEnd) holding = index
+        if (holding >= 0) break
+        childStart = childEnd
+      }
+      if (holding < 0) break
+      wrappers.push(block.type.name === 'orderedList' && typeof block.attrs.start === 'number'
+        ? block.type.create({ ...block.attrs, start: block.attrs.start + holding }, block.content)
+        : block)
+      block = block.child(holding)
+      start = childStart
+    }
+    let built = block
+    for (const wrapper of [...wrappers].reverse()) built = wrapper.copy(Fragment.from(built))
+    part = doc.type.create(doc.attrs, Fragment.from(built))
+    offset = start - wrappers.length
+  } else {
+    const blocks = []
+    for (let index = first; index <= last; index++) blocks.push(doc.child(index))
+    part = doc.type.create(doc.attrs, Fragment.fromArray(blocks))
+  }
+  const chosen = part.content.size * 2 > doc.content.size ? null : choose(part, offset, serialize(part))
   if (chosen) {
     try {
       const whole = marking(doc, 0, chosen.endMarks, chosen.startMarks)

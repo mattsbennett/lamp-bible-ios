@@ -1276,7 +1276,80 @@ func longManuscriptClear() {
                               "a clear in a book-length writing maps to the page's text (read: \(String(describing: r)))")
                         check(took >= 0 && written > 0 && took < written * 3.5 + 150,
                               "and costs a few writings of the whole, not one for each try (\(Int(took)) ms against \(Int(written)) ms for one)")
-                        exit(failed ? 1 : 0)
+                        longListClears()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Clears in a list as long as a book, numbered and bulleted, plain and in
+// the formatting that takes the most tries: never dearer than trying each
+// choice on the whole, and the marked Markdown is the page's.
+let longLists: [(name: String, item: String, last: String, word: String)] = [
+    ("a numbered list", "1. ", "four plain words here", "plain"),
+    ("a numbered list, mixed formatting", "1. ", "<strong>left </strong><a href=\"https://example.org\"><em>middle</em></a><strong><em> right</em></strong>", "middle"),
+    ("a bulleted list, mixed formatting", "- ", "<strong>left </strong><a href=\"https://example.org\"><em>middle</em></a><strong><em> right</em></strong>", "middle"),
+]
+
+func longListClears(_ index: Int = 0) {
+    guard index < longLists.count else { exit(failed ? 1 : 0) }
+    let item = longLists[index]
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            const words = 'and the shepherd calls his own sheep by name and leads them out when he has brought out all his own he goes before them';
+            const items = [];
+            for (let index = 0; index < 2000; index++) items.push('\(item.item)Item ' + index + ' ' + words);
+            items.push('\(item.item)' + '\(item.last.replacingOccurrences(of: "'", with: "\\'"))');
+            rv.load(items.join('\\n'));
+            rv.focus();
+            return true
+        })()
+        """) { _ in
+        after(300) {
+            js("""
+                (() => {
+                    const items = document.querySelectorAll('.ProseMirror li');
+                    const last = items[items.length - 1];
+                    const walker = document.createTreeWalker(last, NodeFilter.SHOW_TEXT);
+                    let text;
+                    while ((text = walker.nextNode()) && !text.textContent.includes('\(item.word)')) {}
+                    if (!text) return 'no text';
+                    const at = text.textContent.indexOf('\(item.word)');
+                    const range = document.createRange();
+                    range.setStart(text, at + 1);
+                    range.setEnd(text, at + 3);
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    return true
+                })()
+                """) { selected in
+                after(200) {
+                    js("""
+                        (() => {
+                            const once = performance.now();
+                            const plain = window.editorAPI.getContent();
+                            const written = performance.now() - once;
+                            const started = performance.now();
+                            const page = window.editorAPI.reviewMarkdownForSelection();
+                            const took = performance.now() - started;
+                            const unmarked = page.markdown.replace(/[\\uE000\\uE001\\uE002]/g, '');
+                            return [took, unmarked === plain, page.markdown.includes('\\uE000'), written]
+                        })()
+                        """) { r in
+                        let parts = r as? [Any] ?? []
+                        let took = parts.first as? Double ?? -1
+                        let written = parts.count > 3 ? parts[3] as? Double ?? -1 : -1
+                        print("  a clear in \(item.name) of 2,000 items took \(Int(took)) ms; writing the whole once takes \(Int(written)) ms")
+                        check(selected as? Bool == true && parts.count == 4 && parts[1] as? Bool == true && parts[2] as? Bool == true,
+                              "a clear in \(item.name) of 2,000 items maps to the page's text (read: \(String(describing: r)))")
+                        check(took >= 0 && written > 0 && took < written * 3.5 + 150,
+                              "and costs a few writings of the whole (\(Int(took)) ms against \(Int(written)) ms for one)")
+                        longListClears(index + 1)
                     }
                 }
             }
