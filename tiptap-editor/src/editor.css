@@ -574,18 +574,18 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
   border-left: 2px solid var(--review-mark-rule, rgba(178, 120, 0, 0.7));
   margin: 0 1px;
 }
-/* In the margin, before the block's first line: pulled left by more than
-   its own width and given the difference back after, so the text does not
-   move when a block gains or loses its button. */
+/* At the right of the block's first line, floated so the text keeps its
+   place and only wraps a little sooner: the phone's margin has no room for
+   it at the left, where it was cut off by the screen's edge. Sized for a
+   finger, its mark drawn small inside. */
 .ProseMirror .review-clear {
-  display: inline-block;
-  vertical-align: baseline;
-  width: 22px;
-  height: 22px;
-  margin: 0 8px 0 -30px;
+  float: right;
+  width: 32px;
+  height: 32px;
+  margin: -5px -8px 0 6px;
   padding: 0;
   border: none;
-  border-radius: 11px;
+  border-radius: 16px;
   background: transparent;
   color: var(--review-mark-rule, rgba(178, 120, 0, 0.7));
   font: inherit;
@@ -594,8 +594,8 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
 }
 .ProseMirror .review-clear::before {
   content: "✓";
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 15px;
+  line-height: 32px;
 }
 .ProseMirror .review-clear:hover {
   background: var(--review-mark-bg, rgba(232, 176, 44, 0.22));

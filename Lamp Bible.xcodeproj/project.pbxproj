@@ -13,6 +13,7 @@
 		69953A461E33453590607608 /* Resources/TipTapEditor in Resources */ = {isa = PBXBuildFile; fileRef = 9CF26519566447318332A93B /* Resources/TipTapEditor */; };
 		76D1ED02B3D86B929A895CBB /* RealmMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63E97884C32E4D3D92C1CA62 /* RealmMigrationTests.swift */; };
 		8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */; };
+		06E92609811F415593EF86BA /* WritingReviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B480368E57E44998D9D41B2 /* WritingReviewSession.swift */; };
 		4E4BAF27A20B29E1841CD1B5 /* TipTapPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43FC535A704656A6E9748E91 /* TipTapPage.swift */; };
 		3DEAB6EDE05206515168103B /* NoteMarkdownRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F59F50174A8F2429FE4D081B /* NoteMarkdownRenderer.swift */; };
 		8DAB54CEB39AB2E388070726 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 0E27D0DD0B6FBDAAD354572B /* GRDB */; };
@@ -201,6 +202,7 @@
 
 /* Begin PBXFileReference section */
 		54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapEditorCoordinator.swift; sourceTree = "<group>"; };
+		3B480368E57E44998D9D41B2 /* WritingReviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WritingReviewSession.swift; sourceTree = "<group>"; };
 		43FC535A704656A6E9748E91 /* TipTapPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipTapPage.swift; sourceTree = "<group>"; };
 		F59F50174A8F2429FE4D081B /* NoteMarkdownRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteMarkdownRenderer.swift; sourceTree = "<group>"; };
 		63E97884C32E4D3D92C1CA62 /* RealmMigrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RealmMigrationTests.swift; sourceTree = "<group>"; };
@@ -529,6 +531,7 @@
 				B87B2AD22F008243006DC53D /* SplitReaderView.swift */,
 				B851FFD42B7B221700C74C1D /* WrappingHStack.swift */,
 				54EF08A29E534BAD8CFC5966 /* TipTapEditorCoordinator.swift */,
+				3B480368E57E44998D9D41B2 /* WritingReviewSession.swift */,
 				43FC535A704656A6E9748E91 /* TipTapPage.swift */,
 				F59F50174A8F2429FE4D081B /* NoteMarkdownRenderer.swift */,
 				A95873C478D642C9B5444C02 /* TipTapEditorView.swift */,
@@ -939,6 +942,7 @@
 				B82DA2252B450C3200E8AC49 /* PlanPickerView.swift in Sources */,
 				D7A1C0A62F0B000000000001 /* NewPlanView.swift in Sources */,
 				8B2C980BB18D46AB99B3CB5C /* TipTapEditorCoordinator.swift in Sources */,
+				06E92609811F415593EF86BA /* WritingReviewSession.swift in Sources */,
 				4E4BAF27A20B29E1841CD1B5 /* TipTapPage.swift in Sources */,
 				3DEAB6EDE05206515168103B /* NoteMarkdownRenderer.swift in Sources */,
 				CD479F6450094BECA0B60B84 /* TipTapEditorView.swift in Sources */,

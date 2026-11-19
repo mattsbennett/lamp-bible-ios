@@ -2794,6 +2794,21 @@ class ModuleDatabase {
         }
     }
 
+    /// Saves `entry` unless the writing as stored is newer than `base`, the
+    /// revision the copy saved began from: checked and written in one
+    /// transaction, so a sync landing between can't be written over.
+    /// Returns whether it saved.
+    func saveDevotionalEntry(_ entry: DevotionalEntry, ifNotNewerThan base: Int?) throws -> Bool {
+        try write { db in
+            if let stored = try DevotionalEntry.fetchOne(db, key: entry.id)?.lastModified, stored > (base ?? 0) {
+                return false
+            }
+            try entry.save(db)
+            try Self.recordPersonalPresence(db, .devotional, entry.id)
+            return true
+        }
+    }
+
     func deleteDevotionalEntry(id: String) throws {
         try dbQueue.write { db in
             if try DevotionalEntry.deleteOne(db, key: id) {

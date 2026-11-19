@@ -1718,6 +1718,15 @@ class ModuleSyncManager: ObservableObject {
         await SearchIndexMaintenance.refreshWordLists()
     }
 
+    /// A pass soon, for a change kept outside the modules (a writing's review
+    /// marks), where the library syncs.
+    func scheduleLibraryPass() async {
+        guard let storage = await getStorage(),
+              let endpoint = libraryEndpoint(for: storage),
+              await LibrarySyncPass.isInUse(at: endpoint) else { return }
+        await LibrarySyncPass.schedule(on: endpoint)
+    }
+
     /// Marks an edited module for the library pass to publish, and asks for
     /// a pass. A library that has not moved yet keeps the mark until it has.
     func exportModule(id: String) async throws {
@@ -1950,6 +1959,26 @@ class ModuleSyncManager: ObservableObject {
         try database.saveDevotionalEntry(entry)
 
         // Cloud export in detached task so it continues even if caller is cancelled
+        let modId = moduleId
+        Task.detached {
+            do {
+                try await self.exportModule(id: modId)
+            } catch {
+                print("[ModuleSyncManager] Background export failed: \(error)")
+            }
+        }
+        return saved
+    }
+
+    /// `saveDevotional`, unless the writing as stored is newer than `base`:
+    /// nil then, and nothing written. The check and the write are one
+    /// transaction (`saveDevotionalEntry(_:ifNotNewerThan:)`).
+    func saveDevotional(_ devotional: Devotional, moduleId: String, ifNotNewerThan base: Int?, at stamp: Int? = nil) async throws -> Int? {
+        var mutableDevotional = devotional
+        let saved = stamp ?? Int(Date().timeIntervalSince1970)
+        mutableDevotional.meta.lastModified = saved
+        let entry = DevotionalEntry(from: mutableDevotional, moduleId: moduleId)
+        guard try database.saveDevotionalEntry(entry, ifNotNewerThan: base) else { return nil }
         let modId = moduleId
         Task.detached {
             do {

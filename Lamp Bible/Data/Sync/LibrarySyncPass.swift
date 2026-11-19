@@ -932,6 +932,14 @@ struct DeletionLedgerParticipant: SettingsBundleParticipant {
 extension LibrarySyncPass {
     private static let revisionsKey = "LibrarySync.bundleRevisions.v1"
     private static var scheduled: Task<Void, Never>?
+    /// A pass was asked for while one ran, which may have read before the
+    /// change it's for: another follows it, however either was started.
+    private static var passAgain = false
+
+    /// Another pass once the one running ends.
+    static func passAgainAfterThisOne() {
+        passAgain = true
+    }
 
     /// The bundle revision this device last read or wrote at an endpoint, or
     /// nil while the endpoint still holds the archive.
@@ -968,9 +976,18 @@ extension LibrarySyncPass {
         // connection, and this pass writes the content it indexes.
         await SearchIndexMaintenance.waitUntilFinished()
         let modules = ModuleSyncManager.shared
-        guard !modules.isSyncing else { throw SyncError.alreadyRunning }
+        guard !modules.isSyncing else {
+            passAgain = true
+            throw SyncError.alreadyRunning
+        }
         modules.isSyncing = true
-        defer { modules.isSyncing = false }
+        defer {
+            modules.isSyncing = false
+            if passAgain {
+                passAgain = false
+                schedule(on: storage, after: 0)
+            }
+        }
 
         var pass = LibrarySyncPass(storage: storage, source: storage.librarySource)
         pass.makeParticipants = { bundle, versions in

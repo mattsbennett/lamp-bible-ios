@@ -347,10 +347,12 @@ class UserSettingsSyncManager {
         take(\.planReaderCount)
         take(\.aiEnabled)
         take(\.defaultCommentarySeries)
+        take(\.reviewMarksEnabled)
         // Only a choice travels: a device that never chose, or a build that
         // doesn't know the setting and wrote the row without it, has no say.
         if merged.aiEnabled == nil { merged.aiEnabled = local.aiEnabled }
         if merged.defaultCommentarySeries == nil { merged.defaultCommentarySeries = local.defaultCommentarySeries }
+        if merged.reviewMarksEnabled == nil { merged.reviewMarksEnabled = local.reviewMarksEnabled }
         merged.updatedAt = max(local.updatedAt, remote.updatedAt)
         return merged
     }
@@ -641,6 +643,11 @@ enum SharedPreferenceArchiveSync {
         } else if let held = base?.fields[LampPreferenceDefaults.aiFeaturesKey]?.value {
             values[LampPreferenceDefaults.aiFeaturesKey] = held
         }
+        if let marks = settings.reviewMarksEnabled {
+            values[LampPreferenceDefaults.writingReviewMarksKey] = .boolean(marks)
+        } else if let held = base?.fields[LampPreferenceDefaults.writingReviewMarksKey]?.value {
+            values[LampPreferenceDefaults.writingReviewMarksKey] = held
+        }
         return values
     }
 
@@ -659,7 +666,8 @@ enum SharedPreferenceArchiveSync {
             || current.planNotification != updated.planNotification
             || current.planNotificationHour != updated.planNotificationHour
             || current.planNotificationMinute != updated.planNotificationMinute
-            || current.aiEnabled != updated.aiEnabled else { return }
+            || current.aiEnabled != updated.aiEnabled
+            || current.reviewMarksEnabled != updated.reviewMarksEnabled else { return }
         try UserDatabase.shared.updateSettings { settings in
             overwrite(&settings, with: ledger)
         }
@@ -718,6 +726,10 @@ enum SharedPreferenceArchiveSync {
                 // A choice, never a clearing: none leaves this device's own.
                 if case .some(.boolean(let value)) = field.value {
                     settings.aiEnabled = value
+                }
+            case LampPreferenceDefaults.writingReviewMarksKey:
+                if case .some(.boolean(let value)) = field.value {
+                    settings.reviewMarksEnabled = value
                 }
             default:
                 break

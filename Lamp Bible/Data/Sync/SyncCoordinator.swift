@@ -398,6 +398,11 @@ class SyncCoordinator: ObservableObject {
             syncAgainAfterPass = true
             return
         }
+        // A scheduled or polled pass running: one more follows it.
+        if ModuleSyncManager.shared.isSyncing {
+            LibrarySyncPass.passAgainAfterThisOne()
+            return
+        }
         Task { try? await syncAll() }
     }
 

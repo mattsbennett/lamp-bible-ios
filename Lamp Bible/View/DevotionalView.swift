@@ -5,6 +5,7 @@
 //  Created by Claude on 2025-01-15.
 //
 
+import LampCore
 import SwiftUI
 
 // MARK: - View Modes
@@ -139,6 +140,9 @@ struct DevotionalView: View {
     /// doesn't, so the assistant isn't offered for it.
     @State private var writingIsEditable = false
     @ObservedObject private var aiFeatures = AIFeatures.shared
+    /// What the assistant changed that the writer hasn't read yet, where
+    /// they keep marks (`AIFeatures.marksReviews`).
+    @StateObject private var reviewSession = WritingReviewSession()
     @State private var hasUnsavedChanges: Bool = false
     @State private var fontSize: CGFloat = 18
 
@@ -427,6 +431,15 @@ struct DevotionalView: View {
             DeckViewerView(entry: entry)
         }
         .task(id: devotional.meta.id) { await reloadLinkedDecks() }
+        // The writing's review marks, followed while it's open and marks are
+        // shown; another writing, or marks turned off, starts again.
+        .task(id: ReviewFollowing(writingID: devotional.meta.id, isShown: showsReviewMarks)) {
+            #if DEBUG
+            if showsReviewMarks, UserDefaults.standard.bool(forKey: "ReviewMarksDemo") { seedReviewMarksDemo() }
+            #endif
+            await reviewSession.follow(writingID: devotional.meta.id, text: markdownContent, isShown: showsReviewMarks)
+        }
+        .onChange(of: markdownContent) { _, text in reviewSession.textChanged(text) }
         .task(id: moduleId) {
             let id = moduleId
             writingIsEditable = await Task.detached(priority: .utility) {
@@ -673,6 +686,7 @@ struct DevotionalView: View {
                 },
                 onCoordinatorReady: { coordinator in
                     tiptapCoordinator = coordinator
+                    connectReviewMarks(to: coordinator)
                     // A newer copy that came while the editor was loading.
                     Task { await takeInNewerStoredCopy() }
 
@@ -1327,6 +1341,11 @@ struct DevotionalView: View {
                     .accessibilityLabel("Ask the Assistant")
                 }
             }
+            if showsReviewMarks && reviewSession.count > 0 {
+                ToolbarItem(placement: .bottomBar) {
+                    reviewControl
+                }
+            }
             ToolbarItem(placement: .bottomBar) {
                 Spacer()
             }
@@ -1509,38 +1528,7 @@ struct DevotionalView: View {
         let savedMarkdown = markdownContent
 
         if storedIsNewer {
-            // Nothing here unsaved (an autosave left queued after the edits
-            // were saved): there's nothing to keep, and the newer version is
-            // shown once it can be.
-            guard hasUnsavedChanges else {
-                saveState = .idle
-                Task { @MainActor in await takeInNewerStoredCopy() }
-                return
-            }
-            // Editing stops first and the editor is read once more, so
-            // nothing typed while the copy is saved is left out of it.
-            if mode == .edit {
-                let live: String?
-                let generation = documentGeneration
-                if let coordinator = tiptapCoordinator {
-                    live = await Self.readPage(coordinator, leaving: { withAnimation { mode = .read } }, visual: editMode == .visual)
-                } else {
-                    live = nil
-                    withAnimation { mode = .read }
-                }
-                if let live, live != markdownContent, isTyped(live), generation == documentGeneration {
-                    takingInStoredCopy = true
-                    markdownContent = live
-                    guard syncBlocksFromMarkdown() else { return }
-                }
-            }
-            let kept = (devotional, markdownContent)
-            guard let title = await Self.keepAsCopy(devotional, moduleId: moduleId) else {
-                // Not kept: the edits stay here, unsaved, for the next try.
-                saveState = .error
-                return
-            }
-            keptEdits(as: title, holding: kept)
+            await keepBesideNewer()
             return
         }
 
@@ -1553,8 +1541,28 @@ struct DevotionalView: View {
                 }
             }
 
-            // Use ModuleSyncManager to save and export to iCloud
-            let committed = try await ModuleSyncManager.shared.saveDevotional(devotional, moduleId: moduleId)
+            // The marks' carry takes its place in line before the save waits
+            // on the database: a clear asked for meanwhile comes after it.
+            let previous = persistedMarkdown
+            let carry = showsReviewMarks ? WritingReviewWork.shared.reserveCarry(for: devotional.meta.id) : nil
+            let written: Int?
+            do {
+                written = try await ModuleSyncManager.shared.saveDevotional(
+                    devotional, moduleId: moduleId, ifNotNewerThan: baseLastModified
+                )
+            } catch {
+                carry?.reservation.giveUp()
+                throw error
+            }
+            // Newer by the time it was written: kept beside it instead.
+            guard let committed = written else {
+                carry?.reservation.giveUp()
+                await keepBesideNewer()
+                return
+            }
+            if let carry {
+                if let previous { WritingReviewWork.shared.carry(carry, from: previous, to: savedMarkdown, savedAs: committed) } else { carry.reservation.giveUp() }
+            }
             devotional.meta.lastModified = committed
             baseLastModified = committed
             persistedMarkdown = savedMarkdown
@@ -1581,6 +1589,44 @@ struct DevotionalView: View {
         }
     }
 
+    /// The writing as stored is newer than the copy here (another device's,
+    /// or the assistant's, brought by sync): the edits here are kept as a
+    /// writing of their own beside it, never written over it.
+    private func keepBesideNewer() async {
+        // Nothing here unsaved (an autosave left queued after the edits
+        // were saved): there's nothing to keep, and the newer version is
+        // shown once it can be.
+        guard hasUnsavedChanges else {
+            saveState = .idle
+            Task { @MainActor in await takeInNewerStoredCopy() }
+            return
+        }
+        // Editing stops first and the editor is read once more, so
+        // nothing typed while the copy is saved is left out of it.
+        if mode == .edit {
+            let live: String?
+            let generation = documentGeneration
+            if let coordinator = tiptapCoordinator {
+                live = await Self.readPage(coordinator, leaving: { withAnimation { mode = .read } }, visual: editMode == .visual)
+            } else {
+                live = nil
+                withAnimation { mode = .read }
+            }
+            if let live, live != markdownContent, isTyped(live), generation == documentGeneration {
+                takingInStoredCopy = true
+                markdownContent = live
+                guard syncBlocksFromMarkdown() else { return }
+            }
+        }
+        let kept = (devotional, markdownContent)
+        guard let title = await Self.keepAsCopy(devotional, moduleId: moduleId) else {
+            // Not kept: the edits stay here, unsaved, for the next try.
+            saveState = .error
+            return
+        }
+        keptEdits(as: title, holding: kept)
+    }
+
     private func saveNowSync() {
         guard !isSaving else { return }
         isSaving = true
@@ -1599,7 +1645,10 @@ struct DevotionalView: View {
         let stamped = Int(Date().timeIntervalSince1970)
         devotional.meta.lastModified = stamped
         lastSaveTime = Date()
+        let previous = persistedMarkdown
         persistedMarkdown = markdownContent
+        // In line before the write, as a save's carry always is.
+        let carry = showsReviewMarks ? WritingReviewWork.shared.reserveCarry(for: devotional.meta.id) : nil
 
         // A detached write, so it finishes even if the view goes; kept, so
         // what depends on it (asking the assistant) can wait for it. A newer
@@ -1613,32 +1662,45 @@ struct DevotionalView: View {
             // device's own save is no change from elsewhere.
             var base = base
             if case .saved(let revision)? = await earlier?.value { base = max(base ?? revision, revision) }
-            if await Self.storedIsNewer(id: devToSave.meta.id, than: base) {
-                guard let title = await Self.keepAsCopy(devToSave, moduleId: modId) else {
-                    // Not kept: still unsaved here, for the next try.
+            // Stored as `stamped` unless what's stored is newer, checked as
+            // it's written; only then is it what the next save is judged
+            // against.
+            if await !Self.storedIsNewer(id: devToSave.meta.id, than: base) {
+                do {
+                    if let committed = try await ModuleSyncManager.shared.saveDevotional(
+                        devToSave, moduleId: modId, ifNotNewerThan: base, at: stamped
+                    ) {
+                        await MainActor.run {
+                            baseLastModified = max(baseLastModified ?? committed, committed)
+                            if let carry {
+                                if let previous { WritingReviewWork.shared.carry(carry, from: previous, to: keptMarkdown, savedAs: committed) } else { carry.reservation.giveUp() }
+                            }
+                        }
+                        return .saved(committed)
+                    }
+                } catch {
+                    carry?.reservation.giveUp()
+                    print("[DevotionalView] Failed to save on disappear: \(error)")
                     await MainActor.run {
                         hasUnsavedChanges = true
                         saveState = .error
                     }
                     return .failed
                 }
-                await MainActor.run { keptEdits(as: title, holding: (devToSave, keptMarkdown)) }
-                return .keptCopy
             }
-            do {
-                // Stored as `stamped`; only then is it what the next save is
-                // judged against.
-                let committed = try await ModuleSyncManager.shared.saveDevotional(devToSave, moduleId: modId, at: stamped)
-                await MainActor.run { baseLastModified = max(baseLastModified ?? committed, committed) }
-                return .saved(committed)
-            } catch {
-                print("[DevotionalView] Failed to save on disappear: \(error)")
+            // Newer: these edits are kept beside it. Not this writing's
+            // text, so its marks stay as they are.
+            carry?.reservation.giveUp()
+            guard let title = await Self.keepAsCopy(devToSave, moduleId: modId) else {
+                // Not kept: still unsaved here, for the next try.
                 await MainActor.run {
                     hasUnsavedChanges = true
                     saveState = .error
                 }
                 return .failed
             }
+            await MainActor.run { keptEdits(as: title, holding: (devToSave, keptMarkdown)) }
+            return .keptCopy
         }
         isSaving = false
         hasUnsavedChanges = false
@@ -1682,11 +1744,106 @@ struct DevotionalView: View {
     /// editing began, or the page has reported or saved edits since (an undo
     /// back to the start is typing too).
     private func isTyped(_ live: String) -> Bool {
-        if hasUnsavedChanges || markdownContent != persistedMarkdown || persistedMarkdown != persistedAtEditStart {
+        // The body, not the details: a title changed alone leaves the page as
+        // it began, whose Markdown isn't the stored text's to replace.
+        if markdownContent != persistedMarkdown || persistedMarkdown != persistedAtEditStart {
             return true
         }
         guard let editBaseline else { return false }
         return live != editBaseline
+    }
+
+    // MARK: - Review marks
+
+    /// Whether the assistant's changes are marked here: the writer asked for
+    /// it, AI is on, and the writing is one the assistant may change.
+    private var showsReviewMarks: Bool {
+        #if DEBUG
+        if UserDefaults.standard.bool(forKey: "ReviewMarksDemo") { return aiFeatures.isEnabled && writingIsEditable }
+        #endif
+        return aiFeatures.marksReviews && writingIsEditable
+    }
+
+    #if DEBUG
+    /// For looking at the marks in the simulator, which has no Mac to make
+    /// them: launch with `-ReviewMarksDemo YES`, and the second sentence of
+    /// the writing's first long paragraph, or its last paragraph, reads as
+    /// the assistant's.
+    private func seedReviewMarksDemo() {
+        let store = LibrarySyncPass.reviewStore
+        let id = devotional.meta.id
+        guard (try? store.review(writingID: id))?.isEmpty != false else { return }
+        let text = markdownContent
+        let paragraphs = text.components(separatedBy: "\n\n")
+        let old: String
+        if let paragraph = paragraphs.first(where: { $0.count > 80 && !$0.hasPrefix("#") }),
+           let stop = paragraph.range(of: ". ") {
+            old = text.replacingOccurrences(of: paragraph, with: String(paragraph[..<stop.lowerBound]) + ".")
+        } else {
+            // A short writing: its last paragraph is the assistant's.
+            old = paragraphs.dropLast().joined(separator: "\n\n")
+        }
+        guard old != text else { return }
+        try? store.save(LampWritingReview(writingID: id).markingAssistantChange(from: old, to: text))
+    }
+    #endif
+
+    private struct ReviewFollowing: Equatable {
+        let writingID: String
+        let isShown: Bool
+    }
+
+    /// The page shows the session's marks and sends its clears back.
+    private func connectReviewMarks(to coordinator: TipTapEditorCoordinator) {
+        coordinator.setReviewMarks(reviewSession.markedMarkdown)
+        reviewSession.onMarksChanged = { [weak coordinator] marked in
+            coordinator?.setReviewMarks(marked)
+        }
+        coordinator.onReviewClear = { [weak reviewSession] marked in
+            reviewSession?.clear(markedMarkdown: marked)
+        }
+        coordinator.onReviewMarksRejected = { [weak reviewSession] in
+            reviewSession?.marksRejected()
+        }
+    }
+
+    /// How much is still to read, and the clears that don't need a
+    /// paragraph's ✓: the selection, or everything. Markdown editing draws
+    /// no marks, and says where they are.
+    private var reviewControl: some View {
+        Menu {
+            if mode == .edit && editMode == .markdown {
+                Section("Changes are marked in Visual") {
+                    Button(action: { switchToVisualEdit() }) {
+                        Label("Visual Edit", systemImage: "pencil")
+                    }
+                }
+            } else {
+                Button(action: markSelectionAsReviewed) {
+                    Label("Mark Selection as Reviewed", systemImage: "text.badge.checkmark")
+                }
+            }
+            Button(action: { reviewSession.clearAll() }) {
+                Label("Mark All as Reviewed", systemImage: "checkmark.circle")
+            }
+        } label: {
+            // The count beside the mark: a bar's label shows its icon alone.
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle")
+                Text(reviewSession.count, format: .number)
+                    .monospacedDigit()
+            }
+            .font(.body.weight(.semibold))
+        }
+        .accessibilityLabel(reviewSession.count == 1 ? "1 to Review" : "\(reviewSession.count) to Review")
+        .accessibilityHint("Passages the assistant changed that you haven’t read yet")
+    }
+
+    private func markSelectionAsReviewed() {
+        tiptapCoordinator?.reviewMarkdownForSelection { marked in
+            guard let marked else { return }
+            reviewSession.clear(markedMarkdown: marked)
+        }
     }
 
     /// The page's text as editing ends, typing its debounced report hasn't

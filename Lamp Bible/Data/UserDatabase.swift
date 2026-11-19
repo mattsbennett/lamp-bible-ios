@@ -348,6 +348,14 @@ class UserDatabase {
             }
         }
 
+        // Whether the writing assistant's changes are marked for review,
+        // once someone has chosen: NULL until then.
+        migrator.registerMigration("v12_review_marks") { db in
+            try db.alter(table: "user_settings") { t in
+                t.add(column: "review_marks_enabled", .boolean)
+            }
+        }
+
         return migrator
     }
 
@@ -668,6 +676,7 @@ class UserDatabase {
                         plan_reader_count = ?,
                         ai_enabled = COALESCE(?, ai_enabled),
                         default_commentary_series = COALESCE(?, default_commentary_series),
+                        review_marks_enabled = COALESCE(?, review_marks_enabled),
                         updated_at = ?
                     WHERE id = 1
                     """, arguments: [
@@ -698,6 +707,7 @@ class UserDatabase {
                         // know the setting, has no say in it.
                         remote.aiEnabled,
                         remote.defaultCommentarySeries,
+                        remote.reviewMarksEnabled,
                         remote.updatedAt
                     ])
                 // Plans chosen on a phone without plan progress reach the

@@ -712,6 +712,28 @@ struct SettingsView: View {
                 }
                 .textCase(nil)
 
+                // The Mac's switch, in its words: one choice for every device.
+                if aiFeatures.isEnabled {
+                    Section {
+                        Toggle(isOn: Binding(
+                            get: { aiFeatures.reviewMarksChosen },
+                            set: { aiFeatures.chooseReviewMarks($0) }
+                        )) {
+                            Label {
+                                Text("Mark the assistant’s changes for review")
+                            } icon: {
+                                LampIconTile(systemName: "checkmark.circle", color: .indigo)
+                            }
+                        }.tint(.accentColor)
+                    } header: {
+                        Text("Writing").lampSectionHeader()
+                    } footer: {
+                        Text("Every passage the writing assistant changes stays marked until you read it and clear it, by paragraph or selection. A later change marks it again. Kept the same on all your devices.")
+                            .foregroundStyle(LampTheme.caption)
+                    }
+                    .textCase(nil)
+                }
+
                 Section {
                     aboutLink("Privacy", url: "https://lampbible.com/privacy/apps", systemImage: "hand.raised.fill", color: .blue)
                     aboutLink("Content Licences", url: "https://lampbible.com/content-licences", systemImage: "doc.text.fill", color: .gray)

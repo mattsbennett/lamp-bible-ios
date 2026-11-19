@@ -1139,7 +1139,7 @@ final class Lamp_BibleTests: XCTestCase {
         // The merge names every setting; one added since must join it, or a
         // change to it made on two devices at once keeps only the remote's.
         XCTAssertEqual(
-            Mirror(reflecting: UserSettings()).children.count, 27,
+            Mirror(reflecting: UserSettings()).children.count, 28,
             "A new setting needs a line in UserSettingsSyncManager.mergingFields"
         )
     }
@@ -9322,5 +9322,39 @@ final class HighlightPanelTests: XCTestCase {
         XCTAssertTrue(left.contains { $0.id == across.id }, "one only overlapping stays beneath")
         XCTAssertEqual(made.count, 1)
         XCTAssertEqual(left.first { $0.id == made.first?.id }?.highlightStyle, .underlineSolid)
+    }
+}
+
+/// A writing's save never lands over a newer copy stored since the one saved
+/// was loaded: the check and the write are one transaction.
+final class WritingConditionalSaveTests: XCTestCase {
+    private let database = ModuleDatabase.shared
+
+    func testASaveIsRefusedOverANewerStoredCopyAndTakenOverAnOlderOne() throws {
+        let id = UUID().uuidString
+        let moduleID = "conditional-save-\(UUID().uuidString)"
+        try database.saveModule(Module(
+            id: moduleID, type: .devotional, name: "Writings", filePath: "\(moduleID).lamp", isEditable: true
+        ))
+        addTeardownBlock {
+            try? ModuleDatabase.shared.deleteDevotionalEntry(id: id)
+            try? ModuleDatabase.shared.deleteModule(id: moduleID)
+        }
+        func entry(_ text: String, at revision: Int) -> DevotionalEntry {
+            DevotionalEntry(
+                from: Devotional(
+                    meta: DevotionalMeta(id: id, title: "Conditional save", created: 100, lastModified: revision),
+                    markdownContent: text
+                ),
+                moduleId: moduleID
+            )
+        }
+        try database.saveDevotionalEntry(entry("Synced from the Mac.", at: 200))
+
+        XCTAssertFalse(try database.saveDevotionalEntry(entry("Edited here.", at: 300), ifNotNewerThan: 150))
+        XCTAssertEqual(try database.getDevotionalEntry(id: id)?.lastModified, 200, "the newer copy stays")
+
+        XCTAssertTrue(try database.saveDevotionalEntry(entry("Edited here.", at: 300), ifNotNewerThan: 200))
+        XCTAssertEqual(try database.getDevotionalEntry(id: id)?.lastModified, 300)
     }
 }

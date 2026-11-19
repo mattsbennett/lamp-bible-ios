@@ -23,13 +23,19 @@ final class AIFeatures: ObservableObject {
     static let shared = AIFeatures()
 
     @Published private(set) var isEnabled: Bool
+    /// Whether the writer asked for the writing assistant's changes to stay
+    /// marked until they've read them (`LampWritingReview`), one choice for
+    /// every device. Only acted on with the AI features on: `marksReviews`.
+    @Published private(set) var reviewMarksChosen: Bool
 
     /// The text views to tell when the switch changes, held weakly.
     private let textViews = NSHashTable<UITextView>.weakObjects()
     private var observer: NSObjectProtocol?
 
     private init() {
-        isEnabled = Self.isEnabled(in: UserDatabase.shared.getSettings())
+        let settings = UserDatabase.shared.getSettings()
+        isEnabled = Self.isEnabled(in: settings)
+        reviewMarksChosen = Self.reviewMarksChosen(in: settings)
         // A choice made here, or one another device's sync brings.
         observer = NotificationCenter.default.addObserver(
             forName: .userDatabaseDidChange, object: nil, queue: .main
@@ -40,6 +46,19 @@ final class AIFeatures: ObservableObject {
 
     static func isEnabled(in settings: UserSettings) -> Bool {
         settings.aiEnabled ?? LampPreferenceDefaults.aiFeaturesEnabled
+    }
+
+    static func reviewMarksChosen(in settings: UserSettings) -> Bool {
+        settings.reviewMarksEnabled ?? LampPreferenceDefaults.writingReviewMarksEnabled
+    }
+
+    /// The assistant's changes are marked for review here: asked for, and AI
+    /// on. Off, they're neither drawn nor recorded.
+    var marksReviews: Bool { isEnabled && reviewMarksChosen }
+
+    func chooseReviewMarks(_ enabled: Bool) {
+        try? UserDatabase.shared.updateSettings { $0.reviewMarksEnabled = enabled }
+        refresh()
     }
 
     /// Someone's choice: kept, and carried to the other devices by the sync
@@ -60,7 +79,10 @@ final class AIFeatures: ObservableObject {
     }
 
     private func refresh() {
-        let enabled = Self.isEnabled(in: UserDatabase.shared.getSettings())
+        let settings = UserDatabase.shared.getSettings()
+        let marks = Self.reviewMarksChosen(in: settings)
+        if marks != reviewMarksChosen { reviewMarksChosen = marks }
+        let enabled = Self.isEnabled(in: settings)
         guard enabled != isEnabled else { return }
         isEnabled = enabled
         for textView in textViews.allObjects {

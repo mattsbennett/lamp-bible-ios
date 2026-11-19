@@ -50,6 +50,22 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     /// Called when editor is ready
     var onReady: (() -> Void)?
 
+    /// A paragraph's ✓ was pressed: the document's Markdown with markers at
+    /// the paragraph's edges, for the host to clear what of the review marks
+    /// fall there (`LampWritingReview.markedRange`).
+    var onReviewClear: ((String) -> Void)?
+
+    /// The page couldn't place the review marks it was sent: its text was a
+    /// moment ahead of the host's. The host sends them again once it settles.
+    var onReviewMarksRejected: (() -> Void)?
+
+    /// The review marks last sent: sent again once the page is ready, and
+    /// after its document is replaced, which takes them off.
+    private var reviewMarks: String?
+    /// The page is in Markdown editing, as last asked: only coming back from
+    /// it rebuilds the rich-text document, and takes the marks off.
+    private var inMarkdown = false
+
     // MARK: - WKScriptMessageHandler
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -130,7 +146,13 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
                 pendingReadPadding = nil
                 setReadPadding(top: readPadding)
             }
+            if reviewMarks != nil { sendReviewMarks() }
             onReady?()
+
+        case "reviewClear":
+            if let markdown = body["markdown"] as? String {
+                onReviewClear?(markdown)
+            }
 
         case "focusChanged":
             if let focused = body["focused"] as? Bool {
@@ -171,6 +193,37 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
         }
         let escaped = markdown.jsEscaped()
         evaluateJS("window.editorAPI.setContent(\"\(escaped)\")")
+        // Marks for the text replaced: refused if they aren't this one's,
+        // which has the host draw them for it.
+        if reviewMarks != nil { sendReviewMarks() }
+    }
+
+    // MARK: - Review marks
+
+    /// Shows the writing assistant's changes still to read: the document's
+    /// Markdown with markers at each edge (`LampWritingReview.markedMarkdown`),
+    /// or nil for none. Kept through typing by the page itself.
+    func setReviewMarks(_ marked: String?) {
+        reviewMarks = marked
+        guard isReady else { return }
+        sendReviewMarks()
+    }
+
+    private func sendReviewMarks() {
+        let argument = reviewMarks.map { "\"\($0.jsEscaped())\"" } ?? "null"
+        evaluateJS("window.editorAPI.setReviewMarks(\(argument))") { [weak self] result in
+            if (result as? Bool) == false { self?.onReviewMarksRejected?() }
+        }
+    }
+
+    /// The selection as the document's Markdown with markers at its edges,
+    /// for clearing what of the marks it covers; nil outside the visual
+    /// editor.
+    func reviewMarkdownForSelection(completion: @escaping (String?) -> Void) {
+        guard isReady else { return completion(nil) }
+        evaluateJS("window.editorAPI.reviewMarkdownForSelection()") { result in
+            completion(result as? String)
+        }
     }
 
     /// The document as it stands, including what the editor has not yet
@@ -331,7 +384,12 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
             pendingMode = "richtext"
             return
         }
+        let rebuilt = inMarkdown
+        inMarkdown = false
         evaluateJS("window.editorAPI.switchToRichText()")
+        // Back from Markdown, the page's document is made again without the
+        // marks; refused if the text moved, which has the host redraw them.
+        if rebuilt, reviewMarks != nil { sendReviewMarks() }
     }
 
     func switchToMarkdown() {
@@ -339,6 +397,7 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
             pendingMode = "markdown"
             return
         }
+        inMarkdown = true
         evaluateJS("window.editorAPI.switchToMarkdown()")
     }
 

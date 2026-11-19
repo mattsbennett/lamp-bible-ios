@@ -46,6 +46,10 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
     /// device, as after a reinstall. Nil until someone chooses one, and only a
     /// choice travels, as `aiEnabled`'s does; "None" chosen is an empty name.
     var defaultCommentarySeries: String? = nil
+    /// Whether the passages the writing assistant changes stay marked until
+    /// the writer reads and clears them (`writing.reviewMarks`). Nil until
+    /// someone chooses, and only a choice travels, as `aiEnabled`'s does.
+    var reviewMarksEnabled: Bool? = nil
     var updatedAt: Date = Date()
 
     // MARK: - CodingKeys for snake_case mapping
@@ -77,6 +81,7 @@ struct UserSettings: Codable, Equatable, FetchableRecord, PersistableRecord, Ide
         case planReaderCount = "plan_reader_count"
         case aiEnabled = "ai_enabled"
         case defaultCommentarySeries = "default_commentary_series"
+        case reviewMarksEnabled = "review_marks_enabled"
         case updatedAt = "updated_at"
     }
 
