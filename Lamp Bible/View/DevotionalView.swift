@@ -1053,8 +1053,9 @@ struct DevotionalView: View {
             // and each message carries the writing's revision as stored, so
             // the Mac can check it has caught up (AgentRemoteWritingStamp).
             // Only when there's something to send: a save, now or earlier,
-            // that hasn't gone up.
-            asked.syncFirst = await asked.isWaitingToGoUp()
+            // that hasn't gone up. One just made hasn't, so the sheet opens
+            // without checking, and checks while it waits.
+            asked.syncFirst = saving ? true : await asked.isWaitingToGoUp()
             askingAssistant = asked
         }
     }

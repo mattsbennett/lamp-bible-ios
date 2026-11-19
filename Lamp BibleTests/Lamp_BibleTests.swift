@@ -9403,6 +9403,53 @@ final class WritingConditionalSaveTests: XCTestCase {
     }
 }
 
+extension WritingConditionalSaveTests {
+    /// Every change to a collection's writings, or to its own row, is
+    /// counted, so the assistant's sheet can tell it hasn't changed without
+    /// exporting it; another collection's changes aren't its.
+    func testACollectionsChangesAreCountedAndNoOtherCollectionsAre() throws {
+        let id = UUID().uuidString
+        let moduleID = "collection-changes-\(UUID().uuidString)"
+        let otherID = "collection-changes-\(UUID().uuidString)"
+        func module(_ id: String, named name: String) -> Module {
+            Module(id: id, type: .devotional, name: name, filePath: "\(id).lamp", isEditable: true)
+        }
+        try database.saveModule(module(moduleID, named: "Writings"))
+        try database.saveModule(module(otherID, named: "Others"))
+        addTeardownBlock {
+            try? ModuleDatabase.shared.deleteDevotionalEntry(id: id)
+            try? ModuleDatabase.shared.deleteModule(id: moduleID)
+            try? ModuleDatabase.shared.deleteModule(id: otherID)
+        }
+        func changes() throws -> Int64 { try database.devotionalCollectionChanges(moduleID: moduleID) }
+        func save(_ text: String) throws {
+            try database.saveDevotionalEntry(DevotionalEntry(
+                from: Devotional(
+                    meta: DevotionalMeta(id: id, title: "Counted", created: 100, lastModified: 200),
+                    markdownContent: text
+                ),
+                moduleId: moduleID
+            ))
+        }
+        var last = try changes()
+        func XCTAssertCounted(_ what: String) throws {
+            let now = try changes()
+            XCTAssertGreaterThan(now, last, what)
+            last = now
+        }
+        try save("Grace abounds.")
+        try XCTAssertCounted("a writing added")
+        try save("Grace abounds all the more.")
+        try XCTAssertCounted("a writing changed")
+        try database.saveModule(module(moduleID, named: "Writings, renamed"))
+        try XCTAssertCounted("the collection renamed")
+        try database.saveModule(module(otherID, named: "Others, renamed"))
+        XCTAssertEqual(try changes(), last, "another collection's change")
+        try database.deleteDevotionalEntry(id: id)
+        try XCTAssertCounted("a writing removed")
+    }
+}
+
 /// The writer's ✓ clears, made in the page's text when it's a moment ahead
 /// of the session's: none waits on a report that may never match.
 @MainActor

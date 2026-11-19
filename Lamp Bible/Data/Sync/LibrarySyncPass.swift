@@ -1107,7 +1107,7 @@ extension LibrarySyncPass {
         guard let module = try? database.getModule(id: moduleID) else { return false }
         guard let records = try? database.libraryRecords(source: source),
               let queued = try? database.pendingManifestChanges(source: source),
-              let exported = try? ModuleSyncManager.shared.exportDevotionalModuleToSQLite(module)
+              let exported = exportDigest(ofCollection: module.id)
         else { return true }
         let unlisted = Set(queued.map(\.path))
         func unsent(_ path: String, digest: String) -> Bool {
@@ -1116,7 +1116,7 @@ extension LibrarySyncPass {
                 || unlisted.contains(path)
         }
         let collection = "\(ModuleType.devotional.libraryFolder)/\(moduleID).lamp"
-        if unsent(collection, digest: digest(exported)) { return true }
+        if unsent(collection, digest: exported) { return true }
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let directory = LampSyncFolderLayout.devotionalMediaDirectory
         let own = "\(directory)/\(moduleID)/\(writingID)/"
@@ -1125,6 +1125,31 @@ extension LibrarySyncPass {
             guard let digest = try? LampSyncContentRevision.digest(forFileAt: url) else { return true }
             return unsent(path, digest: digest)
         }
+    }
+
+    /// Each collection's export digest, with the change count it was taken
+    /// at: asked again with nothing changed, the collection isn't exported.
+    nonisolated private static let collectionDigests = NSLock()
+    nonisolated(unsafe) private static var collectionDigestsByID: [String: (changes: Int64, digest: String)] = [:]
+
+    /// A collection's export digest, as a pass would send it. The count is
+    /// read before the collection, so a change made while it's exported
+    /// counts as after it.
+    nonisolated private static func exportDigest(ofCollection moduleID: String) -> String? {
+        let database = ModuleDatabase.shared
+        guard let changes = try? database.devotionalCollectionChanges(moduleID: moduleID) else { return nil }
+        collectionDigests.lock()
+        let kept = collectionDigestsByID[moduleID]
+        collectionDigests.unlock()
+        if let kept, kept.changes == changes { return kept.digest }
+        guard let module = try? database.getModule(id: moduleID),
+              let exported = try? ModuleSyncManager.shared.exportDevotionalModuleToSQLite(module)
+        else { return nil }
+        let taken = digest(exported)
+        collectionDigests.lock()
+        collectionDigestsByID[moduleID] = (changes, taken)
+        collectionDigests.unlock()
+        return taken
     }
 
     /// A pass a few seconds from now, after a burst of edits settles.

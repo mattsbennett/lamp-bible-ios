@@ -1614,6 +1614,37 @@ class ModuleDatabase {
             }
         }
 
+        // A count of the changes to each collection's writings and to its
+        // own row, so whether it has changed is known without exporting it
+        // (`devotionalCollectionChanges`). A migration that rebuilds either
+        // table must create these triggers again.
+        migrator.registerMigration("v44_devotional_collection_changes") { db in
+            try db.execute(sql: """
+                CREATE TABLE devotional_collection_changes (
+                    module_id TEXT PRIMARY KEY NOT NULL,
+                    changes INTEGER NOT NULL
+                )
+            """)
+            func bump(_ id: String) -> String {
+                """
+                INSERT INTO devotional_collection_changes (module_id, changes) VALUES (\(id), 1)
+                    ON CONFLICT(module_id) DO UPDATE SET changes = changes + 1;
+                """
+            }
+            let triggers = [
+                ("devotional_changes_insert", "AFTER INSERT ON devotional_entries", bump("new.module_id")),
+                ("devotional_changes_update", "AFTER UPDATE ON devotional_entries",
+                 bump("new.module_id") + bump("old.module_id")),
+                ("devotional_changes_delete", "AFTER DELETE ON devotional_entries", bump("old.module_id")),
+                ("devotional_module_changes_insert", "AFTER INSERT ON modules", bump("new.id")),
+                ("devotional_module_changes_update", "AFTER UPDATE ON modules", bump("new.id") + bump("old.id")),
+                ("devotional_module_changes_delete", "AFTER DELETE ON modules", bump("old.id")),
+            ]
+            for (name, event, body) in triggers {
+                try db.execute(sql: "CREATE TRIGGER \(name) \(event) BEGIN \(body) END")
+            }
+        }
+
         return migrator
     }
 
@@ -4123,6 +4154,17 @@ extension ModuleDatabase {
                 source: source, path: path, change: .delete,
                 revision: deleted?.pendingRevision ?? deleted?.lastRevision, at: Self.nowMilliseconds(time)
             ).save(db)
+        }
+    }
+
+    /// How many times a collection's writings or its own row have changed,
+    /// counted by triggers: equal counts mean nothing in it has.
+    func devotionalCollectionChanges(moduleID: String) throws -> Int64 {
+        try read { db in
+            try Int64.fetchOne(
+                db, sql: "SELECT changes FROM devotional_collection_changes WHERE module_id = ?",
+                arguments: [moduleID]
+            ) ?? 0
         }
     }
 
