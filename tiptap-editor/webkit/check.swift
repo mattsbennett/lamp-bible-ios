@@ -938,6 +938,7 @@ func reviewMarks() {
                                 rv.setReviewMarks('Read \\uE000deux\\uE001 here.');
                                 document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
                                 const reading = document.querySelectorAll('.review-mark').length;
+                                document.querySelector('.review-clear').click();
                                 rv.setMode('present');
                                 const shown = getComputedStyle(document.querySelector('.review-clear')).display;
                                 rv.setMode('edit');
@@ -949,6 +950,7 @@ func reviewMarks() {
                                 check(parts.last as? String == "none", "and not while presenting")
                                 after(200) {
                                     check(probe.reviewClears.last == "\u{E000}Read deux here.\u{E001}", "a clear works in read mode (read: \(probe.reviewClears))")
+                                    check(probe.reviewClears.suffix(2).count == 2 && probe.reviewClears.suffix(2).allSatisfy { $0 == "\u{E000}Read deux here.\u{E001}" }, "and pressed with no pointer, as VoiceOver presses it")
                                     exit(failed ? 1 : 0)
                                 }
                             }

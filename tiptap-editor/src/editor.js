@@ -741,7 +741,7 @@ function reviewClearButton(start, end) {
   // positions are only as good as the last redraw. On the pointer's first
   // event: on a phone a tap's mousedown comes after its touches, by which
   // time the caret is in the block and the keyboard on its way up.
-  button.addEventListener('pointerdown', event => {
+  const clear = event => {
     event.preventDefault()
     event.stopPropagation()
     const pos = editor.view.posAtDOM(button, 0)
@@ -750,6 +750,14 @@ function reviewClearButton(start, end) {
     const from = block ? $pos.start() : start
     const to = block ? $pos.end() : end
     postToSwift('reviewClear', { markdown: markdownMarking(from, to) })
+  }
+  button.addEventListener('pointerdown', clear)
+  // Pressed with no pointer — VoiceOver, Full Keyboard Access — a button
+  // hears only a click, whose `detail` is 0; a pointer's own click comes
+  // after its pointerdown, which has already cleared.
+  button.addEventListener('click', event => {
+    if (event.detail === 0) clear(event)
+    else event.preventDefault()
   })
   return button
 }
