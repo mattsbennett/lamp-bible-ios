@@ -855,32 +855,59 @@ function markdownMarking(from, to) {
       return true
     })
   }
-  const write = (endMarks, startMarks) => {
-    const tr = editor.state.tr
-    tr.insert(to, editor.schema.text(MARK_END, endMarks))
-    tr.insert(from, editor.schema.text(MARK_START, startMarks))
-    return tidyMarkdown(editor.storage.markdown.serializer.serialize(tr.doc))
+  const serialize = doc => tidyMarkdown(editor.storage.markdown.serializer.serialize(doc))
+  const marking = (doc, offset, endMarks, startMarks) => {
+    const tr = new Transform(doc)
+    tr.insert(to - offset, editor.schema.text(MARK_END, endMarks))
+    tr.insert(from - offset, editor.schema.text(MARK_START, startMarks))
+    return serialize(tr.doc)
   }
-  // Kept: the first whose Markdown, less its markers, is the page's text.
-  const plain = getMarkdownContent()
   const unmarked = marked => marked.replace(/[\uE000\uE001\uE002]/g, '')
   const doc = editor.state.doc
   const endChoices = choices(doc, to)
   const startChoices = choices(doc, from)
-  let first = null
-  for (const endMarks of endChoices) {
-    for (const startMarks of startChoices) {
-      let marked
-      try {
-        marked = write(endMarks, startMarks)
-      } catch (e) {
-        continue
+  // The first pair of choices whose Markdown in `part`, less its markers,
+  // is `part` written without them.
+  const choose = (part, offset, plainPart) => {
+    for (const endMarks of endChoices) {
+      for (const startMarks of startChoices) {
+        let marked
+        try {
+          marked = marking(part, offset, endMarks, startMarks)
+        } catch (e) {
+          continue
+        }
+        if (unmarked(marked) === plainPart) return { endMarks, startMarks, marked }
       }
-      if (first === null) first = marked
-      if (unmarked(marked) === plain) return marked
     }
+    return null
   }
-  return first ?? write([], [])
+  // Tried on the top-level blocks the markers fall in, which are all a
+  // marker can change the writing of: a long manuscript is written whole
+  // once more, not once for each try. Then the whole is checked.
+  const plain = getMarkdownContent()
+  const first = doc.resolve(from).index(0)
+  const last = Math.min(doc.resolve(to).index(0), doc.childCount - 1)
+  let offset = 0
+  for (let index = 0; index < first; index++) offset += doc.child(index).nodeSize
+  const blocks = []
+  for (let index = first; index <= last; index++) blocks.push(doc.child(index))
+  const part = doc.type.create(doc.attrs, Fragment.fromArray(blocks))
+  const chosen = choose(part, offset, serialize(part))
+  if (chosen) {
+    try {
+      const whole = marking(doc, 0, chosen.endMarks, chosen.startMarks)
+      if (unmarked(whole) === plain) return whole
+    } catch (e) {}
+  }
+  // Otherwise every pair, on the whole.
+  const found = choose(doc, 0, plain)
+  if (found) return found.marked
+  try {
+    return marking(doc, 0, endChoices[0] ?? [], startChoices[0] ?? [])
+  } catch (e) {
+    return marking(doc, 0, [], [])
+  }
 }
 
 // Where the host's marks fall in the document shown, or null if they cannot
