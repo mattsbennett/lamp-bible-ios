@@ -567,6 +567,20 @@ final class AgentRemoteClient: ObservableObject {
             if let kept = unsent[id], Self.holds(snapshot.messages, kept.words, known: kept.known) {
                 unsent[id] = nil
             }
+            // A Mac that names the request each question came with settles
+            // what the connection ending left unsure: named, it went. Older
+            // Macs say nothing, and the note stays.
+            if let askedBy = snapshot.askedBy {
+                let went = Set(askedBy.map(\.requestID))
+                for (key, kept) in unsent where kept.requestID.map(went.contains) == true {
+                    unsent[key] = nil
+                }
+                for requestID in went {
+                    if let request = sendRequests.removeValue(forKey: requestID), chat?.id == request.chatID {
+                        chat?.sending = nil
+                    }
+                }
+            }
             // The bubble for a message on its way stays while its request
             // does, a chat opened again included, and goes with it.
             if chat?.id == id {

@@ -229,4 +229,6 @@ extension Notification.Name {
     static let presentationDecksDidChange = Notification.Name("presentationDecksDidChange")
     /// Posted after sync writes writings into the library, whatever ran it.
     static let writingsDidChange = Notification.Name("writingsDidChange")
+    /// Posted after sync changes a writing's review marks.
+    static let writingReviewsDidChange = Notification.Name("writingReviewsDidChange")
 }

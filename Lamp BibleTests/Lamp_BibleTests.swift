@@ -3215,6 +3215,55 @@ final class LibrarySyncPassTests: XCTestCase {
         return pass
     }
 
+    // MARK: - Review marks
+
+    /// A writing's review marks with one mark in them, kept in the phone's store.
+    private func keepReview(for writingID: String) throws {
+        let review = LampWritingReview(writingID: writingID)
+            .markingAssistantChange(from: "Grace abounds.", to: "Grace abounds all the more.")
+        XCTAssertFalse(review.isEmpty)
+        try LibrarySyncPass.reviewStore.save(review)
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: writingID) }
+    }
+
+    func testAWritingsReviewMarksGoUpAndAQuietPassFollows() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        try keepReview(for: writingID)
+        let path = try LampSyncFolderLayout.writingReviewPath(writingID: writingID)
+
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+
+        let uploaded = await server.file(path)
+        XCTAssertNotNil(uploaded, "the marks went up")
+        let written = try await bundle()
+        XCTAssertEqual(written.manifest.entry(at: path)?.isMember, true)
+        let before = await server.writes.count
+        _ = try await pass().run()
+        let after = await server.writes.count
+        XCTAssertEqual(after, before, "nothing new to send")
+    }
+
+    /// A deleted writing's marks go with it: swept here and recorded as a
+    /// deletion, so the other devices remove theirs.
+    func testADeletedWritingsReviewMarksAreSweptAndDeletedEverywhere() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        try keepReview(for: writingID)
+        let path = try LampSyncFolderLayout.writingReviewPath(writingID: writingID)
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+
+        try database.write { db in
+            try db.execute(
+                sql: "INSERT INTO personal_sync_ledger (kind, item_key, present_since, deleted_at) VALUES (?, ?, ?, ?)",
+                arguments: ["devotional", writingID, 1, Int64(Date().timeIntervalSince1970 * 1_000)]
+            )
+        }
+        _ = try await pass().run()
+
+        XCTAssertEqual(try LibrarySyncPass.reviewStore.writingIDs().contains(writingID), false, "swept here")
+        let written = try await bundle()
+        XCTAssertNotEqual(written.manifest.entry(at: path)?.isMember, true, "deleted in the library")
+    }
+
     private func saveNotesModule(notes: [String]) throws {
         try database.saveModule(Module(
             id: moduleId, type: .notes, name: "My Notes",

@@ -338,23 +338,32 @@ struct LibrarySyncPass {
         return !LampSyncConditionalWrite.namesSameRevision(previous, current)
     }
 
-    /// What this device plans: modules and their media. Decks are the Mac's
-    /// to publish and mirrored here as before; workspaces stay on the Mac.
-    /// The writing assistant's change marks aren't kept on the phone yet, so
-    /// it leaves them to the Mac. Pruning still sees every listed file, which
-    /// core keeps to.
+    /// What this device plans: modules and their media, and each writing's
+    /// review marks (what the writing assistant changed and the writer
+    /// hasn't cleared). Decks are the Mac's to publish and mirrored here as
+    /// before; workspaces stay on the Mac. Pruning still sees every listed
+    /// file, which core keeps to.
     static func isPlanned(_ kind: LampSyncFileKind?) -> Bool {
         switch kind {
-        case .module, .devotionalMedia, .noteMedia, .bookMedia: true
-        case .deck, .deckAsset, .workspaceFile, .writingReview, nil: false
+        case .module, .devotionalMedia, .noteMedia, .bookMedia, .writingReview: true
+        case .deck, .deckAsset, .workspaceFile, nil: false
         }
+    }
+
+    /// Where the phone keeps its writings' review marks: in its documents,
+    /// laid out as the server lays them out, one file per writing. Every
+    /// change goes through the store, which locks each file, so a clear in
+    /// the editor and a pass taking a download in never write over each
+    /// other.
+    static var reviewStore: LampWritingReviewStore {
+        LampWritingReviewStore(rootURL: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0])
     }
 
     static func confirmsByReading(_ kind: LampSyncFileKind) -> Bool {
         switch kind {
         case .module(let content): [.notes, .devotionals, .highlights].contains(content)
-        case .devotionalMedia, .noteMedia, .bookMedia: true
-        case .deck, .deckAsset, .workspaceFile, .writingReview: false
+        case .devotionalMedia, .noteMedia, .bookMedia, .writingReview: true
+        case .deck, .deckAsset, .workspaceFile: false
         }
     }
 
@@ -599,6 +608,30 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         gathered.deletedLocally = Dictionary(
             carriedDeletions.map { ($0.path, $0.at) }, uniquingKeysWith: { max($0, $1) }
         )
+
+        // Each writing's review marks. A deleted writing's go with it
+        // everywhere, swept first, so a file removed here isn't also offered
+        // for upload.
+        let reviews = LibrarySyncPass.reviewStore
+        let ledger = try database.personalDeletionLedger()
+        let reviewDeletions = try reviews.deletions(
+            deleted: Set((ledger.entries[.devotional] ?? [:]).filter { $0.value.deletedAt != nil }.keys),
+            held: try DevotionalStorage.shared.getAllWritingIDs(),
+            members: Dictionary(manifest.members.map { ($0.path, $0.presentSince ?? 0) }, uniquingKeysWith: max),
+            now: Int64(Date().timeIntervalSince1970 * 1_000)
+        )
+        gathered.deletedLocally.merge(reviewDeletions) { max($0, $1) }
+        for writingID in try reviews.writingIDs() {
+            let path = try LampSyncFolderLayout.writingReviewPath(writingID: writingID)
+            // Sent from a copy, read under the file's lock: a clear landing
+            // while the pass runs can't leave the bytes sent unlike the
+            // digest taken of them.
+            let review = try reviews.review(writingID: writingID)
+            let copy = scratch.appendingPathComponent("review-\(UUID().uuidString).json")
+            try review.encoded().write(to: copy, options: .atomic)
+            guard let digest = try? LampSyncContentRevision.digest(forFileAt: copy) else { continue }
+            gathered.local.append(LampSyncLocalFile(path: path, kind: .writingReview, url: copy, digest: digest))
+        }
         return gathered
     }
 
@@ -624,6 +657,15 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             return nil
         case .module:
             return try await installModule(path, from: url, merging: false)
+        case .writingReview:
+            // Merged into the copy here, never put over it: this device may
+            // hold clears the server's copy hasn't seen. What differs from the
+            // download goes back up, by the plan on the next pass, or by
+            // `reconcile` when both sides changed.
+            guard let writingID = LampSyncFolderLayout.writingID(ofReviewPath: path) else { return nil }
+            try LibrarySyncPass.reviewStore.takeIn(downloaded: try Data(contentsOf: url), writingID: writingID)
+            await MainActor.run { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
+            return nil
         default:
             return nil
         }
@@ -634,6 +676,22 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     func reconcile(_ downloaded: [String: URL]) async throws -> [String: URL] {
         var republish: [String: URL] = [:]
         for (path, url) in downloaded.sorted(by: { $0.key < $1.key }) {
+            if LampSyncFolderLayout.kind(of: path) == .writingReview {
+                // Merged by `takeIn`; what goes back up is the merge, and only
+                // when this device had marks or clears the download lacked.
+                guard let writingID = LampSyncFolderLayout.writingID(ofReviewPath: path) else { continue }
+                let reviews = LibrarySyncPass.reviewStore
+                let arrived = try Data(contentsOf: url)
+                let differs = try reviews.takeIn(downloaded: arrived, writingID: writingID)
+                await MainActor.run { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
+                guard differs else { continue }
+                // From a copy in this pass's scratch, never the file itself.
+                let copy = scratch.appendingPathComponent("review-\(UUID().uuidString).json")
+                try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                try reviews.review(writingID: writingID).encoded().write(to: copy, options: .atomic)
+                republish[path] = copy
+                continue
+            }
             _ = try await installModule(path, from: url, merging: true)
             guard let id = heldModules[path]?.id ?? LampSyncFolderLayout.remoteModuleID(of: path),
                   let module = try database.getModule(id: id) else { continue }
@@ -667,6 +725,10 @@ final class PhonePassLibrary: LampSyncPassLibrary {
                 try database.deleteAllEntriesForModule(moduleId: held.id)
                 try database.deleteModule(id: held.id)
             }
+        case .writingReview:
+            guard let writingID = LampSyncFolderLayout.writingID(ofReviewPath: path) else { return }
+            try LibrarySyncPass.reviewStore.remove(writingID: writingID)
+            await MainActor.run { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
         default:
             return
         }
