@@ -723,6 +723,11 @@ function reviewDecorations(doc, ranges) {
     if (!ranges.some(range => range.to >= start && range.from <= end)) return false
     decorations.push(Decoration.widget(start, () => reviewClearButton(start, end), {
       side: -1, ignoreSelection: true, key: `review-clear-${start}-${end}`,
+      // Everything the button hears is the button's. Return or Space on it
+      // focused would otherwise reach the editor's keymap first, which
+      // splits the block and stops the press, so the text changed and the
+      // mark stayed.
+      stopEvent: () => true,
     }))
     return false
   })

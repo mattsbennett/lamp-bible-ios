@@ -863,6 +863,36 @@ func addingAndRemoving() {
     }
 }
 
+// Return on the clear button, focused from the keyboard, is the button's:
+// the editor's keymap does not split the block under it, and the press
+// that follows clears.
+func keyboardClear() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('Keys deux here.');
+            rv.setReviewMarks('Keys \\uE000deux\\uE001 here.');
+            rv.focus();
+            const button = document.querySelector('.review-clear');
+            button.focus();
+            const press = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true });
+            button.dispatchEvent(press);
+            const kept = rv.getContent();
+            button.click();
+            return [press.defaultPrevented, kept]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(parts.first as? Bool == false && parts.last as? String == "Keys deux here.",
+              "Return on a focused clear button leaves the text alone and is not taken from it (read: \(String(describing: r)))")
+        after(200) {
+            check(probe.reviewClears.last == "\u{E000}Keys deux here.\u{E001}", "and the press clears (read: \(probe.reviewClears))")
+            exit(failed ? 1 : 0)
+        }
+    }
+}
+
 // The assistant's changes the writer has not yet read: the host's Markdown
 // with markers at each edge, placed in the document shown, drawn, carried
 // through typing, and sent back for a clear the same way.
@@ -951,7 +981,7 @@ func reviewMarks() {
                                 after(200) {
                                     check(probe.reviewClears.last == "\u{E000}Read deux here.\u{E001}", "a clear works in read mode (read: \(probe.reviewClears))")
                                     check(probe.reviewClears.suffix(2).count == 2 && probe.reviewClears.suffix(2).allSatisfy { $0 == "\u{E000}Read deux here.\u{E001}" }, "and pressed with no pointer, as VoiceOver presses it")
-                                    exit(failed ? 1 : 0)
+                                    keyboardClear()
                                 }
                             }
                         }
