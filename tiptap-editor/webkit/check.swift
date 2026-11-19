@@ -1076,7 +1076,145 @@ func boldCaretClear() {
                         let marked = (page as? [String: Any])?["markdown"] as? String ?? ""
                         check(marked == "One **dog\u{E000}\u{E001}** more",
                               "a caret just after a bold word stays inside its markup (read: \(marked.replacingOccurrences(of: "\u{E000}", with: "<S>").replacingOccurrences(of: "\u{E001}", with: "<E>")), \(String(describing: r)))")
-                        exit(failed ? 1 : 0)
+                        pageTextCases()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// More selections whose marked Markdown, less its markers, must be the
+// page's text: a caret in a formatted link's label, whose markers go round
+// the link outside its `**`; and a selection in a table cell that runs into
+// its trailing breaks, which the page leaves off.
+let pageTextSelections: [(name: String, markdown: String, select: String)] = [
+    ("a caret in a bold link's label", "one [**alpha beta**](https://example.org) three", """
+        (() => {
+            const strong = document.querySelector('.ProseMirror a strong') || document.querySelector('.ProseMirror strong');
+            const walker = document.createTreeWalker(strong, NodeFilter.SHOW_TEXT);
+            let text;
+            while ((text = walker.nextNode()) && !text.textContent.includes('alpha')) {}
+            const range = document.createRange();
+            range.setStart(text, 2);
+            range.setEnd(text, 2);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return true
+        })()
+        """),
+    ("a caret in an italic link's label", "one [*alpha beta*](https://example.org) three", """
+        (() => {
+            const em = document.querySelector('.ProseMirror em');
+            const walker = document.createTreeWalker(em, NodeFilter.SHOW_TEXT);
+            let text;
+            while ((text = walker.nextNode()) && !text.textContent.includes('alpha')) {}
+            const range = document.createRange();
+            range.setStart(text, 2);
+            range.setEnd(text, 2);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return true
+        })()
+        """),
+    ("a caret in a link that emphasis encloses", "***abc [label](https://example.org)***!", """
+        (() => {
+            const anchor = document.querySelector('.ProseMirror a');
+            const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT);
+            let text;
+            while ((text = walker.nextNode()) && !text.textContent.includes('label')) {}
+            const range = document.createRange();
+            range.setStart(text, 2);
+            range.setEnd(text, 2);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return true
+        })()
+        """),
+    ("a caret in a link followed by a bold break", "[label](https://example.org)<strong><br></strong>more", """
+        (() => {
+            const anchor = document.querySelector('.ProseMirror a');
+            const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT);
+            let text;
+            while ((text = walker.nextNode()) && !text.textContent.includes('label')) {}
+            const range = document.createRange();
+            range.setStart(text, 2);
+            range.setEnd(text, 2);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return true
+        })()
+        """),
+    ("a selection from a bold link into bold text after it", "left [**alpha**](https://example.org)**right**", """
+        (() => {
+            const anchor = document.querySelector('.ProseMirror a');
+            const walker = document.createTreeWalker(anchor.parentNode.closest('p') || anchor.parentNode, NodeFilter.SHOW_TEXT);
+            let start, end;
+            for (let text; (text = walker.nextNode());) {
+                if (!start && text.textContent.includes('alpha')) start = text;
+                if (text.textContent.includes('right')) end = text;
+            }
+            if (!start || !end) return 'missing text';
+            const range = document.createRange();
+            range.setStart(start, 2);
+            range.setEnd(end, end.textContent.length);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return true
+        })()
+        """),
+    ("a selection into a table cell's trailing breaks", "| head |\n| --- |\n| alpha beta<br><br> |", """
+        (() => {
+            const cells = document.querySelectorAll('.ProseMirror td');
+            const cell = cells[cells.length - 1];
+            if (!cell) return 'no cell';
+            const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+            let text;
+            while ((text = walker.nextNode()) && !text.textContent.includes('alpha')) {}
+            const br = cell.querySelector('br');
+            if (!text || !br) return 'no text or break: ' + cell.innerHTML;
+            const range = document.createRange();
+            range.setStart(text, 0);
+            range.setEndAfter(br);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return true
+        })()
+        """),
+]
+
+func pageTextCases(_ index: Int = 0) {
+    guard index < pageTextSelections.count else { exit(failed ? 1 : 0) }
+    let item = pageTextSelections[index]
+    let quoted = item.markdown.replacingOccurrences(of: "\n", with: "\\n")
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('\(quoted)');
+            const plain = rv.getContent();
+            rv.setReviewMarks('\\uE000' + plain + '\\uE001');
+            rv.focus();
+            return plain
+        })()
+        """) { p in
+        let plain = p as? String ?? ""
+        after(100) {
+            js(item.select) { r in
+                after(150) {
+                    js("window.editorAPI.reviewMarkdownForSelection()") { page in
+                        let marked = (page as? [String: Any])?["markdown"] as? String ?? ""
+                        let unmarked = marked.filter { $0 != "\u{E000}" && $0 != "\u{E001}" && $0 != "\u{E002}" }
+                        let shown = marked.replacingOccurrences(of: "\u{E000}", with: "<S>").replacingOccurrences(of: "\u{E001}", with: "<E>")
+                        check(r as? Bool == true && !plain.isEmpty && marked.contains("\u{E000}") && unmarked == plain,
+                              "\(item.name): the marked Markdown less its markers is the page's text (read: \(shown.debugDescription), page \(plain.debugDescription), \(String(describing: r)))")
+                        pageTextCases(index + 1)
                     }
                 }
             }

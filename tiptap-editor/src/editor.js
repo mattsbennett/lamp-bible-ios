@@ -777,14 +777,17 @@ function reviewClearButton(start, end) {
 // So a marker inside a link moves to the link's edge, the whole link taken
 // as one: in it, the link would be split, each piece writing its address
 // again, and an autolink's text would no longer be its address, so the page
-// would write `<url>` as `[url](url)`, text the host never had. Each marker
-// takes the marks typing there would, but never a link's: a caret just after
-// a bold word stays inside its `**`, where the mark it clears is, and one at
-// a link's edge stays out of the link.
+// would write `<url>` as `[url](url)`, text the host never had. Each
+// marker's formatting, never a link's, is the first of a few likely ones
+// with which the Markdown, less the markers, is the page's own text: how
+// the serializer opens and closes `**` and `*` round a marker depends on
+// everything near it, so it's tried rather than reasoned out. A caret just
+// after a bold word stays inside its `**`, where the mark it clears is.
 //
-// And an end marker goes before any hard breaks that end its block: after
-// them, a break the page leaves off the end of a table cell would no longer
-// be the cell's last, and would be written.
+// And an end marker goes before any hard breaks that end its block, the
+// whole run of them, even from among them: after one, a break the page
+// leaves off the end of a table cell would no longer be the cell's last,
+// and would be written.
 function markdownMarking(from, to) {
   const link = editor.schema.marks.link
   const outside = (pos, side) => {
@@ -793,16 +796,17 @@ function markdownMarking(from, to) {
     if (!range || range.from >= pos || range.to <= pos) return pos
     return side < 0 ? range.from : range.to
   }
+  const isBreak = node => node && node.type.name === 'hardBreak'
   const trailingBreaks = pos => {
     const $pos = editor.state.doc.resolve(pos)
-    if ($pos.nodeAfter) return pos
+    if ($pos.textOffset) return pos
+    const parent = $pos.parent
+    for (let index = $pos.index(); index < parent.childCount; index++) {
+      if (!isBreak(parent.child(index))) return pos
+    }
     let at = pos
-    let before = $pos.nodeBefore
-    let index = $pos.index() - 1
-    while (before && before.type.name === 'hardBreak') {
-      at -= before.nodeSize
-      index -= 1
-      before = index >= 0 ? $pos.parent.child(index) : null
+    for (let index = $pos.index() - 1; index >= 0 && isBreak(parent.child(index)); index--) {
+      at -= parent.child(index).nodeSize
     }
     return at
   }
@@ -820,14 +824,63 @@ function markdownMarking(from, to) {
   to = Math.max(from, outside(to, 1))
   to = Math.max(from, trailingBreaks(to))
   from = Math.min(from, to)
-  const tr = editor.state.tr
-  const marker = (pos, text) => {
-    const marks = tr.doc.resolve(pos).marks().filter(mark => mark.type !== link)
-    return editor.schema.text(text, marks)
+  const linked = node => Boolean(node && link && link.isInSet(node.marks))
+  const formatting = node => (node && !isBreak(node) ? node.marks : [])
+  const unlinked = marks => marks.filter(mark => mark.type !== link)
+  // The formatting a marker could take, likeliest first: at a link's edge,
+  // what encloses the link (its own formatting its neighbours share); else
+  // what typing there would take; then either side's, both sides', or none.
+  // Which one the serializer writes back as the page's own text depends on
+  // the formatting round it, so each is tried, not reasoned out.
+  const choices = (doc, pos) => {
+    const $pos = doc.resolve(pos)
+    const before = $pos.nodeBefore ? $pos.nodeBefore.marks : []
+    const after = $pos.nodeAfter ? $pos.nodeAfter.marks : []
+    const found = []
+    if (linked($pos.nodeBefore) !== linked($pos.nodeAfter)) {
+      const range = getMarkRange($pos, link)
+      if (range) {
+        const $start = doc.resolve(range.from)
+        const $end = doc.resolve(range.to)
+        const around = [...formatting($start.nodeBefore), ...formatting($end.nodeAfter)]
+        const own = $start.nodeAfter ? $start.nodeAfter.marks : []
+        found.push(own.filter(mark => mark.isInSet(around)))
+      }
+    }
+    found.push($pos.marks(), before, after, before.filter(mark => mark.isInSet(after)), [])
+    const seen = []
+    return found.map(unlinked).filter(marks => {
+      if (seen.some(other => other.length === marks.length && marks.every(mark => mark.isInSet(other)))) return false
+      seen.push(marks)
+      return true
+    })
   }
-  tr.insert(to, marker(to, MARK_END))
-  tr.insert(from, marker(from, MARK_START))
-  return tidyMarkdown(editor.storage.markdown.serializer.serialize(tr.doc))
+  const write = (endMarks, startMarks) => {
+    const tr = editor.state.tr
+    tr.insert(to, editor.schema.text(MARK_END, endMarks))
+    tr.insert(from, editor.schema.text(MARK_START, startMarks))
+    return tidyMarkdown(editor.storage.markdown.serializer.serialize(tr.doc))
+  }
+  // Kept: the first whose Markdown, less its markers, is the page's text.
+  const plain = getMarkdownContent()
+  const unmarked = marked => marked.replace(/[\uE000\uE001\uE002]/g, '')
+  const doc = editor.state.doc
+  const endChoices = choices(doc, to)
+  const startChoices = choices(doc, from)
+  let first = null
+  for (const endMarks of endChoices) {
+    for (const startMarks of startChoices) {
+      let marked
+      try {
+        marked = write(endMarks, startMarks)
+      } catch (e) {
+        continue
+      }
+      if (first === null) first = marked
+      if (unmarked(marked) === plain) return marked
+    }
+  }
+  return first ?? write([], [])
 }
 
 // Where the host's marks fall in the document shown, or null if they cannot
