@@ -15,6 +15,7 @@ import Foundation
 import GRDB
 import LampCore
 import LampModuleKit
+import UIKit
 
 /// Part of the settings bundle that something on this device keeps.
 ///
@@ -209,7 +210,37 @@ struct LibrarySyncPass {
         let outcome: LampSyncBundlePass.Outcome
         do {
             outcome = try await engine.run(
-                gathering: { try library.gather() },
+                gathering: {
+                    var gathered = try library.gather()
+                    // A writing's documents change in place, and no folder
+                    // listing reaches them: the manifest names each, and
+                    // each is asked for in turn, as the Mac asks. Core asks
+                    // after the rest (`LampSyncBundlePass.asksForRevision`).
+                    // A young deletion too, as core's retry window allows:
+                    // a deletion recorded here keeps no file record for
+                    // core to go by, so a removal that failed is tried again.
+                    // Not a deletion whose path the manifest also holds
+                    // under another spelling: a server that folds case would
+                    // answer with that file, as if put back by hand.
+                    let now = Int64(Date().timeIntervalSince1970 * 1_000)
+                    let paths = library.opened?.manifest.paths ?? []
+                    var spellings: [String: Int] = [:]
+                    for path in paths { spellings[path.precomposedStringWithCanonicalMapping.lowercased(), default: 0] += 1 }
+                    let asked = paths.compactMap { path -> String? in
+                        guard let entry = library.opened?.manifest.entry(at: path),
+                              entry.kind == .writingDocument else { return nil }
+                        if entry.isMember { return path }
+                        guard let deletedAt = entry.deletedAt, now - deletedAt < Self.documentReapRetryWindow,
+                              spellings[path.precomposedStringWithCanonicalMapping.lowercased()] == 1 else { return nil }
+                        return path
+                    }
+                    for path in asked.sorted() {
+                        if let revision = try await storage.revision(path: path) {
+                            gathered.extraListing[path] = revision
+                        }
+                    }
+                    return gathered
+                },
                 records: &records,
                 mergingVersion: { bundle, version in
                     // Only versions the settings were prepared with: one that
@@ -342,17 +373,65 @@ struct LibrarySyncPass {
         return !LampSyncConditionalWrite.namesSameRevision(previous, current)
     }
 
-    /// What this device plans: modules and their media, and each writing's
+    /// What this device plans: modules and their media, each writing's
     /// review marks (what the writing assistant changed and the writer
-    /// hasn't cleared). Decks are the Mac's to publish and mirrored here as
-    /// before; workspaces stay on the Mac. Pruning still sees every listed
-    /// file, which core keeps to.
+    /// hasn't cleared), and each writing's own documents, its outline and
+    /// notes. Decks are the Mac's to publish and mirrored here as before;
+    /// the rest of a Mac workspace stays on the Mac. Pruning still sees every
+    /// listed file, which core keeps to.
     static func isPlanned(_ kind: LampSyncFileKind?) -> Bool {
         switch kind {
-        case .module, .devotionalMedia, .noteMedia, .bookMedia, .writingReview: true
-        // A writing's documents, until the phone keeps them.
-        case .deck, .deckAsset, .writingDocument, .workspaceFile, nil: false
+        case .module, .devotionalMedia, .noteMedia, .bookMedia, .writingReview, .writingDocument: true
+        case .deck, .deckAsset, .workspaceFile, nil: false
         }
+    }
+
+    /// Where the phone keeps its writings' documents, a folder for each
+    /// writing as core names it. Every change goes through the store, which
+    /// locks each file, so a save in the editor and a pass taking a download
+    /// in never write over each other.
+    nonisolated static var documentStore: LampWritingDocumentStore {
+        LampWritingDocumentStore(
+            rootURL: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("WritingWorkspaces", isDirectory: true)
+        )
+    }
+
+    /// How long a document's deletion is asked about after it, so a removal
+    /// from the server that failed is tried again: core's window for its
+    /// own (`LampSyncBundlePass.reapRetryWindow`), 14 days.
+    static let documentReapRetryWindow: Int64 = 14 * 24 * 60 * 60 * 1_000
+
+    /// Held while a document is deleted here and while a pass takes one in.
+    nonisolated static let documentChanges = NSLock()
+
+    /// What a kept copy of this device's edits is named after.
+    @MainActor static var deviceName: String { UIDevice.current.name }
+
+    /// A document the writer deleted here, as they last saw it (`seen`):
+    /// removed, and its deletion recorded for the server this device syncs
+    /// with (`source`, nil for none) and every other it was sent to or taken
+    /// from, so every other device removes its copy too, and a server synced
+    /// with again later doesn't bring it back. Checked and removed under the file's lock: a copy sync brought
+    /// in since, which the writer never saw, is kept under a copy's name,
+    /// and that name returned.
+    @discardableResult
+    nonisolated static func deleteDocument(
+        writingID: String, name: String, seen: Data, source: String?, device: String
+    ) throws -> String? {
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: name)
+        // One at a time with a pass taking a download in, so a download
+        // can't land between this deletion and its record.
+        documentChanges.lock()
+        defer { documentChanges.unlock() }
+        let kept = try documentStore.remove(
+            path: path, agreedDigest: LampSyncContentRevision.digest(for: seen), localDevice: device
+        )
+        let database = ModuleDatabase.shared
+        for endpoint in Set(try database.syncSources(recording: path)).union(source.map { [$0] } ?? []) {
+            try database.recordSyncLocalDeletion(source: endpoint, path: path)
+        }
+        return kept
     }
 
     /// Where the phone keeps its writings' review marks: in its documents,
@@ -367,8 +446,8 @@ struct LibrarySyncPass {
     static func confirmsByReading(_ kind: LampSyncFileKind) -> Bool {
         switch kind {
         case .module(let content): [.notes, .devotionals, .highlights].contains(content)
-        case .devotionalMedia, .noteMedia, .bookMedia, .writingReview: true
-        case .deck, .deckAsset, .writingDocument, .workspaceFile: false
+        case .devotionalMedia, .noteMedia, .bookMedia, .writingReview, .writingDocument: true
+        case .deck, .deckAsset, .workspaceFile: false
         }
     }
 
@@ -660,10 +739,97 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             guard let digest = try? LampSyncContentRevision.digest(forFileAt: copy) else { continue }
             gathered.local.append(LampSyncLocalFile(path: path, kind: .writingReview, url: copy, digest: digest))
         }
+
+        // Each writing's documents. A deleted writing's go with it, as its
+        // marks do; one the writer deleted here is dated never before the
+        // write the manifest holds for it, so a clock running behind can't
+        // let that write bring it back.
+        let documents = LibrarySyncPass.documentStore
+        let members = Dictionary(manifest.members.map { ($0.path, $0.presentSince ?? 0) }, uniquingKeysWith: max)
+        let documentDeletions = try documents.deletions(
+            deleted: LampWritingReviewStore.deletedWritings(in: ledger),
+            held: try DevotionalStorage.shared.getAllWritingIDs(),
+            members: members,
+            now: Int64(Date().timeIntervalSince1970 * 1_000)
+        )
+        gathered.deletedLocally.merge(documentDeletions) { max($0, $1) }
+        for change in carriedDeletions where LampSyncFolderLayout.kind(of: change.path) == .writingDocument {
+            // Only over the write it deleted: one another device made since
+            // is newer than the deletion, and outlives it.
+            guard let deleted = change.revision, let written = manifest.entry(at: change.path)?.revision,
+                  LampSyncConditionalWrite.namesSameRevision(deleted, written),
+                  let at = gathered.deletedLocally[change.path] else { continue }
+            gathered.deletedLocally[change.path] = LampWritingDocumentStore.deletionTime(
+                of: change.path, members: members, now: at
+            )
+        }
+        let agreed = try database.libraryRecords(source: source)
+        for (path, url) in try documents.held() where gathered.deletedLocally[path] == nil {
+            // Sent from a copy, as the marks are: a save landing while the
+            // pass runs can't leave the bytes sent unlike their digest.
+            guard let data = try? Data(contentsOf: url) else { continue }
+            let copy = scratch.appendingPathComponent("document-\(UUID().uuidString)")
+            try data.write(to: copy, options: .atomic)
+            gathered.local.append(LampSyncLocalFile(
+                path: path, kind: .writingDocument, url: copy, digest: LampSyncContentRevision.digest(for: data)
+            ))
+            // When it was last written here, so one written after another
+            // device deleted it, a file made again under the same name,
+            // survives the deletion rather than being taken by it. Only one
+            // unlike what this device last agreed with the server on: a copy
+            // as taken in is dated when it arrived, which is no edit.
+            let digest = LampSyncContentRevision.digest(for: data)
+            if agreed.record(path, in: source)?.uploadedDigest != digest,
+               let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date {
+                gathered.savedAt[path] = Int64(modified.timeIntervalSince1970 * 1_000)
+            }
+        }
         return gathered
     }
 
     // MARK: LampSyncPassLibrary
+
+    /// A writing's document is taken in by core's rule, against what this
+    /// device last agreed with the server on: edited here since, it's kept
+    /// beside the server's copy rather than replaced.
+    func install(_ path: String, from url: URL, agreedDigest: String?) async throws -> String? {
+        guard LampSyncFolderLayout.kind(of: path) == .writingDocument else {
+            return try await install(path, from: url)
+        }
+        try takeInDocument(path, from: url, agreedDigest: agreedDigest)
+        return nil
+    }
+
+    /// A writing's document deleted elsewhere is removed, unless it was
+    /// edited here since this device last agreed with the server: then it's
+    /// kept under a copy's name, and goes up as a document of its own.
+    func deleteLocally(_ path: String, agreedDigest: String?) async throws {
+        guard LampSyncFolderLayout.kind(of: path) == .writingDocument else {
+            return try await deleteLocally(path)
+        }
+        try LibrarySyncPass.documentStore.remove(
+            path: path, agreedDigest: agreedDigest, localDevice: LibrarySyncPass.deviceName
+        )
+        NotificationCenter.default.post(name: .writingDocumentsDidChange, object: nil)
+    }
+
+    private func takeInDocument(_ path: String, from url: URL, agreedDigest: String?) throws {
+        // Deleted here since the pass gathered it: a download finishing
+        // after the writer deleted the file doesn't bring it back. Not one
+        // deleted before, which the plan weighed: a write made elsewhere
+        // since outlives it, and is taken. Checked and taken in under the
+        // lock a deletion holds.
+        LibrarySyncPass.documentChanges.lock()
+        defer { LibrarySyncPass.documentChanges.unlock() }
+        let weighed = carriedDeletions.contains { $0.path == path }
+        let deletedSince = try !weighed && database.pendingManifestDeletions(source: source)[path] != nil
+        guard !deletedSince else { return }
+        try LibrarySyncPass.documentStore.takeIn(
+            downloaded: try Data(contentsOf: url), path: path,
+            agreedDigest: agreedDigest, localDevice: LibrarySyncPass.deviceName
+        )
+        NotificationCenter.default.post(name: .writingDocumentsDidChange, object: nil)
+    }
 
     func install(_ path: String, from url: URL) async throws -> String? {
         switch LampSyncFolderLayout.kind(of: path) {
@@ -712,6 +878,13 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     func reconcile(_ downloaded: [String: URL]) async throws -> [String: URL] {
         var republish: [String: URL] = [:]
         for (path, url) in downloaded.sorted(by: { $0.key < $1.key }) {
+            if LampSyncFolderLayout.kind(of: path) == .writingDocument {
+                // Both changed: the server's copy keeps the name, and this
+                // device's edits, where they differ, are kept beside it and
+                // go up on the next pass. Nothing goes back up at the path.
+                try takeInDocument(path, from: url, agreedDigest: nil)
+                continue
+            }
             if LampSyncFolderLayout.kind(of: path) == .writingReview {
                 // Merged by `takeIn`; what goes back up is the merge, and only
                 // when this device had marks or clears the download lacked.
@@ -1115,7 +1288,20 @@ extension LibrarySyncPass {
             !((try? database.pendingModulePublications(type: $0).isEmpty) ?? true)
         }) { return true }
         if !((try? database.pendingManifestChanges(source: storage.librarySource).isEmpty) ?? true) { return true }
-        return hasUnsentReviews(source: storage.librarySource)
+        return hasUnsentReviews(source: storage.librarySource) || hasUnsentDocuments(source: storage.librarySource)
+    }
+
+    /// A writing's document unlike what this device last sent or took in for
+    /// it, written here or kept as a copy beside a download, or sent but not
+    /// yet in a bundle the other devices read.
+    static func hasUnsentDocuments(source: String) -> Bool {
+        guard let held = try? documentStore.held(), !held.isEmpty,
+              let records = try? ModuleDatabase.shared.libraryRecords(source: source) else { return false }
+        return held.contains { path, url in
+            guard let digest = try? LampSyncContentRevision.digest(forFileAt: url) else { return false }
+            let record = records.record(path, in: source)
+            return record?.uploadedDigest != digest || record?.pendingRevision != nil
+        }
     }
 
     /// A writing's review marks unlike what this device last sent or took in
@@ -1156,6 +1342,18 @@ extension LibrarySyncPass {
         }
         let collection = "\(ModuleType.devotional.libraryFolder)/\(moduleID).lamp"
         if unsent(collection, digest: exported) { return true }
+        // Its own documents, the outline and notes the assistant reads, and
+        // any the writer deleted that the server still has.
+        let folder = LampWritingWorkspaceLayout.directoryName(for: writingID)
+        guard let held = try? documentStore.documents(writingID: writingID) else { return true }
+        for document in held {
+            guard let path = try? LampWritingWorkspaceLayout.documentPath(folder: folder, name: document.name)
+            else { continue }
+            if unsent(path, digest: LampSyncContentRevision.digest(for: document.data)) { return true }
+        }
+        if unlisted.contains(where: { LampWritingWorkspaceLayout.document(ofPath: $0)?.folder == folder }) {
+            return true
+        }
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let directory = LampSyncFolderLayout.devotionalMediaDirectory
         let own = "\(directory)/\(moduleID)/\(writingID)/"

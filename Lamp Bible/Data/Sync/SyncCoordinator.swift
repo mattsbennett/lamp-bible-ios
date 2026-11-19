@@ -94,6 +94,9 @@ class SyncCoordinator: ObservableObject {
         var recoveryError: Error?
         do {
             pendingPreviousSettings = try ModuleDatabase.shared.pendingBackendTransition()
+            // Before the switch's record is cleared, which says whether
+            // documents it set aside go back or go.
+            try Self.settleSetAsideDocuments(restoring: pendingPreviousSettings != nil)
             if let pendingPreviousSettings {
                 try userDatabase.saveSyncSettings(pendingPreviousSettings)
                 try ModuleDatabase.shared.clearPendingBackendTransition()
@@ -163,9 +166,57 @@ class SyncCoordinator: ObservableObject {
         }
     }
 
+    /// The writings' documents, set aside while a switch that discards them
+    /// commits: put back if it didn't, removed once it did. Never gathered
+    /// by a pass, so none goes up to the new endpoint meanwhile.
+    private static var setAsideDocumentsURL: URL {
+        LibrarySyncPass.documentStore.rootURL.deletingLastPathComponent()
+            .appendingPathComponent("WritingWorkspaces-discarding", isDirectory: true)
+    }
+
+    /// Settles documents a switch set aside: back in place when the switch
+    /// is being undone, gone when it committed. Throws where they can't all
+    /// be put back, leaving them set aside, so the switch's record, which
+    /// says to put them back, is kept until they are.
+    private static func settleSetAsideDocuments(restoring: Bool) throws {
+        let fileManager = FileManager.default
+        let setAside = setAsideDocumentsURL
+        guard fileManager.fileExists(atPath: setAside.path) else { return }
+        guard restoring else {
+            try? fileManager.removeItem(at: setAside)
+            return
+        }
+        let documents = LibrarySyncPass.documentStore.rootURL
+        guard fileManager.fileExists(atPath: documents.path) else {
+            try fileManager.moveItem(at: setAside, to: documents)
+            return
+        }
+        // Written to since, as a save can be: each set-aside file put back
+        // beside what's there, under a copy's name where the name is taken.
+        let device = LibrarySyncPass.deviceName
+        for folder in try fileManager.contentsOfDirectory(at: setAside, includingPropertiesForKeys: nil) {
+            let target = documents.appendingPathComponent(folder.lastPathComponent, isDirectory: true)
+            try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+            for file in try fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) {
+                var destination = target.appendingPathComponent(file.lastPathComponent)
+                if fileManager.fileExists(atPath: destination.path) {
+                    let name = LampWritingWorkspaceLayout.keptCopyName(
+                        of: file.lastPathComponent, device: device, at: Date(),
+                        taken: { fileManager.fileExists(atPath: target.appendingPathComponent($0).path) }
+                    )
+                    destination = target.appendingPathComponent(name)
+                }
+                try fileManager.moveItem(at: file, to: destination)
+            }
+        }
+        try fileManager.removeItem(at: setAside)
+    }
+
     private func recoverPendingBackendTransition() throws {
         do {
-            if let previous = try ModuleDatabase.shared.pendingBackendTransition() {
+            let pending = try ModuleDatabase.shared.pendingBackendTransition()
+            try Self.settleSetAsideDocuments(restoring: pending != nil)
+            if let previous = pending {
                 try userDatabase.saveSyncSettings(previous)
                 try ModuleDatabase.shared.clearPendingBackendTransition()
                 settings = previous
@@ -246,11 +297,34 @@ class SyncCoordinator: ObservableObject {
                     return (previous: previousSettings, selected: selectedSettings)
                 },
                 wipeLocal: {
-                    try ModuleDatabase.shared.wipeAllSyncableData()
+                    // The writings' documents go with the writings, so none
+                    // of the old library's goes up to the new endpoint. Set
+                    // aside first, while the switch can still be undone, and
+                    // removed only once the wipe has committed its end; a
+                    // stop between the two is settled by the next recovery.
+                    let fileManager = FileManager.default
+                    let documents = LibrarySyncPass.documentStore.rootURL
+                    let setAside = Self.setAsideDocumentsURL
+                    if fileManager.fileExists(atPath: setAside.path) { try fileManager.removeItem(at: setAside) }
+                    if fileManager.fileExists(atPath: documents.path) {
+                        try fileManager.moveItem(at: documents, to: setAside)
+                    }
+                    do {
+                        try ModuleDatabase.shared.wipeAllSyncableData()
+                    } catch {
+                        // Left set aside if this fails too: the switch's
+                        // record still stands, and recovery puts them back.
+                        try? Self.settleSetAsideDocuments(restoring: true)
+                        throw error
+                    }
+                    try? Self.settleSetAsideDocuments(restoring: false)
                     try ModuleSyncManager.shared.reloadPendingModuleConflicts()
                 },
                 rollbackBackend: { selection in
                     try self.userDatabase.saveSyncSettings(selection.previous)
+                    // Documents set aside go back before the switch's record
+                    // goes; where they can't, it stays, and recovery tries again.
+                    try Self.settleSetAsideDocuments(restoring: true)
                     try ModuleDatabase.shared.clearPendingBackendTransition()
                 },
                 activateBackend: { selection in

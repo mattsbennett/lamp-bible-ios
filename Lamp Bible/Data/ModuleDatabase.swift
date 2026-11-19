@@ -4144,6 +4144,16 @@ extension ModuleDatabase {
         }
     }
 
+    /// The endpoints this device has a record of a file at: where it was
+    /// sent or taken.
+    func syncSources(recording path: String) throws -> [String] {
+        try read { db in
+            try String.fetchAll(
+                db, sql: "SELECT DISTINCT source FROM sync_file_records WHERE path = ?", arguments: [path]
+            )
+        }
+    }
+
     /// A file this device deleted. The tombstone records which copy it
     /// deleted, so a copy put back later is told apart from it.
     func recordSyncLocalDeletion(source: String, path: String, at time: Date = Date()) throws {

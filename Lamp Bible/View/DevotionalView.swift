@@ -6,6 +6,7 @@
 //
 
 import LampCore
+import LampModuleKit
 import SwiftUI
 
 // MARK: - View Modes
@@ -190,6 +191,11 @@ struct DevotionalView: View {
 
     // Slide decks made from this writing on a Mac
     @State private var linkedDecks: [PresentationDeckEntry] = []
+    /// The writing's other files, its outline and notes, below the prose.
+    @State private var documents: [WritingDocument] = []
+    @AppStorage("writingOtherFilesExpanded") private var otherFilesExpanded = false
+    @State private var openDocuments: Set<String> = []
+    @State private var editingDocument: WritingDocumentEditing?
     @State private var openDeck: PresentationDeckEntry?
 
     // Table insertion state
@@ -344,6 +350,20 @@ struct DevotionalView: View {
         // assistant's change, or another device's.
         .onReceive(NotificationCenter.default.publisher(for: .writingsDidChange)) { _ in
             Task { await takeInNewerStoredCopy() }
+        }
+        .task(id: devotional.meta.id) {
+            #if DEBUG
+            if UserDefaults.standard.bool(forKey: "OtherFilesDemo") { seedOtherFilesDemo() }
+            #endif
+            await reloadDocuments()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .writingDocumentsDidChange)) { _ in
+            Task { await reloadDocuments() }
+        }
+        .sheet(item: $editingDocument) { editing in
+            WritingDocumentEditor(editing: editing) {
+                Task { await reloadDocuments() }
+            }
         }
         .sheet(item: $linkedWriting) { linked in
             LinkedWritingSheet(linked: linked, onNavigateToVerse: onNavigateToVerse)
@@ -669,6 +689,26 @@ struct DevotionalView: View {
         .accessibilityHint(mode == .edit ? "Edits the title and details" : "")
     }
 
+    private var documentsSection: some View {
+        WritingDocumentsSection(
+            documents: documents,
+            expanded: $otherFilesExpanded,
+            openFiles: $openDocuments,
+            canEdit: writingIsEditable,
+            onEdit: { editingDocument = WritingDocumentEditing(writingID: devotional.meta.id, document: $0) },
+            onAdd: { editingDocument = WritingDocumentEditing(writingID: devotional.meta.id, document: nil) }
+        )
+    }
+
+    private func reloadDocuments() async {
+        let id = devotional.meta.id
+        let loaded = await WritingDocuments.load(writingID: id)
+        // Not over another writing's, opened meanwhile.
+        guard id == devotional.meta.id else { return }
+        documents = loaded
+        openDocuments.formIntersection(loaded.map(\.name))
+    }
+
     private var tiptapWebView: some View {
         GeometryReader { geometry in
             TipTapEditorView(
@@ -681,6 +721,8 @@ struct DevotionalView: View {
                 moduleId: moduleId,
                 header: readModeHeader,
                 showsHeader: showsDocumentHeader,
+                footer: documents.isEmpty ? nil : AnyView(documentsSection),
+                showsFooter: !documents.isEmpty,
                 onHeaderScrolledAway: { away in
                     if headerScrolledAway != away { headerScrolledAway = away }
                 },
@@ -1371,6 +1413,13 @@ struct DevotionalView: View {
                     Button(action: { showingMetadataEditor = true }) {
                         Label("Edit Metadata", systemImage: "info")
                     }
+                    if writingIsEditable {
+                        Button(action: {
+                            editingDocument = WritingDocumentEditing(writingID: devotional.meta.id, document: nil)
+                        }) {
+                            Label("Add Other File", systemImage: "doc.badge.plus")
+                        }
+                    }
                     if mode == .edit && syncIsOff {
                         Divider()
                         Section("Sync is off. This writing is saved on this device.") {}
@@ -1772,6 +1821,19 @@ struct DevotionalView: View {
     /// them: launch with `-ReviewMarksDemo YES`, and the second sentence of
     /// the writing's first long paragraph, or its last paragraph, reads as
     /// the assistant's.
+    /// Two files and a kept copy beside the writing, as the Mac's workspace
+    /// would hold them, for a look at the section.
+    private func seedOtherFilesDemo() {
+        let store = LibrarySyncPass.documentStore
+        let id = devotional.meta.id
+        guard (try? store.documents(writingID: id))?.isEmpty != false else { return }
+        let outline = "# Outline\n\n1. The shepherd **knows** his sheep\n2. The sheep *know* his voice\n3. Other sheep, one flock"
+        _ = try? store.write(Data(outline.utf8), writingID: id, name: "outline.md", replacing: nil)
+        _ = try? store.write(Data("John 10:1-18\nPsalm 23\nEzekiel 34".utf8), writingID: id, name: "sources.txt", replacing: nil)
+        let copy = LampWritingWorkspaceLayout.keptCopyName(of: "outline.md", device: "iPhone", at: Date())
+        _ = try? store.write(Data("# Outline\n\n1. The shepherd knows his own".utf8), writingID: id, name: copy, replacing: nil)
+    }
+
     private func seedReviewMarksDemo() {
         let store = LibrarySyncPass.reviewStore
         let id = devotional.meta.id

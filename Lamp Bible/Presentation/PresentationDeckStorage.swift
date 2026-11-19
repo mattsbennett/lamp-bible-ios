@@ -231,4 +231,6 @@ extension Notification.Name {
     static let writingsDidChange = Notification.Name("writingsDidChange")
     /// Posted after sync changes a writing's review marks.
     static let writingReviewsDidChange = Notification.Name("writingReviewsDidChange")
+    /// Posted after sync changes a writing's documents, its outline or notes.
+    static let writingDocumentsDidChange = Notification.Name("writingDocumentsDidChange")
 }
