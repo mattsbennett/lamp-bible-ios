@@ -24,6 +24,7 @@ final class Probe: NSObject, WKScriptMessageHandler {
     var searches: [(count: Int, current: Int, token: String?)] = []
     var footnoteTaps: [(id: String, editing: Bool)] = []
     var reviewClears: [String] = []
+    var reviewClearTexts: [String] = []
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         guard let body = m.body as? [String: Any], let type = body["type"] as? String else { return }
         tokens[type, default: []].append(body["token"] as? String)
@@ -32,7 +33,10 @@ final class Probe: NSObject, WKScriptMessageHandler {
         if type == "contentHeight" { heights.append(body["height"] as? Int ?? -1) }
         if type == "caret" { carets.append((body["top"] as? Int ?? -1, body["bottom"] as? Int ?? -1)) }
         if type == "footnoteTapped" { footnoteTaps.append((body["id"] as? String ?? "", body["editing"] as? Bool ?? false)) }
-        if type == "reviewClear" { reviewClears.append(body["markdown"] as? String ?? "") }
+        if type == "reviewClear" {
+            reviewClears.append(body["markdown"] as? String ?? "")
+            reviewClearTexts.append(body["plain"] as? String ?? "")
+        }
         if type == "searchChanged" { searches.append((body["count"] as? Int ?? -1, body["current"] as? Int ?? -1, body["token"] as? String)) }
     }
 }
@@ -888,7 +892,194 @@ func keyboardClear() {
               "Return on a focused clear button leaves the text alone and is not taken from it (read: \(String(describing: r)))")
         after(200) {
             check(probe.reviewClears.last == "\u{E000}Keys deux here.\u{E001}", "and the press clears (read: \(probe.reviewClears))")
-            exit(failed ? 1 : 0)
+            autolinkClear()
+        }
+    }
+}
+
+// A clear for a block that ends in an autolink: the markers are text of
+// their own, so the link keeps its address as its text, and the marked
+// Markdown is the page's own with the markers in it, which the host can
+// map; the page's text comes with it.
+func autolinkClear() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('Read <https://example.com>');
+            const plain = rv.getContent();
+            rv.setReviewMarks('\\uE000Read\\uE001 ' + plain.slice(5));
+            document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            return plain
+        })()
+        """) { r in
+        let plain = r as? String ?? ""
+        after(200) {
+            let marked = probe.reviewClears.last ?? ""
+            let unmarked = marked.filter { $0 != "\u{E000}" && $0 != "\u{E001}" && $0 != "\u{E002}" }
+            check(!plain.isEmpty && marked.contains("\u{E000}") && marked.contains("\u{E001}") && unmarked == plain && !marked.contains("]("),
+                  "an autolink at a block's edge stays as the page writes it under the clear's markers (read: \(marked.debugDescription), page \(plain.debugDescription))")
+            check(probe.reviewClearTexts.last == plain, "and the clear brings the page's text (read: \(probe.reviewClearTexts.last.debugDescription))")
+            linkSelectionClear()
+        }
+    }
+}
+
+// Markers around links, as the page writes them: for a caret, a selection
+// and a ✓ inside an autolink, a ✓ on a paragraph that starts and ends with
+// one, and a selection inside a named link, the marked Markdown less its
+// markers is the page's own text, and the link is written once, as it was.
+let linkCases: [(name: String, markdown: String, select: String?, clear: Bool)] = [
+    ("a caret inside an autolink", "See <https://example.org> now.", "", false),
+    ("a selection inside an autolink", "See <https://example.org> now.", "example", false),
+    ("a ✓ beside an autolink", "See <https://example.org> now.", nil, true),
+    ("a ✓ on a paragraph that starts and ends with an autolink", "<https://example.org> and <https://example.net>", nil, true),
+    ("a selection inside a named link", "See [alpha beta gamma](https://example.com) now.", "beta", false),
+]
+
+// A caret just after a link's label: the whole link is taken, so the
+// markers go round its Markdown, where the label is, not after its address.
+func linkEdgeCaretClear() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('See [dog](https://example.com) now.');
+            rv.setReviewMarks('See [\\uE000dog\\uE001](https://example.com) now.');
+            rv.focus();
+            return true
+        })()
+        """) { _ in
+        after(100) {
+            js("""
+                (() => { try {
+                    const anchor = document.querySelector('.ProseMirror a');
+                    const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT);
+                    let text;
+                    while ((text = walker.nextNode()) && text.textContent !== 'dog') {}
+                    const range = document.createRange();
+                    range.setStart(text, 2);
+                    range.setEnd(text, 3);
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    selection.collapseToEnd();
+                    return true
+                } catch (e) { return 'error: ' + e.message } })()
+                """) { r in
+                after(150) {
+                    js("window.editorAPI.reviewMarkdownForSelection()") { page in
+                        let marked = (page as? [String: Any])?["markdown"] as? String ?? ""
+                        check(marked == "See \u{E000}[dog](https://example.com)\u{E001} now.",
+                              "a caret just after a link's label takes the whole link (read: \(marked.replacingOccurrences(of: "\u{E000}", with: "<S>").replacingOccurrences(of: "\u{E001}", with: "<E>")), \(String(describing: r)))")
+                        boldCaretClear()
+                    }
+                }
+            }
+        }
+    }
+}
+
+func linkSelectionClear(_ index: Int = 0) {
+    guard index < linkCases.count else { return linkEdgeCaretClear() }
+    let item = linkCases[index]
+    let quoted = item.markdown.replacingOccurrences(of: "'", with: "\\'")
+    let select = item.select.map { "'\($0)'" } ?? "null"
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('\(quoted)');
+            const plain = rv.getContent();
+            rv.setReviewMarks('\\uE000' + plain + '\\uE001');
+            rv.focus();
+            const select = \(select);
+            if (select !== null) {
+                const walker = document.createTreeWalker(document.querySelector('.ProseMirror'), NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode()) && !node.textContent.includes(select || 'example')) {}
+                if (!node) return [plain, false];
+                const at = node.textContent.indexOf(select || 'example') + (select ? 0 : 3);
+                const range = document.createRange();
+                range.setStart(node, at);
+                range.setEnd(node, at + select.length);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+            if (\(item.clear ? "true" : "false")) {
+                document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            }
+            return [plain, true]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        let plain = parts.first as? String ?? ""
+        let read: (@escaping (String, String) -> Void) -> Void = { done in
+            if item.clear {
+                after(200) { done(probe.reviewClears.last ?? "", probe.reviewClearTexts.last ?? "") }
+            } else {
+                after(150) {
+                    js("window.editorAPI.reviewMarkdownForSelection()") { r in
+                        let page = r as? [String: Any]
+                        done(page?["markdown"] as? String ?? "", page?["plain"] as? String ?? "")
+                    }
+                }
+            }
+        }
+        read { marked, sent in
+            let unmarked = marked.filter { $0 != "\u{E000}" && $0 != "\u{E001}" && $0 != "\u{E002}" }
+            let markers = marked.filter { $0 == "\u{E000}" || $0 == "\u{E001}" || $0 == "\u{E002}" }.count
+            check(parts.last as? Bool == true && !plain.isEmpty && markers >= 1 && unmarked == plain && sent == plain,
+                  "\(item.name): the marked Markdown less its markers is the page's text (read: \(marked.debugDescription), page \(plain.debugDescription))")
+            linkSelectionClear(index + 1)
+        }
+    }
+}
+
+// A caret just after a bold word the assistant changed: its markers stay
+// inside the `**`, where the mark is, as typing there would, so Mark
+// Selection clears it.
+func boldCaretClear() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('One **dog** more');
+            rv.setReviewMarks('One **\\uE000dog\\uE001** more');
+            rv.focus();
+            return true
+        })()
+        """) { _ in
+        after(100) {
+            js("""
+                (() => { try {
+                    const strong = document.querySelector('.ProseMirror strong');
+                    if (!strong) return 'no strong';
+                    // The mark's own span may wrap the word: the text itself.
+                    const walker = document.createTreeWalker(strong, NodeFilter.SHOW_TEXT);
+                    let text;
+                    while ((text = walker.nextNode()) && text.textContent !== 'dog') {}
+                    if (!text) return 'no text';
+                    const range = document.createRange();
+                    range.setStart(text, 2);
+                    range.setEnd(text, 3);
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    selection.collapseToEnd();
+                    return strong.outerHTML
+                } catch (e) { return 'error: ' + e.message } })()
+                """) { r in
+                after(150) {
+                    js("window.editorAPI.reviewMarkdownForSelection()") { page in
+                        let marked = (page as? [String: Any])?["markdown"] as? String ?? ""
+                        check(marked == "One **dog\u{E000}\u{E001}** more",
+                              "a caret just after a bold word stays inside its markup (read: \(marked.replacingOccurrences(of: "\u{E000}", with: "<S>").replacingOccurrences(of: "\u{E001}", with: "<E>")), \(String(describing: r)))")
+                        exit(failed ? 1 : 0)
+                    }
+                }
+            }
         }
     }
 }
@@ -955,8 +1146,11 @@ func reviewMarks() {
                         return rv.reviewMarkdownForSelection()
         })()
         """) { r in
-                        check((r as? String)?.contains("\u{E000}") == true && (r as? String)?.contains("\u{E001}") == true,
-                              "the selection comes back as Markdown with its markers (read: \(String(describing: r).debugDescription))")
+                        let selected = r as? [String: Any]
+                        let selectedMarkdown = selected?["markdown"] as? String
+                        check(selectedMarkdown?.contains("\u{E000}") == true && selectedMarkdown?.contains("\u{E001}") == true
+                              && selected?["plain"] as? String == "One deux three.",
+                              "the selection comes back as Markdown with its markers, and the page's text beside it (read: \(String(describing: r).debugDescription))")
                         after(200) {
                             let clears = probe.reviewClears
                             check(clears.last == "\u{E000}One deux three.\u{E001}", "the clear button sends its block's Markdown, marked at its edges (read: \(clears))")

@@ -1,5 +1,5 @@
 import './editor.css'
-import { Editor, Extension, createDocument } from '@tiptap/core'
+import { Editor, Extension, createDocument, getMarkRange } from '@tiptap/core'
 import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { Fragment } from '@tiptap/pm/model'
@@ -754,7 +754,9 @@ function reviewClearButton(start, end) {
     const block = $pos.parent.isTextblock ? $pos : null
     const from = block ? $pos.start() : start
     const to = block ? $pos.end() : end
-    postToSwift('reviewClear', { markdown: markdownMarking(from, to) })
+    // With the page's own text beside it, written as every edit is reported
+    // (getMarkdownContent), for a host whose copy is a moment behind.
+    postToSwift('reviewClear', { markdown: markdownMarking(from, to), plain: getMarkdownContent() })
   }
   button.addEventListener('pointerdown', clear)
   // Pressed with no pointer — VoiceOver, Full Keyboard Access — a button
@@ -768,11 +770,63 @@ function reviewClearButton(start, end) {
 }
 
 // The document's Markdown with the markers written at `from` and `to`, for
-// the host to find where they fell in the Markdown it holds.
+// the host to find where they fell in the Markdown it holds, written as the
+// page writes the document, the markers apart: a host maps them into its
+// text, or into the page's (getMarkdownContent), only then.
+//
+// So a marker inside a link moves to the link's edge, the whole link taken
+// as one: in it, the link would be split, each piece writing its address
+// again, and an autolink's text would no longer be its address, so the page
+// would write `<url>` as `[url](url)`, text the host never had. Each marker
+// takes the marks typing there would, but never a link's: a caret just after
+// a bold word stays inside its `**`, where the mark it clears is, and one at
+// a link's edge stays out of the link.
+//
+// And an end marker goes before any hard breaks that end its block: after
+// them, a break the page leaves off the end of a table cell would no longer
+// be the cell's last, and would be written.
 function markdownMarking(from, to) {
+  const link = editor.schema.marks.link
+  const outside = (pos, side) => {
+    if (!link) return pos
+    const range = getMarkRange(editor.state.doc.resolve(pos), link)
+    if (!range || range.from >= pos || range.to <= pos) return pos
+    return side < 0 ? range.from : range.to
+  }
+  const trailingBreaks = pos => {
+    const $pos = editor.state.doc.resolve(pos)
+    if ($pos.nodeAfter) return pos
+    let at = pos
+    let before = $pos.nodeBefore
+    let index = $pos.index() - 1
+    while (before && before.type.name === 'hardBreak') {
+      at -= before.nodeSize
+      index -= 1
+      before = index >= 0 ? $pos.parent.child(index) : null
+    }
+    return at
+  }
+  // A caret at a link's edge (just after its label, say) takes the whole
+  // link too: left where it is, with no link mark, its markers would fall
+  // outside the link's Markdown, after its address, away from the label.
+  if (link && from === to) {
+    const range = getMarkRange(editor.state.doc.resolve(from), link)
+    if (range) {
+      from = range.from
+      to = range.to
+    }
+  }
+  from = outside(from, -1)
+  to = Math.max(from, outside(to, 1))
+  to = Math.max(from, trailingBreaks(to))
+  from = Math.min(from, to)
   const tr = editor.state.tr
-  tr.insertText(MARK_END, to)
-  tr.insertText(MARK_START, from)
+  const marker = (pos, text) => {
+    const marks = tr.doc.resolve(pos).marks().filter(mark => mark.type !== link)
+    return editor.schema.text(text, marks)
+  }
+  tr.insert(to, marker(to, MARK_END))
+  tr.insert(from, marker(from, MARK_START))
   return tidyMarkdown(editor.storage.markdown.serializer.serialize(tr.doc))
 }
 
@@ -1184,12 +1238,13 @@ window.editorAPI = {
   },
 
   // The selection, as the document's Markdown with markers at its edges,
-  // for the host to clear what of the marks it covers. A caret is both
-  // edges at once, and clears the mark it stands in.
+  // for the host to clear what of the marks it covers, with the page's own
+  // text beside it as a clear sends it. A caret is both edges at once, and
+  // clears the mark it stands in.
   reviewMarkdownForSelection() {
     if (!editor || currentMode !== 'richtext') return null
     const { from, to } = editor.state.selection
-    return markdownMarking(from, to)
+    return { markdown: markdownMarking(from, to), plain: getMarkdownContent() }
   },
 
   // Replaces the document with another, for an editor handed from one note

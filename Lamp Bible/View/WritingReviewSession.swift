@@ -276,30 +276,37 @@ final class WritingReviewSession: ObservableObject {
         clear(range: range, in: text, writingID: writingID)
     }
 
+    /// Made in `text` with the marks carried there, changing only the marks
+    /// it touches (`clearing(_:in:carryingFrom:)`): `text` can be a moment
+    /// behind the latest marks, and carried whole into it, a mark with no
+    /// words there would be retired by a clear of some other passage.
     private func clear(range: NSRange, in text: String, writingID: String) {
         WritingReviewTexts.shared.remember(text, for: writingID)
         let known = WritingReviewTexts.shared.known(for: writingID)
-        change { $0.carryingToText(text, from: known).clearing(range, in: text) }
+        change { $0.clearing(range, in: text, carryingFrom: known) }
     }
 
-    /// Clears the range the page marked in the Markdown it sent: nothing,
-    /// where that isn't the writing as held here, since its range would then
-    /// fall on other words.
+    /// Clears the range the page marked in the Markdown it sent.
     ///
-    /// The page's text can be a moment ahead of this one's (typed into within
-    /// the editor's report of it). Then the clear is made in the text the page
-    /// sent, the markers taken out: the marks carried to it, cleared there,
-    /// and that text remembered, so the draws and saves after carry from it
-    /// like any other. None waits on a report that may never match.
-    func clear(markedMarkdown marked: String) {
+    /// Where that's the writing as held here, the clear is made in it.
+    /// Otherwise the page was ahead or behind (typed into within the
+    /// editor's report of it, or pressed before new marks reached it), and
+    /// the clear is made in the page's own text, `pageText`, sent unmarked
+    /// beside the marked: that text is then known, so the next draw and
+    /// save carry the clear on from it. None waits on a report that may
+    /// never match.
+    ///
+    /// Never made in the marked Markdown with its markers taken out: a
+    /// marker can change how the page writes what's round it, so that's
+    /// text the page never held. A page that sends no text of its own clears
+    /// only where it matches the writing here. As on the Mac.
+    func clear(markedMarkdown marked: String, pageText: String? = nil) {
+        guard let writingID else { return }
         if let range = LampWritingReview.markedRange(in: marked, of: text) {
-            clear(range: range)
-            return
+            clear(range: range, in: text, writingID: writingID)
+        } else if let pageText, let range = LampWritingReview.markedRange(in: marked, of: pageText) {
+            clear(range: range, in: pageText, writingID: writingID)
         }
-        let markers: Set<Character> = [LampWritingReview.markStart, LampWritingReview.markEnd, LampWritingReview.markPoint]
-        let sent = String(marked.filter { !markers.contains($0) })
-        guard let writingID, let range = LampWritingReview.markedRange(in: marked, of: sent) else { return }
-        clear(range: range, in: sent, writingID: writingID)
     }
 
     func clearAll() {

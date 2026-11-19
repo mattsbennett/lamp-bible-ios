@@ -52,8 +52,9 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
 
     /// A paragraph's ✓ was pressed: the document's Markdown with markers at
     /// the paragraph's edges, for the host to clear what of the review marks
-    /// fall there (`LampWritingReview.markedRange`).
-    var onReviewClear: ((String) -> Void)?
+    /// fall there (`LampWritingReview.markedRange`), and the page's own text
+    /// as it reports edits, for a host whose copy is a moment behind.
+    var onReviewClear: ((_ marked: String, _ pageText: String?) -> Void)?
 
     /// The page couldn't place the review marks it was sent: its text was a
     /// moment ahead of the host's. The host sends them again once it settles.
@@ -151,7 +152,7 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
 
         case "reviewClear":
             if let markdown = body["markdown"] as? String {
-                onReviewClear?(markdown)
+                onReviewClear?(markdown, body["plain"] as? String)
             }
 
         case "focusChanged":
@@ -217,12 +218,17 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     }
 
     /// The selection as the document's Markdown with markers at its edges,
-    /// for clearing what of the marks it covers; nil outside the visual
-    /// editor.
-    func reviewMarkdownForSelection(completion: @escaping (String?) -> Void) {
-        guard isReady else { return completion(nil) }
+    /// for clearing what of the marks it covers, with the page's own text;
+    /// nil outside the visual editor. A page built before it sent its text
+    /// answers with the Markdown alone.
+    func reviewMarkdownForSelection(completion: @escaping (_ marked: String?, _ pageText: String?) -> Void) {
+        guard isReady else { return completion(nil, nil) }
         evaluateJS("window.editorAPI.reviewMarkdownForSelection()") { result in
-            completion(result as? String)
+            if let page = result as? [String: Any] {
+                completion(page["markdown"] as? String, page["plain"] as? String)
+            } else {
+                completion(result as? String, nil)
+            }
         }
     }
 

@@ -1799,8 +1799,8 @@ struct DevotionalView: View {
         reviewSession.onMarksChanged = { [weak coordinator] marked in
             coordinator?.setReviewMarks(marked)
         }
-        coordinator.onReviewClear = { [weak reviewSession] marked in
-            reviewSession?.clear(markedMarkdown: marked)
+        coordinator.onReviewClear = { [weak reviewSession] marked, pageText in
+            reviewSession?.clear(markedMarkdown: marked, pageText: pageText)
         }
         coordinator.onReviewMarksRejected = { [weak reviewSession] in
             reviewSession?.marksRejected()
@@ -1840,9 +1840,9 @@ struct DevotionalView: View {
     }
 
     private func markSelectionAsReviewed() {
-        tiptapCoordinator?.reviewMarkdownForSelection { marked in
+        tiptapCoordinator?.reviewMarkdownForSelection { marked, pageText in
             guard let marked else { return }
-            reviewSession.clear(markedMarkdown: marked)
+            reviewSession.clear(markedMarkdown: marked, pageText: pageText)
         }
     }
 

@@ -9383,9 +9383,9 @@ final class WritingReviewSessionTests: XCTestCase {
         // Typed ahead of the session's text each time, then a ✓ pressed.
         let start = String(LampWritingReview.markStart), end = String(LampWritingReview.markEnd)
         let typedOnce = "Opening. \(first) Truly.\n\nClosing. \(second)"
-        session.clear(markedMarkdown: "\(start)Opening. \(first) Truly.\(end)\n\nClosing. \(second)")
+        session.clear(markedMarkdown: "\(start)Opening. \(first) Truly.\(end)\n\nClosing. \(second)", pageText: typedOnce)
         let typedTwice = "Opening. \(first) Truly.\n\nClosing. \(second) Amen."
-        session.clear(markedMarkdown: "Opening. \(first) Truly.\n\n\(start)Closing. \(second) Amen.\(end)")
+        session.clear(markedMarkdown: "Opening. \(first) Truly.\n\n\(start)Closing. \(second) Amen.\(end)", pageText: typedTwice)
         let later = typedTwice + "\n\nMore."
         session.textChanged(later)
         await WritingReviewWork.shared.drained()
@@ -9394,5 +9394,25 @@ final class WritingReviewSessionTests: XCTestCase {
         let known = WritingReviewTexts.shared.known(for: id)
         XCTAssertTrue(known.contains(typedOnce) && known.contains(typedTwice), "each clear's text is kept to carry from")
         XCTAssertEqual(review.carryingToText(later, from: known).located(in: later).count, 0, "both clears landed")
+    }
+
+    /// A page that sends no text of its own clears only where it matches
+    /// the writing here: never in its marked Markdown with the markers out.
+    func testAClearAheadOfItsTextWithNoPageTextChangesNothing() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let saved = "Opening. The shepherd calls his own sheep by name."
+        try store.save(LampWritingReview(writingID: id).markingAssistantChange(from: "Opening.", to: saved))
+
+        let session = WritingReviewSession()
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where session.count == 0 { try await Task.sleep(for: .milliseconds(50)) }
+        let start = String(LampWritingReview.markStart), end = String(LampWritingReview.markEnd)
+        session.clear(markedMarkdown: "\(start)\(saved) Truly.\(end)")
+        await WritingReviewWork.shared.drained()
+
+        XCTAssertEqual(try store.review(writingID: id).located(in: saved).count, 1, "nothing cleared")
     }
 }
