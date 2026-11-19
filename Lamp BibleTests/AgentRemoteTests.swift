@@ -148,39 +148,50 @@ final class AgentRemoteTests: XCTestCase {
         )
     }
 
-    func testTheMessageOnItsWayGoesWhenItsTurnBegins() {
+    func testATurnStartingClearsTheDevicesRequestProblem() {
         var chat = AgentRemoteChat(snapshot())
-        chat.sending = "And grace?"
         chat.requestProblem = "A reply is still being written."
         chat.apply(LampAgentRemoteChatEvent(
             chatID: "chat", kind: LampAgentRemoteChatEvent.turnStarted,
             message: LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "And grace?", date: Date())
         ))
-        XCTAssertNil(chat.sending)
         XCTAssertNil(chat.problem)
         XCTAssertTrue(chat.isRunning)
     }
 
-    /// A turn stopped before it showed anything brings its question as a reply.
-    func testTheMessageOnItsWayGoesWhenItArrivesAsAReply() {
-        var chat = AgentRemoteChat(snapshot())
-        chat.sending = "Stop that"
-        chat.apply(LampAgentRemoteChatEvent(
-            chatID: "chat", kind: LampAgentRemoteChatEvent.reply,
-            message: LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "Stop that", date: Date())
-        ))
-        XCTAssertNil(chat.sending)
-        XCTAssertEqual(chat.messages.last?.text, "Stop that")
+    // MARK: - Which message arrived
+
+    private let asked = LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "And grace?", date: Date())
+
+    private func pending(_ id: UUID = UUID(), words: String = "And grace?", known: Set<UUID> = []) -> AgentRemoteAcknowledgement.Pending {
+        AgentRemoteAcknowledgement.Pending(id: id, chatID: "chat", words: words, known: known)
     }
 
-    func testSomeoneElsesQuestionLeavesTheMessageOnItsWay() {
-        var chat = AgentRemoteChat(snapshot())
-        chat.sending = "Mine"
-        chat.apply(LampAgentRemoteChatEvent(
-            chatID: "chat", kind: LampAgentRemoteChatEvent.turnStarted,
-            message: LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "Asked on the Mac", date: Date())
-        ))
-        XCTAssertEqual(chat.sending, "Mine")
+    func testTheRequestTheMacNamesIsTheOneThatArrived() {
+        let mine = pending()
+        let other = pending(words: "And grace?")
+        let arrived = AgentRemoteAcknowledgement.arrived(
+            asked, in: "chat", requestID: mine.id, hostNamesRequests: true, pending: [mine, other]
+        )
+        XCTAssertEqual(arrived, [mine.id])
+    }
+
+    /// From a Mac that names requests, the same words asked on the Mac are
+    /// someone else's question.
+    func testTheSameWordsAskedElsewhereArentThisDevicesMessage() {
+        let arrived = AgentRemoteAcknowledgement.arrived(
+            asked, in: "chat", requestID: nil, hostNamesRequests: true, pending: [pending()]
+        )
+        XCTAssertTrue(arrived.isEmpty)
+    }
+
+    func testAMacFromBeforeRequestIDsIsMatchedByWords() {
+        let mine = pending()
+        let earlier = pending(known: [asked.id])
+        let arrived = AgentRemoteAcknowledgement.arrived(
+            asked, in: "chat", requestID: nil, hostNamesRequests: false, pending: [mine, earlier]
+        )
+        XCTAssertEqual(arrived, [mine.id])
     }
 
     func testTheProblemLineIsTheDevicesRequestOrElseTheLastTurns() {

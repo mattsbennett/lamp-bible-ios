@@ -32,16 +32,13 @@ struct AgentRemoteChat: Equatable {
         view.apply(snapshot)
     }
 
+    /// What the Mac's event says. The bubble for a message on its way is
+    /// the client's to clear, since only it knows which request is this
+    /// device's.
     mutating func apply(_ event: LampAgentRemoteChatEvent) {
         guard event.chatID == view.id else { return }
         view.apply(event)
         if event.kind == LampAgentRemoteChatEvent.turnStarted { requestProblem = nil }
-        // The question this device sent, arriving as the turn's start, or as
-        // a reply when the turn was stopped before it showed anything.
-        if event.kind == LampAgentRemoteChatEvent.turnStarted || event.kind == LampAgentRemoteChatEvent.reply,
-           let message = event.message, message.role == LampAgentRemoteChatMessage.user, message.text == sending {
-            sending = nil
-        }
     }
 
     /// What a running turn is doing, in a few words.
@@ -59,6 +56,37 @@ struct AgentRemoteChat: Equatable {
         default:
             return "Working…"
         }
+    }
+}
+
+/// Which of this device's messages a question arriving from the Mac is.
+enum AgentRemoteAcknowledgement {
+    struct Pending: Equatable {
+        let id: UUID
+        let chatID: String
+        let words: String
+        /// The chat's messages when it was sent.
+        let known: Set<UUID>
+    }
+
+    /// The pending messages `asked` is: the one its request names; or, from a
+    /// Mac that has never named one, by its words and an id not seen when it
+    /// was sent. From a Mac that names requests, a question without one was
+    /// asked on the Mac or by another device, and is none of them.
+    static func arrived(
+        _ asked: LampAgentRemoteChatMessage,
+        in chatID: String,
+        requestID: UUID?,
+        hostNamesRequests: Bool,
+        pending: [Pending]
+    ) -> Set<UUID> {
+        if let requestID {
+            return pending.contains { $0.id == requestID } ? [requestID] : []
+        }
+        guard !hostNamesRequests else { return [] }
+        return Set(pending.filter {
+            $0.chatID == chatID && $0.words == asked.text && !$0.known.contains(asked.id)
+        }.map(\.id))
     }
 }
 

@@ -65,6 +65,9 @@ final class AgentRemoteClient: ObservableObject {
         /// Where the reader was when it was asked, so Try Again asks about
         /// the same passage, wherever the reader is now.
         var reading: LampAgentRemoteReading?
+        /// The request it went in, when the connection ended before the Mac
+        /// answered: the Mac names it on the question's events if it had it.
+        var requestID: UUID?
     }
 
     /// Messages not sent, by chat id; a new chat's first message under "".
@@ -124,6 +127,9 @@ final class AgentRemoteClient: ObservableObject {
     /// The last chat asked for, so only its failure abandons the chat being
     /// opened.
     private var openRequest: UUID?
+    /// The connected Mac names a question's request on its events, so a
+    /// question without one was asked elsewhere, whatever its words.
+    private var hostNamesRequests = false
 
     private static let lastHostKey = "agentRemote.lastHostName"
     static let localNetworkDenied = "Lamp Bible needs Local Network access to find your Mac. Allow it for Lamp Bible in Settings, then try again."
@@ -286,6 +292,7 @@ final class AgentRemoteClient: ObservableObject {
 
     func connect(to host: Host, pendingCode: String? = nil) {
         closingReason = nil
+        hostNamesRequests = false
         browser?.cancel()
         browser = nil
         teardown()
@@ -368,10 +375,16 @@ final class AgentRemoteClient: ObservableObject {
         session = nil
         let problem = "The connection ended before your Mac answered, so it may have it. Check the chats before trying again."
         if let startRequest {
-            keepForNewChat(Unsent(words: startRequest.words, problem: problem, known: startRequest.known, reading: startRequest.reading))
+            keepForNewChat(Unsent(
+                words: startRequest.words, problem: problem, known: startRequest.known,
+                reading: startRequest.reading, requestID: startRequest.id
+            ))
         }
-        for request in sendRequests.values {
-            unsent[request.chatID] = Unsent(words: request.words, problem: problem, known: request.known, reading: request.reading)
+        for (requestID, request) in sendRequests {
+            unsent[request.chatID] = Unsent(
+                words: request.words, problem: problem, known: request.known,
+                reading: request.reading, requestID: requestID
+            )
         }
         isStartingChat = false
         startRequest = nil
@@ -503,11 +516,28 @@ final class AgentRemoteClient: ObservableObject {
             // as a `reply`.
             if event.kind == LampAgentRemoteChatEvent.turnStarted || event.kind == LampAgentRemoteChatEvent.reply,
                let asked = event.message, asked.role == LampAgentRemoteChatMessage.user {
-                sendRequests = sendRequests.filter {
-                    $0.value.chatID != event.chatID || $0.value.words != asked.text || $0.value.known.contains(asked.id)
+                if event.requestID != nil { hostNamesRequests = true }
+                let pending = sendRequests.map {
+                    AgentRemoteAcknowledgement.Pending(id: $0.key, chatID: $0.value.chatID, words: $0.value.words, known: $0.value.known)
                 }
-                if let kept = unsent[event.chatID], kept.words == asked.text, !kept.known.contains(asked.id) {
-                    unsent[event.chatID] = nil
+                let arrived = AgentRemoteAcknowledgement.arrived(
+                    asked, in: event.chatID, requestID: event.requestID,
+                    hostNamesRequests: hostNamesRequests, pending: pending
+                )
+                for requestID in arrived {
+                    if let request = sendRequests.removeValue(forKey: requestID), chat?.id == request.chatID {
+                        chat?.sending = nil
+                    }
+                }
+                let kept = unsent.compactMap { key, value in
+                    value.requestID.map { AgentRemoteAcknowledgement.Pending(id: $0, chatID: key, words: value.words, known: value.known) }
+                }
+                let arrivedKept = AgentRemoteAcknowledgement.arrived(
+                    asked, in: event.chatID, requestID: event.requestID,
+                    hostNamesRequests: hostNamesRequests, pending: kept
+                )
+                for (key, value) in unsent where value.requestID.map(arrivedKept.contains) == true {
+                    unsent[key] = nil
                 }
             }
             if let index = chats.firstIndex(where: { $0.id == event.chatID }) {
