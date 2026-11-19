@@ -1549,6 +1549,14 @@ struct ToolPanelView: View {
     @State private var maxVerseInChapter: Int = 1
     /// Which `loadNote` is the latest; see there.
     @State private var noteLoadGeneration = 0
+    /// Notes a sync pass brought while the pane was busy with them, shown
+    /// once it's free.
+    @State private var syncedNotesWaiting = false
+    /// Sections a synced copy added or removed, left out of the list's
+    /// identity so taking it in doesn't scroll the pane as a new chapter.
+    @State private var syncedSectionDrift = 0
+    /// Counts pictures that came in by sync, so the notes draw again.
+    @State private var notesMediaRevision = 0
 
     private struct VerseCountKey: Equatable {
         let translationId: String
@@ -1575,6 +1583,20 @@ struct ToolPanelView: View {
             // The Chat panel goes with the AI features, here or on another device.
             .onAppear { leaveChatIfAIOff() }
             .onChange(of: aiFeatures.isEnabled) { leaveChatIfAIOff() }
+            // Notes another device changed, taken in by a sync pass.
+            .onReceive(NotificationCenter.default.publisher(for: .libraryModulesDidChange)) { notification in
+                guard LibraryModulesChange.types(in: notification).contains(.notes) else { return }
+                // The module in use may be the one deleted: the picker moves
+                // to one still here, and that module's notes load.
+                Task {
+                    await loadNotesModules()
+                    await takeInSyncedNotes()
+                }
+            }
+            .onChange(of: notesAreBusy) { _, busy in
+                guard !busy, syncedNotesWaiting else { return }
+                Task { await takeInSyncedNotes() }
+            }
     }
 
     private func leaveChatIfAIOff() {
@@ -1916,6 +1938,17 @@ struct ToolPanelView: View {
         )) {
             footnoteEditorSheet
         }
+        // The picture picker, as the maximized notes present their own.
+        .sheet(isPresented: Binding(
+            get: { !isMaximized && showingNotePicturePicker },
+            set: { showingNotePicturePicker = $0 }
+        ), onDismiss: {
+            if !pictureInserted, editingNoteSectionId != nil { noteEditor.resumeTyping() }
+        }) {
+            ImagePickerSheet(isPresented: $showingNotePicturePicker) { image in
+                addPicture(image)
+            }
+        }
         .sheet(isPresented: $showingConflictSheet) {
             NoteConflictView()
         }
@@ -1983,14 +2016,14 @@ struct ToolPanelView: View {
                 scrollPosition = currentVerse
             }
         }
-        .onChange(of: passagePreview != nil || showingFootnoteEditor) { _, sheetIsUp in
+        .onChange(of: passagePreview != nil || showingFootnoteEditor || showingNotePicturePicker) { _, sheetIsUp in
             noteEditorFocus.isAwaitingSheet = sheetIsUp && editingNoteSectionId != nil
         }
         .onChange(of: noteEditorFocus.isEditing) { _, editing in
             // Done typing: the note goes back to being drawn, unless a sheet
             // opened from it took the focus and will hand it back, or the
             // note that stopped is not this one but the last, handing over.
-            if !editing && !showingFootnoteEditor && passagePreview == nil,
+            if !editing && !showingFootnoteEditor && !showingNotePicturePicker && passagePreview == nil,
                let open = editingNoteSectionId,
                noteEditorFocus.lastBlurredKey == editorKey(for: open) {
                 editingNoteSectionId = nil
@@ -2298,7 +2331,9 @@ struct ToolPanelView: View {
                     .padding(.top, 8)
                 }
 
-                // Main content
+                // Main content. Read here so a picture arriving on its own
+                // draws the rows again.
+                let _ = notesMediaRevision
                 if sections.isEmpty {
                     ProgressView().centeredInVisibleSpace()
                 } else {
@@ -2306,7 +2341,7 @@ struct ToolPanelView: View {
                     UIKitVerseList(
                         items: items,
                         cellContent: { item in notesListCell(item) },
-                        listId: "notes_\(book)_\(chapter)_\(toolTextKey)_\(sections.count)",
+                        listId: "notes_\(book)_\(chapter)_\(toolTextKey)_\(sections.count - syncedSectionDrift)",
                         additionalTopOffset: 0,
                         topInset: hideHeader ? sharedHeaderHeight : headerBarHeight,
                         // Notes are written here: scrolling them keeps the
@@ -2948,6 +2983,8 @@ struct ToolPanelView: View {
             print("[Notes] Found \(entries.count) entries for this chapter")
 
             // Convert NoteEntry records to NoteSection for UI
+            forgetPooledNotes(in: asked)
+            syncedSectionDrift = 0
             sections = convertEntriesToSections(entries)
             savedSections = sections
 
@@ -2967,6 +3004,100 @@ struct ToolPanelView: View {
 
         // Check sync status
         await checkSyncStatus()
+    }
+
+    /// Shows the chapter's notes as a sync pass left them, when another
+    /// device changed them. Quietly: no spinner, and the pane keeps its
+    /// place. A note being edited, or edits not yet saved, are left as they
+    /// are; their save, and the pass it starts, bring the two together.
+    private func takeInSyncedNotes() async {
+        // Busy first: the first load, before it names its chapter, is busy
+        // too, and takes the notes once it lands.
+        guard !notesAreBusy, !hasEditsNotYetStored else {
+            syncedNotesWaiting = true
+            return
+        }
+        guard let scope = loadedNotes else { return }
+        syncedNotesWaiting = false
+        let generation = noteLoadGeneration
+        // The notes as they stand now: a save or deletion made while the
+        // read runs leaves them otherwise, and the read is older than it.
+        let before = (noteFingerprint(sections), noteFingerprint(savedSections))
+        guard let entries = try? await Task.detached(priority: .utility, operation: {
+            try ModuleDatabase.shared.getNotesForChapter(
+                moduleId: scope.moduleId, book: scope.book, chapter: scope.chapter
+            )
+        }).value else { return }
+        // Another chapter or a load since owns the pane; an edit or a sheet
+        // opened meanwhile takes the notes once it's done.
+        guard generation == noteLoadGeneration, loadedNotes == scope else { return }
+        guard before == (noteFingerprint(sections), noteFingerprint(savedSections)) else {
+            // Changed here meanwhile; read again once the pane is free.
+            syncedNotesWaiting = true
+            if !notesAreBusy { Task { await takeInSyncedNotes() } }
+            return
+        }
+        guard !notesAreBusy, !hasEditsNotYetStored else {
+            syncedNotesWaiting = true
+            return
+        }
+        let fresh = convertEntriesToSections(entries)
+        guard noteFingerprint(fresh) != noteFingerprint(savedSections) else {
+            // The same notes: a picture of theirs may have come in on its
+            // own since, so the rows are drawn again to find it.
+            notesMediaRevision &+= 1
+            return
+        }
+        let shown = fresh.isEmpty ? [NoteSection.general(content: "")] : fresh
+        forgetPooledNotes(in: scope)
+        syncedSectionDrift += shown.count - sections.count
+        sections = shown
+        savedSections = fresh
+    }
+
+    /// Something in the pane holds the notes as they are: one being typed,
+    /// edits not yet saved, or a sheet or confirmation that names a note by
+    /// its place in the list, which a synced copy could shift.
+    private var notesAreBusy: Bool {
+        // `editingSection` is the Change Verses sheet's; its index can be
+        // left behind when the sheet is swiped away.
+        // A load in flight may have read before the pass: what it brought is
+        // read again once the load lands.
+        isLoading || hasUnsavedNotes || editingNoteSectionId != nil || editingSection != nil
+            || noteToDelete != nil
+            || showingFootnoteEditor || showingAddVerseSheet || showingNotePicturePicker
+            || showingConflictSheet
+    }
+
+    /// Notes here that storage doesn't have, as after a save that failed:
+    /// a synced copy would put the stored ones over them. Compared as a load
+    /// leaves them, a chapter with none showing one empty general note.
+    private var hasEditsNotYetStored: Bool {
+        noteFingerprint(sections.filter(holdsSomething))
+            != noteFingerprint(savedSections.filter(holdsSomething))
+    }
+
+    /// A note with anything in it. An empty one, as the chapter's blank
+    /// general note or a verse note opened and left untyped, isn't an edit.
+    private func holdsSomething(_ section: NoteSection) -> Bool {
+        !section.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || section.hasFootnotes || !(section.mediaJson ?? "").isEmpty
+    }
+
+    /// The chapter's notes were read again from storage: a warm editor page
+    /// still holding one of them must load it afresh, not carry its older
+    /// text back as an edit.
+    private func forgetPooledNotes(in scope: NotesScope) {
+        let prefix = "\(scope.moduleId)|\(scope.book)|\(scope.chapter)|"
+        TipTapPagePool.shared.forgetDocuments { $0.hasPrefix(prefix) }
+    }
+
+    /// What a chapter's notes say, to tell whether a synced copy differs.
+    private func noteFingerprint(_ sections: [NoteSection]) -> [String] {
+        sections.map { section in
+            [section.id, section.content, section.mediaJson ?? "", String(describing: section.footnotes)]
+                .joined(separator: "\u{1F}")
+        }
     }
 
     /// Convert NoteEntry records to NoteSection array for UI display

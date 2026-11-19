@@ -194,7 +194,10 @@ struct LibrarySyncPass {
         }
 
         let library = PhonePassLibrary(storage: storage, source: source)
-        defer { library.cleanUp() }
+        defer {
+            library.announceChanges()
+            library.cleanUp()
+        }
         var records = try database.libraryRecords(source: source)
         library.seedFolderRevisions(into: &records)
         let carried = try database.pendingManifestWrites(source: source)
@@ -224,12 +227,13 @@ struct LibrarySyncPass {
                 confirmByReading: { Self.confirmsByReading($0) },
                 patience: patience,
                 receiving: { snapshot in
-                    try receive(snapshot.bundle)
+                    try receive(snapshot.bundle, into: library)
                     // This device's deletions, read here because the update's
                     // change only computes and may run again on a newer bundle.
                     ledger = DeletionLedgerParticipant(
                         source: source,
-                        contribution: .init(personal: try database.personalDeletionLedger())
+                        contribution: .init(personal: try database.personalDeletionLedger()),
+                        touched: { library.noteChanges(inModules: $0) }
                     )
                     library.opened = snapshot.bundle
                     prepared = Set(snapshot.versions.map(\.revision))
@@ -310,10 +314,10 @@ struct LibrarySyncPass {
     /// Deletions made elsewhere, before anything here is gathered: a library
     /// read before them would publish what it had just been told was gone.
     /// One no device can read is skipped, as the Mac skips it.
-    private func receive(_ bundle: LampSyncSettingsBundle) throws {
+    private func receive(_ bundle: LampSyncSettingsBundle, into library: PhonePassLibrary) throws {
         if let ledger = LampSyncBundleLedgers.personalDeletions(in: bundle) {
             try database.mergePersonalDeletionLedger(ledger)
-            try database.applyPersonalDeletionLedger()
+            library.noteChanges(inModules: try database.applyPersonalDeletionLedger())
         }
         try Self.settleEmptiedHighlightModules(source: source)
     }
@@ -489,6 +493,27 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         try? FileManager.default.removeItem(at: scratch)
     }
 
+    /// The kinds of module this pass took in or removed.
+    private var changedModuleTypes: Set<ModuleType> = []
+
+    /// Modules whose entries another device's deletions removed here.
+    func noteChanges(inModules ids: Set<String>) {
+        for id in ids {
+            if let type = try? database.getModule(id: id)?.type { changedModuleTypes.insert(type) }
+        }
+    }
+
+    /// Tells open lists what the pass changed, once, however it ended: what
+    /// was taken in before a failure is in the library all the same.
+    func announceChanges() {
+        guard !changedModuleTypes.isEmpty else { return }
+        NotificationCenter.default.post(
+            name: .libraryModulesDidChange, object: nil,
+            userInfo: [LibraryModulesChange.typesKey: changedModuleTypes]
+        )
+        changedModuleTypes = []
+    }
+
     /// On iCloud Drive a file's revision is the digest of its bytes, which is
     /// what the earlier iCloud sync recorded for each module. Taken as the
     /// revision of a module with no record yet, the first pass compares most
@@ -642,6 +667,13 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     func install(_ path: String, from url: URL) async throws -> String? {
         switch LampSyncFolderLayout.kind(of: path) {
         case .devotionalMedia, .noteMedia, .bookMedia:
+            // A picture coming in after its note, writing or book: shown
+            // once the view holding it draws again.
+            switch LampSyncFolderLayout.kind(of: path) {
+            case .noteMedia: changedModuleTypes.insert(.notes)
+            case .devotionalMedia: changedModuleTypes.insert(.devotional)
+            default: changedModuleTypes.insert(.book)
+            }
             guard let local = localURL(forMedia: path) else {
                 // Another module's folder, not this book's: taken as here,
                 // with nothing written, so it isn't fetched on every pass.
@@ -658,6 +690,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             try FileManager.default.copyItem(at: url, to: local)
             return nil
         case .module:
+            if let type = LibrarySyncPass.moduleType(of: path) { changedModuleTypes.insert(type) }
             return try await installModule(path, from: url, merging: false)
         case .writingReview:
             // Merged into the copy here, never put over it: this device may
@@ -694,6 +727,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
                 republish[path] = copy
                 continue
             }
+            if let type = LibrarySyncPass.moduleType(of: path) { changedModuleTypes.insert(type) }
             _ = try await installModule(path, from: url, merging: true)
             guard let id = heldModules[path]?.id ?? LampSyncFolderLayout.remoteModuleID(of: path),
                   let module = try database.getModule(id: id) else { continue }
@@ -716,6 +750,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
                 throw LibrarySyncError.collectionKept(path)
             }
             guard let held = heldModules[path] else { return }
+            changedModuleTypes.insert(held.type)
             if held.type == .translation {
                 try database.deleteTranslation(id: held.id)
             } else if held.type == .plan {
@@ -914,6 +949,9 @@ struct DeletionLedgerParticipant: SettingsBundleParticipant {
     let source: String
     /// This device's own records, read before the update.
     let contribution: LampSyncBundleLedgers.Contribution
+    /// Told the modules whose notes, writings or highlights the ledger
+    /// removed here.
+    var touched: (Set<String>) -> Void = { _ in }
 
     func change(_ bundle: inout LampSyncSettingsBundle, now: Int64) throws {
         try contribution.apply(to: &bundle)
@@ -922,7 +960,7 @@ struct DeletionLedgerParticipant: SettingsBundleParticipant {
     func committed(_ written: LampSyncSettingsStore.Snapshot) throws {
         guard let ledger = LampSyncBundleLedgers.personalDeletions(in: written.bundle) else { return }
         try ModuleDatabase.shared.mergePersonalDeletionLedger(ledger)
-        try ModuleDatabase.shared.applyPersonalDeletionLedger()
+        touched(try ModuleDatabase.shared.applyPersonalDeletionLedger())
         try LibrarySyncPass.settleEmptiedHighlightModules(source: source)
     }
 }

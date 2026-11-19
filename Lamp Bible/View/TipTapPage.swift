@@ -141,6 +141,13 @@ final class TipTapPage: NSObject, WKScriptMessageHandler, WKNavigationDelegate, 
         }
     }
 
+    /// The document here is no longer the one its host knows by that key:
+    /// the host's text was read again from storage. The next host loads its
+    /// own text instead of taking this page's as its newest edit.
+    func forgetDocument() {
+        documentKey = nil
+    }
+
     /// Hands the page to another document. `then` runs once it is in place.
     func load(_ markdown: String, key: String?, then done: (() -> Void)? = nil) {
         token = UUID().uuidString
@@ -365,10 +372,16 @@ enum VerseCatalog {
 final class TipTapPagePool {
     static let shared = TipTapPagePool()
     private var idle: [TipTapPage.Kind: TipTapPage] = [:]
+    /// Every page handed out and not yet let go, idle or still held.
+    private let live = NSHashTable<TipTapPage>.weakObjects()
 
     /// Loads a page ahead of need, so the first editor opened is warm.
     func warmUp(_ kind: TipTapPage.Kind) {
-        if idle[kind].map(isUsable) != true { idle[kind] = TipTapPage(kind: kind) }
+        if idle[kind].map(isUsable) != true {
+            let page = TipTapPage(kind: kind)
+            live.add(page)
+            idle[kind] = page
+        }
         idle[kind]?.useVerseCatalog(translationId: UserDatabase.shared.getSettings().readerTranslation)
     }
 
@@ -378,7 +391,20 @@ final class TipTapPagePool {
             return page
         }
         idle[kind] = nil
-        return TipTapPage(kind: kind)
+        let page = TipTapPage(kind: kind)
+        live.add(page)
+        return page
+    }
+
+    /// An idle page keeps the document it held last, to carry on in it if
+    /// that section is opened again. Once the section's text has been read
+    /// again from storage, as after a sync, the page's copy may be older.
+    /// Pages still held count too: one whose editor has closed but not yet
+    /// let it go comes back to the pool with the same key.
+    func forgetDocuments(where isStale: (String) -> Bool) {
+        for page in Array(idle.values) + live.allObjects {
+            if let key = page.documentKey, isStale(key) { page.forgetDocument() }
+        }
     }
 
     func giveBack(_ page: TipTapPage) {

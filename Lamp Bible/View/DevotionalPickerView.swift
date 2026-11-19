@@ -156,7 +156,10 @@ struct DevotionalPickerView: View {
                 ProgressView("Loading...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredDevotionals.isEmpty {
+                // Pulled, as the list is, to fetch writing from another device.
                 emptyState
+                    .scrollableForPull()
+                    .refreshableBySync { loadDevotionals() }
             } else {
                 devotionalList
             }
@@ -287,6 +290,12 @@ struct DevotionalPickerView: View {
         // A sync, however it ran, can bring writings changed on another
         // device: a new title, category or tag shows without a relaunch.
         .onReceive(NotificationCenter.default.publisher(for: .writingsDidChange)) { _ in
+            loadDevotionals()
+        }
+        // Writings deleted on another device, or a collection taken in or
+        // removed, by a sync pass.
+        .onReceive(NotificationCenter.default.publisher(for: .libraryModulesDidChange)) { notification in
+            guard LibraryModulesChange.types(in: notification).contains(.devotional) else { return }
             loadDevotionals()
         }
         .sheet(isPresented: $showingFilterSheet) {
@@ -701,13 +710,8 @@ struct DevotionalPickerView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .contentMargins(.top, 4, for: .scrollContent)
-        // Pulling asks the library for what other devices changed, then
-        // reads the list again. A pass already running brings its changes
-        // in through `writingsDidChange`.
-        .refreshable {
-            try? await SyncCoordinator.shared.syncAll()
-            loadDevotionals()
-        }
+        // Pulling asks the library for what other devices changed first.
+        .refreshableBySync { loadDevotionals() }
     }
 
     /// A list row's card, inset from the screen's edges and from its

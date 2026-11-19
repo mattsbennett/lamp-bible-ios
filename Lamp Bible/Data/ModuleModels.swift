@@ -481,6 +481,20 @@ extension Notification.Name {
     /// Where a book was left, or what is bookmarked in it, changed on another
     /// device and came in with a sync pass.
     static let bookReadingDidChange = Notification.Name("bookReadingDidChange")
+    /// A sync pass took in or removed modules: another device's new book,
+    /// commentary or notes. Posted once a pass ends, with the kinds it
+    /// touched under `LibraryModulesChange.typesKey`.
+    static let libraryModulesDidChange = Notification.Name("libraryModulesDidChange")
+}
+
+/// What a `libraryModulesDidChange` notice says changed.
+enum LibraryModulesChange {
+    static let typesKey = "types"
+
+    /// The kinds of module the notice names; every kind when it names none.
+    static func types(in notification: Notification) -> Set<ModuleType> {
+        notification.userInfo?[typesKey] as? Set<ModuleType> ?? Set(ModuleType.allCases)
+    }
 }
 
 /// Where each book was left and what is bookmarked in it, in the store both

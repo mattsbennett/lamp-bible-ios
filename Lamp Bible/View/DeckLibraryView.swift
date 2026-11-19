@@ -45,7 +45,10 @@ struct DeckLibraryView: View {
     private var library: some View {
         Group {
             if entries.isEmpty {
+                // Pulled, as the list is, to fetch the first deck.
                 emptyState
+                    .scrollableForPull()
+                    .refreshableBySync { await reload() }
             } else {
                 deckList
                     .searchable(
@@ -106,6 +109,12 @@ struct DeckLibraryView: View {
         }
         .task { await reload() }
         .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
+            Task { await reload() }
+        }
+        // A writing renamed or deleted on another device, which the cards
+        // show; a pass already running when the list was pulled ends here.
+        .onReceive(NotificationCenter.default.publisher(for: .libraryModulesDidChange)) { notification in
+            guard LibraryModulesChange.types(in: notification).contains(.devotional) else { return }
             Task { await reload() }
         }
         // A sync can rename a writing without touching any deck, and the
@@ -194,6 +203,14 @@ struct DeckLibraryView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // Pulling asks the library for decks other devices changed. A pass
+        // this starts reloads the list as it ends; read here only when one
+        // was already running, none could run, or there's no sync.
+        .refreshable {
+            let sync = SyncCoordinator.shared
+            guard sync.settings.backend != .none else { return await reload() }
+            do { try await sync.syncAll() } catch { await reload() }
+        }
         .fullScreenCover(
             isPresented: Binding(
                 get: { pendingDeckID != nil },

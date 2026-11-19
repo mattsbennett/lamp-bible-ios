@@ -314,7 +314,10 @@ struct ModuleManagerView: View {
                     ProgressView()
                     Spacer()
                 } else if filteredModules.isEmpty && filteredCommentarySeries.isEmpty && filteredDictionarySeries.isEmpty && filteredHighlights.isEmpty && filteredPlans.isEmpty && filteredQuizzes.isEmpty {
-                    emptyStateView
+                    // Pulled, as the list is, to fetch modules from another device.
+                    VStack(spacing: 0) { emptyStateView }
+                        .scrollableForPull()
+                        .refreshableBySync { await loadModules() }
                 } else {
                     modulesList
                 }
@@ -364,6 +367,10 @@ struct ModuleManagerView: View {
             }
             // A sync that finished while the screen is open marks or clears.
             .onReceive(SyncCoordinator.shared.$missingModules.dropFirst()) { _ in
+                Task { await loadModules() }
+            }
+            // Modules another device added or removed, taken in by a pass.
+            .onReceive(NotificationCenter.default.publisher(for: .libraryModulesDidChange)) { _ in
                 Task { await loadModules() }
             }
             .onChange(of: scenePhase) { _, newPhase in
@@ -901,9 +908,8 @@ struct ModuleManagerView: View {
         }
         .listStyle(.plain)
         .contentMargins(.top, 0, for: .scrollContent)
-        .refreshable {
-            await loadModules()
-        }
+        // Pulling asks the library for what other devices changed first.
+        .refreshableBySync { await loadModules() }
         .sheet(item: $selectedCommentarySeries) { series in
             CommentarySeriesDetailView(series: series, onDelete: series.isBundled ? nil : { book in
                 Task { await deleteCommentaryBook(book) }

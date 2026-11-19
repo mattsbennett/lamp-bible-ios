@@ -60,6 +60,8 @@ struct BookLibraryView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if books.isEmpty {
+                // In a scroll view, so the pull that fetches a book another
+                // device added reaches it too.
                 ContentUnavailableView {
                     Label("No Books Installed", systemImage: "books.vertical")
                 } description: {
@@ -68,8 +70,12 @@ struct BookLibraryView: View {
                     Button("Import Book…") { showingImporter = true }
                         .buttonStyle(.borderedProminent)
                 }
+                .scrollableForPull()
+                .refreshableBySync { await loadBooks() }
             } else if filteredBooks.isEmpty {
                 ContentUnavailableView.search(text: searchText)
+                    .scrollableForPull()
+                    .refreshableBySync { await loadBooks() }
             } else {
                 // A shelf of covers, as a bookshop or Apple Books lays one out.
                 ScrollView {
@@ -87,7 +93,7 @@ struct BookLibraryView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 32)
                 }
-                .refreshable { await loadBooks() }
+                .refreshableBySync { await loadBooks() }
             }
         }
         .navigationTitle("Books")
@@ -164,6 +170,11 @@ struct BookLibraryView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .bookReadingDidChange)) { _ in
             Task { await loadPositions() }
+        }
+        // A book added or removed on another device, taken in by a sync pass.
+        .onReceive(NotificationCenter.default.publisher(for: .libraryModulesDidChange)) { notification in
+            guard LibraryModulesChange.types(in: notification).contains(.book) else { return }
+            Task { await loadBooks() }
         }
     }
 
@@ -2217,5 +2228,25 @@ struct LampGeneratedCover: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// Pull to refresh that first asks the library for what other devices
+    /// changed, then reads the list again. A pass already running brings
+    /// its changes in through the sync notices instead.
+    func refreshableBySync(then reload: @escaping () async -> Void) -> some View {
+        refreshable {
+            try? await SyncCoordinator.shared.syncAll()
+            await reload()
+        }
+    }
+
+    /// An empty state the pull to refresh can reach: in a scroll view, as
+    /// tall as the screen.
+    func scrollableForPull() -> some View {
+        ScrollView {
+            containerRelativeFrame([.horizontal, .vertical])
+        }
     }
 }
