@@ -350,6 +350,11 @@ class ModuleSyncManager: ObservableObject {
             if type == .highlights {
                 Task { @MainActor in HighlightManager.shared.reloadAfterExternalChange() }
             }
+            // A writing open now may have a newer copy: the assistant's
+            // change, or another device's.
+            if type == .devotional {
+                Task { @MainActor in NotificationCenter.default.post(name: .writingsDidChange, object: nil) }
+            }
         }
 
         let portableKind = type

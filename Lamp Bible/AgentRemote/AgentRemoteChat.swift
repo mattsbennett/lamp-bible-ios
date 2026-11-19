@@ -59,6 +59,23 @@ struct AgentRemoteChat: Equatable {
     }
 }
 
+/// A writing's revision and body digest as stored here now, which the Mac
+/// checks its own copy against before the assistant works on it. Read at
+/// the moment of sending, so a copy sync brought since counts.
+enum AgentRemoteWritingStamp {
+    static func current(writingID: String) async -> (revision: Int?, digest: String?) {
+        await Task.detached(priority: .userInitiated) {
+            guard let entry = (try? ModuleDatabase.shared.getDevotionalEntry(id: writingID)).flatMap({ $0 }) else {
+                return (nil, nil)
+            }
+            let revision = entry.lastModified.map {
+                LampAgentRemoteWritingRevision.of(lastModified: Date(timeIntervalSince1970: TimeInterval($0)))
+            }
+            return (revision, LampAgentRemoteWritingRevision.digest(of: entry.writingFileRow(moduleID: entry.moduleId)))
+        }.value
+    }
+}
+
 /// Which of this device's messages a question arriving from the Mac is.
 enum AgentRemoteAcknowledgement {
     struct Pending: Equatable {
@@ -100,6 +117,9 @@ enum AgentRemoteFailureText {
             return "That chat is no longer on your Mac."
         case LampAgentRemoteFailure.needsSetup:
             return "The AI provider needs setting up on your Mac. Open Lamp Bible there to finish."
+        case LampAgentRemoteFailure.writingBehind:
+            // The Mac says why, as when the writing is open there.
+            return message ?? "Your Mac doesn’t have your latest edits to this writing yet. Try again once it has synced."
         case LampAgentRemoteFailure.aiOff:
             return "AI features are turned off."
         case LampAgentRemoteFailure.notAllowed:

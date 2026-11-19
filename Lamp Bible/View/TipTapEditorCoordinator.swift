@@ -393,6 +393,15 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
             completion(result as? String ?? "")
         }
     }
+
+    /// The words chosen on the page, in any mode. Reading, the editor isn't
+    /// editable and its own selection doesn't follow what is highlighted, so
+    /// this asks the page.
+    func getChosenWords(completion: @escaping (String) -> Void) {
+        evaluateJS("(window.getSelection && window.getSelection().toString()) || window.editorAPI.getSelectedText() || ''") { result in
+            completion(result as? String ?? "")
+        }
+    }
 }
 
 // MARK: - Text Style Enum

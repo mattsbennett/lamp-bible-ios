@@ -227,4 +227,6 @@ struct PresentationDeckStorage: Sendable {
 extension Notification.Name {
     /// Posted after a sync pull or an import changes the deck library.
     static let presentationDecksDidChange = Notification.Name("presentationDecksDidChange")
+    /// Posted after sync writes writings into the library, whatever ran it.
+    static let writingsDidChange = Notification.Name("writingsDidChange")
 }

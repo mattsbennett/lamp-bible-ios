@@ -95,6 +95,18 @@ struct DevotionalView: View {
     @State private var markdownContent: String = ""
     @State private var preservesRichContentJSON = false
     @State private var showingMetadataEditor: Bool = false
+    /// Asking the writing assistant about this writing, with the words chosen
+    /// in it when asked.
+    @State private var askingAssistant: AgentRemoteWriting?
+    /// The text was just replaced by a newer stored copy, not edited here:
+    /// nothing to save.
+    @State private var takingInStoredCopy = false
+    /// Leaving editing to ask the assistant, which saves on its own terms.
+    @State private var handingToAssistant = false
+    /// The writing's module takes changes: one that came in a module
+    /// doesn't, so the assistant isn't offered for it.
+    @State private var writingIsEditable = false
+    @ObservedObject private var aiFeatures = AIFeatures.shared
     @State private var hasUnsavedChanges: Bool = false
     @State private var fontSize: CGFloat = 18
 
@@ -277,6 +289,16 @@ struct DevotionalView: View {
                 scheduleAutoSave()
             }
         }
+        .sheet(item: $askingAssistant, onDismiss: {
+            Task { await takeInNewerStoredCopy() }
+        }) { writing in
+            AskAssistantSheet(writing: writing)
+        }
+        // A sync, however it ran, can bring a newer copy of this writing: the
+        // assistant's change, or another device's.
+        .onReceive(NotificationCenter.default.publisher(for: .writingsDidChange)) { _ in
+            Task { await takeInNewerStoredCopy() }
+        }
         .sheet(item: $linkedWriting) { linked in
             LinkedWritingSheet(linked: linked, onNavigateToVerse: onNavigateToVerse)
         }
@@ -363,6 +385,12 @@ struct DevotionalView: View {
             DeckViewerView(entry: entry)
         }
         .task(id: devotional.meta.id) { await reloadLinkedDecks() }
+        .task(id: moduleId) {
+            let id = moduleId
+            writingIsEditable = await Task.detached(priority: .utility) {
+                (try? ModuleDatabase.shared.getModule(id: id))?.isEditable ?? false
+            }.value
+        }
         .onReceive(NotificationCenter.default.publisher(for: .presentationDecksDidChange)) { _ in
             Task { await reloadLinkedDecks() }
         }
@@ -416,7 +444,8 @@ struct DevotionalView: View {
                 }
                 // Then sync blocks from markdown (works for both visual and markdown modes)
                 guard syncBlocksFromMarkdown() else { return }
-                if hasUnsavedChanges {
+                // Asking the assistant saves, and waits for the save, itself.
+                if hasUnsavedChanges && !handingToAssistant {
                     saveNowSync()
                 }
             }
@@ -573,6 +602,8 @@ struct DevotionalView: View {
                 },
                 onCoordinatorReady: { coordinator in
                     tiptapCoordinator = coordinator
+                    // A newer copy that came while the editor was loading.
+                    Task { await takeInNewerStoredCopy() }
 
                     coordinator.onImageTapped = { mediaId in
                         handleImageTapByMediaId(mediaId)
@@ -616,6 +647,10 @@ struct DevotionalView: View {
                 }
             )
             .onChange(of: markdownContent) { _, _ in
+                if takingInStoredCopy {
+                    takingInStoredCopy = false
+                    return
+                }
                 if mode == .edit {
                     hasUnsavedChanges = true
                     scheduleAutoSave()
@@ -812,6 +847,105 @@ struct DevotionalView: View {
             .fill(Color.primary.opacity(0.12))
             .frame(width: 1, height: 20)
             .padding(.horizontal, 4)
+    }
+
+    private func replace(with stored: Devotional) {
+        let markdown = stored.markdownContent ?? MarkdownDevotionalConverter.contentToMarkdown(stored)
+        devotional = stored
+        preservesRichContentJSON = MarkdownDevotionalConverter.shouldRetainContentJSON(stored)
+        guard markdown != markdownContent else { return }
+        // The editor resolves images as it draws them: the media the copy
+        // brings has to be known to it first.
+        var mediaMap: [String: String] = [:]
+        for ref in stored.media ?? [] {
+            if let url = DevotionalMediaStorage.shared.getMediaURL(for: ref, devotionalId: stored.meta.id, moduleId: moduleId) {
+                mediaMap[ref.id] = url.absoluteString
+            }
+        }
+        tiptapCoordinator?.setMediaMap(mediaMap)
+        takingInStoredCopy = true
+        markdownContent = markdown
+        tiptapCoordinator?.setContent(markdown)
+    }
+
+    /// Takes in the writing as stored when it's newer than what's shown: the
+    /// assistant's change, or another device's, brought by sync. Without this
+    /// the next edit here would start from, and save, the older copy.
+    private func takeInNewerStoredCopy() async {
+        guard !isSaving else { return }
+        let id = devotional.meta.id
+        let stored = await Task.detached(priority: .userInitiated) {
+            try? DevotionalStorage.shared.getDevotional(id: id)
+        }.value
+        // Read or presented only, with nothing here waiting to be saved: while
+        // editing, typing the editor hasn't reported yet can't be ruled out,
+        // and asking the assistant leaves editing first (askAssistant).
+        // Not before the editor is there to take it: it would load the copy it
+        // began with, and this one would be passed over as already shown.
+        guard let stored, (stored.meta.lastModified ?? 0) > (devotional.meta.lastModified ?? 0),
+              mode != .edit, !hasUnsavedChanges, !isSaving, saveTask == nil,
+              tiptapCoordinator != nil else { return }
+        replace(with: stored)
+    }
+
+    /// Opens the writing's chat with the assistant, taking along whatever is
+    /// chosen in the writing.
+    private func askAssistant() {
+        let writing = AgentRemoteWriting(id: devotional.meta.id, title: devotional.meta.title)
+        Task { @MainActor in
+            // The assistant changes the writing on the Mac: editing it here at
+            // the same time would be two hands on one page. So everything
+            // typed, reported or not, is saved first, no save is left queued
+            // to land over the assistant's change, and the writing is read
+            // while asking, taking the change in when it comes.
+            let editing = mode == .edit
+            handingToAssistant = true
+            defer { handingToAssistant = false }
+            // A save already under way finishes first, so what's read from
+            // the editor next isn't marked saved by it.
+            for _ in 0..<100 where isSaving {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            var live: String?
+            var chosen = ""
+            if let coordinator = tiptapCoordinator {
+                // Taken before leaving editing clears them.
+                chosen = await withCheckedContinuation { continuation in
+                    coordinator.getChosenWords { continuation.resume(returning: $0) }
+                }
+                if editing {
+                    // Editing stops first, so nothing more is typed after
+                    // the text is read.
+                    withAnimation { mode = .read }
+                    live = await withCheckedContinuation { continuation in
+                        coordinator.getContent { continuation.resume(returning: $0) }
+                    }
+                }
+            }
+            if let live, live != markdownContent {
+                takingInStoredCopy = true
+                markdownContent = live
+                hasUnsavedChanges = true
+            }
+            saveTask?.cancel()
+            saveTask = nil
+            for _ in 0..<100 where isSaving {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            if hasUnsavedChanges { await saveNow() }
+            // Not saved here: nothing goes to the assistant from text the
+            // library doesn't have. The save's own error shows.
+            guard !hasUnsavedChanges, saveState != .error else { return }
+            if editing && mode == .edit { withAnimation { mode = .read } }
+            var asked = writing
+            let words = chosen.trimmingCharacters(in: .whitespacesAndNewlines)
+            asked.selection = words.isEmpty ? nil : words
+            // The Mac works on its own copy: a sync pass sends what's saved,
+            // and each message carries the writing's revision as stored, so
+            // the Mac can check it has caught up (AgentRemoteWritingStamp).
+            asked.syncFirst = true
+            askingAssistant = asked
+        }
     }
 
     private func openLinkEditor() {
@@ -1087,6 +1221,17 @@ struct DevotionalView: View {
 
         // Bottom toolbar with single mode button (hidden in present mode)
         if mode != .present {
+            // The writing assistant, on the Mac, while the AI features are on,
+            // for a writing it may change.
+            if aiFeatures.isEnabled && writingIsEditable {
+                ToolbarItem(placement: .bottomBar) {
+                    Button(action: askAssistant) {
+                        Image(systemName: "bubble.left.and.text.bubble.right")
+                            .font(.body.weight(.semibold))
+                    }
+                    .accessibilityLabel("Ask the Assistant")
+                }
+            }
             ToolbarItem(placement: .bottomBar) {
                 Spacer()
             }
@@ -1309,6 +1454,7 @@ struct DevotionalView: View {
         }
 
         devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
+        lastSaveTime = Date()
 
         // Use detached task so cloud sync continues even if view is dismissed
         let devToSave = devotional

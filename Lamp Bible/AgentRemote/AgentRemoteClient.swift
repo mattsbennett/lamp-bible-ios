@@ -68,25 +68,56 @@ final class AgentRemoteClient: ObservableObject {
         /// The request it went in, when the connection ended before the Mac
         /// answered: the Mac names it on the question's events if it had it.
         var requestID: UUID?
+        /// The words chosen in the writing it was asked about, sent with it.
+        var selection: String?
+        /// The writing a new chat's first message was about.
+        var writingID: String?
+        /// It begins a new chat when sent again, rather than going on in the
+        /// chat it's kept under: said outright, since a chat's id can look
+        /// like anything.
+        var startsChat = false
+        /// The writing's revision it was sent with, which a retry keeps as
+        /// the least the Mac's copy must be.
+        var writingRevision: Int?
+        /// The writing's body digest that went with that revision.
+        var writingDigest: String?
     }
 
-    /// Messages not sent, by chat id; a new chat's first message under "".
+    /// Messages not sent, by chat id; a new chat's first message under its
+    /// new-chat key ("" for the reader's, one per writing).
     @Published private(set) var unsent: [String: Unsent] = [:]
     static let newChatKey = ""
+
+    /// Where a new chat about a writing keeps its draft and a first message
+    /// that didn't go.
+    /// Its own form, which no chat id the Mac gives takes (the Mac's writing
+    /// chats are `writing:<id>`).
+    static func newChatKey(writing writingID: String) -> String { "new-writing|\(writingID.uppercased())" }
 
     /// What's being written, for each Mac (by its secret, whatever it's
     /// called) and chat: kept here, so a panel closed or switched away from
     /// keeps it, and words meant for one conversation never go to another.
     @Published private var drafts: [String: String] = [:]
 
-    private var draftKey: String {
-        "\(chatsHostSecret ?? "")|\(openChatID ?? Self.newChatKey)"
+    /// The words written for one destination: a chat's id, or a new chat's
+    /// key. Each panel says which is its own, so one window's chat never
+    /// takes another's words.
+    func draft(for destination: String) -> String {
+        drafts["\(chatsHostSecret ?? "")|\(destination)"] ?? ""
     }
 
-    /// The composer's words for where they'd go now.
-    var draft: String {
-        get { drafts[draftKey] ?? "" }
-        set { drafts[draftKey] = newValue.isEmpty ? nil : newValue }
+    func setDraft(_ text: String, for destination: String) {
+        drafts["\(chatsHostSecret ?? "")|\(destination)"] = text.isEmpty ? nil : text
+    }
+
+    /// Moves what was written for one destination to another, joined to what
+    /// is there.
+    private func moveDraft(from source: String, to destination: String) {
+        let moving = draft(for: source)
+        guard !moving.isEmpty, source != destination else { return }
+        setDraft("", for: source)
+        let waiting = draft(for: destination)
+        setDraft(waiting.isEmpty ? moving : waiting + "\n\n" + moving, for: destination)
     }
 
     private let memory: AgentRemoteMemory
@@ -97,9 +128,25 @@ final class AgentRemoteClient: ObservableObject {
     /// Said on the pairing screen when it next opens.
     private var pendingNotice: String?
     /// The new chat asked for, and its first message.
-    private var startRequest: (id: UUID, words: String, known: Set<UUID>, reading: LampAgentRemoteReading)?
+    private var startRequest: StartRequest?
+
+    private struct StartRequest {
+        let id: UUID
+        let words: String
+        let known: Set<UUID>
+        let reading: LampAgentRemoteReading?
+        /// Where the new chat's draft and a first message that didn't go are kept.
+        let key: String
+        let writingID: String?
+        let selection: String?
+    }
     /// Sends not yet answered, with the chat each was for and its words.
-    private var sendRequests: [UUID: (chatID: String, words: String, known: Set<UUID>, reading: LampAgentRemoteReading?)] = [:]
+    private var sendRequests: [UUID: (chatID: String, words: String, known: Set<UUID>, reading: LampAgentRemoteReading?, selection: String?)] = [:]
+
+    /// The writing revision each request about a writing went with.
+    private var requestRevisions: [UUID: Int] = [:]
+    /// And the body digest that went with it.
+    private var requestDigests: [UUID: String] = [:]
 
     /// Whether `messages` holds this question as a message the chat didn't
     /// have when it was sent: the same words asked before are not it.
@@ -377,13 +424,16 @@ final class AgentRemoteClient: ObservableObject {
         if let startRequest {
             keepForNewChat(Unsent(
                 words: startRequest.words, problem: problem, known: startRequest.known,
-                reading: startRequest.reading, requestID: startRequest.id
-            ))
+                reading: startRequest.reading, requestID: startRequest.id,
+                selection: startRequest.selection, writingID: startRequest.writingID,
+                writingRevision: requestRevisions[startRequest.id], writingDigest: requestDigests[startRequest.id]
+            ), key: startRequest.key)
         }
         for (requestID, request) in sendRequests {
             unsent[request.chatID] = Unsent(
                 words: request.words, problem: problem, known: request.known,
-                reading: request.reading, requestID: requestID
+                reading: request.reading, requestID: requestID, selection: request.selection,
+                writingRevision: requestRevisions[requestID], writingDigest: requestDigests[requestID]
             )
         }
         isStartingChat = false
@@ -430,6 +480,7 @@ final class AgentRemoteClient: ObservableObject {
                         if let earlier = chatsHostSecret {
                             parkedUnsent[earlier] = unsent
                             unsent = [:]
+                            chatWritings = [:]
                             chats = []
                             chat = nil
                             openChatID = nil
@@ -472,15 +523,24 @@ final class AgentRemoteClient: ObservableObject {
         switch message.kind {
         case .chats:
             chats = message.chats ?? []
+            noteWritings(chats)
         case .snapshot:
             guard let snapshot = message.snapshot else { return }
             let started = message.requestID != nil && message.requestID == startRequest?.id
             guard started || snapshot.summary.id == openChatID else { return }
             // Words typed while the new chat was on its way belong to it.
-            let typedMeanwhile = started && openChatID == nil ? draft : ""
-            if !typedMeanwhile.isEmpty { draft = "" }
+            if started, let startKey = startRequest?.key {
+                moveDraft(from: startKey, to: snapshot.summary.id)
+            }
             openChatID = snapshot.summary.id
-            if !typedMeanwhile.isEmpty { draft = typedMeanwhile }
+            // The list knows the chat too, a new one included, so its
+            // running state and its writing are known from it.
+            noteWritings([snapshot.summary])
+            if let index = chats.firstIndex(where: { $0.id == snapshot.summary.id }) {
+                chats[index] = snapshot.summary
+            } else {
+                chats.insert(snapshot.summary, at: 0)
+            }
             if chat?.id == snapshot.summary.id {
                 chat?.apply(snapshot)
             } else {
@@ -491,7 +551,11 @@ final class AgentRemoteClient: ObservableObject {
                 // still on its way, as any message sent in it would be.
                 startRequest = nil
                 isStartingChat = false
-                sendRequests[start.id] = (snapshot.summary.id, start.words, start.known, start.reading)
+                // What the snapshot already holds came before this question:
+                // a writing's chat goes on from what was said in it.
+                sendRequests[start.id] = (
+                    snapshot.summary.id, start.words, Set(snapshot.messages.map(\.id)), start.reading, start.selection
+                )
                 chat?.sending = start.words
             }
             // A question the snapshot already holds has arrived, whether it
@@ -542,7 +606,14 @@ final class AgentRemoteClient: ObservableObject {
             }
             if let index = chats.firstIndex(where: { $0.id == event.chatID }) {
                 if event.kind == LampAgentRemoteChatEvent.turnStarted { chats[index].isRunning = true }
-                if event.kind == LampAgentRemoteChatEvent.turnEnded { chats[index].isRunning = false }
+                if event.kind == LampAgentRemoteChatEvent.turnEnded {
+                    chats[index].isRunning = false
+                    // What the assistant changed in a writing comes by sync:
+                    // start a pass now rather than wait for the next.
+                    if chats[index].writingID != nil {
+                        Task { try? await SyncCoordinator.shared.syncAll() }
+                    }
+                }
             }
         case .failed:
             failed(message)
@@ -569,17 +640,32 @@ final class AgentRemoteClient: ObservableObject {
         if let requestID = message.requestID, let start = startRequest, requestID == start.id {
             startRequest = nil
             isStartingChat = false
-            keepForNewChat(Unsent(words: start.words, problem: text, known: start.known, reading: start.reading))
+            // A Mac from before writing chats refuses one as not allowed.
+            let problem = start.writingID != nil && message.errorCode == LampAgentRemoteFailure.notAllowed
+                ? Self.macTooOldForWritings : text
+            keepForNewChat(Unsent(
+                words: start.words, problem: problem, known: start.known, reading: start.reading,
+                selection: start.selection, writingID: start.writingID,
+                writingRevision: requestRevisions[start.id], writingDigest: requestDigests[start.id]
+            ), key: start.key)
             return
         }
         if let requestID = message.requestID, let request = sendRequests.removeValue(forKey: requestID) {
             if chat?.id == request.chatID { chat?.sending = nil }
             if message.errorCode == LampAgentRemoteFailure.notFound {
                 // The chat has gone: the question can begin a new one.
-                keepForNewChat(Unsent(words: request.words, problem: text, known: request.known, reading: request.reading))
+                let writingID = writingID(ofChat: request.chatID)
+                keepForNewChat(Unsent(
+                    words: request.words, problem: text, known: request.known, reading: request.reading,
+                    selection: request.selection, writingID: writingID,
+                    writingRevision: requestRevisions[requestID], writingDigest: requestDigests[requestID]
+                ), key: writingID.map(Self.newChatKey(writing:)) ?? Self.newChatKey)
                 if openChatID == request.chatID { leaveChat(saying: text) }
             } else {
-                unsent[request.chatID] = Unsent(words: request.words, problem: text, known: request.known, reading: request.reading)
+                unsent[request.chatID] = Unsent(
+                    words: request.words, problem: text, known: request.known, reading: request.reading,
+                    selection: request.selection, writingRevision: requestRevisions[requestID], writingDigest: requestDigests[requestID]
+                )
             }
             return
         }
@@ -602,33 +688,47 @@ final class AgentRemoteClient: ObservableObject {
 
     /// Keeps a question for a new chat. One already waiting there is kept too,
     /// the two joined, so neither is lost: Edit brings both back.
-    private func keepForNewChat(_ kept: Unsent) {
-        if let waiting = unsent[Self.newChatKey], waiting.words != kept.words {
-            unsent[Self.newChatKey] = Unsent(words: waiting.words + "\n\n" + kept.words, problem: kept.problem, reading: kept.reading ?? waiting.reading)
+    private func keepForNewChat(_ kept: Unsent, key: String = AgentRemoteClient.newChatKey) {
+        var kept = kept
+        kept.startsChat = true
+        if let waiting = unsent[key], waiting.words != kept.words {
+            unsent[key] = Unsent(
+                words: waiting.words + "\n\n" + kept.words, problem: kept.problem,
+                reading: kept.reading ?? waiting.reading, selection: kept.selection ?? waiting.selection,
+                writingID: kept.writingID ?? waiting.writingID, startsChat: true,
+                writingRevision: [kept.writingRevision, waiting.writingRevision].compactMap { $0 }.max()
+            )
         } else {
-            unsent[Self.newChatKey] = kept
+            unsent[key] = kept
         }
     }
 
+    static let macTooOldForWritings = "Your Mac didn’t take this. If Lamp Bible there hasn’t been updated lately, update it to ask about writings from here."
+
+
     /// Back to the list, saying why: the open chat has gone from the Mac.
     private func leaveChat(saying text: String) {
-        // A question kept for the chat that's gone can begin a new one.
-        if let openChatID, let kept = unsent.removeValue(forKey: openChatID) {
-            keepForNewChat(kept)
+        // A question kept for the chat that's gone can begin a new one, about
+        // the same writing if the chat was one's.
+        let writingID = openChatID.flatMap(writingID(ofChat:))
+        let key = writingID.map(Self.newChatKey(writing:)) ?? Self.newChatKey
+        if let openChatID, var kept = unsent.removeValue(forKey: openChatID) {
+            kept.writingID = writingID
+            keepForNewChat(kept, key: key)
         }
         // And one still on its way to it, which now never will arrive.
         for (requestID, request) in sendRequests where request.chatID == openChatID {
             sendRequests[requestID] = nil
-            keepForNewChat(Unsent(words: request.words, problem: text, reading: request.reading))
+            keepForNewChat(Unsent(
+                words: request.words, problem: text, reading: request.reading,
+                selection: request.selection, writingID: writingID,
+                writingRevision: requestRevisions[requestID], writingDigest: requestDigests[requestID]
+            ), key: key)
         }
         // And what was being written in it, to the new chat's composer.
-        let written = draft
-        draft = ""
+        if let openChatID { moveDraft(from: openChatID, to: key) }
         chat = nil
         openChatID = nil
-        if !written.isEmpty {
-            draft = draft.isEmpty ? written : draft + "\n\n" + written
-        }
         listProblem = text
         seal(.listChats())
     }
@@ -650,10 +750,13 @@ final class AgentRemoteClient: ObservableObject {
 
     // MARK: - What the panel asks for
 
-    func open(_ chatID: String) {
+    /// Opens a chat. `carryingDraftFrom` is the new-chat key whose draft goes
+    /// with it: what was written for a writing before it had a chat.
+    func open(_ chatID: String, carryingDraftFrom newChatKey: String? = nil) {
         // A new chat on its way opens itself when it comes.
         guard !isStartingChat else { return }
         listProblem = nil
+        if let newChatKey { moveDraft(from: newChatKey, to: chatID) }
         openChatID = chatID
         chat = nil
         let request = LampAgentRemoteMessage.openChat(chatID)
@@ -671,21 +774,40 @@ final class AgentRemoteClient: ObservableObject {
     /// Sends a message in the open chat. Returns whether the words were
     /// taken, sent or kept as not sent, so the composer clears only then.
     @discardableResult
-    func send(_ text: String, reading: LampAgentRemoteReading) -> Bool {
+    func send(
+        _ text: String,
+        reading: LampAgentRemoteReading?,
+        selection: String? = nil,
+        writingRevision: Int? = nil,
+        writingDigest: String? = nil,
+        inChat chatID: String? = nil
+    ) -> Bool {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Meant for one chat, after a pause: not sent to another opened since.
+        if let chatID, chat?.id != chatID { return false }
         // One at a time: until the Mac starts the turn, or refuses it, the
         // last message is still on its way.
         // A message that didn't go is sent again or edited first, so one
         // refused can't be lost under the next.
         guard let chat, !words.isEmpty, !chat.isRunning, chat.sending == nil, unsent[chat.id] == nil,
               !sendRequests.values.contains(where: { $0.chatID == chat.id }) else { return false }
-        let request = LampAgentRemoteMessage.send(words, to: chat.id, reading: reading)
+        let request = LampAgentRemoteMessage.send(
+            words, to: chat.id, reading: reading, selection: selection,
+            writingRevision: writingRevision, writingDigest: writingDigest
+        )
         let known = Set(chat.messages.map(\.id))
         guard sealAndSend(request) else {
-            unsent[chat.id] = Unsent(words: words, problem: Self.unsealable, known: known, reading: reading)
+            unsent[chat.id] = Unsent(
+                words: words, problem: Self.unsealable, known: known, reading: reading,
+                selection: selection, writingRevision: writingRevision, writingDigest: writingDigest
+            )
             return true
         }
-        if let requestID = request.requestID { sendRequests[requestID] = (chat.id, words, known, reading) }
+        if let requestID = request.requestID {
+            sendRequests[requestID] = (chat.id, words, known, reading, selection)
+            requestRevisions[requestID] = writingRevision
+            requestDigests[requestID] = writingDigest
+        }
         self.chat?.sending = words
         self.chat?.requestProblem = nil
         return true
@@ -693,23 +815,44 @@ final class AgentRemoteClient: ObservableObject {
 
     /// Sends a message that didn't go, again: in its chat, which must be the
     /// one open, or as a new chat's first message.
-    func resend(_ key: String, reading: LampAgentRemoteReading) {
-        guard let kept = unsent[key], key == Self.newChatKey || chat?.id == key else { return }
+    /// `writingRevision` is the writing's revision now, for a message about
+    /// one: the Mac checks its copy is as new before working on it.
+    func resend(_ key: String, reading: LampAgentRemoteReading?, writingRevision: Int? = nil, writingDigest: String? = nil) {
+        guard let kept = unsent[key], kept.startsChat || chat?.id == key else { return }
+        // At least the revision it was first sent with, whichever panel
+        // retries, with the digest that goes with the one used.
+        let useKept = (kept.writingRevision ?? .min) > (writingRevision ?? .min)
+        let writingDigest = useKept ? kept.writingDigest : (writingDigest ?? kept.writingDigest)
+        let writingRevision = [writingRevision, kept.writingRevision].compactMap { $0 }.max()
+        let isNewChat = kept.startsChat
         // Taken out first, as sending needs; put back if it fails again.
         unsent[key] = nil
-        if key == Self.newChatKey {
-            startChat(kept.words, reading: kept.reading ?? reading)
+        if isNewChat, let writingID = kept.writingID, let chat,
+           chat.summary.writingID?.caseInsensitiveCompare(writingID) == .orderedSame {
+            // The writing's chat is open now: the question goes on in it.
+            // Refused here (another message is on its way, or waits), the
+            // question stays where it was.
+            if !send(kept.words, reading: nil, selection: kept.selection, writingRevision: writingRevision, writingDigest: writingDigest), unsent[key] == nil {
+                unsent[key] = kept
+            }
+        } else if isNewChat {
+            if let writingID = kept.writingID {
+                startWritingChat(kept.words, writingID: writingID, selection: kept.selection, writingRevision: writingRevision, writingDigest: writingDigest)
+            } else {
+                startChat(kept.words, reading: kept.reading ?? reading ?? LampAgentRemoteReading())
+            }
             if startRequest == nil, unsent[key] == nil { unsent[key] = kept }
         } else {
-            send(kept.words, reading: kept.reading ?? reading)
+            send(kept.words, reading: kept.reading ?? reading, selection: kept.selection, writingRevision: writingRevision, writingDigest: writingDigest)
             if sendRequests.values.contains(where: { $0.chatID == key }) == false, unsent[key] == nil { unsent[key] = kept }
         }
     }
 
-    /// Takes a message that didn't go out of the chat, to be edited.
-    func takeUnsent(_ key: String) -> String? {
+    /// Takes a message that didn't go out of the chat, to be edited, with the
+    /// words chosen in the writing that went with it.
+    func takeUnsent(_ key: String) -> Unsent? {
         defer { unsent[key] = nil }
-        return unsent[key]?.words
+        return unsent[key]
     }
 
     func cancel() {
@@ -719,7 +862,8 @@ final class AgentRemoteClient: ObservableObject {
 
     #if DEBUG
     /// For looking at the panel in the simulator, which has no Mac to find:
-    /// launch with `-AgentRemoteDemo list`, `chat`, `unsent` or `pair`.
+    /// launch with `-AgentRemoteDemo list`, `chat`, `unsent`, `pair`,
+    /// `writing-start` or `writing-chat`.
     private func showDemo(_ demo: String) {
         let now = Date()
         let summaries = [
@@ -752,6 +896,26 @@ final class AgentRemoteClient: ObservableObject {
                 partialReply: "Chapter 6 opens with the question this raises: “Are we to continue in sin that grace may abound?”",
                 activity: LampAgentRemoteActivity(kind: LampAgentRemoteActivity.tool, name: "read passage", summary: "Romans 6:1-4")
             ))
+        case "writing-start":
+            phase = .connected("Study Mac")
+            chats = summaries
+        case "writing-chat":
+            phase = .connected("Study Mac")
+            let summary = LampAgentRemoteChatSummary(
+                id: "demo-w", title: "Tighten the opening paragraph", subtitle: "John 10: The Shepherd Who Knows His Sheep",
+                kind: LampAgentRemoteChatSummary.writing, writingID: "demo", provider: "claude", providerName: "Claude",
+                updatedAt: now.addingTimeInterval(-300), acceptsMessages: true
+            )
+            chats = summaries + [summary]
+            demoWritingChat = true
+            openChatID = "demo-w"
+            chat = AgentRemoteChat(LampAgentRemoteChatSnapshot(
+                summary: summary,
+                messages: [
+                    LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "Tighten the opening paragraph.", date: now.addingTimeInterval(-320)),
+                    LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.assistant, text: "I cut the opening to two sentences and moved the quotation of John 10:14 to the start, so the paragraph begins with the Shepherd’s own words.", date: now.addingTimeInterval(-300)),
+                ]
+            ))
         case "unsent":
             phase = .connected("Study Mac")
             chats = summaries
@@ -778,16 +942,80 @@ final class AgentRemoteClient: ObservableObject {
     /// taken, as `send` does.
     @discardableResult
     func startChat(_ text: String, reading: LampAgentRemoteReading) -> Bool {
+        start(text, key: Self.newChatKey, reading: reading, writingID: nil, selection: nil) { words in
+            LampAgentRemoteNewChat(reading: reading, firstMessage: words)
+        }
+    }
+
+    /// Asks the assistant about a writing, with the words chosen in it. The
+    /// Mac goes on in the writing's chat if it has one, and its snapshot
+    /// shows what was said before.
+    @discardableResult
+    func startWritingChat(_ text: String, writingID: String, selection: String?, writingRevision: Int? = nil, writingDigest: String? = nil) -> Bool {
+        start(text, key: Self.newChatKey(writing: writingID), reading: nil, writingID: writingID, selection: selection, writingRevision: writingRevision, writingDigest: writingDigest) { words in
+            .writing(writingID, firstMessage: words, selection: selection, writingRevision: writingRevision, writingDigest: writingDigest)
+        }
+    }
+
+    private func start(
+        _ text: String,
+        key: String,
+        reading: LampAgentRemoteReading?,
+        writingID: String?,
+        selection: String?,
+        writingRevision: Int? = nil,
+        writingDigest: String? = nil,
+        newChat: (String) -> LampAgentRemoteNewChat
+    ) -> Bool {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !words.isEmpty, !isStartingChat, unsent[Self.newChatKey] == nil else { return false }
-        let request = LampAgentRemoteMessage.startChat(LampAgentRemoteNewChat(reading: reading, firstMessage: words))
+        guard !words.isEmpty, !isStartingChat, unsent[key] == nil else { return false }
+        let request = LampAgentRemoteMessage.startChat(newChat(words))
         guard sealAndSend(request) else {
-            keepForNewChat(Unsent(words: words, problem: Self.unsealable, reading: reading))
+            keepForNewChat(Unsent(
+                words: words, problem: Self.unsealable, reading: reading, selection: selection,
+                writingID: writingID, writingRevision: writingRevision, writingDigest: writingDigest
+            ), key: key)
             return true
         }
-        if let requestID = request.requestID { startRequest = (requestID, words, [], reading) }
+        if let requestID = request.requestID {
+            requestRevisions[requestID] = writingRevision
+            requestDigests[requestID] = writingDigest
+            startRequest = StartRequest(
+                id: requestID, words: words, known: [], reading: reading,
+                key: key, writingID: writingID, selection: selection
+            )
+        }
         isStartingChat = true
         listProblem = nil
         return true
     }
+
+    /// The writing each chat seen on this Mac is about, kept when a list
+    /// later leaves the chat out, as one deleted while disconnected.
+    private var chatWritings: [String: String] = [:]
+
+    /// The writing a chat is about, if it's a writing's.
+    private func writingID(ofChat id: String) -> String? {
+        if chat?.id == id, let writingID = chat?.summary.writingID { return writingID }
+        return chats.first { $0.id == id }?.writingID ?? chatWritings[id]
+    }
+
+    private func noteWritings(_ summaries: [LampAgentRemoteChatSummary]) {
+        for summary in summaries {
+            if let writingID = summary.writingID { chatWritings[summary.id] = writingID }
+        }
+    }
+
+    /// The writing's chat on the Mac, if it has one.
+    func chatSummary(forWriting writingID: String) -> LampAgentRemoteChatSummary? {
+        #if DEBUG
+        // The demo's writing chat stands for whichever writing is open.
+        if demoWritingChat, let demo = chats.first(where: { $0.id == "demo-w" }) { return demo }
+        #endif
+        return chats.first { $0.writingID?.caseInsensitiveCompare(writingID) == .orderedSame }
+    }
+
+    #if DEBUG
+    private var demoWritingChat = false
+    #endif
 }

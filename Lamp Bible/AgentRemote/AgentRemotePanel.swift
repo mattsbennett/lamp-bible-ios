@@ -1,8 +1,69 @@
 import LampCore
 import SwiftUI
 
+/// A writing the assistant is asked about from the phone: its chat on the
+/// Mac, begun or continued, with the words chosen in it.
+struct AgentRemoteWriting: Equatable, Identifiable {
+    let id: String
+    let title: String
+    var selection: String?
+    /// Sent to the Mac by a sync pass before asking.
+    var syncFirst = false
+}
+
+/// The writing's chat with the assistant, over the writing it's about.
+struct AskAssistantSheet: View {
+    let writing: AgentRemoteWriting
+    @Environment(\.dismiss) private var dismiss
+    /// The latest edits are on their way to the Mac.
+    @State private var sendingEdits = false
+
+    var body: some View {
+        NavigationStack {
+            AgentRemotePanel(
+                reading: LampAgentRemoteReading(),
+                referenceLabel: writing.title,
+                toolText: .current,
+                writing: writing,
+                sendingHeld: sendingEdits ? "Sending your latest edits to your Mac…" : nil
+            )
+            .task {
+                guard writing.syncFirst else { return }
+                await sendEdits()
+            }
+            .navigationTitle("Ask the Assistant")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    /// A sync pass with what was just saved, so it's on its way before the
+    /// Mac is asked. Best effort: the Mac checks the writing's revision
+    /// itself, pulls if it's behind, and says so if it still is.
+    private func sendEdits() async {
+        guard SyncCoordinator.shared.settings.backend != .none else { return }
+        sendingEdits = true
+        // One already running may have begun before the save.
+        for _ in 0..<6 {
+            do {
+                try await SyncCoordinator.shared.syncAll()
+                break
+            } catch {
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+        sendingEdits = false
+    }
+}
+
 /// The reader's Chat panel: the Mac's reader chats, followed and continued
-/// from here, each message sent with where this device is reading.
+/// from here, each message sent with where this device is reading. Given a
+/// writing, it's that writing's chat with the assistant instead.
 struct AgentRemotePanel: View {
     /// Where the reader is, sent with each message as ids.
     let reading: LampAgentRemoteReading
@@ -19,8 +80,20 @@ struct AgentRemotePanel: View {
     /// Beside the reader, where nothing lifts the panel for the keyboard:
     /// the composer makes room for it itself.
     var besideReader = false
+    /// The writing this panel asks about, when it's the writing's own chat.
+    var writing: AgentRemoteWriting?
+    /// Why nothing can be sent yet, said above the composer.
+    var sendingHeld: String?
+    /// Tries again what holds sending, when it failed.
+    var onRetryHeld: (() -> Void)?
 
     @ObservedObject private var client = AgentRemoteClient.shared
+    /// The words chosen in the writing, sent with the next message until
+    /// someone takes them off it.
+    @State private var selection: String?
+    /// The writing's chat has been found and opened once: after that, list
+    /// changes don't open it again over a chat opened elsewhere.
+    @State private var openedWritingChat = false
     @State private var code = ""
     @State private var showingScanner = false
     @State private var scannerError: String?
@@ -35,9 +108,25 @@ struct AgentRemotePanel: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onAppear { client.panelAppeared() }
+            .onAppear {
+                selection = writing?.selection
+                // Another chat left open isn't this writing's: its draft and
+                // composer would be that chat's.
+                if writing != nil, client.openChatID != nil, !showsWritingChat { client.closeChat() }
+                client.panelAppeared()
+                openWritingChat()
+            }
+            // The writing's chat, once the Mac's list says it has one, or
+            // once connected with a list kept from before.
+            .onChange(of: client.chats) { openWritingChat() }
+            .onChange(of: client.phase) { _, phase in
+                // Connected again, perhaps to another Mac: its copy of the
+                // writing's chat is looked for afresh.
+                if case .connected = phase {} else { openedWritingChat = false }
+                openWritingChat()
+            }
             .onDisappear {
-                if composerFocused || codeFocused { NoteEditorFocus.shared.isEditing = false }
+                if writing == nil, composerFocused || codeFocused { NoteEditorFocus.shared.isEditing = false }
                 client.panelDisappeared()
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
@@ -51,7 +140,8 @@ struct AgentRemotePanel: View {
             // Typing here, the panel takes the space above the keyboard, as a
             // note being typed does: the reader lays the split out around it.
             .onChange(of: composerFocused || codeFocused) { _, focused in
-                NoteEditorFocus.shared.isEditing = focused
+                // In the reader only: a sheet makes room for the keyboard itself.
+                if writing == nil { NoteEditorFocus.shared.isEditing = focused }
             }
             .sheet(isPresented: $showingScanner) { scannerSheet }
     }
@@ -66,7 +156,9 @@ struct AgentRemotePanel: View {
         case let .needsCode(host, notice):
             pairing(host: host, notice: notice)
         case .connected:
-            if client.openChatID != nil {
+            if writing != nil {
+                if showsWritingChat { chatView } else { writingStart }
+            } else if client.openChatID != nil {
                 chatView
             } else {
                 chatList
@@ -358,8 +450,24 @@ struct AgentRemotePanel: View {
 
     /// The composer's words, kept by the client for this Mac and chat.
     private var draft: String {
-        get { client.draft }
-        nonmutating set { client.draft = newValue }
+        get { client.draft(for: draftDestination) }
+        nonmutating set { client.setDraft(newValue, for: draftDestination) }
+    }
+
+    /// Where this panel's words go: its chat when it shows one, else the new
+    /// chat it would begin. A writing's panel doesn't take a chat opened for
+    /// something else.
+    private var draftDestination: String {
+        if writing != nil {
+            return showsWritingChat ? (client.openChatID ?? newChatKey) : newChatKey
+        }
+        return client.openChatID ?? newChatKey
+    }
+
+    /// The new chat this panel's composer begins: the reader's, or the
+    /// writing's.
+    private var newChatKey: String {
+        writing.map { AgentRemoteClient.newChatKey(writing: $0.id) } ?? AgentRemoteClient.newChatKey
     }
 
     private var hostName: String? {
@@ -375,6 +483,11 @@ struct AgentRemotePanel: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
+                        if chat.summary.writingID != nil {
+                            Text("What the assistant changes in the writing arrives with your library’s next sync.")
+                                .font(.footnote)
+                                .foregroundStyle(LampTheme.caption)
+                        }
                         ForEach(chat.messages) { message in
                             messageView(message)
                         }
@@ -384,6 +497,11 @@ struct AgentRemotePanel: View {
                         }
                         if let unsent = client.unsent[chat.id] {
                             unsentView(unsent, key: chat.id)
+                        }
+                        // A first message for this writing that didn't go:
+                        // sent again, it goes on in this chat.
+                        if let writing, let unsent = client.unsent[AgentRemoteClient.newChatKey(writing: writing.id)] {
+                            unsentView(unsent, key: AgentRemoteClient.newChatKey(writing: writing.id))
                         }
                         if let partial = chat.partialReply, !partial.isEmpty {
                             assistantText(partial)
@@ -425,14 +543,17 @@ struct AgentRemotePanel: View {
                     .background(.bar)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                composer(
-                    prompt: chat.summary.acceptsMessages ? "Ask about \(referenceLabel)…" : "Continue this chat on your Mac",
-                    isRunning: chat.isRunning,
-                    canSend: chat.summary.acceptsMessages && !chat.isRunning && chat.sending == nil
-                        && client.unsent[chat.id] == nil,
-                    onSend: { if client.send(draft, reading: reading) { draft = "" } },
-                    onStop: { client.cancel() }
-                )
+                VStack(spacing: 0) {
+                    if chat.summary.writingID != nil { selectionLine }
+                    composer(
+                        prompt: composerPrompt(for: chat.summary),
+                        isRunning: chat.isRunning,
+                        canSend: chat.summary.acceptsMessages && !chat.isRunning && chat.sending == nil
+                            && client.unsent[chat.id] == nil && sendingHeld == nil,
+                        onSend: { sendInOpenChat(chat.summary) },
+                        onStop: { client.cancel() }
+                    )
+                }
             }
         } else {
             waiting("Opening the chat…")
@@ -441,18 +562,173 @@ struct AgentRemotePanel: View {
 
     private static let chatEnd = "chat-end"
 
+    // MARK: - A writing's chat
+
+    /// Whether the chat open is this writing's: the one the Mac's list gives
+    /// it, or the one a first message just began.
+    private var showsWritingChat: Bool {
+        guard let writing, let openChatID = client.openChatID else { return false }
+        if client.chat?.summary.writingID?.caseInsensitiveCompare(writing.id) == .orderedSame { return true }
+        return client.chatSummary(forWriting: writing.id)?.id == openChatID
+    }
+
+    /// Opens the writing's chat on the Mac when the list shows it has one.
+    private func openWritingChat() {
+        guard let writing, !openedWritingChat, client.phase == .connected(hostName ?? ""), !client.isStartingChat,
+              let summary = client.chatSummary(forWriting: writing.id) else { return }
+        openedWritingChat = true
+        guard client.openChatID != summary.id else { return }
+        client.open(summary.id, carryingDraftFrom: AgentRemoteClient.newChatKey(writing: writing.id))
+    }
+
+    /// Asking about a writing that has no chat yet: the first message begins
+    /// it, on the Mac, about this writing.
+    private var writingStart: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Ask the assistant about “\(writing?.title ?? "this writing")”")
+                    .font(.headline)
+                Text("It works on the writing in Lamp Bible on your Mac. What it changes arrives here with your library’s next sync.")
+                    .font(.subheadline)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let problem = client.listProblem {
+                    problemText(problem)
+                }
+                if let writing, let unsent = client.unsent[AgentRemoteClient.newChatKey(writing: writing.id)] {
+                    unsentView(unsent, key: AgentRemoteClient.newChatKey(writing: writing.id))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16 + topObstruction)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                selectionLine
+                composer(
+                    prompt: "Ask about this writing…",
+                    isRunning: client.isStartingChat,
+                    canSend: !client.isStartingChat && sendingHeld == nil
+                        && writing.map { client.unsent[AgentRemoteClient.newChatKey(writing: $0.id)] == nil } == true,
+                    onSend: {
+                        guard let writing else { return }
+                        let words = draft
+                        let chosen = selection
+                        Task {
+                            let stamp = await AgentRemoteWritingStamp.current(writingID: writing.id)
+                            if client.startWritingChat(
+                                words, writingID: writing.id, selection: chosen,
+                                writingRevision: stamp.revision, writingDigest: stamp.digest
+                            ) {
+                                if draft == words { draft = "" }
+                                selection = nil
+                            }
+                        }
+                    },
+                    onStop: nil
+                )
+            }
+        }
+    }
+
+    /// The words chosen in the writing, going with the next message, and
+    /// what holds sending, if anything.
+    @ViewBuilder
+    private var selectionLine: some View {
+        if let sendingHeld {
+            HStack(spacing: 8) {
+                if onRetryHeld == nil {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+                Text(sendingHeld)
+                    .font(.footnote)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if let onRetryHeld {
+                    Button("Try Again", action: onRetryHeld)
+                        .font(.footnote.weight(.semibold))
+                        .buttonStyle(.borderless)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+        if let selection, !selection.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "text.quote")
+                    .foregroundStyle(LampTheme.caption)
+                Text("About: “\(selection)”")
+                    .font(.footnote)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .lineLimit(2)
+                Spacer(minLength: 4)
+                Button {
+                    self.selection = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(LampTheme.caption)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Don’t send the chosen words")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+    }
+
+    private func composerPrompt(for summary: LampAgentRemoteChatSummary) -> String {
+        if summary.acceptsMessages {
+            return summary.writingID != nil ? "Ask about this writing…" : "Ask about \(referenceLabel)…"
+        }
+        // A writing that came in a module, or a chat the Mac keeps to itself.
+        return summary.writingID != nil ? "A writing from a module can’t be changed" : "Continue this chat on your Mac"
+    }
+
+    /// A message in the open chat: with the reader's place for a reader
+    /// chat, with the chosen words for a writing's.
+    private func sendInOpenChat(_ summary: LampAgentRemoteChatSummary) {
+        guard let writingID = summary.writingID else {
+            if client.send(draft, reading: reading) { draft = "" }
+            return
+        }
+        // About a writing: with its revision and digest as stored now.
+        let words = draft
+        let chosen = selection
+        Task {
+            let stamp = await AgentRemoteWritingStamp.current(writingID: writingID)
+            if client.send(
+                words, reading: nil, selection: chosen,
+                writingRevision: stamp.revision, writingDigest: stamp.digest, inChat: summary.id
+            ) {
+                if draft == words { draft = "" }
+                selection = nil
+            }
+        }
+    }
+
     private func chatHeader(_ chat: AgentRemoteChat) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Button {
-                client.closeChat()
-            } label: {
-                Label("Chats", systemImage: "chevron.left")
-                    .font(.subheadline.weight(.medium))
+            // A writing's own chat is the only one here: nothing to go back to.
+            if writing == nil {
+                Button {
+                    client.closeChat()
+                } label: {
+                    Label("Chats", systemImage: "chevron.left")
+                        .font(.subheadline.weight(.medium))
+                }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.borderless)
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
-                Text(chat.summary.title)
+                Text(writing?.title ?? chat.summary.subtitle.flatMap { chat.summary.writingID != nil ? $0 : nil } ?? chat.summary.title)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                 Text(chat.summary.providerName)
@@ -509,12 +785,23 @@ struct AgentRemotePanel: View {
             problemText("Not sent. \(unsent.problem)")
             HStack(spacing: 16) {
                 Button("Edit") {
-                    if let words = client.takeUnsent(key) {
-                        draft = draft.isEmpty ? words : draft + "\n" + words
+                    if let kept = client.takeUnsent(key) {
+                        draft = draft.isEmpty ? kept.words : draft + "\n" + kept.words
+                        if let chosen = kept.selection { selection = chosen }
                     }
                 }
-                Button("Try Again") { client.resend(key, reading: reading) }
-                    .disabled(client.chat?.isRunning == true || client.isStartingChat)
+                Button("Try Again") {
+                    let writingID = unsent.writingID ?? client.chat?.summary.writingID
+                    Task {
+                        let stamp: (revision: Int?, digest: String?) = writingID != nil
+                            ? await AgentRemoteWritingStamp.current(writingID: writingID!) : (nil, nil)
+                        client.resend(
+                            key, reading: writingID == nil ? reading : nil,
+                            writingRevision: stamp.revision, writingDigest: stamp.digest
+                        )
+                    }
+                }
+                    .disabled(client.chat?.isRunning == true || client.isStartingChat || sendingHeld != nil)
             }
             .font(.footnote.weight(.semibold))
             .buttonStyle(.borderless)
