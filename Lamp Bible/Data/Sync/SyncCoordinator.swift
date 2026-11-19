@@ -73,6 +73,9 @@ class SyncCoordinator: ObservableObject {
     private var backendRecoveryError: Error?
     private var backendTransitionInProgress = false
     private var syncOperationInProgress = false
+    /// Something asked for a pass while one ran, which may have read before
+    /// the change it's for: one more follows it.
+    private var syncAgainAfterPass = false
 
     struct SyncSession {
         let storage: ModuleStorage
@@ -342,7 +345,13 @@ class SyncCoordinator: ObservableObject {
             throw SyncError.backendTransitionInProgress
         }
         syncOperationInProgress = true
-        defer { syncOperationInProgress = false }
+        defer {
+            syncOperationInProgress = false
+            if syncAgainAfterPass {
+                syncAgainAfterPass = false
+                Task { try? await self.syncAll() }
+            }
+        }
         try recoverPendingBackendTransition()
         guard settings.backend != .none else { return }
         guard let session = activeSession else {
@@ -380,6 +389,16 @@ class SyncCoordinator: ObservableObject {
             syncState = .error(error as? SyncError ?? .unknown(error))
             throw error
         }
+    }
+
+    /// A pass that sees a change made elsewhere just now, as the assistant's
+    /// to a writing: started now, or, while one runs, right after it.
+    func syncAfterChange() {
+        guard !backendTransitionInProgress && !syncOperationInProgress else {
+            syncAgainAfterPass = true
+            return
+        }
+        Task { try? await syncAll() }
     }
 
     /// The person agreed to move a library only this device kept.

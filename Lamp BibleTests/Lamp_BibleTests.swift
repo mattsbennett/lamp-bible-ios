@@ -3241,6 +3241,11 @@ final class LibrarySyncPassTests: XCTestCase {
         _ = try await pass().run()
         let after = await server.writes.count
         XCTAssertEqual(after, before, "nothing new to send")
+        XCTAssertFalse(LibrarySyncPass.hasUnsentReviews(source: source), "sent, so nothing waits")
+
+        // A clear here waits to go up, and says so, so a pass is started.
+        try LibrarySyncPass.reviewStore.update(writingID: writingID) { $0.clearingAll() }
+        XCTAssertTrue(LibrarySyncPass.hasUnsentReviews(source: source))
     }
 
     /// A deleted writing's marks go with it: swept here and recorded as a

@@ -58,7 +58,7 @@ final class AgentRemoteClient: ObservableObject {
     /// again or edited rather than typed again.
     struct Unsent: Equatable {
         let words: String
-        let problem: String
+        var problem: String
         /// The chat's messages when it was sent, so the same words asked
         /// before aren't taken for it.
         var known: Set<UUID> = []
@@ -110,11 +110,40 @@ final class AgentRemoteClient: ObservableObject {
         drafts["\(chatsHostSecret ?? "")|\(destination)"] = text.isEmpty ? nil : text
     }
 
+    /// Moves what was kept with no Mac known to be `secret`'s, where it has
+    /// nothing of its own for the same destination.
+    private static func adopt(_ kept: inout [String: String], as secret: String) {
+        for (key, value) in kept where key.hasPrefix("|") {
+            kept[key] = nil
+            let mine = secret + key
+            if kept[mine] == nil { kept[mine] = value }
+        }
+    }
+
+    /// The words chosen in a writing that go with the next message, kept as
+    /// drafts are, so a selection never crosses to another writing's chat.
+    @Published private var selections: [String: String] = [:]
+
+    func selection(for destination: String) -> String? {
+        selections["\(chatsHostSecret ?? "")|\(destination)"]
+    }
+
+    func setSelection(_ text: String?, for destination: String) {
+        selections["\(chatsHostSecret ?? "")|\(destination)"] = text?.isEmpty == false ? text : nil
+    }
+
     /// Moves what was written for one destination to another, joined to what
     /// is there.
     private func moveDraft(from source: String, to destination: String) {
+        guard source != destination else { return }
+        // The chosen words go too, with or without words written to them,
+        // and in place of any kept there: they were chosen since.
+        if let chosen = selection(for: source) {
+            setSelection(nil, for: source)
+            setSelection(chosen, for: destination)
+        }
         let moving = draft(for: source)
-        guard !moving.isEmpty, source != destination else { return }
+        guard !moving.isEmpty else { return }
         setDraft("", for: source)
         let waiting = draft(for: destination)
         setDraft(waiting.isEmpty ? moving : waiting + "\n\n" + moving, for: destination)
@@ -276,6 +305,7 @@ final class AgentRemoteClient: ObservableObject {
         unsent = [:]
         parkedUnsent[secret] = nil
         drafts = drafts.filter { !$0.key.hasPrefix(secret + "|") }
+        selections = selections.filter { !$0.key.hasPrefix(secret + "|") }
         chatsHostSecret = nil
         chooseAnotherHost()
     }
@@ -489,6 +519,12 @@ final class AgentRemoteClient: ObservableObject {
                         if let parked = parkedUnsent.removeValue(forKey: secret) {
                             unsent.merge(parked) { current, _ in current }
                         }
+                        // Written before any Mac was known (the first opening
+                        // after launch): this Mac's, as the first one reached.
+                        if chatsHostSecret == nil {
+                            Self.adopt(&drafts, as: secret)
+                            Self.adopt(&selections, as: secret)
+                        }
                     }
                     chatsHostSecret = secret
                 }
@@ -625,7 +661,7 @@ final class AgentRemoteClient: ObservableObject {
                     // What the assistant changed in a writing comes by sync:
                     // start a pass now rather than wait for the next.
                     if chats[index].writingID != nil {
-                        Task { try? await SyncCoordinator.shared.syncAll() }
+                        SyncCoordinator.shared.syncAfterChange()
                     }
                 }
             }
@@ -715,6 +751,33 @@ final class AgentRemoteClient: ObservableObject {
         } else {
             unsent[key] = kept
         }
+    }
+
+    /// A message about a writing kept as not sent before it went: its
+    /// revision couldn't be read here, and the Mac would take one without it
+    /// as from an older phone and not check its own copy.
+    /// `known` is the chat's messages when it was asked, taken before the
+    /// stamp was looked for.
+    func keepUnstamped(_ words: String, selection: String?, writingID: String, key: String, startsChat: Bool, known: Set<UUID> = []) {
+        var kept = Unsent(words: words, problem: AgentRemoteWritingStamp.unreadable, selection: selection, writingID: writingID)
+        if startsChat {
+            keepForNewChat(kept, key: key)
+            return
+        }
+        kept.known = known
+        if let waiting = unsent[key] {
+            kept = Unsent(
+                words: waiting.words + "\n\n" + words, problem: kept.problem, known: waiting.known,
+                reading: waiting.reading, selection: selection ?? waiting.selection, writingID: writingID,
+                writingRevision: waiting.writingRevision, writingDigest: waiting.writingDigest
+            )
+        }
+        unsent[key] = kept
+    }
+
+    /// Says why a message kept as not sent still hasn't gone.
+    func keepProblem(_ problem: String, forUnsent key: String) {
+        unsent[key]?.problem = problem
     }
 
     static let macTooOldForWritings = "Your Mac didn’t take this. If Lamp Bible there hasn’t been updated lately, update it to ask about writings from here."

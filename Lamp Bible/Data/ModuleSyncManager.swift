@@ -1937,10 +1937,13 @@ class ModuleSyncManager: ObservableObject {
 
     // MARK: - Save Devotional Entry (with auto-export)
 
-    /// Save a devotional and export to iCloud
-    func saveDevotional(_ devotional: Devotional, moduleId: String) async throws {
+    /// Save a devotional and export to iCloud. Returns the revision it was
+    /// saved as: `stamp`, or now.
+    @discardableResult
+    func saveDevotional(_ devotional: Devotional, moduleId: String, at stamp: Int? = nil) async throws -> Int {
         var mutableDevotional = devotional
-        mutableDevotional.meta.lastModified = Int(Date().timeIntervalSince1970)
+        let saved = stamp ?? Int(Date().timeIntervalSince1970)
+        mutableDevotional.meta.lastModified = saved
         let entry = DevotionalEntry(from: mutableDevotional, moduleId: moduleId)
 
         // Local save first - this must complete
@@ -1955,6 +1958,7 @@ class ModuleSyncManager: ObservableObject {
                 print("[ModuleSyncManager] Background export failed: \(error)")
             }
         }
+        return saved
     }
 
     /// Save a devotional entry directly and export to iCloud

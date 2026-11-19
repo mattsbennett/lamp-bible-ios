@@ -101,6 +101,38 @@ struct DevotionalView: View {
     /// The text was just replaced by a newer stored copy, not edited here:
     /// nothing to save.
     @State private var takingInStoredCopy = false
+    /// The stored revision this copy was loaded or last saved as. A save
+    /// finding the stored writing newer than this keeps both rather than
+    /// writing over the other device's (or the assistant's) change.
+    @State private var baseLastModified: Int?
+    /// The text as last saved, to tell what the editor shows from it.
+    @State private var persistedMarkdown: String?
+    /// The write an immediate save started, to wait for before what follows
+    /// it depends on it.
+    @State private var inFlightWrite: Task<WriteOutcome, Never>?
+
+    /// How an immediate save's write ended.
+    enum WriteOutcome: Equatable, Sendable {
+        /// Stored as this revision.
+        case saved(Int)
+        /// A newer copy was stored meanwhile: the edits were kept beside it.
+        case keptCopy
+        case failed
+    }
+    /// Counts the stored copies put in the editor's place: a read of the page
+    /// begun before one is of the text it replaced, and is dropped.
+    @State private var documentGeneration = 0
+    /// The page's text as editing began. The page writes some Markdown its
+    /// own way (a fourth-level heading, a comment), so only text unlike this
+    /// is typing; nil until it's read, when none is taken for typing.
+    @State private var editBaseline: String?
+    /// What was saved as editing began: saved since, the page has been edited.
+    @State private var persistedAtEditStart: String?
+    /// Counts the times edits were kept as a copy, so what was waiting on a
+    /// save knows the writing's own copy didn't take them.
+    @State private var keptCopies = 0
+    /// Said once edits were kept as a copy beside a newer version.
+    @State private var keptEditsNotice: String?
     /// Leaving editing to ask the assistant, which saves on its own terms.
     @State private var handingToAssistant = false
     /// The writing's module takes changes: one that came in a module
@@ -182,6 +214,8 @@ struct DevotionalView: View {
         _mode = State(initialValue: initialMode)
         // Use stored markdown if available, otherwise convert from blocks (legacy data)
         _markdownContent = State(initialValue: devotional.markdownContent ?? MarkdownDevotionalConverter.contentToMarkdown(devotional))
+        _baseLastModified = State(initialValue: devotional.meta.lastModified)
+        _persistedMarkdown = State(initialValue: devotional.markdownContent ?? MarkdownDevotionalConverter.contentToMarkdown(devotional))
         _preservesRichContentJSON = State(initialValue:
             MarkdownDevotionalConverter.shouldRetainContentJSON(devotional)
         )
@@ -283,6 +317,14 @@ struct DevotionalView: View {
             } else {
                 toolbarContent
             }
+        }
+        .alert(
+            "Edits Kept as a Copy",
+            isPresented: Binding(get: { keptEditsNotice != nil }, set: { if !$0 { keptEditsNotice = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(keptEditsNotice ?? "")
         }
         .sheet(isPresented: $showingMetadataEditor) {
             MetadataEditorSheet(devotional: $devotional) {
@@ -438,20 +480,49 @@ struct DevotionalView: View {
                 syncPollingTask?.cancel()
                 syncPollingTask = nil
 
-                // If we were in visual mode, sync markdown from visual editor first
-                if editMode == .visual {
-                    syncMarkdownFromVisualEditor()
-                }
-                // Then sync blocks from markdown (works for both visual and markdown modes)
-                guard syncBlocksFromMarkdown() else { return }
-                // Asking the assistant saves, and waits for the save, itself.
-                if hasUnsavedChanges && !handingToAssistant {
-                    saveNowSync()
+                // Asking the assistant reads the page and saves, waiting for
+                // the save, itself.
+                guard !handingToAssistant else { return }
+                // The page is read first, for typing the editor hadn't
+                // reported yet; then what it shows is saved, and waited for
+                // (a save finding a newer copy keeps the edits beside it);
+                // then a newer copy that came while editing is shown.
+                // Only the visual editor: leaving Markdown editing has already
+                // turned the page back to rich text, whose Markdown isn't
+                // what was typed (a fourth-level heading, a comment).
+                let visual = editMode == .visual
+                Task {
+                    if visual, let coordinator = tiptapCoordinator {
+                        let generation = documentGeneration
+                        let live = await withCheckedContinuation { continuation in
+                            coordinator.getContent { continuation.resume(returning: $0) }
+                        }
+                        if let live, live != markdownContent, isTyped(live), mode != .edit, generation == documentGeneration {
+                            takingInStoredCopy = true
+                            markdownContent = live
+                            hasUnsavedChanges = true
+                        }
+                    }
+                    guard mode != .edit else { return }
+                    // Saved now, so an autosave still queued has nothing to do.
+                    saveTask?.cancel()
+                    saveTask = nil
+                    if hasUnsavedChanges { await saveNow() }
+                    _ = await inFlightWrite?.value
+                    await takeInNewerStoredCopy()
                 }
             }
 
             // When entering edit mode, start sync status polling
             if newMode == .edit && oldMode != .edit {
+                editBaseline = nil
+                persistedAtEditStart = persistedMarkdown
+                if let coordinator = tiptapCoordinator {
+                    let generation = documentGeneration
+                    coordinator.getContent { text in
+                        if generation == documentGeneration, mode == .edit { editBaseline = text }
+                    }
+                }
                 Task {
                     await checkSyncStatus()
                 }
@@ -852,6 +923,9 @@ struct DevotionalView: View {
     private func replace(with stored: Devotional) {
         let markdown = stored.markdownContent ?? MarkdownDevotionalConverter.contentToMarkdown(stored)
         devotional = stored
+        documentGeneration += 1
+        baseLastModified = stored.meta.lastModified
+        persistedMarkdown = markdown
         preservesRichContentJSON = MarkdownDevotionalConverter.shouldRetainContentJSON(stored)
         guard markdown != markdownContent else { return }
         // The editor resolves images as it draws them: the media the copy
@@ -871,8 +945,13 @@ struct DevotionalView: View {
     /// Takes in the writing as stored when it's newer than what's shown: the
     /// assistant's change, or another device's, brought by sync. Without this
     /// the next edit here would start from, and save, the older copy.
-    private func takeInNewerStoredCopy() async {
-        guard !isSaving else { return }
+    /// `regardless` once the edits here were kept as a copy: the stored
+    /// version is shown whatever this copy is dated, since an immediate save
+    /// dates it before knowing whether it wrote.
+    private func takeInNewerStoredCopy(regardless: Bool = false) async {
+        // Not while the writing is handed to the assistant, which reads the
+        // editor and saves what it shows itself.
+        guard !isSaving, regardless || !handingToAssistant else { return }
         let id = devotional.meta.id
         let stored = await Task.detached(priority: .userInitiated) {
             try? DevotionalStorage.shared.getDevotional(id: id)
@@ -882,8 +961,8 @@ struct DevotionalView: View {
         // and asking the assistant leaves editing first (askAssistant).
         // Not before the editor is there to take it: it would load the copy it
         // began with, and this one would be passed over as already shown.
-        guard let stored, (stored.meta.lastModified ?? 0) > (devotional.meta.lastModified ?? 0),
-              mode != .edit, !hasUnsavedChanges, !isSaving, saveTask == nil,
+        guard let stored, regardless || (stored.meta.lastModified ?? 0) > (devotional.meta.lastModified ?? 0),
+              mode != .edit, !hasUnsavedChanges, !isSaving, saveTask == nil, regardless || !handingToAssistant,
               tiptapCoordinator != nil else { return }
         replace(with: stored)
     }
@@ -908,34 +987,50 @@ struct DevotionalView: View {
             }
             var live: String?
             var chosen = ""
+            let generation = documentGeneration
             if let coordinator = tiptapCoordinator {
                 // Taken before leaving editing clears them.
                 chosen = await withCheckedContinuation { continuation in
                     coordinator.getChosenWords { continuation.resume(returning: $0) }
                 }
                 if editing {
-                    // Editing stops first, so nothing more is typed after
-                    // the text is read.
-                    withAnimation { mode = .read }
-                    live = await withCheckedContinuation { continuation in
-                        coordinator.getContent { continuation.resume(returning: $0) }
-                    }
+                    live = await Self.readPage(coordinator, leaving: { withAnimation { mode = .read } }, visual: editMode == .visual)
                 }
-            }
-            if let live, live != markdownContent {
-                takingInStoredCopy = true
-                markdownContent = live
-                hasUnsavedChanges = true
             }
             saveTask?.cancel()
             saveTask = nil
+            // Every write already started finishes first: an immediate save's
+            // detached one, and one in progress.
+            if await inFlightWrite?.value == .keptCopy { return }
             for _ in 0..<100 where isSaving {
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            if hasUnsavedChanges { await saveNow() }
-            // Not saved here: nothing goes to the assistant from text the
-            // library doesn't have. The save's own error shows.
-            guard !hasUnsavedChanges, saveState != .error else { return }
+            // A stored copy put in the editor's place meanwhile: what was
+            // read is the text it replaced, and nothing is asked.
+            guard generation == documentGeneration else { return }
+            // Edits are saved for the assistant: those reported, and typing
+            // read from the page while editing that wasn't yet. Nothing else
+            // is: the page's own Markdown for an unedited writing can differ
+            // from what's stored (a fourth-level heading, a comment) and
+            // would lose it.
+            var saving = hasUnsavedChanges
+            if let live, live != markdownContent, isTyped(live) {
+                takingInStoredCopy = true
+                markdownContent = live
+                saving = true
+            }
+            if saving {
+                let shown = markdownContent
+                let copiesBefore = keptCopies
+                hasUnsavedChanges = true
+                await saveNow()
+                // Kept beside a newer version: that's the one to ask about,
+                // once it's shown.
+                guard keptCopies == copiesBefore else { return }
+                // Not saved here: nothing goes to the assistant from text the
+                // library doesn't have. The save's own error shows.
+                guard !hasUnsavedChanges, saveState != .error, persistedMarkdown == shown else { return }
+            }
             if editing && mode == .edit { withAnimation { mode = .read } }
             var asked = writing
             let words = chosen.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1395,15 +1490,59 @@ struct DevotionalView: View {
         saveState = .saving
         defer { isSaving = false }
 
+        // An immediate save's write lands first, so what's stored is judged
+        // after it.
+        _ = await inFlightWrite?.value
+        // A newer copy stored since this one was loaded (another device's,
+        // or the assistant's, brought by sync) is never written over: the
+        // edits here are kept as a copy of their own beside it. Asked before
+        // the text is taken, so nothing reported meanwhile is left out of
+        // what's saved.
+        let storedIsNewer = await Self.storedIsNewer(id: devotional.meta.id, than: baseLastModified)
+
         // If in visual edit mode, sync from visual editor first
         if mode == .edit && editMode == .visual {
             syncMarkdownFromVisualEditor()
         }
 
         guard syncBlocksFromMarkdown() else { return }
+        let savedMarkdown = markdownContent
 
-        // Update lastModified timestamp
-        devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
+        if storedIsNewer {
+            // Nothing here unsaved (an autosave left queued after the edits
+            // were saved): there's nothing to keep, and the newer version is
+            // shown once it can be.
+            guard hasUnsavedChanges else {
+                saveState = .idle
+                Task { @MainActor in await takeInNewerStoredCopy() }
+                return
+            }
+            // Editing stops first and the editor is read once more, so
+            // nothing typed while the copy is saved is left out of it.
+            if mode == .edit {
+                let live: String?
+                let generation = documentGeneration
+                if let coordinator = tiptapCoordinator {
+                    live = await Self.readPage(coordinator, leaving: { withAnimation { mode = .read } }, visual: editMode == .visual)
+                } else {
+                    live = nil
+                    withAnimation { mode = .read }
+                }
+                if let live, live != markdownContent, isTyped(live), generation == documentGeneration {
+                    takingInStoredCopy = true
+                    markdownContent = live
+                    guard syncBlocksFromMarkdown() else { return }
+                }
+            }
+            let kept = (devotional, markdownContent)
+            guard let title = await Self.keepAsCopy(devotional, moduleId: moduleId) else {
+                // Not kept: the edits stay here, unsaved, for the next try.
+                saveState = .error
+                return
+            }
+            keptEdits(as: title, holding: kept)
+            return
+        }
 
         do {
             // Debug: Log media array before save
@@ -1415,8 +1554,11 @@ struct DevotionalView: View {
             }
 
             // Use ModuleSyncManager to save and export to iCloud
-            try await ModuleSyncManager.shared.saveDevotional(devotional, moduleId: moduleId)
-            hasUnsavedChanges = false
+            let committed = try await ModuleSyncManager.shared.saveDevotional(devotional, moduleId: moduleId)
+            devotional.meta.lastModified = committed
+            baseLastModified = committed
+            persistedMarkdown = savedMarkdown
+            if markdownContent == savedMarkdown { hasUnsavedChanges = false }
             lastSaveTime = Date()
             saveState = .saved
             print("[DevotionalView] Saved devotional: \(devotional.meta.title)")
@@ -1453,21 +1595,157 @@ struct DevotionalView: View {
             return
         }
 
-        devotional.meta.lastModified = Int(Date().timeIntervalSince1970)
+        let base = baseLastModified
+        let stamped = Int(Date().timeIntervalSince1970)
+        devotional.meta.lastModified = stamped
         lastSaveTime = Date()
+        persistedMarkdown = markdownContent
 
-        // Use detached task so cloud sync continues even if view is dismissed
+        // A detached write, so it finishes even if the view goes; kept, so
+        // what depends on it (asking the assistant) can wait for it. A newer
+        // copy stored meanwhile is kept, and these edits saved beside it.
         let devToSave = devotional
+        let keptMarkdown = markdownContent
         let modId = moduleId
-        Task.detached {
+        let earlier = inFlightWrite
+        inFlightWrite = Task.detached {
+            // Judged against what the write before it stored, if it did: this
+            // device's own save is no change from elsewhere.
+            var base = base
+            if case .saved(let revision)? = await earlier?.value { base = max(base ?? revision, revision) }
+            if await Self.storedIsNewer(id: devToSave.meta.id, than: base) {
+                guard let title = await Self.keepAsCopy(devToSave, moduleId: modId) else {
+                    // Not kept: still unsaved here, for the next try.
+                    await MainActor.run {
+                        hasUnsavedChanges = true
+                        saveState = .error
+                    }
+                    return .failed
+                }
+                await MainActor.run { keptEdits(as: title, holding: (devToSave, keptMarkdown)) }
+                return .keptCopy
+            }
             do {
-                try await ModuleSyncManager.shared.saveDevotional(devToSave, moduleId: modId)
+                // Stored as `stamped`; only then is it what the next save is
+                // judged against.
+                let committed = try await ModuleSyncManager.shared.saveDevotional(devToSave, moduleId: modId, at: stamped)
+                await MainActor.run { baseLastModified = max(baseLastModified ?? committed, committed) }
+                return .saved(committed)
             } catch {
                 print("[DevotionalView] Failed to save on disappear: \(error)")
+                await MainActor.run {
+                    hasUnsavedChanges = true
+                    saveState = .error
+                }
+                return .failed
             }
         }
         isSaving = false
         hasUnsavedChanges = false
+    }
+
+    /// The edits here went into a copy of their own, beside a newer version
+    /// stored meanwhile: said, and the newer version shown in their place,
+    /// editing left so no later save writes over it.
+    ///
+    /// `kept` is the writing and text the copy holds. Changed again since
+    /// (editing taken up, or its details changed, while the copy saved),
+    /// what's here stays, unsaved: the next save finds the newer version
+    /// too, and keeps all of it as well.
+    private func keptEdits(as title: String, holding kept: (writing: Devotional, markdown: String)) {
+        keptEditsNotice = "This writing changed on another device or by the assistant while you edited it. Your edits were kept as “\(title)”."
+        keptCopies += 1
+        let unchanged = mode != .edit && markdownContent == kept.markdown && devotional == kept.writing
+        if unchanged {
+            hasUnsavedChanges = false
+            saveTask?.cancel()
+            saveTask = nil
+            saveState = .idle
+        } else {
+            // What's shown isn't the writing's stored text, which is the
+            // newer version: unsaved until a save keeps it too.
+            persistedMarkdown = nil
+            hasUnsavedChanges = true
+        }
+        Task { @MainActor in
+            // Handled here either way, so later asks and saves don't take it
+            // for a conflict still to come.
+            let write = inFlightWrite
+            _ = await write?.value
+            if inFlightWrite == write { inFlightWrite = nil }
+            if unchanged { await takeInNewerStoredCopy(regardless: true) }
+        }
+    }
+
+    /// Whether text read from the page holds typing, not only the page's own
+    /// way of writing the Markdown it was given: it's unlike the page as
+    /// editing began, or the page has reported or saved edits since (an undo
+    /// back to the start is typing too).
+    private func isTyped(_ live: String) -> Bool {
+        if hasUnsavedChanges || markdownContent != persistedMarkdown || persistedMarkdown != persistedAtEditStart {
+            return true
+        }
+        guard let editBaseline else { return false }
+        return live != editBaseline
+    }
+
+    /// The page's text as editing ends, typing its debounced report hasn't
+    /// brought yet included. Editing stops first, so nothing more is typed
+    /// after; but Markdown editing is read before it stops, since stopping
+    /// turns the page back to rich text, whose Markdown isn't what was
+    /// typed (a fourth-level heading, a comment).
+    @MainActor
+    static func readPage(_ coordinator: TipTapEditorCoordinator, leaving: () -> Void, visual: Bool) async -> String? {
+        func read() async -> String? {
+            await withCheckedContinuation { continuation in
+                coordinator.getContent { continuation.resume(returning: $0) }
+            }
+        }
+        if visual {
+            leaving()
+            return await read()
+        }
+        let live = await read()
+        leaving()
+        return live
+    }
+
+    /// Whether the writing as stored is newer than `base`, the revision this
+    /// copy began from. Read from the row itself: decoding a writing with no
+    /// date gives it the time it was read, which would look newer every time.
+    nonisolated static func storedIsNewer(id: String, than base: Int?) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            guard let entry = (try? ModuleDatabase.shared.getDevotionalEntry(id: id)).flatMap({ $0 }),
+                  let stored = entry.lastModified else { return false }
+            return stored > (base ?? 0)
+        }.value
+    }
+
+    /// Saves `devotional` as a writing of its own, "(your edits)", with its
+    /// media, beside a newer version of it. Returns its title, or nil when
+    /// it couldn't be saved.
+    nonisolated static func keepAsCopy(_ devotional: Devotional, moduleId: String) async -> String? {
+        var copy = devotional
+        copy.meta.id = UUID().uuidString
+        copy.meta.title = devotional.meta.title + " (your edits)"
+        copy.meta.lastModified = Int(Date().timeIntervalSince1970)
+        let media = DevotionalMediaStorage.shared
+        let from = media.mediaDirectory(devotionalId: devotional.meta.id, moduleId: moduleId)
+        let to = media.mediaDirectory(devotionalId: copy.meta.id, moduleId: moduleId)
+        do {
+            // Its pictures and recordings go with it, or it isn't kept: a copy
+            // whose media resolve to nothing isn't the edits.
+            if FileManager.default.fileExists(atPath: from.path) {
+                try FileManager.default.createDirectory(at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: from, to: to)
+            }
+            try await ModuleSyncManager.shared.saveDevotional(copy, moduleId: moduleId)
+        } catch {
+            print("[DevotionalView] Failed to keep edits as a copy: \(error)")
+            try? FileManager.default.removeItem(at: to)
+            return nil
+        }
+        return copy.meta.title
     }
 
     // MARK: - Preview Navigation

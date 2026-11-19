@@ -88,9 +88,6 @@ struct AgentRemotePanel: View {
     var onRetryHeld: (() -> Void)?
 
     @ObservedObject private var client = AgentRemoteClient.shared
-    /// The words chosen in the writing, sent with the next message until
-    /// someone takes them off it.
-    @State private var selection: String?
     /// The writing's chat has been found and opened once: after that, list
     /// changes don't open it again over a chat opened elsewhere.
     @State private var openedWritingChat = false
@@ -109,7 +106,7 @@ struct AgentRemotePanel: View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onAppear {
-                selection = writing?.selection
+                if writing != nil { selection = writing?.selection }
                 // Another chat left open isn't this writing's: its draft and
                 // composer would be that chat's.
                 if writing != nil, client.openChatID != nil, !showsWritingChat { client.closeChat() }
@@ -454,6 +451,13 @@ struct AgentRemotePanel: View {
         nonmutating set { client.setDraft(newValue, for: draftDestination) }
     }
 
+    /// The words chosen in the writing, sent with the next message until
+    /// someone takes them off it; kept with the draft, for its chat.
+    private var selection: String? {
+        get { client.selection(for: draftDestination) }
+        nonmutating set { client.setSelection(newValue, for: draftDestination) }
+    }
+
     /// Where this panel's words go: its chat when it shows one, else the new
     /// chat it would begin. A writing's panel doesn't take a chat opened for
     /// something else.
@@ -615,14 +619,20 @@ struct AgentRemotePanel: View {
                         guard let writing else { return }
                         let words = draft
                         let chosen = selection
+                        let destination = draftDestination
                         Task {
-                            let stamp = await AgentRemoteWritingStamp.current(writingID: writing.id)
+                            guard let stamp = await AgentRemoteWritingStamp.current(writingID: writing.id) else {
+                                client.keepUnstamped(
+                                    words, selection: chosen, writingID: writing.id, key: destination, startsChat: true
+                                )
+                                clearSent(words, chosen: chosen, from: destination)
+                                return
+                            }
                             if client.startWritingChat(
                                 words, writingID: writing.id, selection: chosen,
                                 writingRevision: stamp.revision, writingDigest: stamp.digest
                             ) {
-                                if draft == words { draft = "" }
-                                selection = nil
+                                clearSent(words, chosen: chosen, from: destination)
                             }
                         }
                     },
@@ -702,15 +712,33 @@ struct AgentRemotePanel: View {
         // About a writing: with its revision and digest as stored now.
         let words = draft
         let chosen = selection
+        let destination = draftDestination
+        let known = Set(client.chat?.id == summary.id ? client.chat?.messages.map(\.id) ?? [] : [])
         Task {
-            let stamp = await AgentRemoteWritingStamp.current(writingID: writingID)
+            // Not read, it isn't sent: without the stamp the Mac would take it
+            // as from an older phone and skip its check of its own copy.
+            guard let stamp = await AgentRemoteWritingStamp.current(writingID: writingID) else {
+                client.keepUnstamped(words, selection: chosen, writingID: writingID, key: summary.id, startsChat: false, known: known)
+                clearSent(words, chosen: chosen, from: destination)
+                return
+            }
             if client.send(
                 words, reading: nil, selection: chosen,
                 writingRevision: stamp.revision, writingDigest: stamp.digest, inChat: summary.id
             ) {
-                if draft == words { draft = "" }
-                selection = nil
+                clearSent(words, chosen: chosen, from: destination)
             }
+        }
+    }
+
+    /// Takes words that went (or were kept as not sent) out of the composer:
+    /// where they were written, and where they've moved since, as when the
+    /// writing's chat turned up while they were on their way. Words written
+    /// meanwhile stay.
+    private func clearSent(_ words: String, chosen: String?, from destination: String) {
+        for place in Set([destination, draftDestination]) {
+            if client.draft(for: place) == words { client.setDraft("", for: place) }
+            if client.selection(for: place) == chosen { client.setSelection(nil, for: place) }
         }
     }
 
@@ -793,8 +821,14 @@ struct AgentRemotePanel: View {
                 Button("Try Again") {
                     let writingID = unsent.writingID ?? client.chat?.summary.writingID
                     Task {
-                        let stamp: (revision: Int?, digest: String?) = writingID != nil
-                            ? await AgentRemoteWritingStamp.current(writingID: writingID!) : (nil, nil)
+                        var stamp: (revision: Int?, digest: String?) = (nil, nil)
+                        if let writingID {
+                            guard let read = await AgentRemoteWritingStamp.current(writingID: writingID) else {
+                                client.keepProblem(AgentRemoteWritingStamp.unreadable, forUnsent: key)
+                                return
+                            }
+                            stamp = (read.revision, read.digest)
+                        }
                         client.resend(
                             key, reading: writingID == nil ? reading : nil,
                             writingRevision: stamp.revision, writingDigest: stamp.digest

@@ -615,7 +615,9 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         let reviews = LibrarySyncPass.reviewStore
         let ledger = try database.personalDeletionLedger()
         let reviewDeletions = try reviews.deletions(
-            deleted: Set((ledger.entries[.devotional] ?? [:]).filter { $0.value.deletedAt != nil }.keys),
+            // Only deletions that still stand: a writing saved again under its
+            // id after one keeps it beside the newer save.
+            deleted: LampWritingReviewStore.deletedWritings(in: ledger),
             held: try DevotionalStorage.shared.getAllWritingIDs(),
             members: Dictionary(manifest.members.map { ($0.path, $0.presentSince ?? 0) }, uniquingKeysWith: max),
             now: Int64(Date().timeIntervalSince1970 * 1_000)
@@ -1056,7 +1058,23 @@ extension LibrarySyncPass {
         if ModuleType.allCases.contains(where: {
             !((try? database.pendingModulePublications(type: $0).isEmpty) ?? true)
         }) { return true }
-        return !((try? database.pendingManifestChanges(source: storage.librarySource).isEmpty) ?? true)
+        if !((try? database.pendingManifestChanges(source: storage.librarySource).isEmpty) ?? true) { return true }
+        return hasUnsentReviews(source: storage.librarySource)
+    }
+
+    /// A writing's review marks unlike what this device last sent or took in
+    /// for them: a clear or a mark made here, or a merge of a download with
+    /// marks the server lacked, which goes back up.
+    static func hasUnsentReviews(source: String) -> Bool {
+        let reviews = reviewStore
+        guard let ids = try? reviews.writingIDs(), !ids.isEmpty,
+              let records = try? ModuleDatabase.shared.libraryRecords(source: source) else { return false }
+        return ids.contains { id in
+            guard let path = try? LampSyncFolderLayout.writingReviewPath(writingID: id),
+                  let url = try? reviews.url(writingID: id),
+                  let digest = try? LampSyncContentRevision.digest(forFileAt: url) else { return false }
+            return records.record(path, in: source)?.uploadedDigest != digest
+        }
     }
 
     /// A pass a few seconds from now, after a burst of edits settles.

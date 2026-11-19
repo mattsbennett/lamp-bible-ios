@@ -62,11 +62,20 @@ struct AgentRemoteChat: Equatable {
 /// A writing's revision and body digest as stored here now, which the Mac
 /// checks its own copy against before the assistant works on it. Read at
 /// the moment of sending, so a copy sync brought since counts.
+///
+/// Nil when the writing can't be read here: nothing is sent then, since a
+/// message without a stamp reads to the Mac as one from an older phone,
+/// which it doesn't check.
 enum AgentRemoteWritingStamp {
-    static func current(writingID: String) async -> (revision: Int?, digest: String?) {
+    static let unreadable = "This writing couldn’t be read on this device. Try again."
+
+    static func current(writingID: String) async -> (revision: Int?, digest: String)? {
         await Task.detached(priority: .userInitiated) {
-            guard let entry = (try? ModuleDatabase.shared.getDevotionalEntry(id: writingID)).flatMap({ $0 }) else {
-                return (nil, nil)
+            // A writing's id isn't spelled alike on every platform: the Mac's
+            // chat may name it in another case than it's kept in here.
+            let spellings = [writingID, writingID.uppercased(), writingID.lowercased()]
+            guard let entry = spellings.lazy.compactMap({ (try? ModuleDatabase.shared.getDevotionalEntry(id: $0)).flatMap({ $0 }) }).first else {
+                return nil
             }
             let revision = entry.lastModified.map {
                 LampAgentRemoteWritingRevision.of(lastModified: Date(timeIntervalSince1970: TimeInterval($0)))
