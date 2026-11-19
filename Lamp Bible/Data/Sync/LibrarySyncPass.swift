@@ -340,11 +340,13 @@ struct LibrarySyncPass {
 
     /// What this device plans: modules and their media. Decks are the Mac's
     /// to publish and mirrored here as before; workspaces stay on the Mac.
-    /// Pruning still sees every listed file, which core keeps to.
+    /// The writing assistant's change marks aren't kept on the phone yet, so
+    /// it leaves them to the Mac. Pruning still sees every listed file, which
+    /// core keeps to.
     static func isPlanned(_ kind: LampSyncFileKind?) -> Bool {
         switch kind {
         case .module, .devotionalMedia, .noteMedia, .bookMedia: true
-        case .deck, .deckAsset, .workspaceFile, nil: false
+        case .deck, .deckAsset, .workspaceFile, .writingReview, nil: false
         }
     }
 
@@ -352,7 +354,7 @@ struct LibrarySyncPass {
         switch kind {
         case .module(let content): [.notes, .devotionals, .highlights].contains(content)
         case .devotionalMedia, .noteMedia, .bookMedia: true
-        case .deck, .deckAsset, .workspaceFile: false
+        case .deck, .deckAsset, .workspaceFile, .writingReview: false
         }
     }
 
