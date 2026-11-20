@@ -975,21 +975,23 @@ struct DevotionalListRow: View {
                     .padding(.top, 2)
             }
 
-            // Metadata row
+            // Metadata row, a dot only between two things
+            let category = devotional.meta.categoryName
+            let author = devotional.meta.author.flatMap { $0.isEmpty ? nil : $0 }
             HStack(spacing: 6) {
                 if let date = displayDate {
                     Text(date)
                 }
-                if let category = devotional.meta.categoryName {
+                if let category {
                     if displayDate != nil { Text("·") }
                     Text(category)
                 }
-                if let author = devotional.meta.author, !author.isEmpty {
-                    Text("·")
+                if let author {
+                    if displayDate != nil || category != nil { Text("·") }
                     Text(author)
                 }
                 if hasSlides {
-                    Text("·")
+                    if displayDate != nil || category != nil || author != nil { Text("·") }
                     Label("Slides", systemImage: "rectangle.on.rectangle")
                         .labelStyle(.titleAndIcon)
                 }
