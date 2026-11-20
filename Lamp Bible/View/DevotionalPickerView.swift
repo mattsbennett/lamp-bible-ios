@@ -942,7 +942,10 @@ struct DevotionalListRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
+            // Across the card, so a short writing sits at its leading edge
+            // as a long one does, not centered.
             details
+                .frame(maxWidth: .infinity, alignment: .leading)
             if showsDisclosure {
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.bold))
