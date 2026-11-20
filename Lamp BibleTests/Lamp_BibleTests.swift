@@ -3097,7 +3097,22 @@ private actor LibraryServer {
         if weakReadsAfterWrite > 0 { weakReadsLeft[path] = weakReadsAfterWrite }
         if lagging, before[path] == nil { before[path] = .some(current) }
         let revision = seed(path, data)
+        whileWriting.removeValue(forKey: path)?()
         return withholdsRevisions ? nil : revision
+    }
+
+    /// What the person does on the device once `path` is written, before the
+    /// pass hears back, once.
+    private var whileWriting: [String: @Sendable () -> Void] = [:]
+    func whileWriting(_ path: String, _ action: @escaping @Sendable () -> Void) {
+        whileWriting[path] = action
+    }
+
+    /// Paths whose next ask for a revision goes unanswered.
+    private var unansweredRevisions: Set<String> = []
+    func failNextRevision(of path: String) { unansweredRevisions.insert(path) }
+    func answerRevision(_ path: String) throws {
+        if unansweredRevisions.remove(path) != nil { throw URLError(.timedOut) }
     }
 
     /// Paths whose next removal fails, as one cut off partway would.
@@ -3144,7 +3159,10 @@ private struct LibraryServerStorage: ModuleStorage, LampSyncRemoteStore {
     func isAvailable() async -> Bool { true }
     func list(directory: String) async throws -> [LampSyncRemoteEntry]? { await server.list(directory) }
     func read(path: String) async throws -> LampSyncRemoteFile? { await server.fetch(path) }
-    func revision(path: String) async throws -> String? { await server.visible(path)?.revision }
+    func revision(path: String) async throws -> String? {
+        try await server.answerRevision(path)
+        return await server.visible(path)?.revision
+    }
     func write(_ data: Data, to path: String, condition: LampSyncWriteCondition) async throws -> String? {
         try await server.write(data, to: path, condition: condition)
     }
@@ -3436,6 +3454,279 @@ final class LibrarySyncPassTests: XCTestCase {
         let removed = await server.file(path)
         XCTAssertNil(removed, "removed by the next pass")
         XCTAssertEqual(try documents(of: writingID), [:])
+    }
+
+    /// Deleted here while its own upload was sent, first or an edit: the
+    /// deletion saw that upload, and isn't outlived by it.
+    func testADocumentDeletedWhileItsUploadIsSentStaysDeleted() async throws {
+        for edited in [false, true] {
+            let writingID = UUID().uuidString
+            try keepDocument("Outline.", named: "outline.md", for: writingID)
+            let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+            if edited {
+                _ = try await pass().run()
+                try await Task.sleep(for: .milliseconds(20))
+                try keepDocument("Outline, edited.", named: "outline.md", for: writingID)
+            }
+            let source = source!, seen = Data((edited ? "Outline, edited." : "Outline.").utf8)
+            await server.whileWriting(path) {
+                _ = try? LibrarySyncPass.deleteDocument(
+                    writingID: writingID, name: "outline.md", seen: seen, source: source, device: "iPhone"
+                )
+            }
+            _ = try await pass().run()
+            _ = try await pass().run()
+
+            XCTAssertEqual(try documents(of: writingID), [:], "still deleted here (edited: \(edited))")
+            let written = try await bundle()
+            XCTAssertNotEqual(written.manifest.entry(at: path)?.isMember, true, "deleted in the library (edited: \(edited))")
+            let left = await server.file(path)
+            XCTAssertNil(left, "removed from the server (edited: \(edited))")
+        }
+    }
+
+    /// Deleted while its upload was sent, then made again under its name
+    /// before the deletion went up, while that pass still ran or after it:
+    /// the new file is the writer's, and goes up over the deletion. Made
+    /// during the pass it's older than the upload the deletion is dated
+    /// after, so only being held keeps it.
+    func testADocumentMadeAgainBeforeItsDeletionWentUpGoesUp() async throws {
+        for duringThePass in [false, true] {
+            let writingID = UUID().uuidString
+            try keepDocument("Outline.", named: "outline.md", for: writingID)
+            let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+            let source = source!
+            await server.whileWriting(path) {
+                _ = try? LibrarySyncPass.deleteDocument(
+                    writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+                )
+                if duringThePass {
+                    _ = try? LibrarySyncPass.documentStore.write(
+                        Data("A new outline.".utf8), writingID: writingID, name: "outline.md", replacing: nil
+                    )
+                }
+            }
+            _ = try await pass().run()
+            if !duringThePass {
+                try await Task.sleep(for: .milliseconds(20))
+                try keepDocument("A new outline.", named: "outline.md", for: writingID)
+            }
+            _ = try await pass().run()
+            _ = try await pass().run()
+
+            XCTAssertEqual(
+                try documents(of: writingID), ["outline.md": "A new outline."],
+                "kept under its name (during the pass: \(duringThePass))"
+            )
+            let written = try await bundle()
+            XCTAssertEqual(written.manifest.entry(at: path)?.isMember, true, "during the pass: \(duringThePass)")
+            let sent = await server.file(path)
+            XCTAssertEqual(
+                sent.map { String(decoding: $0.data, as: UTF8.self) }, "A new outline.", "during the pass: \(duringThePass)"
+            )
+        }
+    }
+
+    /// Deleted here while another device's edit came down, before that
+    /// device's manifest named it: the edit was never seen here, so the
+    /// deletion isn't dated after it, and it outlives the deletion.
+    func testAnEditDeletedHereWhileItCameDownOutlivesTheDeletion() async throws {
+        let writingID = UUID().uuidString
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        _ = try await pass().run()
+        let first = await server.file(path)?.revision
+
+        let edit = await server.seed(path, Data("Outline, edited on the Mac.".utf8))
+        let source = source!
+        await server.whileFetching(path) {
+            _ = try? LibrarySyncPass.deleteDocument(
+                writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+            )
+        }
+        _ = try await pass().run()
+        XCTAssertEqual(try documents(of: writingID), [:], "deleted while the edit came down, and not taken in")
+        try await Task.sleep(for: .milliseconds(20))
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.recordingWrite(
+                path, revision: edit, replacing: first, at: ModuleDatabase.nowMilliseconds()
+            )
+        }
+        _ = try await pass().run()
+        _ = try await pass().run()
+
+        let kept = await server.file(path)
+        XCTAssertEqual(kept.map { String(decoding: $0.data, as: UTF8.self) }, "Outline, edited on the Mac.")
+        let written = try await bundle()
+        XCTAssertEqual(written.manifest.entry(at: path)?.isMember, true, "the edit outlives the deletion")
+        XCTAssertEqual(try documents(of: writingID), ["outline.md": "Outline, edited on the Mac."])
+    }
+
+    /// Deleted during its upload, deleted on another device too, then made
+    /// again here with the same bytes before the deletion went up: made
+    /// after the other device's deletion, it outlives it.
+    func testADocumentMadeAgainWithTheSameBytesOutlivesAnEarlierDeletionElsewhere() async throws {
+        let writingID = UUID().uuidString
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        let source = source!
+        await server.whileWriting(path) {
+            _ = try? LibrarySyncPass.deleteDocument(
+                writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+            )
+        }
+        _ = try await pass().run()
+        try await deleteDocumentElsewhere(path)
+        try await Task.sleep(for: .milliseconds(20))
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        _ = try await pass().run()
+        _ = try await pass().run()
+
+        XCTAssertEqual(try documents(of: writingID), ["outline.md": "Outline."], "kept under its name")
+        let written = try await bundle()
+        XCTAssertEqual(written.manifest.entry(at: path)?.isMember, true, "goes up over both deletions")
+        let sent = await server.file(path)
+        XCTAssertEqual(sent.map { String(decoding: $0.data, as: UTF8.self) }, "Outline.")
+    }
+
+    /// Deleted between passes and made again before the deletion went up,
+    /// with new text: it goes up over the copy the deletion took, under its
+    /// name, with nothing kept beside it, since no other device edited it.
+    func testADocumentMadeAgainBeforeItsDeletionWentUpReplacesTheCopyItDeleted() async throws {
+        let writingID = UUID().uuidString
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        _ = try await pass().run()
+        try LibrarySyncPass.deleteDocument(
+            writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+        )
+        try await Task.sleep(for: .milliseconds(20))
+        try keepDocument("A new outline.", named: "outline.md", for: writingID)
+        _ = try await pass().run()
+        _ = try await pass().run()
+
+        XCTAssertEqual(try documents(of: writingID), ["outline.md": "A new outline."], "under its name, alone")
+        let sent = await server.file(path)
+        XCTAssertEqual(sent.map { String(decoding: $0.data, as: UTF8.self) }, "A new outline.")
+    }
+
+    /// Deleted during its upload, made again with the same bytes, and edited
+    /// on another device before the next pass: the re-creation is the
+    /// writer's, so it's kept beside the other device's edit, not replaced.
+    func testADocumentMadeAgainWithTheSameBytesIsKeptBesideAnEditElsewhere() async throws {
+        let writingID = UUID().uuidString
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        let source = source!
+        await server.whileWriting(path) {
+            _ = try? LibrarySyncPass.deleteDocument(
+                writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+            )
+        }
+        _ = try await pass().run()
+        try await Task.sleep(for: .milliseconds(20))
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        try await publishDocumentElsewhere(path, "Outline, edited on the Mac.")
+        _ = try await pass().run()
+        _ = try await pass().run()
+
+        let held = try documents(of: writingID)
+        XCTAssertEqual(held["outline.md"], "Outline, edited on the Mac.", "the server's copy keeps the name")
+        XCTAssertEqual(held.count, 2, "and the re-creation is kept beside it: \(held)")
+        XCTAssertTrue(held.contains { $0.key != "outline.md" && $0.value == "Outline." })
+    }
+
+    /// Made again under a name deleted here, then deleted again while
+    /// another device's edit of it comes down: the second deletion is the
+    /// writer's latest word, not the one the re-creation undid, and the
+    /// download doesn't bring the file back.
+    func testADocumentMadeAgainAndDeletedAgainWhileItComesDownStaysDeleted() async throws {
+        let writingID = UUID().uuidString
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        let source = source!
+        await server.whileWriting(path) {
+            _ = try? LibrarySyncPass.deleteDocument(
+                writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+            )
+        }
+        _ = try await pass().run()
+        try await Task.sleep(for: .milliseconds(20))
+        try keepDocument("A new outline.", named: "outline.md", for: writingID)
+        try await publishDocumentElsewhere(path, "Outline, edited on the Mac.")
+        await server.whileFetching(path) {
+            _ = try? LibrarySyncPass.deleteDocument(
+                writingID: writingID, name: "outline.md", seen: Data("A new outline.".utf8), source: source, device: "iPhone"
+            )
+        }
+        _ = try await pass().run()
+        XCTAssertEqual(try documents(of: writingID), [:], "not brought back by the download")
+        _ = try await pass().run()
+        XCTAssertEqual(try documents(of: writingID), [:], "and the second deletion isn't undone")
+    }
+
+    /// A deletion queued again for a path already tombstoned, as a pass
+    /// that stopped before clearing its queue leaves it, whose file can't be
+    /// asked about: the pass leaves it out, and it waits for the next pass
+    /// rather than being dropped.
+    func testADeletionWhoseFileCouldNotBeAskedAboutWaitsForTheNextPass() async throws {
+        let writingID = UUID().uuidString
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        _ = try await pass().run()
+        _ = try LibrarySyncPass.deleteDocument(
+            writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+        )
+        _ = try await pass().run()
+        try database.recordSyncLocalDeletion(source: source, path: path)
+
+        await server.failNextRevision(of: path)
+        _ = try? await pass().run()
+        XCTAssertNotNil(try database.pendingManifestDeletions(source: source)[path], "left for the next pass")
+
+        _ = try await pass().run()
+        XCTAssertNil(try database.pendingManifestDeletions(source: source)[path], "settled once asked")
+        XCTAssertEqual(try documents(of: writingID), [:])
+    }
+
+    /// Deleted here, during its upload or between passes, then made again
+    /// with the same bytes, which sends nothing, and only then a deletion
+    /// made elsewhere before the re-creation arrives: the re-creation is
+    /// still newer, and outlives it.
+    func testADocumentMadeAgainWithTheSameBytesOutlivesADeletionElsewhereArrivingLater() async throws {
+        for duringItsUpload in [true, false] {
+            let writingID = UUID().uuidString
+            try keepDocument("Outline.", named: "outline.md", for: writingID)
+            let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+            let source = source!
+            let delete: @Sendable () -> Void = {
+                _ = try? LibrarySyncPass.deleteDocument(
+                    writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+                )
+            }
+            if duringItsUpload { await server.whileWriting(path, delete) }
+            _ = try await pass().run()
+            if !duringItsUpload { delete() }
+            try await Task.sleep(for: .milliseconds(20))
+            let deletedElsewhereAt = ModuleDatabase.nowMilliseconds()
+            try await Task.sleep(for: .milliseconds(20))
+            try keepDocument("Outline.", named: "outline.md", for: writingID)
+            _ = try await pass().run()
+
+            let revision = await server.file(path)?.revision
+            _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+                bundle.manifest = try bundle.manifest.removing(path, at: deletedElsewhereAt, revision: revision)
+            }
+            _ = try await pass().run()
+            _ = try await pass().run()
+
+            let during = "during its upload: \(duringItsUpload)"
+            XCTAssertEqual(try documents(of: writingID), ["outline.md": "Outline."], "kept under its name (\(during))")
+            let written = try await bundle()
+            XCTAssertEqual(written.manifest.entry(at: path)?.isMember, true, "goes up over the deletion (\(during))")
+            let sent = await server.file(path)
+            XCTAssertEqual(sent.map { String(decoding: $0.data, as: UTF8.self) }, "Outline.", during)
+        }
     }
 
     /// A document the server took but hasn't shown back yet is settled by a

@@ -201,6 +201,25 @@ struct LibrarySyncPass {
         }
         var records = try database.libraryRecords(source: source)
         library.seedFolderRevisions(into: &records)
+        // A document made again here under a name deleted here, before the
+        // deletion went up, replaces the copy the deletion took: planned as
+        // changed since that copy, whatever its bytes, so it goes up over it
+        // rather than being taken for it or by an edit made elsewhere.
+        let heldDocuments = try LibrarySyncPass.documentStore.held()
+        for change in try database.pendingManifestChanges(source: source)
+        where change.change == .delete && LampSyncFolderLayout.kind(of: change.path) == .writingDocument
+            && heldDocuments[change.path] != nil {
+            var record = records.record(change.path, in: source)
+                ?? LampSyncFileRecords.Record(installedRevision: change.revision)
+            record.uploadedDigest = nil
+            records.sources[source, default: LampSyncFileRecords.Source()].files[change.path] = record
+        }
+        // Not the record of a copy deleted here before it was taken in: kept,
+        // as a document deleted during the pass keeps its record, it would
+        // date the deletion after an edit this device never saw.
+        func settleDocumentRecords() {
+            for path in library.deletedWhileTakenIn { records.sources[source]?.files[path] = nil }
+        }
         let carried = try database.pendingManifestWrites(source: source)
         var ledger = DeletionLedgerParticipant(source: source, contribution: .init(personal: .init()))
         var participants: [any SettingsBundleParticipant] = []
@@ -279,14 +298,19 @@ struct LibrarySyncPass {
             )
         } catch {
             // What was written before it stopped is real; keep its records.
+            settleDocumentRecords()
             try? database.saveLibraryRecords(records, source: source)
             throw error
         }
+        settleDocumentRecords()
         try database.saveLibraryRecords(records, source: source)
 
         guard let written = outcome.written else { throw LampSyncSettingsStore.StoreError.tooManyAttempts }
         for participant in [ledger] + participants { try participant.committed(written) }
-        try database.clearPendingManifestChanges(carried + library.carriedDeletions)
+        // Not a deletion the pass left out, its file asked about and no
+        // answer had: it waits for the next.
+        let deferred = Set(outcome.deferred)
+        try database.clearPendingManifestChanges(carried + library.carriedDeletions.filter { !deferred.contains($0.path) })
 
         if await olderDeviceIsWriting() {
             SyncCoordinator.shared.olderDeviceSyncing = true
@@ -527,6 +551,9 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     var opened: LampSyncSettingsBundle?
     /// Deletions made here that this pass carries to the manifest.
     private(set) var carriedDeletions: [SyncPendingManifestChange] = []
+    /// Documents downloaded but not taken in, deleted here meanwhile: the
+    /// pass's record of them names a copy this device never saw.
+    private(set) var deletedWhileTakenIn: Set<String> = []
     /// What each module path held here is, as the database knows it: a
     /// module's file may be named other than by its ID.
     private(set) var heldModules: [String: (type: ModuleType, id: String)] = [:]
@@ -747,7 +774,20 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             )
         }
         let agreed = try database.libraryRecords(source: source)
-        for (path, url) in try documents.held() where gathered.deletedLocally[path] == nil {
+        let heldDocuments = try documents.held()
+        // One made again here under a name deleted here, before the deletion
+        // went up: the deletion took the file, so one held now was written
+        // since, and is the writer's new file, not the deletion's to take.
+        // It's dated when written whatever its bytes, so it outlives a
+        // deletion made elsewhere before it, as a new file does. The
+        // deletion is still cleared once the bundle is written.
+        var madeAgain: Set<String> = []
+        for (path, _) in heldDocuments where documentDeletions[path] == nil
+            && carriedDeletions.contains(where: { $0.path == path }) {
+            gathered.deletedLocally[path] = nil
+            madeAgain.insert(path)
+        }
+        for (path, url) in heldDocuments where gathered.deletedLocally[path] == nil {
             // Sent from a copy, as the marks are: a save landing while the
             // pass runs can't leave the bytes sent unlike their digest.
             guard let data = try? Data(contentsOf: url) else { continue }
@@ -762,7 +802,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             // unlike what this device last agreed with the server on: a copy
             // as taken in is dated when it arrived, which is no edit.
             let digest = LampSyncContentRevision.digest(for: data)
-            if agreed.record(path, in: source)?.uploadedDigest != digest,
+            if madeAgain.contains(path) || agreed.record(path, in: source)?.uploadedDigest != digest,
                let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date {
                 gathered.savedAt[path] = Int64(modified.timeIntervalSince1970 * 1_000)
             }
@@ -799,14 +839,19 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     private func takeInDocument(_ path: String, from url: URL, agreedDigest: String?) throws {
         // Deleted here since the pass gathered it: a download finishing
         // after the writer deleted the file doesn't bring it back. Not one
-        // deleted before, which the plan weighed: a write made elsewhere
-        // since outlives it, and is taken. Checked and taken in under the
-        // lock a deletion holds.
+        // deleted before, which the plan weighed, or which a file made again
+        // since undid: a write made elsewhere since outlives it, and is
+        // taken. Told apart by when it was made, so a deletion made again
+        // since, which replaces the one carried, isn't taken for it. Checked
+        // and taken in under the lock a deletion holds.
         LibrarySyncPass.documentChanges.lock()
         defer { LibrarySyncPass.documentChanges.unlock() }
-        let weighed = carriedDeletions.contains { $0.path == path }
-        let deletedSince = try !weighed && database.pendingManifestDeletions(source: source)[path] != nil
-        guard !deletedSince else { return }
+        let pending = try database.pendingManifestDeletions(source: source)[path]
+        let deletedSince = pending.map { at in !carriedDeletions.contains { $0.path == path && $0.at == at } } ?? false
+        guard !deletedSince else {
+            deletedWhileTakenIn.insert(path)
+            return
+        }
         try LibrarySyncPass.documentStore.takeIn(
             downloaded: try Data(contentsOf: url), path: path,
             agreedDigest: agreedDigest, localDevice: LibrarySyncPass.deviceName

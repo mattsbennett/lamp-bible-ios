@@ -4234,8 +4234,15 @@ extension ModuleDatabase {
         var files = records.sources[source]?.files ?? [:]
         let now = Self.nowMilliseconds(time)
         // Deleted here while the pass ran: the deletion already took its
-        // record, and the pass's copy of it must not bring it back.
-        for path in try pendingManifestDeletions(source: source).keys { files[path] = nil }
+        // record, and the pass's copy of it must not bring it back. But a
+        // document's is kept, until the deletion is carried and forgets it:
+        // it names the upload the pass made, which the deletion saw, so the
+        // next pass dates the deletion after that upload
+        // (`LampSyncBundlePass.queuedDeletionTime`) and it isn't brought back.
+        for path in try pendingManifestDeletions(source: source).keys
+        where LampSyncFolderLayout.kind(of: path) != .writingDocument {
+            files[path] = nil
+        }
         try write { db in
             let kept = try SyncFileRecord.filter(Column("source") == source).fetchAll(db)
             let before = Dictionary(uniqueKeysWithValues: kept.map { ($0.path, $0) })
