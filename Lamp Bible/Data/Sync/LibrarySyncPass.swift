@@ -215,24 +215,12 @@ struct LibrarySyncPass {
                     // A writing's documents change in place, and no folder
                     // listing reaches them: the manifest names each, and
                     // each is asked for in turn, as the Mac asks. Core asks
-                    // after the rest (`LampSyncBundlePass.asksForRevision`).
-                    // A young deletion too, as core's retry window allows:
-                    // a deletion recorded here keeps no file record for
-                    // core to go by, so a removal that failed is tried again.
-                    // Not a deletion whose path the manifest also holds
-                    // under another spelling: a server that folds case would
-                    // answer with that file, as if put back by hand.
-                    let now = Int64(Date().timeIntervalSince1970 * 1_000)
-                    let paths = library.opened?.manifest.paths ?? []
-                    var spellings: [String: Int] = [:]
-                    for path in paths { spellings[path.precomposedStringWithCanonicalMapping.lowercased(), default: 0] += 1 }
-                    let asked = paths.compactMap { path -> String? in
-                        guard let entry = library.opened?.manifest.entry(at: path),
-                              entry.kind == .writingDocument else { return nil }
-                        if entry.isMember { return path }
-                        guard let deletedAt = entry.deletedAt, now - deletedAt < Self.documentReapRetryWindow,
-                              spellings[path.precomposedStringWithCanonicalMapping.lowercased()] == 1 else { return nil }
-                        return path
+                    // after the rest (`LampSyncBundlePass.asksForRevision`),
+                    // young deletions among them, so a removal that failed is
+                    // tried again.
+                    let asked = (library.opened?.manifest.paths ?? []).filter { path in
+                        guard let entry = library.opened?.manifest.entry(at: path) else { return false }
+                        return entry.kind == .writingDocument && entry.isMember
                     }
                     for path in asked.sorted() {
                         if let revision = try await storage.revision(path: path) {
@@ -396,11 +384,6 @@ struct LibrarySyncPass {
                 .appendingPathComponent("WritingWorkspaces", isDirectory: true)
         )
     }
-
-    /// How long a document's deletion is asked about after it, so a removal
-    /// from the server that failed is tried again: core's window for its
-    /// own (`LampSyncBundlePass.reapRetryWindow`), 14 days.
-    static let documentReapRetryWindow: Int64 = 14 * 24 * 60 * 60 * 1_000
 
     /// Held while a document is deleted here and while a pass takes one in.
     nonisolated static let documentChanges = NSLock()

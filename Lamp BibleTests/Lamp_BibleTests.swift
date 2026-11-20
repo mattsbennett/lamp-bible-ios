@@ -3100,7 +3100,12 @@ private actor LibraryServer {
         return withholdsRevisions ? nil : revision
     }
 
+    /// Paths whose next removal fails, as one cut off partway would.
+    private var failingDeletes: Set<String> = []
+    func failNextDelete(of path: String) { failingDeletes.insert(path) }
+
     func delete(_ path: String, condition: LampSyncWriteCondition) throws {
+        if failingDeletes.remove(path) != nil { throw URLError(.networkConnectionLost) }
         guard let current = files[path] else { return }
         if case .ifRevision(let expected) = condition,
            !LampSyncConditionalWrite.namesSameRevision(current.revision, expected) {
@@ -3405,6 +3410,32 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(try documents(of: writingID), [:])
         let written = try await bundle()
         XCTAssertNotEqual(written.manifest.entry(at: path)?.isMember, true, "deleted in the library")
+    }
+
+    /// A deletion made here whose file the server kept, its removal cut off,
+    /// has it removed by a later pass: core asks about a young deletion's
+    /// file though the phone keeps no record of it once the deletion is
+    /// queued.
+    func testADocumentDeletedHereWhoseRemovalFailedIsRemovedNextPass() async throws {
+        let writingID = UUID().uuidString
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        _ = try await pass().run()
+
+        _ = try LibrarySyncPass.deleteDocument(
+            writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+        )
+        await server.failNextDelete(of: path)
+        _ = try? await pass().run()
+        let kept = await server.file(path)
+        XCTAssertNotNil(kept, "the removal was cut off")
+        let deleted = try await bundle()
+        XCTAssertNotEqual(deleted.manifest.entry(at: path)?.isMember, true, "deleted in the library")
+
+        _ = try await pass().run()
+        let removed = await server.file(path)
+        XCTAssertNil(removed, "removed by the next pass")
+        XCTAssertEqual(try documents(of: writingID), [:])
     }
 
     /// A document the server took but hasn't shown back yet is settled by a
