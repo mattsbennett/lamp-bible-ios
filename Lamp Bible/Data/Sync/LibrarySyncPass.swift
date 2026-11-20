@@ -309,8 +309,16 @@ struct LibrarySyncPass {
         for participant in [ledger] + participants { try participant.committed(written) }
         // Not a deletion the pass left out, its file asked about and no
         // answer had: it waits for the next.
+        // A document's record, kept through its deletion to date it, goes
+        // with the deletion once carried, unless the file is held again: a
+        // reap that failed, or found nothing, would otherwise leave it naming
+        // a file deleted here as one kept here against a deletion elsewhere.
         let deferred = Set(outcome.deferred)
-        try database.clearPendingManifestChanges(carried + library.carriedDeletions.filter { !deferred.contains($0.path) })
+        let cleared = library.carriedDeletions.filter { !deferred.contains($0.path) }
+        let heldNow = try LibrarySyncPass.documentStore.held()
+        try database.clearPendingManifestChanges(carried + cleared, forgetting: cleared.filter {
+            LampSyncFolderLayout.kind(of: $0.path) == .writingDocument && heldNow[$0.path] == nil
+        })
 
         if await olderDeviceIsWriting() {
             SyncCoordinator.shared.olderDeviceSyncing = true

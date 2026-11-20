@@ -3636,6 +3636,34 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertTrue(held.contains { $0.key != "outline.md" && $0.value == "Outline." })
     }
 
+    /// Deleted during its upload, then its removal from the server cut
+    /// off: the record kept to date the deletion goes with it, so the file
+    /// isn't reported as kept here against a deletion elsewhere, and a later
+    /// pass still removes the file.
+    func testADocumentsKeptRecordGoesWithItsDeletionThoughTheRemovalFailed() async throws {
+        let writingID = UUID().uuidString
+        try keepDocument("Outline.", named: "outline.md", for: writingID)
+        let path = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        let source = source!
+        await server.whileWriting(path) {
+            _ = try? LibrarySyncPass.deleteDocument(
+                writingID: writingID, name: "outline.md", seen: Data("Outline.".utf8), source: source, device: "iPhone"
+            )
+        }
+        _ = try await pass().run()
+        XCTAssertNotNil(try database.libraryRecords(source: source).record(path, in: source), "kept to date the deletion")
+
+        await server.failNextDelete(of: path)
+        _ = try? await pass().run()
+        XCTAssertNil(try database.pendingManifestDeletions(source: source)[path], "carried")
+        XCTAssertNil(try database.libraryRecords(source: source).record(path, in: source), "and its record with it")
+
+        guard case .synced(_, let report) = try await pass().run() else { return XCTFail("expected a synced pass") }
+        XCTAssertFalse(report.deletionsNotCarriedOut.contains(path), "not reported as kept here")
+        let left = await server.file(path)
+        XCTAssertNil(left, "removed by a later pass")
+    }
+
     /// Made again under a name deleted here, then deleted again while
     /// another device's edit of it comes down: the second deletion is the
     /// writer's latest word, not the one the re-creation undid, and the

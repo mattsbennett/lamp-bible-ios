@@ -4193,7 +4193,14 @@ extension ModuleDatabase {
 
     /// Once a written bundle carries them. Matched on time as well as path,
     /// so a newer change to the same file, made while the pass ran, stays.
-    func clearPendingManifestChanges(_ carried: [SyncPendingManifestChange]) throws {
+    ///
+    /// `forgetting`: deletions whose record was kept only to date them,
+    /// which a carried deletion has done. Each record goes with its
+    /// deletion, unless a newer deletion of the path, made while the pass
+    /// ran, still waits and needs it.
+    func clearPendingManifestChanges(
+        _ carried: [SyncPendingManifestChange], forgetting: [SyncPendingManifestChange] = []
+    ) throws {
         guard !carried.isEmpty else { return }
         try write { db in
             for change in carried {
@@ -4201,6 +4208,15 @@ extension ModuleDatabase {
                     DELETE FROM sync_pending_manifest_changes
                     WHERE source = ? AND path = ? AND at = ?
                     """, arguments: [change.source, change.path, change.at])
+            }
+            for change in forgetting {
+                try db.execute(sql: """
+                    DELETE FROM sync_file_records
+                    WHERE source = ? AND path = ? AND NOT EXISTS (
+                        SELECT 1 FROM sync_pending_manifest_changes
+                        WHERE source = ? AND path = ? AND change = 'delete'
+                    )
+                    """, arguments: [change.source, change.path, change.source, change.path])
             }
         }
     }
