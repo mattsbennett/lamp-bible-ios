@@ -522,20 +522,15 @@ struct DevotionalPickerView: View {
         .padding(.bottom, 4)
     }
 
-    /// The one action this list exists for, in the accent so it is found at
-    /// once.
-    @ViewBuilder
+    /// A new writing, on the bar's own glass in the text's colour, as the
+    /// writing view's bar buttons are: not in the accent.
     private var newWritingButton: some View {
-        let button = Button(action: { showingNewDevotional = true }) {
+        Button(action: { showingNewDevotional = true }) {
             Image(systemName: "plus")
                 .font(.body.weight(.semibold))
         }
+        .tint(.primary)
         .accessibilityLabel("New Writing")
-        if #available(iOS 26.0, *) {
-            button.buttonStyle(.glassProminent)
-        } else {
-            button
-        }
     }
 
     private var conflictBanner: some View {
