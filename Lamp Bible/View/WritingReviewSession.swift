@@ -211,9 +211,8 @@ final class WritingRestoreObligations {
         let known: [String]
         /// Its place in line, until spent or given up.
         var place: WritingReviewWork.Reservation?
-        /// Every mark was cleared while it was owed: a mark its record makes
-        /// on unread words it put back is cleared too, as that clear would
-        /// have cleared it.
+        /// Every mark was cleared while it was owed: its record doesn't mark
+        /// unread words it put back, which that clear answered.
         var clearedSince = false
     }
 
@@ -312,16 +311,11 @@ final class WritingRestoreObligations {
     ) async {
         guard !restores.isEmpty else { return }
         let written = try? store.updating(writingID: writingID) { review in
-            restores.reduce(review) { review, restore in
-                var recorded = review.restoringWording(
-                    restore.plan, from: restore.base, to: restore.restored, carryingFrom: restore.known
+            restores.reduce(review) {
+                $0.restoringWording(
+                    $1.plan, from: $1.base, to: $1.restored,
+                    remarkingUnread: !$1.clearedSince, carryingFrom: $1.known
                 )
-                guard restore.clearedSince else { return recorded }
-                let held = Set(review.marks.map(\.id))
-                for made in recorded.located(in: restore.restored) where !held.contains(made.id) {
-                    for range in made.ranges { recorded = recorded.clearing(range, in: restore.restored) }
-                }
-                return recorded
             }
         }
         await MainActor.run {
