@@ -194,11 +194,10 @@ struct DevotionalView: View {
 
     // Slide decks made from this writing on a Mac
     @State private var linkedDecks: [PresentationDeckEntry] = []
-    /// The writing's other files, its outline and notes, below the prose.
+    /// The writing's other files, its outline and notes, kept beside it:
+    /// whether there are any says whether the files button is shown.
     @State private var documents: [WritingDocument] = []
-    @AppStorage("writingOtherFilesExpanded") private var otherFilesExpanded = false
-    @State private var openDocuments: Set<String> = []
-    @State private var editingDocument: WritingDocumentEditing?
+    @State private var showingFiles = false
     @State private var openDeck: PresentationDeckEntry?
 
     // Table insertion state
@@ -300,6 +299,10 @@ struct DevotionalView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack(spacing: 16) {
+                        if showsFilesButton {
+                            filesButton
+                                .foregroundColor(.primary)
+                        }
                         Button(action: {
                             let newMultiplier = presentFontMultiplier - 0.25
                             presentFontMultiplier = max(newMultiplier, 1.0)
@@ -374,10 +377,16 @@ struct DevotionalView: View {
         .onReceive(NotificationCenter.default.publisher(for: .writingDocumentsDidChange)) { _ in
             Task { await reloadDocuments() }
         }
-        .sheet(item: $editingDocument) { editing in
-            WritingDocumentEditor(editing: editing) {
-                Task { await reloadDocuments() }
-            }
+        // Read again once closed: a file added or deleted there with sync
+        // off says so to nothing else.
+        .sheet(isPresented: $showingFiles, onDismiss: { Task { await reloadDocuments() } }) {
+            WritingFilesSheet(
+                writingID: devotional.meta.id,
+                writingTitle: devotional.meta.title,
+                canEdit: writingIsEditable,
+                fontSize: fontSize
+            )
+            .presentationDetents([.medium, .large])
         }
         .sheet(item: $linkedWriting) { linked in
             LinkedWritingSheet(linked: linked, onNavigateToVerse: onNavigateToVerse)
@@ -703,15 +712,19 @@ struct DevotionalView: View {
         .accessibilityHint(mode == .edit ? "Edits the title and details" : "")
     }
 
-    private var documentsSection: some View {
-        WritingDocumentsSection(
-            documents: documents,
-            expanded: $otherFilesExpanded,
-            openFiles: $openDocuments,
-            canEdit: writingIsEditable,
-            onEdit: { editingDocument = WritingDocumentEditing(writingID: devotional.meta.id, document: $0) },
-            onAdd: { editingDocument = WritingDocumentEditing(writingID: devotional.meta.id, document: nil) }
-        )
+    /// The writing's files, the way to its outline and notes: shown in every
+    /// mode once it has any, and while it can be written, to add one.
+    private var showsFilesButton: Bool {
+        !documents.isEmpty || (writingIsEditable && mode != .present)
+    }
+
+    private var filesButton: some View {
+        Button { showingFiles = true } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.body.weight(.semibold))
+        }
+        .accessibilityLabel("Files")
+        .accessibilityValue(documents.isEmpty ? "No other files" : "\(documents.count) other files")
     }
 
     private func reloadDocuments() async {
@@ -720,7 +733,6 @@ struct DevotionalView: View {
         // Not over another writing's, opened meanwhile.
         guard id == devotional.meta.id else { return }
         documents = loaded
-        openDocuments.formIntersection(loaded.map(\.name))
     }
 
     private var tiptapWebView: some View {
@@ -735,8 +747,6 @@ struct DevotionalView: View {
                 moduleId: moduleId,
                 header: readModeHeader,
                 showsHeader: showsDocumentHeader,
-                footer: documents.isEmpty ? nil : AnyView(documentsSection),
-                showsFooter: !documents.isEmpty,
                 onHeaderScrolledAway: { away in
                     if headerScrolledAway != away { headerScrolledAway = away }
                 },
@@ -1408,6 +1418,11 @@ struct DevotionalView: View {
             ToolbarItem(placement: .bottomBar) {
                 Spacer()
             }
+            if showsFilesButton {
+                ToolbarItem(placement: .bottomBar) {
+                    filesButton
+                }
+            }
             ToolbarItem(placement: .bottomBar) {
                 Menu {
                     Button(action: { withAnimation { mode = .present } }) {
@@ -1426,13 +1441,6 @@ struct DevotionalView: View {
                     Divider()
                     Button(action: { showingMetadataEditor = true }) {
                         Label("Edit Metadata", systemImage: "info")
-                    }
-                    if writingIsEditable {
-                        Button(action: {
-                            editingDocument = WritingDocumentEditing(writingID: devotional.meta.id, document: nil)
-                        }) {
-                            Label("Add Other File", systemImage: "doc.badge.plus")
-                        }
                     }
                     if mode == .edit && syncIsOff {
                         Divider()
@@ -1842,7 +1850,28 @@ struct DevotionalView: View {
         let store = LibrarySyncPass.documentStore
         let id = devotional.meta.id
         guard (try? store.documents(writingID: id))?.isEmpty != false else { return }
-        let outline = "# Outline\n\n1. The shepherd **knows** his sheep\n2. The sheep *know* his voice\n3. Other sheep, one flock"
+        let outline = """
+            # Outline
+
+            1. The shepherd **knows** his sheep
+               - by name (v. 3)
+               - and leads them out
+            2. The sheep *know* his voice
+            3. Other sheep, one flock
+
+            > I am the good shepherd. (John 10:11)
+
+            ## Images
+
+            | Image | Verse | Meaning |
+            |:--|:--|:--|
+            | Door | 10:7 | The only way in to the fold, and so to *life* |
+            | Shepherd | 10:11 | One who lays down his life for the sheep, as a hired hand will not |
+
+            ```
+            John 10:11  ego eimi ho poimen ho kalos
+            ```
+            """
         _ = try? store.write(Data(outline.utf8), writingID: id, name: "outline.md", replacing: nil)
         _ = try? store.write(Data("John 10:1-18\nPsalm 23\nEzekiel 34".utf8), writingID: id, name: "sources.txt", replacing: nil)
         let copy = LampWritingWorkspaceLayout.keptCopyName(of: "outline.md", device: "iPhone", at: Date())

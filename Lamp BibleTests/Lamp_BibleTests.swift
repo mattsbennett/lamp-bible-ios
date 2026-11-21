@@ -10161,3 +10161,84 @@ final class WritingReviewSessionTests: XCTestCase {
         )
     }
 }
+
+final class WritingDocumentTextTests: XCTestCase {
+    /// Read back through a store, as the sheet reads one.
+    private func document(_ name: String, _ text: String) throws -> WritingDocument {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let store = LampWritingDocumentStore(rootURL: root)
+        let id = UUID().uuidString
+        XCTAssertTrue(try store.write(Data(text.utf8), writingID: id, name: name, replacing: nil))
+        return try XCTUnwrap(store.documents(writingID: id).first)
+    }
+
+    func testAFileIsCutWhereACodeBlockOrATableIs() {
+        let text = """
+        # Outline
+
+        - one
+        ```swift
+        let a = 1
+        ```
+        After.
+        | A | B |
+        |:--|--:|
+        | 1 | 2 |
+        End.
+        """
+        XCTAssertEqual(WritingDocumentText.segments(text), [
+            .markdown("# Outline\n\n- one"),
+            .code("let a = 1"),
+            .markdown("After."),
+            .table([["A", "B"], ["1", "2"]]),
+            .markdown("End."),
+        ])
+    }
+
+    func testATablesCellsAreItsOwn() {
+        XCTAssertEqual(WritingDocumentText.cells("| Door \\| gate | 10:7 |"), ["Door | gate", "10:7"])
+        XCTAssertEqual(WritingDocumentText.cells("a | b"), ["a", "b"])
+        XCTAssertEqual(WritingDocumentText.cells("| | B |"), ["", "B"])
+        XCTAssertEqual(WritingDocumentText.cells("| C:\\Users\\a | \\d+ \\* |"), ["C:\\Users\\a", "\\d+ \\*"])
+        XCTAssertEqual(String(WritingDocumentText.cell("\\*literal\\*").characters), "*literal*")
+        XCTAssertEqual(String(WritingDocumentText.cell("**Door** gate").characters), "Door gate")
+
+    }
+
+    func testAFenceClosesOnlyOnItsOwnMarkAtItsLength() {
+        let text = "~~~~\n```\nstill code\n~~~\n~~~~~\nprose"
+        XCTAssertEqual(WritingDocumentText.segments(text), [
+            .code("```\nstill code\n~~~"),
+            .markdown("prose"),
+        ])
+        XCTAssertEqual(WritingDocumentText.segments("```\nnever closed\n# not a heading"), [
+            .code("never closed\n# not a heading"),
+        ])
+        XCTAssertEqual(WritingDocumentText.segments("```\n```"), [.code("")])
+        XCTAssertEqual(WritingDocumentText.segments("|x| = 1\n| a |"), [.markdown("|x| = 1\n| a |")])
+        XCTAssertEqual(WritingDocumentText.segments("```a` b\nprose"), [.markdown("```a` b\nprose")])
+        XCTAssertEqual(WritingDocumentText.segments("```\r\ncode\r\n```\r\nprose"), [.code("code"), .markdown("prose")])
+        XCTAssertEqual(WritingDocumentText.segments("A | B\n--|--\n| 1 | 2 |\nx | y\nprose"), [
+            .table([["A", "B"], ["1", "2"], ["x", "y"]]), .markdown("prose"),
+        ])
+    }
+
+    func testMarkdownIsDrawnWithoutItsMarkersAndPlainTextAsItIs() throws {
+        let markdown = WritingDocumentText.prose(
+            try document("outline.md", "# Title\n- **bold** point\n> quoted").text, fontSize: 18
+        ).string
+        XCTAssertFalse(markdown.contains("#"))
+        XCTAssertFalse(markdown.contains("**"))
+        XCTAssertFalse(markdown.contains("- "))
+        XCTAssertFalse(markdown.contains(">"))
+        XCTAssertTrue(markdown.contains("bold point"))
+        let linked = WritingDocumentText.prose("See [John 10](lampbible://verse/43010001).", fontSize: 18)
+        let at = (linked.string as NSString).range(of: "John 10").location
+        XCTAssertEqual(linked.attribute(.link, at: at, effectiveRange: nil) as? URL, URL(string: "lampbible://verse/43010001"))
+        let plain = "# kept\n- as typed"
+        let file = try document("sources.txt", plain)
+        XCTAssertFalse(WritingDocumentText.isMarkdown(file.name))
+        XCTAssertEqual(WritingDocumentText.plain(file.text, fontSize: 18).string, plain)
+    }
+}

@@ -34,10 +34,11 @@ enum NoteMarkdown {
     /// `media` is where each of the note's pictures is on this device, by id.
     /// `serif` and `lineSpacing` are the tool panel's settings; without them
     /// a note is set as it always was, in sans, its lines a third of its size
-    /// apart.
+    /// apart. `linksTapped` keeps each link's target on its text, for a text
+    /// view that opens it, as a note's doesn't.
     static func render(
         _ markdown: String, fontSize: CGFloat, serif: Bool = false, lineSpacing: CGFloat? = nil,
-        media: [String: URL] = [:]
+        media: [String: URL] = [:], linksTapped: Bool = false
     ) -> Rendered {
         let out = NSMutableAttributedString()
         var links: [VerseLink] = []
@@ -68,7 +69,8 @@ enum NoteMarkdown {
                 continue
             }
             let line = inline(
-                block.text, attributes: attributes, fontSize: block.fontSize(fontSize), bold: block.isHeading, serif: serif
+                block.text, attributes: attributes, fontSize: block.fontSize(fontSize), bold: block.isHeading, serif: serif,
+                linksTapped: linksTapped
             )
             for link in line.links {
                 links.append(VerseLink(
@@ -209,7 +211,8 @@ enum NoteMarkdown {
     }
 
     private static func inline(
-        _ text: String, attributes: [NSAttributedString.Key: Any], fontSize: CGFloat, bold: Bool, serif: Bool
+        _ text: String, attributes: [NSAttributedString.Key: Any], fontSize: CGFloat, bold: Bool, serif: Bool,
+        linksTapped: Bool = false
     ) -> (text: NSAttributedString, links: [InlineLink], pictures: [(id: String, caption: String)]) {
         guard !text.isEmpty else { return (NSAttributedString(), [], []) }
         let options = AttributedString.MarkdownParsingOptions(
@@ -254,6 +257,7 @@ enum NoteMarkdown {
             }
             if let url = run.link {
                 runAttributes[.foregroundColor] = UIColor.lampLink
+                if linksTapped { runAttributes[.link] = url }
                 if let verse = verseLink(url) {
                     links.append(InlineLink(
                         range: NSRange(location: out.length, length: (piece as NSString).length),

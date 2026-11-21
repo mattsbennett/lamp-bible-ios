@@ -25,12 +25,6 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     /// The header padding the page last took, so a host update that measures
     /// the same header again costs no script.
     private var appliedReadPadding: Int?
-    private var pendingFooterSpace: CGFloat?
-    /// The space last left below the writing for the host's footer.
-    private var appliedFooterSpace: Int?
-    /// Told where the writing ends on the page, in the page's own
-    /// coordinates, whenever that moves, once a footer is asked for.
-    var onProseEnd: ((CGFloat) -> Void)?
 
     /// Called when editor content changes (debounced from JS)
     var onContentChanged: ((String) -> Void)?
@@ -92,9 +86,6 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
               let type = body["type"] as? String else { return }
 
         switch type {
-        case "proseEnd":
-            if let y = body["y"] as? Double { onProseEnd?(CGFloat(y)) }
-
         case "contentChanged":
             if let markdown = body["markdown"] as? String {
                 onContentChanged?(markdown)
@@ -135,7 +126,6 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
             isReady = true
             // A page that has just loaded holds none of what was sent before.
             appliedReadPadding = nil
-            appliedFooterSpace = nil
             // Apply any pending state
             if let content = pendingContent {
                 pendingContent = nil
@@ -168,10 +158,6 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
             if let readPadding = pendingReadPadding {
                 pendingReadPadding = nil
                 setReadPadding(top: readPadding)
-            }
-            if let footerSpace = pendingFooterSpace {
-                pendingFooterSpace = nil
-                setFooterSpace(footerSpace)
             }
             if reviewMarks != nil { sendReviewMarks() }
             onReady?()
@@ -449,45 +435,6 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
         evaluateJS("window.editorAPI.setPresentPadding(\(Int(bottom)))")
     }
 
-    /// Space below the writing while it's read, for the host's section
-    /// under it, past the page's own (`TipTapWebViewContainer.readBottomPadding`);
-    /// none for zero. Set on the editor's own element, so the writing's
-    /// content is untouched.
-    func setFooterSpace(_ height: CGFloat) {
-        guard isReady else {
-            pendingFooterSpace = height
-            return
-        }
-        guard appliedFooterSpace != Int(height) else { return }
-        appliedFooterSpace = Int(height)
-        let space = Int(TipTapWebViewContainer.footerGap + height + TipTapWebViewContainer.footerClearance)
-        let padding = Int(height) > 0 ? "'\(space)px'" : "''"
-        // Where the writing ends, said again whenever the page's size
-        // changes, so the footer follows the prose rather than the foot of a
-        // page at least a screen tall.
-        evaluateJS("""
-            (function(){
-              var e = document.getElementById('tiptap-editor');
-              if (!e) { return; }
-              e.style.paddingBottom = \(padding);
-              if (window.__lampProseEnd) { window.__lampProseEnd(); return; }
-              window.__lampProseEnd = function() {
-                var prose = document.querySelector('#tiptap-editor .tiptap');
-                if (!prose) { return; }
-                var y = prose.getBoundingClientRect().bottom + window.scrollY;
-                window.webkit.messageHandlers.tiptapBridge.postMessage({type: 'proseEnd', y: y});
-              };
-              // The prose too: a short page stays a screen tall while it grows.
-              var observer = new ResizeObserver(window.__lampProseEnd);
-              // Its border box: the header's padding moves the prose too.
-              observer.observe(e, {box: 'border-box'});
-              var prose = document.querySelector('#tiptap-editor .tiptap');
-              if (prose) { observer.observe(prose); }
-              window.__lampProseEnd();
-            })()
-            """)
-    }
-
     func setReadPadding(top: CGFloat) {
         guard isReady else {
             pendingReadPadding = top
@@ -497,8 +444,7 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
         appliedReadPadding = Int(top)
         // The same header tops the page while writing, over the editor's
         // own top padding (editor.css, body.mode-edit).
-        // The writing's end moves with it, for a footer under it.
-        evaluateJS("document.documentElement.style.setProperty(\"--read-top-padding\", \"\(Int(top))px\"); document.documentElement.style.setProperty(\"--edit-top-padding\", \"\(Int(top))px\"); if (window.__lampProseEnd) { window.__lampProseEnd(); }")
+        evaluateJS("document.documentElement.style.setProperty(\"--read-top-padding\", \"\(Int(top))px\"); document.documentElement.style.setProperty(\"--edit-top-padding\", \"\(Int(top))px\")")
     }
 
     // MARK: - Mode Switching

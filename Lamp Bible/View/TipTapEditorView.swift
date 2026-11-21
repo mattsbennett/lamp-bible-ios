@@ -17,16 +17,6 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
     private var showsHeader = false
     private var headerScrolledAway = false
     var onHeaderHeightChange: ((CGFloat) -> Void)?
-    /// Below the writing while it's read: the host's own section, a
-    /// writing's other files. Kept inside the page's scroll view, where it
-    /// scrolls with the page and a drag on it scrolls the page, in space the
-    /// page leaves for it at its foot (`onFooterHeightChange`).
-    private var footerHostingController: UIHostingController<AnyView>?
-    private var footerContainerView: UIView?
-    private var footerHeight: CGFloat = 0
-    private var showsFooter = false
-    private var contentSizeObservation: NSKeyValueObservation?
-    var onFooterHeightChange: ((CGFloat) -> Void)?
     /// Told when the header scrolls up out of sight and back, so the host
     /// can put the title in its bar while the header is hidden.
     var onHeaderScrolledAway: ((Bool) -> Void)?
@@ -59,9 +49,6 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
 
         clipsToBounds = true
         addSubview(webView)
-        contentSizeObservation = webView.scrollView.observe(\.contentSize) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.updateFooterPosition() }
-        }
     }
 
     required init?(coder: NSCoder) {
@@ -72,7 +59,6 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
         super.layoutSubviews()
         webView.frame = bounds
         updateHeaderFrame()
-        updateFooterFrame()
     }
 
     override func safeAreaInsetsDidChange() {
@@ -126,85 +112,6 @@ class TipTapWebViewContainer: UIView, UIScrollViewDelegate {
             headerHeight = 0
             reportHeaderScrolledAway(false)
         }
-    }
-
-    /// `shows` is whether the footer is drawn: only in reading.
-    func setFooter(_ content: AnyView?, shows: Bool) {
-        showsFooter = shows && content != nil
-        if let content {
-            // Its own height, said whenever it changes: a section folded or
-            // opened inside it changes it without the host updating.
-            let content = AnyView(
-                content
-                    .fixedSize(horizontal: false, vertical: true)
-                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { [weak self] _ in
-                        self?.setNeedsLayout()
-                    }
-                    .ignoresSafeArea()
-            )
-            if footerHostingController == nil {
-                let container = UIView()
-                webView.scrollView.addSubview(container)
-                footerContainerView = container
-                let hostingController = UIHostingController(rootView: content)
-                hostingController.safeAreaRegions = []
-                hostingController.view.backgroundColor = .clear
-                container.addSubview(hostingController.view)
-                footerHostingController = hostingController
-            } else {
-                footerHostingController?.rootView = content
-                footerHostingController?.view.invalidateIntrinsicContentSize()
-            }
-        }
-        footerContainerView?.isHidden = !showsFooter
-        if showsFooter {
-            setNeedsLayout()
-        } else if footerHeight != 0 {
-            footerHeight = 0
-            onFooterHeightChange?(0)
-        }
-    }
-
-    /// Between the writing's end and the footer.
-    static let footerGap: CGFloat = 24
-    /// Below the footer, so its last line scrolls clear of the floating
-    /// bottom bar.
-    static let footerClearance: CGFloat = 120
-    /// Where the writing ends on the page, as the page last said.
-    private var proseEnd: CGFloat?
-
-    func setProseEnd(_ y: CGFloat) {
-        guard y != proseEnd else { return }
-        proseEnd = y
-        updateFooterPosition()
-    }
-
-    private func updateFooterFrame() {
-        guard showsFooter, let footerView = footerHostingController?.view, bounds.width > 0 else { return }
-        footerView.setNeedsLayout()
-        footerView.layoutIfNeeded()
-        let targetSize = CGSize(width: bounds.width - 40, height: .greatestFiniteMagnitude)
-        let size = footerHostingController?.sizeThatFits(in: targetSize) ?? .zero
-        let frame = CGRect(x: 20, y: 0, width: bounds.width - 40, height: size.height)
-        if footerView.frame != frame { footerView.frame = frame }
-        let height = ceil(size.height)
-        if height != footerHeight {
-            footerHeight = height
-            onFooterHeightChange?(height)
-        }
-        updateFooterPosition()
-    }
-
-    private func updateFooterPosition() {
-        guard showsFooter, let container = footerContainerView, footerHeight > 0 else { return }
-        let contentHeight = webView.scrollView.contentSize.height
-        let top = proseEnd.map { $0 + Self.footerGap }
-            ?? contentHeight - Self.footerClearance - footerHeight
-        // Only when it moves: the scroll view answers a subview's change by
-        // working out its content again, which calls back here.
-        let frame = CGRect(x: 0, y: max(0, top), width: bounds.width, height: footerHeight)
-        if container.frame != frame { container.frame = frame }
-        if webView.scrollView.subviews.last !== container { webView.scrollView.bringSubviewToFront(container) }
     }
 
     // MARK: - UIScrollViewDelegate
@@ -270,8 +177,6 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
     var moduleId: String?
     var header: Header?
     var showsHeader: Bool = false
-    var footer: AnyView?
-    var showsFooter: Bool = false
     var onHeaderScrolledAway: ((Bool) -> Void)?
     var onCoordinatorReady: ((TipTapEditorCoordinator) -> Void)?
 
@@ -285,8 +190,6 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         moduleId: String? = nil,
         header: Header?,
         showsHeader: Bool,
-        footer: AnyView? = nil,
-        showsFooter: Bool = false,
         onHeaderScrolledAway: ((Bool) -> Void)? = nil,
         onCoordinatorReady: ((TipTapEditorCoordinator) -> Void)? = nil
     ) {
@@ -299,8 +202,6 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         self.moduleId = moduleId
         self.header = header
         self.showsHeader = showsHeader
-        self.footer = footer
-        self.showsFooter = showsFooter
         self.onHeaderScrolledAway = onHeaderScrolledAway
         self.onCoordinatorReady = onCoordinatorReady
     }
@@ -317,10 +218,6 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
         container.onHeaderHeightChange = { [weak coordinator] padding in
             coordinator?.setReadPadding(top: padding)
         }
-        container.onFooterHeightChange = { [weak coordinator] height in
-            coordinator?.setFooterSpace(height)
-        }
-        coordinator.onProseEnd = { [weak container] y in container?.setProseEnd(y) }
 
         // Register message handler
         webView.configuration.userContentController.add(coordinator, name: "tiptapBridge")
@@ -384,10 +281,6 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
             coordinator?.setReadPadding(top: padding)
         }
         container.onHeaderScrolledAway = onHeaderScrolledAway
-        container.onFooterHeightChange = { [weak coordinator] height in
-            coordinator?.setFooterSpace(height)
-        }
-        coordinator.onProseEnd = { [weak container] y in container?.setProseEnd(y) }
 
         // Update the content changed callback with fresh binding reference
         let contentBinding = $markdownContent
@@ -435,7 +328,6 @@ struct TipTapEditorView<Header: View>: UIViewRepresentable {
 
         // Update header
         container.setHeader(header, for: viewMode, shows: showsHeader)
-        container.setFooter(footer, shows: showsFooter && viewMode == .read)
     }
 
     static func dismantleUIView(_ container: TipTapWebViewContainer, coordinator: TipTapEditorCoordinator) {
