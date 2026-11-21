@@ -10034,4 +10034,130 @@ final class WritingReviewSessionTests: XCTestCase {
 
         XCTAssertEqual(try store.review(writingID: id).located(in: saved).count, 1, "nothing cleared")
     }
+
+    /// A restore pressed on the page: the text with the old wording back is
+    /// handed to the page, worked out in the page's own text, and once the
+    /// page has taken it the mark is retired and what it held recorded.
+    func testARestoreGoesThroughThePageAndIsRecorded() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let old = "One two."
+        let saved = "One alpha two."
+        try store.save(LampWritingReview(writingID: id).markingAssistantChange(from: old, to: saved))
+
+        let session = WritingReviewSession()
+        var handed: [(String, String)] = []
+        session.applyRestore = { text, expected in
+            handed.append((text, expected))
+            return text
+        }
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where !session.canRestore { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertTrue(session.canRestore)
+        XCTAssertEqual(session.markedChanges.compactMap { $0?.before }, [""], "what comes back is nothing: the words were put in")
+        XCTAssertEqual(session.markedChanges.compactMap { $0?.now.trimmingCharacters(in: .whitespaces) }, ["alpha"])
+        let changeID = try XCTUnwrap(session.markedChanges.first??.id)
+
+        session.restore(changeID: changeID, pageText: saved)
+        for _ in 0..<50 where handed.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+        await WritingReviewWork.shared.drained()
+
+        XCTAssertEqual(handed.map(\.0), [old], "the page is handed the text as it was, spaces and all")
+        XCTAssertEqual(handed.map(\.1), [saved], "to take only if it still holds what the press was made in")
+        let review = try store.review(writingID: id)
+        XCTAssertTrue(review.marks.isEmpty)
+        XCTAssertEqual(review.restorations.map(\.restored), [""])
+        XCTAssertEqual(review.restorations.map { $0.discarded.trimmingCharacters(in: .whitespaces) }, ["alpha"])
+        XCTAssertNil(session.restoreRefusal)
+    }
+
+    /// A page that has moved on refuses the text, and nothing is recorded.
+    func testARestoreThePageRefusesChangesNothing() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let saved = "One alpha two."
+        let stored = LampWritingReview(writingID: id).markingAssistantChange(from: "One two.", to: saved)
+        try store.save(stored)
+
+        let session = WritingReviewSession()
+        session.applyRestore = { _, _ in nil }
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where !session.canRestore { try await Task.sleep(for: .milliseconds(50)) }
+        let start = String(LampWritingReview.markStart), end = String(LampWritingReview.markEnd)
+        session.restore(markedMarkdown: "One \(start)alpha\(end) two.", pageText: saved)
+        for _ in 0..<50 where session.restoreRefusal == nil { try await Task.sleep(for: .milliseconds(50)) }
+        await WritingReviewWork.shared.drained()
+
+        XCTAssertEqual(session.restoreRefusal, WritingRestoreRefusal.moved)
+        XCTAssertEqual(try store.review(writingID: id), stored)
+    }
+
+    /// Only the marks a restore puts back change in the file: another mark,
+    /// and its wording, stay exactly as they were, for the save after to
+    /// carry.
+    func testARestoreChangesOnlyTheMarksItPutsBack() throws {
+        let old = "Alpha one here. Beta two there."
+        let text = "Alpha uno here. Beta dos there."
+        let stored = LampWritingReview(writingID: "w").markingAssistantChange(from: old, to: text)
+        let ranges = stored.highlightedRanges(in: text)
+        XCTAssertEqual(ranges.count, 2)
+        let plan = try XCTUnwrap(stored.restorePlan(for: ranges[0], in: text))
+        let restored = WritingReviewSession.applying(plan, to: text)
+        XCTAssertEqual(restored, "Alpha one here. Beta dos there.")
+
+        let result = stored.restoringWording(plan, from: text, to: restored, carryingFrom: [text])
+        let other = stored.marks.filter { !plan.marks.contains($0.id) }
+        XCTAssertEqual(other.count, 1)
+        XCTAssertEqual(result.marks, other, "the other mark is left as it was")
+        XCTAssertEqual(Set(result.wordings.map(\.markID)), Set(other.map(\.id)))
+        XCTAssertEqual(result.retired.map(\.id), plan.marks)
+        XCTAssertEqual(result.restorations.map(\.restored), ["one"])
+        XCTAssertEqual(WritingReviewSession.changes(in: result, text: restored).map { $0?.before }, ["two"])
+    }
+
+    /// A change is offered by the marks it puts back, and one whose words
+    /// have moved says so; a press by id restores only those marks, though
+    /// the passage beside it is offered too.
+    func testChangesNameTheirMarksAndSayWhenTheyCantBePutBack() throws {
+        let old = "Alpha one here. Beta two there."
+        let text = "Alpha uno here. Beta dos there."
+        let review = LampWritingReview(writingID: "w").markingAssistantChange(from: old, to: text)
+        let changes = WritingReviewSession.changes(in: review, text: text)
+        XCTAssertEqual(changes.map { $0?.before }, ["one", "two"])
+        XCTAssertEqual(Set(changes.compactMap { $0?.id }).count, 2)
+        for (change, mark) in zip(changes, review.located(in: text)) {
+            XCTAssertEqual(change?.id, WritingReviewChange.id(of: [mark.id]))
+        }
+
+        // Typed into: the record kept its wording, so the writer is told.
+        let before = "Begin. End."
+        let inserted = "Begin. The shepherd calls his own sheep by name. End."
+        let typed = "Begin. The shepherd calls his very own sheep by name. End."
+        let carried = LampWritingReview(writingID: "w").markingAssistantChange(from: before, to: inserted)
+            .carryingWriterEdit(from: inserted, to: typed)
+        let after = WritingReviewSession.changes(in: carried, text: typed)
+        XCTAssertFalse(after.isEmpty)
+        XCTAssertTrue(after.allSatisfy { $0?.reason == WritingReviewChange.edited && $0?.before == nil }, "\(after)")
+
+        // Kept nowhere: nothing said.
+        var unkept = review
+        unkept.wordings = []
+        XCTAssertEqual(WritingReviewSession.changes(in: unkept, text: text), [nil, nil])
+    }
+
+    /// The selection's refusals say which no it is, in the Mac's words.
+    func testARestoreRefusalSaysWhich() {
+        let range = NSRange(location: 3, length: 0)
+        XCTAssertEqual(WritingRestoreRefusal.text(for: .notExact, selecting: range), WritingRestoreRefusal.edited)
+        XCTAssertEqual(WritingRestoreRefusal.text(for: .notKept, selecting: range), WritingRestoreRefusal.notKept)
+        XCTAssertEqual(WritingRestoreRefusal.text(for: .nothingTouched, selecting: range), WritingRestoreRefusal.caretOutside)
+        XCTAssertEqual(
+            WritingRestoreRefusal.text(for: .nothingTouched, selecting: NSRange(location: 0, length: 4)),
+            WritingRestoreRefusal.nothingSelected
+        )
+    }
 }

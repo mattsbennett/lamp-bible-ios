@@ -25,6 +25,8 @@ final class Probe: NSObject, WKScriptMessageHandler {
     var footnoteTaps: [(id: String, editing: Bool)] = []
     var reviewClears: [String] = []
     var reviewClearTexts: [String] = []
+    var reviewRestores: [(id: String, plain: String)] = []
+    var reviewStale = 0
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         guard let body = m.body as? [String: Any], let type = body["type"] as? String else { return }
         tokens[type, default: []].append(body["token"] as? String)
@@ -36,6 +38,10 @@ final class Probe: NSObject, WKScriptMessageHandler {
         if type == "reviewClear" {
             reviewClears.append(body["markdown"] as? String ?? "")
             reviewClearTexts.append(body["plain"] as? String ?? "")
+        }
+        if type == "reviewMarksStale" { reviewStale += 1 }
+        if type == "reviewRestore" {
+            reviewRestores.append((body["id"] as? String ?? "", body["plain"] as? String ?? ""))
         }
         if type == "searchChanged" { searches.append((body["count"] as? Int ?? -1, body["current"] as? Int ?? -1, body["token"] as? String)) }
     }
@@ -1294,7 +1300,7 @@ let longLists: [(name: String, item: String, last: String, word: String)] = [
 ]
 
 func longListClears(_ index: Int = 0) {
-    guard index < longLists.count else { exit(failed ? 1 : 0) }
+    guard index < longLists.count else { return restoreButton() }
     let item = longLists[index]
     js("""
         (() => {
@@ -1457,6 +1463,366 @@ func reviewMarks() {
             }
         }
     }
+}
+
+// Putting the assistant's change back: a restore button beside the clear
+// where the host says a change can be put back, a preview of both wordings,
+// the passage sent back as a clear sends it, and the host's text taken in
+// as one edit that undoes.
+func restoreButton() {
+    print("-- restoring wording")
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('One deux three.\\n\\nFour five.');
+            const placed = rv.setReviewMarks('One \\uE000deux\\uE001 three.\\n\\nFour\\uE002 five.', [{ id: 'm1', now: 'deux', before: '**two**' }, null]);
+            const buttons = Array.from(document.querySelectorAll('.review-clear, .review-restore')).map(b => b.classList[0]);
+            const restore = document.querySelector('.review-restore');
+            restore.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            const panel = document.querySelector('.review-popover');
+            const texts = panel ? Array.from(panel.querySelectorAll('.review-popover-text')).map(t => t.innerHTML) : [];
+            const labels = panel ? Array.from(panel.querySelectorAll('.review-popover-label')).map(t => t.textContent) : [];
+            panel?.querySelector('.review-popover-restore')?.click();
+            return [placed, buttons, labels, texts, !document.querySelector('.review-popover'), rv.getContent()]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        guard parts.count == 6 else { check(false, "restore read (read: \(String(describing: r)))"); exit(1) }
+        check(parts[0] as? Bool == true, "marks with what they'd put back are placed")
+        check((parts[1] as? [String]) == ["review-clear", "review-restore", "review-clear"], "a restore button beside the clear only where a change can be put back (read: \(String(describing: parts[1])))")
+        check((parts[2] as? [String]) == ["Now", "Original"], "the preview names both (read: \(String(describing: parts[2])))")
+        check((parts[3] as? [String]) == ["<p>deux</p>", "<p><strong>two</strong></p>"], "and shows each as the page shows it (read: \(String(describing: parts[3])))")
+        check(parts[4] as? Bool == true && parts[5] as? String == "One deux three.\n\nFour five.", "pressed, it closes and leaves the text to the host (read: \(String(describing: parts[5])))")
+        after(100) {
+            let sent = probe.reviewRestores.last
+            check(sent?.id == "m1" && sent?.plain == "One deux three.\n\nFour five.",
+                  "the change goes back by its id, with the page's text (read: \(String(describing: sent)))")
+            restoreWording()
+        }
+    }
+}
+
+func restoreWording() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const before = rv.getContent();
+            const refused = rv.restoreWording('One **two** three.\\n\\nFour five.', 'Something else.');
+            const unchanged = rv.getContent();
+            const made = rv.restoreWording('One **two** three.\\n\\nFour five.', before);
+            const marks = document.querySelectorAll('.review-mark').length;
+            return [refused, unchanged, made, rv.getContent(), marks]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(parts.first is NSNull && parts.count > 1 && parts[1] as? String == "One deux three.\n\nFour five.", "a restore for text that has moved on is refused and changes nothing (read: \(String(describing: r)))")
+        check(parts.count > 3 && parts[2] as? String == "One **two** three.\n\nFour five." && parts[3] as? String == "One **two** three.\n\nFour five.", "the host's text is taken in, and the page says what it holds")
+        check(parts.count > 4 && parts[4] as? Int == 0, "and the mark put back is no longer drawn (read: \(String(describing: parts.last)))")
+        js("\(undo); window.editorAPI.getContent()") { undone in
+            check(undone as? String == "One deux three.\n\nFour five.", "Undo brings the assistant's wording back (read: \(String(describing: undone)))")
+            restoreBlocks()
+        }
+    }
+}
+
+// A paragraph the assistant put in goes whole, and one it took out comes
+// back; read mode offers no restore; typing into a change takes its offer
+// away; and the changes can be stepped through.
+func restoreBlocks() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.load('A.\\n\\nNew para.\\n\\nB.');
+            const gone = rv.restoreWording('A.\\n\\nB.', 'A.\\n\\nNew para.\\n\\nB.');
+            const back = rv.restoreWording('A.\\n\\nOld para.\\n\\nB.', 'A.\\n\\nB.');
+            rv.load('One deux three.');
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'm2', now: 'deux', before: 'two' }]);
+            rv.setMode('read');
+            const reading = getComputedStyle(document.querySelector('.review-restore')).display;
+            const notEditing = rv.restoreWording('One two three.', 'One deux three.');
+            rv.setMode('edit');
+            const editing = getComputedStyle(document.querySelector('.review-restore')).display;
+            const ed = document.querySelector('.ProseMirror').editor;
+            let typed = null;
+            if (ed) {
+                ed.commands.insertContentAt(9, 's');
+                typed = [document.querySelectorAll('.review-restore').length, document.querySelectorAll('.review-clear').length];
+                document.querySelector('.review-restore').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+                const panel = document.querySelector('.review-popover');
+                typed.push(panel ? panel.querySelector('.review-popover-reason')?.textContent ?? '' : 'no panel');
+                typed.push(panel ? panel.querySelectorAll('.review-popover-restore').length : -1);
+                rv.setMode('edit');
+            }
+            rv.load('One deux three four.');
+            rv.setReviewMarks('One \\uE000deux\\uE001 three \\uE000four\\uE001.', [null, { id: 'm3', now: 'four', before: '4' }]);
+            const ranges = [];
+            for (let i = 0; i < 3; i++) {
+                rv.goToReviewMark(true);
+                ranges.push(rv.reviewMarkdownForSelection().markdown);
+            }
+            rv.goToReviewMark(false);
+            ranges.push(rv.reviewMarkdownForSelection().markdown);
+            const current = Array.from(document.querySelectorAll('.review-current')).map(e => e.textContent);
+            let moved = null;
+            const again = document.querySelector('.ProseMirror').editor;
+            if (again) {
+                again.commands.setTextSelection(2);
+                moved = document.querySelectorAll('.review-current').length;
+            }
+            return [gone, back, reading, notEditing, editing, typed, ranges, current, moved]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        guard parts.count == 9 else { check(false, "restore blocks read (read: \(String(describing: r)))"); exit(1) }
+        check(parts[0] as? String == "A.\n\nB." && parts[1] as? String == "A.\n\nOld para.\n\nB.", "a paragraph put in goes whole, and one taken out comes back (read: \(String(describing: parts[0])), \(String(describing: parts[1])))")
+        check(parts[2] as? String == "none" && parts[3] is NSNull && parts[4] as? String != "none", "reading offers no restore, and makes none (read: \(String(describing: parts[2])), \(String(describing: parts[3])), \(String(describing: parts[4])))")
+        if let typed = parts[5] as? [Any] {
+            check(typed.count == 4 && typed[0] as? Int == 1 && typed[1] as? Int == 1 && typed[2] as? String == "Can’t be put back: you’ve edited this since" && typed[3] as? Int == 0,
+                  "typed into, a change is no longer offered, and says why (read: \(typed))")
+        } else {
+            print("note: the editor instance is not reachable from the page, so typing into a change is not driven here")
+        }
+        let steps = parts[6] as? [String] ?? []
+        check(steps == [
+            "One \u{E000}deux\u{E001} three four.",
+            "One deux three \u{E000}four\u{E001}.",
+            "One \u{E000}deux\u{E001} three four.",
+            "One deux three \u{E000}four\u{E001}.",
+        ], "the changes are stepped through, round at either end (read: \(steps))")
+        check((parts[7] as? [String]) == ["four"], "and the one landed on is drawn as such (read: \(String(describing: parts[7])))")
+        if let moved = parts[8] as? Int {
+            check(moved == 0, "until the caret moves on (read: \(moved))")
+        }
+        restoreEdges()
+    }
+}
+
+// What codex found: a deletion inside a change takes its offer; the host
+// saying a change can't be put back is said; marks sent again at the same
+// places are what a press sends; and a restore leaves what the page holds
+// beyond its Markdown (empty paragraphs at the end) where it was.
+func restoreEdges() {
+    let staleAtStart = probe.reviewStale
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('One deux three.');
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'm4', now: 'deux', before: 'two' }]);
+            const ed = document.querySelector('.ProseMirror').editor;
+            if (!ed) return null;
+            ed.commands.deleteRange({ from: 6, to: 7 });
+            const pressed = () => {
+                document.querySelector('.review-restore').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+                const panel = document.querySelector('.review-popover');
+                const read = panel ? [panel.querySelectorAll('.review-popover-reason').length, panel.querySelectorAll('.review-popover-restore').length] : null;
+                panel?.querySelector('.review-popover-restore')?.click();
+                document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                return read;
+            };
+            const deleted = pressed();
+            rv.load('One deux three.');
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'm5', now: 'deux', reason: 'edited' }]);
+            const hostSays = pressed();
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'm6', now: 'deux', before: 'two' }]);
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'm7', now: 'deux', before: 'two' }]);
+            const resent = pressed();
+            rv.load('One deux three.\\n\\nEnd.');
+            ed.commands.insertContentAt(ed.state.doc.content.size, [{ type: 'paragraph' }, { type: 'paragraph' }]);
+            const blocks = ed.state.doc.childCount;
+            const made = rv.restoreWording('One two three.\\n\\nEnd.', rv.getContent());
+            const blocksAfter = ed.state.doc.childCount;
+            // A trailing break in an earlier paragraph too: two places the page
+            // holds what its text doesn't, either side of the change.
+            rv.load('A.\\n\\nOne deux three.\\n\\nEnd.');
+            ed.commands.insertContentAt(3, { type: 'hardBreak' });
+            ed.commands.insertContentAt(ed.state.doc.content.size, [{ type: 'paragraph' }, { type: 'paragraph' }]);
+            const apart = rv.getContent();
+            const both = rv.restoreWording(apart.replace('deux', 'two'), apart);
+            const kept = [ed.state.doc.childCount, ed.state.doc.child(0).childCount];
+            ed.commands.insertContentAt(ed.state.doc.child(0).nodeSize + 8, 'X');
+            const typedAfter = rv.getContent();
+            document.querySelector('.ProseMirror').dispatchEvent(new KeyboardEvent('keydown', {key: 'z', code: 'KeyZ', metaKey: true, bubbles: true, cancelable: true}));
+            const undoneOnce = rv.getContent();
+            // Two equal paragraphs, empty ones before them only the page has:
+            // the second is the one changed.
+            rv.load('X.\\n\\nX.');
+            ed.commands.insertContentAt(0, [{ type: 'paragraph' }, { type: 'paragraph' }, { type: 'paragraph' }]);
+            const twin = rv.restoreWording('X.\\n\\nY.', rv.getContent());
+            const twins = [];
+            ed.state.doc.forEach(node => twins.push(node.textContent));
+            // A link in a preview is shown, not followed.
+            rv.load('See deux.');
+            rv.setReviewMarks('See \\uE000deux\\uE001.', [{ id: 'm8', now: 'deux', before: '[two](https://example.com)' }]);
+            document.querySelector('.review-restore').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            const link = document.querySelector('.review-popover a');
+            rv.setMode('edit');
+            const stays = !!document.querySelector('.review-popover');
+            const preview = link ? [link.textContent, link.hasAttribute('href'), stays] : null;
+            document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            // Typed beside a change and undone: the host is asked again.
+            rv.load('One deux three.');
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'm9', now: 'deux', before: 'two' }]);
+            ed.commands.insertContentAt(9, 's');
+            document.querySelector('.ProseMirror').dispatchEvent(new KeyboardEvent('keydown', {key: 'z', code: 'KeyZ', metaKey: true, bubbles: true, cancelable: true}));
+            const undoneTyping = rv.getContent();
+            // Wording the page can't hold is refused, not reported as put back.
+            rv.load('One two.');
+            const dropped = rv.restoreWording('One<!-- note --> two.', 'One two.');
+            // In a quotation of two paragraphs, which its own text writes as one.
+            rv.load('> A.\\n>\\n> One deux.');
+            const quoted = rv.getContent();
+            const inQuote = rv.restoreWording(quoted.replace('deux', 'two'), quoted);
+            const quote = ed.state.doc.child(0);
+            const quoteKept = [quote.type.name, quote.childCount, quote.textContent];
+            // The same words outside the quotation, in a paragraph with a break:
+            // the quotation's are the ones changed.
+            rv.load('> A.\\n>\\n> One deux.\\n\\nA.  \\nOne deux.');
+            const twice = rv.getContent();
+            rv.restoreWording(twice.replace('deux', 'two'), twice);
+            const outside = [ed.state.doc.child(0).textContent, ed.state.doc.child(1).textContent];
+            quoteKept.push(outside);
+            // Across two cells of a table: refused, the table as it was.
+            rv.load('| A | B |\\n| --- | --- |\\n| One deux. | Other quatre. |');
+            const table = rv.getContent();
+            const acrossCells = [rv.restoreWording(table.replace('deux', 'two').replace('quatre', 'four'), table), rv.getContent() === table];
+            // Two changes in one link, the first selected: only its id.
+            rv.load('See [deux and quatre](https://example.com).');
+            rv.setReviewMarks('See [\\uE000deux\\uE001 and \\uE000quatre\\uE001](https://example.com).',
+                [{ id: 'a', now: 'deux', before: 'two' }, { id: 'b', now: 'quatre', before: 'four' }]);
+            rv.goToReviewMark(true);
+            const chosen = rv.reviewChangesForSelection();
+            // Two lists an emptied paragraph stood between, written as one: the
+            // same words in each, the second's changed, and nothing made.
+            rv.load('- one\\n- deux\\n\\nGap.\\n\\n- one\\n- deux');
+            const gap = ed.state.doc.child(1);
+            ed.commands.deleteRange({ from: ed.state.doc.child(0).nodeSize + 1, to: ed.state.doc.child(0).nodeSize + 1 + gap.content.size });
+            const lists = rv.getContent();
+            const lastAt = lists.lastIndexOf('deux');
+            const merged = rv.restoreWording(lists.slice(0, lastAt) + 'two' + lists.slice(lastAt + 4), lists);
+            const listTexts = [];
+            ed.state.doc.forEach(node => listTexts.push(node.textContent));
+            // A quotation whose first two paragraphs its text writes as one,
+            // and a third holding both lines with a break: the first is changed.
+            rv.load('> Before deux\\n>\\n> after words\\n>\\n> Before deux  \\n> after words');
+            const quotes = rv.getContent();
+            const at = quotes.indexOf('deux');
+            const firstQuote = rv.restoreWording(quotes.slice(0, at) + 'two' + quotes.slice(at + 4), quotes);
+            const quoteTexts = [];
+            ed.state.doc.child(0).forEach(node => quoteTexts.push(node.textContent));
+            // The same, with a long line before, so the words beside the change
+            // are the same at both places: still the first, or nothing.
+            rv.load('> A long line of context that runs on for a while\\n>\\n> Before deux\\n>\\n> after words\\n>\\n> A long line of context that runs on for a while  \\n> Before deux  \\n> after words');
+            const longQuotes = rv.getContent();
+            const longAt = longQuotes.indexOf('deux');
+            const firstLong = rv.restoreWording(longQuotes.slice(0, longAt) + 'two' + longQuotes.slice(longAt + 4), longQuotes);
+            const longTexts = [];
+            ed.state.doc.child(0).forEach(node => longTexts.push(node.textContent));
+            // A quotation of three paragraphs, then one outside it.
+            rv.load('> One.\\n>\\n> Two deux.\\n>\\n> Three.\\n\\nAfter.');
+            const three = rv.getContent();
+            const threeAt = three.indexOf('deux');
+            const inThree = rv.restoreWording(three.slice(0, threeAt) + 'two' + three.slice(threeAt + 4), three);
+            // Markdown editing closes a preview left open.
+            rv.load('One deux three.');
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'md', now: 'deux', before: 'two' }]);
+            document.querySelector('.review-restore').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            const openBefore = !!document.querySelector('.review-popover');
+            rv.switchToMarkdown();
+            const openInMarkdown = !!document.querySelector('.review-popover');
+            rv.switchToRichText();
+            // Typing while a preview is open closes it. (Back from Markdown the
+            // page has no marks until the host sends them again.)
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'md', now: 'deux', before: 'two' }]);
+            document.querySelector('.review-restore').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            const openToType = !!document.querySelector('.review-popover');
+            ed.commands.insertContentAt(7, 'x');
+            const openAfterTyping = !!document.querySelector('.review-popover');
+            // A selection in words unchanged, in a link with a change elsewhere.
+            rv.load('See [deux and unchanged](https://example.com).');
+            rv.setReviewMarks('See [\\uE000deux\\uE001 and unchanged](https://example.com).', [{ id: 'c', now: 'deux', before: 'two' }]);
+            ed.commands.setTextSelection({ from: 15, to: 24 });
+            const unchanged = rv.reviewChangesForSelection();
+            // The only mark deleted, then undone: the host is asked again.
+            rv.load('One deux three.');
+            rv.setReviewMarks('One \\uE000deux\\uE001 three.', [{ id: 'm10', now: 'deux', before: 'two' }]);
+            ed.commands.deleteRange({ from: 5, to: 9 });
+            const leftMarks = document.querySelectorAll('.review-mark').length;
+            return [deleted, hostSays, resent, blocks, blocksAfter, made, both, kept, typedAfter, undoneOnce, twin, twins, preview, undoneTyping, dropped, inQuote, quoteKept, leftMarks, acrossCells, [chosen.ids, chosen.unnamed], [merged, listTexts], [firstQuote, quoteTexts], [unchanged.ids, unchanged.unnamed, unchanged.caret], [firstLong, longTexts], [inThree, openBefore, openInMarkdown, openToType, openAfterTyping]]
+        })()
+        """) { r in
+        guard let parts = r as? [Any], parts.count == 25 else {
+            // Null is the page saying it can't reach the editor; anything else
+            // (nothing, from an exception) is a failure, not a skip.
+            if r is NSNull {
+                print("note: the editor instance is not reachable from the page, so the restore edges are not driven here")
+                exit(failed ? 1 : 0)
+            }
+            check(false, "restore edges read (read: \(String(describing: r)))")
+            exit(1)
+        }
+        check((parts[0] as? [Int]) == [1, 0], "a deletion inside a change takes its offer and says why (read: \(String(describing: parts[0])))")
+        check((parts[1] as? [Int]) == [1, 0], "a change the host says can't be put back says why, with nothing to press (read: \(String(describing: parts[1])))")
+        check((parts[2] as? [Int]) == [0, 1], "marks sent again at the same places are offered (read: \(String(describing: parts[2])))")
+        check(parts[3] as? Int == 4 && parts[4] as? Int == 4 && parts[5] as? String == "One two three.\n\nEnd.",
+              "a restore leaves the empty paragraphs the page holds beyond its Markdown (read: \(String(describing: parts[3])) → \(String(describing: parts[4])), \(String(describing: parts[5])))")
+        check(parts[6] as? String == "A.\n\nOne two three.\n\nEnd." && (parts[7] as? [Int]) == [5, 2],
+              "and with a trailing break before it too, keeps both (read: \(String(describing: parts[6])), \(String(describing: parts[7])))")
+        check((parts[8] as? String)?.contains("X") == true && parts[9] as? String == "A.\n\nOne two three.\n\nEnd.",
+              "typing straight after a restore undoes alone (read: \(String(describing: parts[8])) → \(String(describing: parts[9])))")
+        check((parts[10] as? String)?.hasSuffix("X.\n\nY.") == true && (parts[11] as? [String]) == ["", "", "", "X.", "Y."],
+              "of two equal paragraphs, the one changed is the one restored (read: \(String(describing: parts[10])), \(String(describing: parts[11])))")
+        check((parts[12] as? [Any]).map { $0.count == 3 && $0[0] as? String == "two" && $0[1] as? Bool == false } == true,
+              "a link in a preview is shown, not followed (read: \(String(describing: parts[12])))")
+        check((parts[12] as? [Any]).map { $0.count == 3 && $0[2] as? Bool == true } == true,
+              "and the preview stays open when the host sends the same mode again")
+        check(parts[14] is NSNull, "wording the page can't hold is refused, not reported as put back (read: \(String(describing: parts[14])))")
+        check((parts[15] as? String)?.contains("One two.") == true && (parts[16] as? [Any]).map { $0[0] as? String == "blockquote" && $0[1] as? Int == 2 } == true,
+              "a change in a quotation of two paragraphs is put back, both kept (read: \(String(describing: parts[15])), \(String(describing: parts[16])))")
+        check((parts[16] as? [Any]).flatMap { $0.last as? [String] }.map { $0[0].contains("One two.") && $0[1].contains("deux") } == true,
+              "and the same words outside the quotation are left alone (read: \(String(describing: parts[16])))")
+        check(parts[17] as? Int == 0, "deleting the only mark leaves none drawn")
+        check((parts[18] as? [Any]).map { $0[0] is NSNull && $0[1] as? Bool == true } == true,
+              "a restore across a table's cells is refused, the table as it was (read: \(String(describing: parts[18])))")
+        check((parts[19] as? [Any]).map { $0[0] as? String == "a" && $0[1] as? Bool == false } == true,
+              "a change selected in a link is the only one the selection names (read: \(String(describing: parts[19])))")
+        check((parts[20] as? [Any]).map { $0[0] is NSNull && ($0[1] as? [String])?.allSatisfy { !$0.contains("two") } == true } == true,
+              "two lists written as one aren't told apart, and nothing is changed (read: \(String(describing: parts[20])))")
+        let quotes = (parts[21] as? [Any]).flatMap { $0.last as? [String] } ?? []
+        check(quotes.count == 3 && quotes[2].contains("deux") && ((parts[21] as? [Any])?.first is NSNull || quotes[0].contains("two")),
+              "a change in a quotation never lands in a later paragraph with the same words (read: \(String(describing: parts[21])))")
+        check((parts[22] as? [Any]).map { $0[0] as? String == "" && $0[1] as? Bool == false && $0[2] as? Bool == false } == true,
+              "a selection in unchanged words names no change (read: \(String(describing: parts[22])))")
+        let long = (parts[23] as? [Any]).flatMap { $0.last as? [String] } ?? []
+        check(long.count == 4 && long[3].contains("deux") && ((parts[23] as? [Any])?.first is NSNull || long[1].contains("two")),
+              "and with the same words beside both places, never the later one (read: \(String(describing: parts[23])))")
+        check((parts[24] as? [Any]).map { ($0[0] as? String)?.contains("Two two.") == true } == true,
+              "a change in a quotation of three paragraphs, with one after it, is put back (read: \(String(describing: parts[24])))")
+        check((parts[24] as? [Any]).map { $0[1] as? Bool == true && $0[2] as? Bool == false } == true,
+              "and Markdown editing closes a preview left open")
+        check((parts[24] as? [Any]).map { $0.count == 5 && $0[3] as? Bool == true && $0[4] as? Bool == false } == true,
+              "and typing while a preview is open closes it (read: \(String(describing: parts[24])))")
+        let asksBeforeUndo = probe.reviewStale
+        after(100) {
+            js("\(undo); window.editorAPI.getContent()") { undone in
+                after(100) {
+                    check(undone as? String == "One deux three." && probe.reviewStale > asksBeforeUndo,
+                          "and undoing it asks the host for the marks again (read: \(String(describing: undone)), \(probe.reviewStale) asks, \(asksBeforeUndo) before)")
+                    finishEdges(parts: parts, staleAtStart: staleAtStart)
+                }
+            }
+        }
+    }
+}
+
+func finishEdges(parts: [Any], staleAtStart: Int) {
+        after(0) {
+            check(parts[13] as? String == "One deux three." && probe.reviewStale > staleAtStart,
+                  "an undo with marks shown asks the host for them again (read: \(String(describing: parts[13])), \(probe.reviewStale) asks, \(staleAtStart) before)")
+            check(probe.reviewRestores.last?.id == "m7", "and a press sends the change as last sent (read: \(String(describing: probe.reviewRestores.last)))")
+            exit(failed ? 1 : 0)
+        }
 }
 
 probe.onReady = {

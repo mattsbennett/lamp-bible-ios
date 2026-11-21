@@ -78,3 +78,48 @@ export function withoutSpans(ranges, taken) {
   }
   return result
 }
+
+// `ranges` with any the writer has typed into or beside, or deleted from,
+// by the spans in `typed` (a deletion's is empty), no longer offering to
+// put its wording back: their words and the assistant's can no longer be
+// told apart there, and a restore would take both. Its `change` says why
+// instead, as the host would. The host checks again before putting anything
+// back, so this only keeps the page from offering what it would refuse.
+export function withoutTypedChanges(ranges, typed) {
+  return ranges.map(range => {
+    if (!range.change || range.change.reason) return range
+    const touched = typed.some(([from, to]) => from <= range.to && to >= range.from)
+    if (!touched) return range
+    return { ...range, change: { id: range.change.id, reason: 'edited' } }
+  })
+}
+
+// Which of `ranges` each block offers to put back, or says why it can't: a
+// range with a `change`, in the first block it touches, so one that runs
+// over several is offered once. `blocks` are `{ start, end }` in document order; returns, for each,
+// the indexes of its ranges.
+export function restorableByBlock(ranges, blocks) {
+  const offered = new Set()
+  return blocks.map(({ start, end }) => {
+    const own = []
+    ranges.forEach((range, index) => {
+      if (!range.change || offered.has(index)) return
+      if (range.to >= start && range.from <= end) {
+        offered.add(index)
+        own.push(index)
+      }
+    })
+    return own
+  })
+}
+
+// The range a step through the marks lands on from a caret at `at`: the
+// first starting after it, going forward, or the last starting before it,
+// going back, round to the other end when there is none. Null with none.
+export function nextMark(ranges, at, forward) {
+  if (ranges.length === 0) return null
+  const sorted = [...ranges].sort((a, b) => a.from - b.from || a.to - b.to)
+  if (forward) return sorted.find(range => range.from > at) ?? sorted[0]
+  return [...sorted].reverse().find(range => range.from < at) ?? sorted[sorted.length - 1]
+}
+

@@ -614,3 +614,111 @@ body.dark {
   --review-mark-bg: rgba(240, 190, 70, 0.2);
   --review-mark-rule: rgba(240, 190, 70, 0.75);
 }
+/* Beside the clear button, to its left: puts back what the assistant
+   replaced, after showing both (reviewRestoreButton). Only in editing,
+   where the change is saved. */
+.ProseMirror .review-restore {
+  float: right;
+  width: 32px;
+  height: 32px;
+  margin: -5px 0 0 2px;
+  padding: 0;
+  border: none;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--review-mark-rule, rgba(178, 120, 0, 0.7));
+  font: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+.ProseMirror .review-restore::before {
+  content: "↺";
+  font-size: 17px;
+  line-height: 32px;
+}
+.ProseMirror .review-restore:hover {
+  background: var(--review-mark-bg, rgba(232, 176, 44, 0.22));
+}
+body:not(.mode-edit) .review-restore {
+  display: none;
+}
+.review-popover {
+  position: absolute;
+  z-index: 1000;
+  box-sizing: border-box;
+  width: min(340px, calc(100vw - 16px));
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 10px 12px 12px;
+  border-radius: 10px;
+  background: var(--popover-bg);
+  box-shadow: var(--popover-shadow);
+  color: var(--text-color);
+}
+.review-popover-item + .review-popover-item {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--image-caption-color);
+}
+.review-popover-label {
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--image-caption-color);
+  margin-bottom: 2px;
+}
+.review-popover-text {
+  font-size: 0.9em;
+  line-height: 1.45;
+  max-height: 8.7em;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+.review-popover-text > * {
+  margin: 0;
+  font-size: inherit;
+}
+.review-popover-text > * + * {
+  margin-top: 0.4em;
+}
+.review-popover-text.is-marked:not(.is-empty) > * {
+  background: var(--review-mark-bg, rgba(232, 176, 44, 0.22));
+}
+.review-popover-text.is-empty {
+  font-style: italic;
+  color: var(--image-caption-color);
+}
+.review-popover-restore {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--review-mark-bg, rgba(232, 176, 44, 0.22));
+  color: var(--text-color);
+  font: inherit;
+  font-size: 0.9em;
+  font-weight: 600;
+  cursor: pointer;
+}
+/* The change a step through them landed on (goToReviewMark). */
+.review-mark.review-current {
+  background: var(--review-mark-current, rgba(232, 176, 44, 0.45));
+  border-bottom-style: solid;
+}
+.review-point.review-current {
+  border-left-width: 3px;
+  box-shadow: 0 0 0 3px var(--review-mark-bg, rgba(232, 176, 44, 0.22));
+}
+body.dark {
+  --review-mark-current: rgba(240, 190, 70, 0.4);
+}
+body.mode-present .review-mark.review-current {
+  background: none;
+  border-bottom: none;
+}
+.review-popover-reason {
+  font-size: 0.85em;
+  line-height: 1.4;
+  color: var(--image-caption-color);
+}

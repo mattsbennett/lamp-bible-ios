@@ -2,7 +2,7 @@ import './editor.css'
 import { Editor, Extension, createDocument, getMarkRange } from '@tiptap/core'
 import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
-import { Fragment } from '@tiptap/pm/model'
+import { DOMSerializer, Fragment } from '@tiptap/pm/model'
 import { Transform } from '@tiptap/pm/transform'
 import { closeHistory } from '@tiptap/pm/history'
 import { StarterKit } from '@tiptap/starter-kit'
@@ -26,7 +26,7 @@ import {
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
 import { searchPattern, findMatches } from './search.js'
-import { MARK_START, MARK_END, readMarkers, withoutSpans } from './review-marks.js'
+import { MARK_START, MARK_END, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
 import { ImageBlock } from './extensions/image-caption.js'
 
 // Media map for resolving media/id to file URLs
@@ -680,6 +680,8 @@ const LineHardBreak = HardBreak.extend({
 // ---- Review marks (see review-marks.js) ----
 
 const reviewKey = new PluginKey('reviewMarks')
+// Whether the host has marks for the document shown, placed or not.
+let reviewMarksShown = false
 
 // The spans a transaction wrote, where they are in the document it made: what
 // the writer typed, which is theirs and not the assistant's.
@@ -700,27 +702,32 @@ function writtenSpans(tr) {
   return spans
 }
 
-function reviewDecorations(doc, ranges) {
+// `current`, if given, is the mark a step through them landed on
+// (goToReviewMark), drawn more strongly: the selection it makes isn't drawn
+// while the editor is unfocused, and focusing it would raise the keyboard.
+function reviewDecorations(doc, ranges, current = null) {
   if (ranges.length === 0) return DecorationSet.empty
   const decorations = []
   for (const range of ranges) {
+    const isCurrent = current !== null && range.from === current.from && range.to === current.to
     if (range.from === range.to) {
       decorations.push(Decoration.widget(range.from, () => {
         const point = document.createElement('span')
-        point.className = 'review-point'
+        point.className = isCurrent ? 'review-point review-current' : 'review-point'
         point.setAttribute('aria-hidden', 'true')
         return point
-      }, { side: 0, ignoreSelection: true, key: `review-point-${range.from}` }))
+      }, { side: 0, ignoreSelection: true, key: `review-point-${range.from}${isCurrent ? '-current' : ''}` }))
     } else {
-      decorations.push(Decoration.inline(range.from, range.to, { class: 'review-mark' }))
+      decorations.push(Decoration.inline(range.from, range.to, { class: isCurrent ? 'review-mark review-current' : 'review-mark' }))
     }
   }
-  // A clear button beside each block with something in it still to read.
-  doc.descendants((node, pos) => {
-    if (!node.isTextblock) return true
-    const start = pos + 1
-    const end = pos + node.nodeSize - 1
-    if (!ranges.some(range => range.to >= start && range.from <= end)) return false
+  // A clear button beside each block with something in it still to read,
+  // and beside it a restore button where the block holds wording that can
+  // be put back.
+  const blocks = textblocks(doc)
+  const restorable = restorableByBlock(ranges, blocks)
+  blocks.forEach(({ start, end }, index) => {
+    if (!ranges.some(range => range.to >= start && range.from <= end)) return
     decorations.push(Decoration.widget(start, () => reviewClearButton(start, end), {
       side: -1, ignoreSelection: true, key: `review-clear-${start}-${end}`,
       // Everything the button hears is the button's. Return or Space on it
@@ -729,7 +736,11 @@ function reviewDecorations(doc, ranges) {
       // mark stayed.
       stopEvent: () => true,
     }))
-    return false
+    if (restorable[index].length === 0) return
+    decorations.push(Decoration.widget(start, () => reviewRestoreButton(), {
+      side: -1, ignoreSelection: true, key: `review-restore-${start}-${end}`,
+      stopEvent: () => true,
+    }))
   })
   return DecorationSet.create(doc, decorations)
 }
@@ -767,6 +778,209 @@ function reviewClearButton(start, end) {
     else event.preventDefault()
   })
   return button
+}
+
+// Where each textblock's text starts and ends.
+function textblocks(doc) {
+  const blocks = []
+  doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true
+    blocks.push({ start: pos + 1, end: pos + node.nodeSize - 1 })
+    return false
+  })
+  return blocks
+}
+
+// Puts back what the assistant replaced in a block, shown first: what stands
+// now and what would stand instead, both, since a writer about to press it
+// is comparing, and where the assistant only took words out there is
+// nothing marked to look at. Offered in editing only, where the change is
+// saved. The page sends the passage back as a clear does, and the host,
+// which keeps the old wording, works out the text and hands it to
+// `restoreWording`, so the page makes the edit itself and it undoes like
+// any other.
+function reviewRestoreButton() {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'review-restore'
+  button.contentEditable = 'false'
+  button.title = 'Restore Original Wording'
+  button.setAttribute('aria-label', 'Restore Original Wording')
+  // On the pointer's first event, as the clear button is, so the caret
+  // stays where it was and the keyboard down. What the block offers is read
+  // at press time, from the marks as they stand: the widget is kept across
+  // redraws that leave it where it was.
+  const open = event => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (reviewPopover?.button === button) {
+      // A tap can come as more than one press; only a later one closes.
+      if (performance.now() - reviewPopover.openedAt > 400) closeReviewPopover()
+      return
+    }
+    const pos = editor.view.posAtDOM(button, 0)
+    const { ranges } = reviewKey.getState(editor.state)
+    const blocks = textblocks(editor.state.doc)
+    const index = blocks.findIndex(block => pos >= block.start - 1 && pos <= block.end)
+    if (index < 0) return
+    const seen = new Set()
+    const changes = restorableByBlock(ranges, blocks)[index]
+      .map(at => ranges[at].change)
+      .filter(change => !seen.has(change.id) && seen.add(change.id))
+    if (changes.length > 0) openReviewPopover(button, changes)
+  }
+  button.addEventListener('pointerdown', open)
+  button.addEventListener('click', event => {
+    if (event.detail === 0) open(event)
+    else event.preventDefault()
+  })
+  return button
+}
+
+// The restore preview open by its button, if one is: { panel, button }.
+let reviewPopover = null
+
+// What stands and what would come back for each change the block offers,
+// each with its button, or why it can't be put back. A change is sent back
+// by its id, which names the marks it puts back, so the host restores those
+// and nothing beside them.
+function openReviewPopover(button, changes) {
+  closeReviewPopover()
+  const panel = document.createElement('div')
+  panel.className = 'review-popover'
+  panel.setAttribute('role', 'dialog')
+  panel.setAttribute('aria-label', 'Restore Original Wording')
+  for (const change of changes) {
+    const item = document.createElement('div')
+    item.className = 'review-popover-item'
+    if (change.reason) {
+      if (typeof change.now === 'string') {
+        item.append(reviewPopoverLabel('Now'), reviewPreview(change.now, 'Nothing: the assistant took words out here', true))
+      }
+      const why = document.createElement('div')
+      why.className = 'review-popover-reason'
+      why.textContent = 'Can’t be put back: you’ve edited this since'
+      item.append(why)
+      panel.append(item)
+      continue
+    }
+    item.append(
+      reviewPopoverLabel('Now'),
+      reviewPreview(change.now, 'Nothing: the assistant took words out here', true),
+      reviewPopoverLabel('Original'),
+      reviewPreview(change.before, 'Nothing: the assistant added these words', false),
+    )
+    const restore = document.createElement('button')
+    restore.type = 'button'
+    restore.className = 'review-popover-restore'
+    restore.textContent = 'Restore Original Wording'
+    // Pressed without taking focus, so the caret and keyboard stay put.
+    restore.addEventListener('pointerdown', event => event.preventDefault())
+    restore.addEventListener('click', event => {
+      event.preventDefault()
+      closeReviewPopover()
+      requestRestore(change)
+    })
+    item.append(restore)
+    panel.append(item)
+  }
+  document.body.appendChild(panel)
+  reviewPopover = { panel, button, openedAt: performance.now() }
+  placeReviewPopover(button, panel)
+  document.addEventListener('pointerdown', closeReviewPopoverOutside, true)
+  document.addEventListener('keydown', closeReviewPopoverOnEscape, true)
+}
+
+function reviewPopoverLabel(text) {
+  const label = document.createElement('div')
+  label.className = 'review-popover-label'
+  label.textContent = text
+  return label
+}
+
+// Markdown shown as the page shows it, its emphasis drawn, or `empty` said
+// where there is none.
+function reviewPreview(markdown, empty, marked) {
+  const holder = document.createElement('div')
+  holder.className = 'review-popover-text' + (marked ? ' is-marked' : '')
+  if (!markdown || !markdown.trim()) {
+    holder.classList.add('is-empty')
+    holder.textContent = empty
+    return holder
+  }
+  try {
+    const html = editor.storage.markdown.parser.parse(resolveForEditor(markdown.trim()))
+    const doc = createDocument(html, editor.schema, editor.options.parseOptions)
+    holder.append(DOMSerializer.fromSchema(editor.schema).serializeFragment(doc.content))
+    // Shown, not followed: outside the editor nothing would catch a tap on
+    // one, and the page would go to it.
+    for (const link of holder.querySelectorAll('a[href]')) link.removeAttribute('href')
+  } catch (e) {
+    holder.textContent = markdown.trim()
+  }
+  return holder
+}
+
+// Under the button, kept inside the page's width and what can be seen of
+// it: on a phone the keyboard covers the bottom of the window, which only
+// the visual viewport leaves out (as revealCaret reckons it), and a button
+// under it couldn't be pressed. Where there's no room below, the page is
+// brought up until there is, as far as keeps the button in view: above it,
+// the host's own header can lie over the page. Only what still doesn't fit
+// is laid over the words.
+function placeReviewPopover(button, panel) {
+  const visible = window.visualViewport
+  const visibleTop = visible ? visible.offsetTop : 0
+  const visibleBottom = visibleTop + (visible ? visible.height : window.innerHeight)
+  panel.style.maxHeight = `${Math.max(120, visibleBottom - visibleTop - 16)}px`
+  const width = panel.offsetWidth
+  const height = panel.offsetHeight
+  let at = button.getBoundingClientRect()
+  const short = at.bottom + 6 + height - (visibleBottom - 8)
+  if (short > 0) {
+    const lift = Math.min(short, at.top - visibleTop - 8)
+    if (lift > 0) {
+      window.scrollBy(0, lift)
+      at = button.getBoundingClientRect()
+    }
+  }
+  const left = Math.min(Math.max(8, at.right - width), window.innerWidth - width - 8)
+  let top = at.bottom + 6
+  if (top + height > visibleBottom - 8) top = Math.max(visibleTop + 8, visibleBottom - height - 8)
+  panel.style.left = `${left + window.scrollX}px`
+  panel.style.top = `${top + window.scrollY}px`
+}
+
+function closeReviewPopoverOutside(event) {
+  if (reviewPopover && !reviewPopover.panel.contains(event.target) && !reviewPopover.button.contains(event.target)) {
+    closeReviewPopover()
+  }
+}
+
+function closeReviewPopoverOnEscape(event) {
+  if (event.key !== 'Escape' || !reviewPopover) return
+  event.preventDefault()
+  event.stopPropagation()
+  closeReviewPopover()
+}
+
+function closeReviewPopover() {
+  if (!reviewPopover) return
+  reviewPopover.panel.remove()
+  reviewPopover = null
+  document.removeEventListener('pointerdown', closeReviewPopoverOutside, true)
+  document.removeEventListener('keydown', closeReviewPopoverOnEscape, true)
+}
+
+// Asks the host to put a change back, by its id, with the page's own text
+// for the host to find its marks in: not by a range, which a link round it
+// would widen to take changes beside it in. Only while it's still offered.
+function requestRestore(change) {
+  if (!editor.isEditable) return
+  const offered = reviewKey.getState(editor.state).ranges
+    .some(range => range.change && range.change.id === change.id && !range.change.reason)
+  if (!offered) return
+  postToSwift('reviewRestore', { id: change.id, plain: getMarkdownContent() })
 }
 
 // The document's Markdown with the markers written at `from` and `to`, for
@@ -943,6 +1157,209 @@ function markdownMarking(from, to) {
   }
 }
 
+// Where two documents differ: from `start`, to `endA` in the first and
+// `endB` in the second; null where they don't. Where they share text across
+// the change the ends can pass the start, and both are moved on by as much.
+function differing(a, b) {
+  const start = a.content.findDiffStart(b.content)
+  if (start === null) return null
+  let { a: endA, b: endB } = a.content.findDiffEnd(b.content)
+  const overlap = start - Math.min(endA, endB)
+  if (overlap > 0) {
+    endA += overlap
+    endB += overlap
+  }
+  return { start, endA, endB }
+}
+
+// How far the part `span` of `parsed` (the page's own text, parsed) stands
+// from where it stands in `page`, the document the page holds, or null
+// where that can't be told for certain. The page can hold what its text
+// doesn't write (an empty paragraph, a trailing break), each moving what
+// follows it. So the two are walked block by block in order, an empty
+// paragraph only the page has passed over, the rest paired as they come:
+// the same block is found whichever of several equal ones it is. The
+// blocks holding the part, and the one before it where it falls between
+// blocks, must each be paired with one the same in the page, in a row.
+function blocksInPage(page, parsed, span) {
+  const pairs = pairedBlocks(page, parsed)
+  if (!pairs) return null
+  const $start = parsed.resolve(span.start)
+  const $end = parsed.resolve(span.endA)
+  const first = $start.depth === 0 ? Math.max(0, $start.index(0) - 1) : $start.index(0)
+  const through = Math.min(parsed.childCount - 1, $end.index(0))
+  if (first > through) return null
+  for (let at = first; at <= through; at++) {
+    if (!pairs[at].same || (at > first && pairs[at].index !== pairs[at - 1].index + 1)) return null
+  }
+  let inPage = 0
+  for (let at = 0; at < pairs[first].index; at++) inPage += page.child(at).nodeSize
+  let inParsed = 0
+  for (let at = 0; at < first; at++) inParsed += parsed.child(at).nodeSize
+  return inPage - inParsed
+}
+
+// The page's top-level block each of `parsed`'s stands for, in order, and
+// whether it's the same: an empty paragraph only the page has is passed
+// over, and every other block is paired with the next, the same or not.
+// Null where the two don't come out even (the page runs out first, or has
+// blocks with something in them left over), which is its text writing two
+// of them as one, as it does two lists an emptied paragraph stood between.
+function pairedBlocks(page, parsed) {
+  if (parsed.childCount === 0) return null
+  const isEmpty = node => node.isTextblock && node.content.size === 0
+  const pairs = []
+  let index = 0
+  for (let at = 0; at < parsed.childCount; at++) {
+    const block = parsed.child(at)
+    while (index < page.childCount && !page.child(index).eq(block) && isEmpty(page.child(index))) index++
+    if (index >= page.childCount) return null
+    pairs.push({ index, same: page.child(index).eq(block) })
+    index++
+  }
+  for (; index < page.childCount; index++) if (!isEmpty(page.child(index))) return null
+  return pairs
+}
+
+// Whether `page` became `made` by the change `parsed` became `wanted` by:
+// the same text taken out and put in, with the same text beside it on
+// either side, as far as a few words or the end of the text, which counts
+// as text of its own; spaces and line breaks there are compared as one
+// space, since what only the page holds (an empty paragraph, a trailing
+// break) is written as them. Otherwise the page's text can differ from the
+// parsed one only away from the change, and the same words changed
+// somewhere else don't pass.
+function sameChange(page, made, parsed, wanted) {
+  const change = (a, b) => {
+    let start = 0
+    while (start < a.length && start < b.length && a[start] === b[start]) start++
+    let end = 0
+    while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++
+    return { start, out: a.slice(start, a.length - end), in: b.slice(start, b.length - end), endA: a.length - end }
+  }
+  const reach = 24
+  const spaced = text => text.replace(/\s+/g, ' ')
+  const around = (text, { start, endA }) => [
+    ('\u0002' + spaced(text.slice(0, start)).replace(/^ /, '')).slice(-reach),
+    (spaced(text.slice(endA)).replace(/ $/, '') + '\u0003').slice(0, reach),
+  ]
+  const one = change(page, made)
+  const other = change(parsed, wanted)
+  if (one.out !== other.out || one.in !== other.in) return false
+  const [left, right] = around(page, one)
+  const [wantedLeft, wantedRight] = around(parsed, other)
+  return left === wantedLeft && right === wantedRight
+}
+
+// Whether `from` to `to` of `doc` leaves the textblock it starts in with an
+// end inside a table.
+function acrossCells(doc, from, to) {
+  const $from = doc.resolve(from)
+  const $to = doc.resolve(to)
+  if ($from.parent.isTextblock && $from.sameParent($to)) return false
+  const inTable = $pos => {
+    for (let depth = $pos.depth; depth > 0; depth--) {
+      if ($pos.node(depth).type.spec.tableRole) return true
+    }
+    return false
+  }
+  return inTable($from) || inTable($to)
+}
+
+// A textblock's text with every other inline node as one character per
+// position it takes, so an offset in it is an offset into the block.
+function blockText(node) {
+  let text = ''
+  node.forEach(child => {
+    text += child.isText ? child.text : '\ufffc'.repeat(child.nodeSize)
+  })
+  return text
+}
+
+// Where a change inside one paragraph stands in the page, found by its
+// words, for when the blocks round it don't come back from the page's own
+// text as the page holds them (a quotation of several paragraphs is written
+// as one). Looked for only inside the page's block paired with the one
+// holding it (pairedBlocks), which must be the same kind with the same
+// words, spaces and breaks apart. So each place in it is named by how many
+// of those words' letters come before it, the same in both however the
+// paragraphs and breaks fall: of the places the words changed stand, with
+// as many beside them as tell them apart, the one taken is the one with as
+// many letters before it as the change has. Null where the change isn't
+// inside one paragraph in both, or that block can't be told, or no one
+// place is that one.
+function wordsInPage(page, before, after, span) {
+  const $start = before.resolve(span.start)
+  const $end = before.resolve(span.endA)
+  const $newStart = after.resolve(span.start)
+  const $newEnd = after.resolve(span.endB)
+  if (!$start.parent.isTextblock || !$start.sameParent($end)) return null
+  if (!$newStart.parent.isTextblock || !$newStart.sameParent($newEnd)) return null
+  const pairs = pairedBlocks(page, before)
+  const holding = $start.index(0)
+  if (!pairs || !pairs[holding]) return null
+  const inPage = page.child(pairs[holding].index)
+  const bare = node => node.textBetween(0, node.content.size, '', '').replace(/\s+/g, '')
+  if (inPage.type !== before.child(holding).type || bare(inPage) !== bare(before.child(holding))) return null
+  // Each textblock in a top-level block, with its text and how many letters
+  // (not spaces, nor what isn't text) come before it there.
+  const isLetter = c => c !== '\ufffc' && !/\s/.test(c)
+  const letters = (text, upTo) => {
+    let count = 0
+    for (let at = 0; at < upTo; at++) if (isLetter(text[at])) count++
+    return count
+  }
+  const textblocksOf = (block, offset) => {
+    const list = []
+    let count = 0
+    const visit = (node, pos) => {
+      if (!node.isTextblock) return true
+      const text = blockText(node)
+      list.push({ start: pos + 1, text, before: count })
+      count += letters(text, text.length)
+      return false
+    }
+    if (block.isTextblock) visit(block, offset)
+    else block.descendants((node, pos) => visit(node, offset + 1 + pos))
+    return list
+  }
+  const offsetOf = (doc, index) => {
+    let offset = 0
+    for (let at = 0; at < index; at++) offset += doc.child(at).nodeSize
+    return offset
+  }
+  const own = textblocksOf(before.child(holding), offsetOf(before, holding))
+    .find(block => block.start === $start.start())
+  if (!own) return null
+  const text = own.text
+  const from = $start.parentOffset
+  const to = $end.parentOffset
+  const wanted = own.before + letters(text, from)
+  const words = text.slice(from, to)
+  const blocks = textblocksOf(inPage, offsetOf(page, pairs[holding].index))
+  for (const reach of [40, 20, 8, 3, 0]) {
+    const left = text.slice(Math.max(0, from - reach), from)
+    const needle = left + words + text.slice(to, to + reach)
+    if (!needle) continue
+    const found = []
+    for (const block of blocks) {
+      for (let at = block.text.indexOf(needle); at >= 0; at = block.text.indexOf(needle, at + 1)) {
+        const place = at + left.length
+        if (block.before + letters(block.text, place) === wanted) found.push(block.start + place)
+      }
+    }
+    if (found.length > 1) return null
+    if (found.length === 1) {
+      return {
+        from: found[0],
+        to: found[0] + words.length,
+        slice: $newStart.parent.slice($newStart.parentOffset, $newEnd.parentOffset),
+      }
+    }
+  }
+  return null
+}
+
 // Where the host's marks fall in the document shown, or null if they cannot
 // be placed exactly: the Markdown with markers, parsed as any document is,
 // the markers read and taken out, and what is left compared with the
@@ -973,24 +1390,38 @@ const ReviewMarks = Extension.create({
     return [new Plugin({
       key: reviewKey,
       state: {
-        init: () => ({ ranges: [], decorations: DecorationSet.empty }),
+        init: () => ({ ranges: [], decorations: DecorationSet.empty, current: null }),
         apply(tr, old) {
           const meta = tr.getMeta(reviewKey)
-          if (meta) return { ranges: meta.ranges, decorations: reviewDecorations(tr.doc, meta.ranges) }
+          if (meta?.ranges) return { ranges: meta.ranges, decorations: reviewDecorations(tr.doc, meta.ranges), current: null }
+          if (meta?.current) {
+            return { ranges: old.ranges, decorations: reviewDecorations(tr.doc, old.ranges, meta.current), current: meta.current }
+          }
+          // The step's mark is drawn until the writer moves on from it.
+          if (old.current && (tr.docChanged || tr.selectionSet)) {
+            old = { ranges: old.ranges, decorations: reviewDecorations(tr.doc, old.ranges), current: null }
+            if (!tr.docChanged) return old
+          }
           if (!tr.docChanged || old.ranges.length === 0) return old
           // Carried through the writer's edit: the marks move with the words,
           // and what was typed into them is left out.
+          // What a mark can put back goes with it until the writer types into
+          // or beside it.
           const mapped = old.ranges.flatMap(range => {
             if (range.from === range.to) {
               const result = tr.mapping.mapResult(range.from, -1)
-              return result.deleted ? [] : [{ from: result.pos, to: result.pos }]
+              return result.deleted ? [] : [{ ...range, from: result.pos, to: result.pos }]
             }
             const from = tr.mapping.map(range.from, 1)
             const to = tr.mapping.map(range.to, -1)
-            return to > from ? [{ from, to }] : []
+            return to > from ? [{ ...range, from, to }] : []
           })
-          const ranges = withoutSpans(mapped, writtenSpans(tr).filter(([from, to]) => to > from))
-          return { ranges, decorations: reviewDecorations(tr.doc, ranges) }
+          // A deletion's span is empty: no words of the writer's to take out,
+          // but the words left are no longer the assistant's as marked.
+          const written = writtenSpans(tr)
+          const typed = written.filter(([from, to]) => to > from)
+          const ranges = withoutSpans(withoutTypedChanges(mapped, written), typed)
+          return { ranges, decorations: reviewDecorations(tr.doc, ranges), current: null }
         },
       },
       props: {
@@ -1107,6 +1538,19 @@ function initEditor() {
     onUpdate({ editor }) {
       if (currentMode !== 'richtext') return
       scheduleContentUpdate()
+    },
+
+    // An undo or redo can take the text back to words a change was made
+    // in, which typing had made the page stop offering to put back: the
+    // host, which can tell, is asked for the marks again.
+    // Asked though no mark is left on the page: one undone back in comes
+    // with no mark, which only the host can give it again.
+    // A restore preview open while the text changes may no longer say what
+    // can be put back: it's closed, to be opened again as it now stands.
+    onTransaction({ transaction }) {
+      if (transaction.docChanged && reviewPopover) closeReviewPopover()
+      if (!transaction.docChanged || !transaction.getMeta('history$') || !reviewMarksShown) return
+      postToSwift('reviewMarksStale', {})
     },
 
     onSelectionUpdate({ editor }) {
@@ -1323,6 +1767,7 @@ function reportSelectionState() {
 window.editorAPI = {
   setContent(markdown) {
     closeNotePopover(false)
+    closeReviewPopover()
     currentMarkdown = markdown || ''
     if (currentMode === 'richtext') {
       editor.commands.setContent(resolveForEditor(currentMarkdown), { emitUpdate: false })
@@ -1342,11 +1787,108 @@ window.editorAPI = {
   // through the writer's edits as before, since a host whose copy of the
   // text is a moment behind the page's would otherwise wipe them on every
   // try. Kept through the writer's edits until the next call.
-  setReviewMarks(markedMarkdown) {
+  //
+  // `changes`, beside them, says for each marked range in the order the
+  // markers stand what restoring it would put back: `{ id, now, before }`,
+  // the words as Markdown and an id the host knows its marks by; or
+  // `{ id, now, reason: 'edited' }` where it can't be, for something the
+  // writer did; or null, saying nothing. Missing entries are null. Only the
+  // words cross over, never a position.
+  setReviewMarks(markedMarkdown, changes) {
     if (!editor) return false
-    const ranges = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
-    if (ranges === null) return false
+    reviewMarksShown = Boolean(markedMarkdown)
+    const placed = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
+    if (placed === null) return false
+    closeReviewPopover()
+    const ranges = placed.map((range, index) => {
+      const change = Array.isArray(changes) ? changes[index] : null
+      if (!change || typeof change.id !== 'string' || typeof change.now !== 'string') return range
+      if (change.reason === 'edited') return { ...range, change: { id: change.id, now: change.now, reason: 'edited' } }
+      if (typeof change.before !== 'string') return range
+      return { ...range, change: { id: change.id, now: change.now, before: change.before } }
+    })
     editor.view.dispatch(editor.state.tr.setMeta(reviewKey, { ranges }).setMeta('addToHistory', false))
+    return true
+  },
+
+  // Puts the assistant's change back, as the host worked it out from a
+  // `reviewRestore`: the document becomes `markdown`, if it is still
+  // `expected`, the text the press was made in. Made as one edit of the
+  // part that differs, so it undoes as any edit does and the rest of the
+  // page, the caret among it, stays as it was. Returns the page's Markdown
+  // afterwards, which the host records the restore against, or null where
+  // it was not made: typed into since, or not in editing.
+  //
+  // The part is found between the two texts as parsed, not between the
+  // page and the new text: the page can hold what its Markdown doesn't
+  // write (empty paragraphs, trailing breaks), which parsing the new text
+  // would drop and a replace would take with it. It's made in the page at
+  // the blocks holding it there (`blocksInPage`); where the page's own
+  // blocks differ from them, nothing is made.
+  restoreWording(markdown, expected) {
+    if (!editor || !editor.isEditable || currentMode !== 'richtext') return null
+    if (getMarkdownContent() !== expected) return null
+    const parse = text => {
+      const html = editor.storage.markdown.parser.parse(resolveForEditor(text))
+      return createDocument(html, editor.schema, editor.options.parseOptions)
+    }
+    let before, after
+    try {
+      before = parse(expected)
+      after = parse(markdown)
+    } catch (e) {
+      return null
+    }
+    // A change asked for that the page can't hold (an HTML comment, say)
+    // parses to the document it has: refused, not reported as made.
+    const span = differing(before, after)
+    if (!span) return markdown === expected ? getMarkdownContent() : null
+    // One replace can't be made across a table's cells, or into or out of
+    // one: fitted there, it splits the row or takes what follows into a
+    // cell. Refused rather than made wrong.
+    if (acrossCells(before, span.start, span.endA) || acrossCells(after, span.start, span.endB)) return null
+    const page = editor.state.doc
+    let tr
+    const shift = blocksInPage(page, before, span)
+    if (shift !== null) {
+      tr = editor.state.tr.replace(span.start + shift, span.endA + shift, after.slice(span.start, span.endB))
+    } else {
+      const found = wordsInPage(page, before, after, span)
+      if (!found) return null
+      tr = editor.state.tr.replace(found.from, found.to, found.slice)
+    }
+    // Made only if the page's text would change just as the host's does,
+    // where it does: the same words out and in, with the same beside them.
+    // Against the host's own change, and against the same change as the
+    // page writes the parsed texts: either is enough, since the host may
+    // spell the old wording otherwise, and writing a parsed text again can
+    // tidy it otherwise round the change (a quotation's separators).
+    const write = doc => tidyMarkdown(editor.storage.markdown.serializer.serialize(doc))
+    const made = write(tr.doc)
+    if (!sameChange(expected, made, expected, markdown) && !sameChange(expected, made, write(before), write(after))) return null
+    closeReviewPopover()
+    tr = closeHistory(tr)
+    editor.view.dispatch(tr)
+    // Its own step in the history at both ends: typing straight after it
+    // undoes alone, and leaves the restore to undo after.
+    editor.view.dispatch(closeHistory(editor.state.tr))
+    return getMarkdownContent()
+  },
+
+  // Moves to the next change still to read after the caret, or the one
+  // before it, round at either end, selecting it and bringing it into view.
+  // The keyboard is not raised for it. Whether there was one.
+  goToReviewMark(forward) {
+    if (!editor) return false
+    const { ranges } = reviewKey.getState(editor.state)
+    const range = nextMark(ranges, editor.state.selection.from, forward !== false)
+    if (!range) return false
+    const doc = editor.state.doc
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(doc, range.from, range.to)))
+    editor.view.dispatch(editor.state.tr.setMeta(reviewKey, { current: { from: range.from, to: range.to } }).setMeta('addToHistory', false))
+    // Its own line in the middle of the view, as the caret is revealed: in a
+    // paragraph taller than the view, its paragraph's middle may not be it.
+    revealCaret(editor.view)
     return true
   },
 
@@ -1360,6 +1902,33 @@ window.editorAPI = {
     return { markdown: markdownMarking(from, to), plain: getMarkdownContent() }
   },
 
+  // The changes the selection stands in, as the page has them: their ids
+  // joined (the marks they stand in), those the page no longer offers among
+  // them, for the host to ask about by name; whether it touches a passage
+  // the host sent no change for (`unnamed`); and the selection's Markdown
+  // marked and the page's own text as reviewMarkdownForSelection gives
+  // them. Not widened to a link round it, so a change beside the one
+  // selected isn't taken too.
+  reviewChangesForSelection() {
+    if (!editor || currentMode !== 'richtext') return null
+    const { from, to } = editor.state.selection
+    const touches = range => {
+      if (range.from === range.to) return range.from >= from && range.from <= to
+      if (from === to) return from >= range.from && from <= range.to
+      return range.from < to && from < range.to
+    }
+    const ids = []
+    let unnamed = false
+    for (const range of reviewKey.getState(editor.state).ranges.filter(touches)) {
+      if (!range.change) {
+        unnamed = true
+        continue
+      }
+      for (const id of range.change.id.split(',')) if (!ids.includes(id)) ids.push(id)
+    }
+    return { ids: ids.join(','), unnamed, caret: from === to, markdown: markdownMarking(from, to), plain: getMarkdownContent() }
+  },
+
   // Replaces the document with another, for an editor handed from one note
   // or writing to the next. Nothing is reported back as an edit: a change
   // the previous document had not yet reported is dropped rather than
@@ -1369,6 +1938,8 @@ window.editorAPI = {
   // `token`, if given, comes back on every message about this document.
   load(markdown, token) {
     closeNotePopover(false)
+    closeReviewPopover()
+    reviewMarksShown = false
     cancelContentUpdate()
     documentToken = token ?? null
     savedSelection = null
@@ -1701,6 +2272,8 @@ window.editorAPI = {
   },
 
   switchToMarkdown() {
+    // Nothing on the rich text is offered over the Markdown.
+    closeReviewPopover()
     if (currentMode === 'markdown') return
     // Get current content as markdown
     currentMarkdown = getMarkdownContent()
@@ -1712,6 +2285,9 @@ window.editorAPI = {
 
   setMode(mode) {
     closeNotePopover(false)
+    // Only on a change of mode: a host refreshing sends the same one again,
+    // and a comparison being read stays open through it.
+    if (mode !== currentViewMode) closeReviewPopover()
     currentViewMode = mode
     document.body.classList.remove('mode-edit', 'mode-read', 'mode-present')
     document.body.classList.add('mode-' + mode)

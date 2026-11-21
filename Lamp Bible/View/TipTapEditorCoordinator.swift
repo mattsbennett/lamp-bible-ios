@@ -66,9 +66,21 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     /// moment ahead of the host's. The host sends them again once it settles.
     var onReviewMarksRejected: (() -> Void)?
 
+    /// An undo or redo moved the page's text, perhaps back to words a
+    /// change can be put back from: the host sends the marks again.
+    var onReviewMarksStale: (() -> Void)?
+
+    /// A change's Restore Original Wording was pressed: the change's id, as
+    /// the host sent it with the marks, and the page's own text. The host
+    /// works out the text with the old wording back and hands it to
+    /// `restoreWording`.
+    var onReviewRestore: ((_ changeID: String, _ pageText: String?) -> Void)?
+
     /// The review marks last sent: sent again once the page is ready, and
     /// after its document is replaced, which takes them off.
     private var reviewMarks: String?
+    /// What each of those marked ranges would put back, in their order.
+    private var reviewChanges: [WritingReviewChange?] = []
     /// The page is in Markdown editing, as last asked: only coming back from
     /// it rebuilds the rich-text document, and takes the marks off.
     private var inMarkdown = false
@@ -169,6 +181,14 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
                 onReviewClear?(markdown, body["plain"] as? String)
             }
 
+        case "reviewMarksStale":
+            onReviewMarksStale?()
+
+        case "reviewRestore":
+            if let id = body["id"] as? String {
+                onReviewRestore?(id, body["plain"] as? String)
+            }
+
         case "focusChanged":
             if let focused = body["focused"] as? Bool {
                 onFocusChanged?(focused)
@@ -192,7 +212,11 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     // MARK: - Swift → JS Methods
 
     private func evaluateJS(_ js: String, completion: ((Any?) -> Void)? = nil) {
-        guard let webView = webView else { return }
+        // Answered still, with nothing, so a caller waiting on it goes on.
+        guard let webView = webView else {
+            completion?(nil)
+            return
+        }
         webView.evaluateJavaScript(js) { result, error in
             if let error = error {
                 print("[TipTapCoordinator] JS error: \(error.localizedDescription)")
@@ -217,18 +241,39 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
 
     /// Shows the writing assistant's changes still to read: the document's
     /// Markdown with markers at each edge (`LampWritingReview.markedMarkdown`),
-    /// or nil for none. Kept through typing by the page itself.
-    func setReviewMarks(_ marked: String?) {
+    /// or nil for none. Kept through typing by the page itself. `changes`
+    /// says for each marked range, in order, what restoring it would put
+    /// back, nil where nothing can be.
+    func setReviewMarks(_ marked: String?, changes: [WritingReviewChange?] = []) {
         reviewMarks = marked
+        reviewChanges = marked == nil ? [] : changes
         guard isReady else { return }
         sendReviewMarks()
     }
 
     private func sendReviewMarks() {
         let argument = reviewMarks.map { "\"\($0.jsEscaped())\"" } ?? "null"
-        evaluateJS("window.editorAPI.setReviewMarks(\(argument))") { [weak self] result in
+        let changes = (try? JSONEncoder().encode(reviewChanges)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        evaluateJS("window.editorAPI.setReviewMarks(\(argument), \(changes))") { [weak self] result in
             if (result as? Bool) == false { self?.onReviewMarksRejected?() }
         }
+    }
+
+    /// Takes in the text a restore worked out, as one edit the page makes
+    /// and can undo, if the page still holds `expected`. Answers with the
+    /// page's Markdown afterwards, or nil where nothing was changed.
+    func restoreWording(_ markdown: String, expecting expected: String, completion: @escaping (String?) -> Void) {
+        guard isReady else { return completion(nil) }
+        evaluateJS("window.editorAPI.restoreWording(\"\(markdown.jsEscaped())\", \"\(expected.jsEscaped())\")") { result in
+            completion(result as? String)
+        }
+    }
+
+    /// Selects the next change still to read after the caret, or the one
+    /// before, and brings it into view.
+    func goToReviewMark(forward: Bool) {
+        guard isReady else { return }
+        evaluateJS("window.editorAPI.goToReviewMark(\(forward))")
     }
 
     /// The selection as the document's Markdown with markers at its edges,
@@ -243,6 +288,25 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
             } else {
                 completion(result as? String, nil)
             }
+        }
+    }
+
+    /// The changes the selection stands in, by the ids the host sent them
+    /// with, and whether it touches a passage sent with none; with the
+    /// selection's marked Markdown and the page's text, as
+    /// `reviewMarkdownForSelection` gives them. Nil outside the visual editor.
+    func reviewChangesForSelection(
+        completion: @escaping (
+            _ ids: String, _ unnamed: Bool, _ caret: Bool, _ marked: String?, _ pageText: String?
+        ) -> Void
+    ) {
+        guard isReady else { return completion("", false, true, nil, nil) }
+        evaluateJS("window.editorAPI.reviewChangesForSelection()") { result in
+            guard let page = result as? [String: Any] else { return completion("", false, true, nil, nil) }
+            completion(
+                page["ids"] as? String ?? "", page["unnamed"] as? Bool ?? false, page["caret"] as? Bool ?? true,
+                page["markdown"] as? String, page["plain"] as? String
+            )
         }
     }
 

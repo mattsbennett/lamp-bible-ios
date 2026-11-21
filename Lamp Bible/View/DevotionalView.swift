@@ -109,6 +109,9 @@ struct DevotionalView: View {
     @State private var baseLastModified: Int?
     /// The text as last saved, to tell what the editor shows from it.
     @State private var persistedMarkdown: String?
+    /// How many saves have been written to this writing itself, not kept as
+    /// a copy beside a newer one: what tells a restore it was saved.
+    @State private var savesCommitted = 0
     /// The write an immediate save started, to wait for before what follows
     /// it depends on it.
     @State private var inFlightWrite: Task<WriteOutcome, Never>?
@@ -327,6 +330,17 @@ struct DevotionalView: View {
             } else {
                 toolbarContent
             }
+        }
+        .alert(
+            "Can’t Restore Original Wording",
+            isPresented: Binding(
+                get: { reviewSession.restoreRefusal != nil },
+                set: { if !$0 { reviewSession.restoreRefusal = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(reviewSession.restoreRefusal ?? "")
         }
         .alert(
             "Edits Kept as a Copy",
@@ -1617,6 +1631,7 @@ struct DevotionalView: View {
             }
             devotional.meta.lastModified = committed
             baseLastModified = committed
+            savesCommitted += 1
             persistedMarkdown = savedMarkdown
             if markdownContent == savedMarkdown { hasUnsavedChanges = false }
             lastSaveTime = Date()
@@ -1858,17 +1873,75 @@ struct DevotionalView: View {
         let isShown: Bool
     }
 
-    /// The page shows the session's marks and sends its clears back.
+    /// The page shows the session's marks and sends its clears and restores
+    /// back, and takes in the text a restore works out.
     private func connectReviewMarks(to coordinator: TipTapEditorCoordinator) {
-        coordinator.setReviewMarks(reviewSession.markedMarkdown)
-        reviewSession.onMarksChanged = { [weak coordinator] marked in
-            coordinator?.setReviewMarks(marked)
+        coordinator.setReviewMarks(reviewSession.markedMarkdown, changes: reviewSession.markedChanges)
+        reviewSession.onMarksChanged = { [weak coordinator] marked, changes in
+            coordinator?.setReviewMarks(marked, changes: changes)
         }
         coordinator.onReviewClear = { [weak reviewSession] marked, pageText in
             reviewSession?.clear(markedMarkdown: marked, pageText: pageText)
         }
+        coordinator.onReviewRestore = { [weak reviewSession] changeID, pageText in
+            reviewSession?.restore(changeID: changeID, pageText: pageText)
+        }
+        reviewSession.applyRestore = { [weak coordinator] text, expected in
+            guard let coordinator else { return nil }
+            // A newer copy stored since this one was loaded would take the
+            // save as a copy of its own beside it, and the restore recorded
+            // against the writing it never reached.
+            guard await !Self.storedIsNewer(id: devotional.meta.id, than: baseLastModified) else { return nil }
+            let generation = documentGeneration
+            let restored = await withCheckedContinuation { continuation in
+                coordinator.restoreWording(text, expecting: expected) { continuation.resume(returning: $0) }
+            }
+            // A newer copy put in place meanwhile isn't written over by the
+            // text the restore was made in.
+            guard documentGeneration == generation else { return nil }
+            // Taken now, not when the page next reports its edits, and saved
+            // now, whatever the mode is by then: the restore is recorded only
+            // once this writing holds it. Kept as a copy beside a newer one
+            // instead, it never reached this writing, whose marks stay.
+            guard let restored else { return nil }
+            markdownContent = restored
+            // Written to this writing, with whatever was typed meanwhile:
+            // the restore went with it. A save that failed is tried again a
+            // few times: the page has the wording back already, and a later
+            // save would carry it as the writer's own edit, the restore not
+            // recorded for the assistant to be told.
+            // Counted once a save begun before it is done, which may not hold it.
+            while isSaving { try? await Task.sleep(for: .milliseconds(50)) }
+            let committed = savesCommitted
+            for attempt in 0..<3 where documentGeneration == generation && savesCommitted == committed {
+                if attempt > 0 {
+                    try? await Task.sleep(for: .seconds(1))
+                    while isSaving { try? await Task.sleep(for: .milliseconds(50)) }
+                    guard savesCommitted == committed else { break }
+                }
+                hasUnsavedChanges = true
+                await saveNow()
+                // Kept as a copy beside a newer one: not this writing's, and
+                // not to be tried again.
+                if saveState != .error { break }
+            }
+            guard documentGeneration == generation else { return nil }
+            guard savesCommitted > committed else {
+                // Not saved at all: put back as it was, if nothing's been typed
+                // since, so what's shown agrees with the marks, which keep it.
+                let undone = await withCheckedContinuation { continuation in
+                    coordinator.restoreWording(expected, expecting: restored) { continuation.resume(returning: $0) }
+                }
+                if let undone, documentGeneration == generation { markdownContent = undone }
+                return nil
+            }
+            return restored
+        }
         coordinator.onReviewMarksRejected = { [weak reviewSession] in
             reviewSession?.marksRejected()
+        }
+        coordinator.onReviewMarksStale = { [weak reviewSession] in
+            reviewSession?.refreshMarks()
         }
     }
 
@@ -1884,8 +1957,23 @@ struct DevotionalView: View {
                     }
                 }
             } else {
+                // Each selects the change it lands on, for the two below it.
+                Section {
+                    Button(action: { tiptapCoordinator?.goToReviewMark(forward: true) }) {
+                        Label("Next Change", systemImage: "chevron.down")
+                    }
+                    Button(action: { tiptapCoordinator?.goToReviewMark(forward: false) }) {
+                        Label("Previous Change", systemImage: "chevron.up")
+                    }
+                }
                 Button(action: markSelectionAsReviewed) {
                     Label("Mark Selection as Reviewed", systemImage: "text.badge.checkmark")
+                }
+                // In editing, where the change it makes is saved.
+                if mode == .edit && reviewSession.canRestore {
+                    Button(action: restoreSelection) {
+                        Label("Restore Original Wording", systemImage: "arrow.uturn.backward")
+                    }
                 }
             }
             Button(action: { reviewSession.clearAll() }) {
@@ -1908,6 +1996,26 @@ struct DevotionalView: View {
         tiptapCoordinator?.reviewMarkdownForSelection { marked, pageText in
             guard let marked else { return }
             reviewSession.clear(markedMarkdown: marked, pageText: pageText)
+        }
+    }
+
+    /// Puts back every change the selection touches, or none: by their ids,
+    /// as the page has them, so a link round the selection doesn't widen it
+    /// to a change beside it, and the record decides each, those the page
+    /// stopped offering too. Touching none, it's said so, never asked about
+    /// by the selection's range, which a link round it would widen to a
+    /// change beside it. Where it touches a passage sent with no id, the
+    /// range is asked about, for the record to say which no it is: that
+    /// passage, touched either way, refuses the whole.
+    private func restoreSelection() {
+        tiptapCoordinator?.reviewChangesForSelection { ids, unnamed, caret, marked, pageText in
+            if unnamed, let marked {
+                reviewSession.restore(markedMarkdown: marked, pageText: pageText)
+            } else if !ids.isEmpty {
+                reviewSession.restore(changeID: ids, pageText: pageText)
+            } else {
+                reviewSession.refuseNothingSelected(caret: caret)
+            }
         }
     }
 
