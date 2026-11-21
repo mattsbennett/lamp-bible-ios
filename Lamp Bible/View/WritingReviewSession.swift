@@ -71,9 +71,13 @@ final class WritingReviewWork {
     struct Reservation: Sendable {
         fileprivate let continuation: AsyncStream<@Sendable () async -> Void>.Continuation
 
-        func fill(_ work: @escaping @Sendable () async -> Void) {
-            continuation.yield(work)
+        /// False, the work dropped, where the line has already moved on
+        /// without it.
+        @discardableResult
+        func fill(_ work: @escaping @Sendable () async -> Void) -> Bool {
+            if case .terminated = continuation.yield(work) { return false }
             continuation.finish()
+            return true
         }
 
         func giveUp() {
@@ -172,27 +176,174 @@ final class WritingReviewWork {
     }
 }
 
-/// What restoring a marked passage would do, for the page to show before
-/// it's pressed: the words standing there now and the ones that would stand
-/// instead, each as Markdown, the spaces the assistant put in with its words
-/// included. Or, where it can't be put back for something the writer did,
-/// the reason, and no `before`. `id` names the marks it puts back, so a
-/// press restores those and nothing beside them.
-struct WritingReviewChange: Encodable, Equatable, Sendable {
-    let id: String
-    let now: String
-    var before: String?
-    var reason: String?
-
-    static let edited = "edited"
-
-    /// The id of a passage holding these marks.
-    static func id(of marks: [UUID]) -> String {
-        marks.map(\.uuidString).sorted().joined(separator: ",")
-    }
-
+extension LampWritingReview.Change {
+    /// The marks a change's id names (`id(of:)`).
     static func marks(in id: String) -> Set<UUID> {
         Set(id.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+    }
+}
+
+/// Restores the page has made and the marks file doesn't say yet, by
+/// writing. Each is recorded once a save of its writing commits a text that
+/// still holds it (`RestorePlan.stands(from:in:)`): the save made for it, or
+/// any after, whichever editor of the writing makes it. Never on a save's
+/// word alone: one already in flight took the text before the restore, and
+/// a later one may hold another body. Kept apart from the view, so leaving
+/// the writing before a save lands doesn't drop one. As on the Mac.
+///
+/// A restore keeps the place in line it took before the page made it, and
+/// is recorded there: ahead of its save's carry, which then carries a mark
+/// it makes on unread words it put back, and of a clear asked for since,
+/// which a mark made after it would undo.
+@MainActor
+final class WritingRestoreObligations {
+    static let shared = WritingRestoreObligations()
+    /// How many restores of a writing wait at once: far past any a writer
+    /// makes between two saves.
+    static let kept = 20
+
+    struct Owed: Sendable {
+        let id: UUID
+        let plan: LampWritingReview.RestorePlan
+        /// The text the restore was planned in, and the page's text after it.
+        let base: String
+        let restored: String
+        let known: [String]
+        /// Its place in line, until spent or given up.
+        var place: WritingReviewWork.Reservation?
+        /// Every mark was cleared while it was owed: a mark its record makes
+        /// on unread words it put back is cleared too, as that clear would
+        /// have cleared it.
+        var clearedSince = false
+    }
+
+    private var owed: [String: [Owed]] = [:]
+
+    /// Owed from now. One owed before for only marks this one puts back too
+    /// (made again after an undo, say) is this one's now: both recorded, the
+    /// marks the restore makes would be made twice. One that also put back
+    /// others stays owed for them.
+    @discardableResult
+    func owe(
+        _ plan: LampWritingReview.RestorePlan, from base: String, to restored: String,
+        carryingFrom known: [String], in place: WritingReviewWork.Reservation?, for writingID: String
+    ) -> UUID {
+        let marks = Set(plan.marks)
+        var pending = owed[writingID, default: []]
+        for replaced in pending where marks.isSuperset(of: replaced.plan.marks) { replaced.place?.giveUp() }
+        pending.removeAll { marks.isSuperset(of: $0.plan.marks) }
+        let restore = Owed(id: UUID(), plan: plan, base: base, restored: restored, known: known, place: place)
+        pending.append(restore)
+        for dropped in pending.dropLast(Self.kept) { dropped.place?.giveUp() }
+        owed[writingID] = Array(pending.suffix(Self.kept))
+        return restore.id
+    }
+
+    func isOwed(_ id: UUID, for writingID: String) -> Bool {
+        owed[writingID]?.contains { $0.id == id } ?? false
+    }
+
+    /// Every mark of the writing was cleared.
+    func clearedAll(for writingID: String) {
+        guard let pending = owed[writingID] else { return }
+        owed[writingID] = pending.map { restore in
+            var restore = restore
+            restore.clearedSince = true
+            return restore
+        }
+    }
+
+    /// Its save didn't commit: its place in line goes, and it waits, owed,
+    /// for a later save.
+    func release(_ id: UUID, for writingID: String) {
+        guard let index = owed[writingID]?.firstIndex(where: { $0.id == id }) else { return }
+        owed[writingID]?[index].place?.giveUp()
+        owed[writingID]?[index].place = nil
+    }
+
+    /// A save of the writing committed `saved`: each restore owed that it
+    /// holds is recorded, in its own place in line where it still has one,
+    /// else after the save's carry. Returns once those holding a place are
+    /// in it, so the save made for a restore knows when it returns.
+    func settle(writingID: String, saved: String) async {
+        guard let pending = owed[writingID], !pending.isEmpty else { return }
+        let store = LibrarySyncPass.reviewStore
+        // Asked before its place is spent, so a save without it (one in
+        // flight when it was made) doesn't spend it; off the main actor,
+        // since the whole writing is compared.
+        let placed = pending.filter { $0.place != nil }
+        let holding = placed.isEmpty ? [] : await Task.detached(priority: .userInitiated) {
+            placed.filter { $0.plan.stands(from: $0.restored, in: saved) }.map(\.id)
+        }.value
+        for id in holding {
+            guard let restore = claim([id], for: writingID).first else { continue }
+            let filled = restore.place?.fill {
+                await Self.record([restore], writingID: writingID, saved: saved, store: store)
+            } ?? false
+            // Its place gone by meanwhile: recorded at the end of the line.
+            if !filled {
+                WritingReviewWork.shared.run {
+                    await Self.record([restore], writingID: writingID, saved: saved, store: store)
+                }
+            }
+        }
+        // Those owed as this save committed, not any made after it.
+        let eligible = Set(owed[writingID, default: []].filter { $0.place == nil }.map(\.id))
+        guard !eligible.isEmpty else { return }
+        WritingReviewWork.shared.run {
+            // Still owed when its turn comes: a settle before it in line may
+            // have recorded some.
+            let unplaced = await MainActor.run {
+                WritingRestoreObligations.shared.owed[writingID, default: []].filter { eligible.contains($0.id) }
+            }
+            let holding = unplaced.filter { $0.plan.stands(from: $0.restored, in: saved) }
+            guard !holding.isEmpty else { return }
+            let claimed = await MainActor.run {
+                WritingRestoreObligations.shared.claim(Set(holding.map(\.id)), for: writingID)
+            }
+            await Self.record(claimed, writingID: writingID, saved: saved, store: store)
+        }
+    }
+
+    /// Writes these restores to the marks file; any it couldn't are owed
+    /// again, for the next save.
+    nonisolated private static func record(
+        _ restores: [Owed], writingID: String, saved: String, store: LampWritingReviewStore
+    ) async {
+        guard !restores.isEmpty else { return }
+        let written = try? store.updating(writingID: writingID) { review in
+            restores.reduce(review) { review, restore in
+                var recorded = review.restoringWording(
+                    restore.plan, from: restore.base, to: restore.restored, carryingFrom: restore.known
+                )
+                guard restore.clearedSince else { return recorded }
+                let held = Set(review.marks.map(\.id))
+                for made in recorded.located(in: restore.restored) where !held.contains(made.id) {
+                    for range in made.ranges { recorded = recorded.clearing(range, in: restore.restored) }
+                }
+                return recorded
+            }
+        }
+        await MainActor.run {
+            guard written != nil else {
+                let unplaced = restores.map { restore -> Owed in
+                    var restore = restore
+                    restore.place = nil
+                    return restore
+                }
+                WritingRestoreObligations.shared.owed[writingID, default: []].append(contentsOf: unplaced)
+                return
+            }
+            WritingReviewTexts.shared.remember(saved, for: writingID)
+            WritingReviewWork.marksChanged()
+        }
+    }
+
+    /// Takes these out of what's owed, answering with those still there.
+    private func claim(_ ids: Set<UUID>, for writingID: String) -> [Owed] {
+        let claimed = owed[writingID, default: []].filter { ids.contains($0.id) }
+        owed[writingID]?.removeAll { ids.contains($0.id) }
+        return claimed
     }
 }
 
@@ -203,6 +354,7 @@ enum WritingRestoreRefusal {
     static let caretOutside = "Put the caret in a passage the assistant changed, or select one, and try again."
     static let nothingSelected = "Nothing the assistant changed is inside what you have selected."
     static let moved = "The wording couldn’t be put back on the page as it stands now. Try again, or mark it as reviewed instead."
+    static let unsaved = "The original wording is back, but the writing couldn’t be saved, so the assistant hasn’t been told yet. It will be once the writing saves."
 
     static func text(for outcome: LampWritingReview.RestoreOutcome, selecting range: NSRange) -> String? {
         switch outcome {
@@ -233,19 +385,29 @@ final class WritingReviewSession: ObservableObject {
     @Published private(set) var canRestore = false
     /// Why a restore asked for couldn't be made, nothing having changed.
     @Published var restoreRefusal: String?
+    /// A restore was made and couldn't be saved yet, so it isn't recorded:
+    /// it will be once a save of the writing holds it.
+    @Published var restoreUnsaved = false
 
     /// The marks as the page takes them, each time they change: the
     /// writing's Markdown with markers, or nil for none, and what each
     /// marked range would put back. The page keeps them through the
     /// writer's typing itself, so typing sends nothing.
-    var onMarksChanged: ((String?, [WritingReviewChange?]) -> Void)?
+    var onMarksChanged: ((String?, [LampWritingReview.Change?]) -> Void)?
     /// The marks last sent, for an editor that's ready late.
     private(set) var markedMarkdown: String?
-    private(set) var markedChanges: [WritingReviewChange?] = []
+    private(set) var markedChanges: [LampWritingReview.Change?] = []
     /// Has the page take in the text a restore worked out, as an edit of its
     /// own, if it still holds the text given second: answers with what it
     /// holds afterwards, or nil where it changed nothing.
     var applyRestore: (@MainActor (_ text: String, _ expected: String) async -> String?)?
+    /// Saves the writing now, the restore in it: false where it couldn't be
+    /// saved. A save that commits records the restore if it holds it
+    /// (`WritingRestoreObligations`).
+    var saveRestored: (@MainActor () async -> Bool)?
+    /// One restore at a time: two pressed together would go through one
+    /// save, and the page refuse the second's text.
+    private var restoring = false
 
     private var writingID: String?
     private var store: LampWritingReviewStore?
@@ -371,6 +533,7 @@ final class WritingReviewSession: ObservableObject {
     }
 
     func clearAll() {
+        if let writingID { WritingRestoreObligations.shared.clearedAll(for: writingID) }
         change { $0.clearingAll() }
     }
 
@@ -382,7 +545,7 @@ final class WritingReviewSession: ObservableObject {
     /// Never by a range the page marked, which a link round the change
     /// would widen to take a change beside it too.
     func restore(changeID: String, pageText: String?) {
-        let wanted = WritingReviewChange.marks(in: changeID)
+        let wanted = LampWritingReview.Change.marks(in: changeID)
         guard !wanted.isEmpty else { return }
         restore(in: pageText ?? text) { live, base in
             switch live.restoring(marks: wanted, in: base) {
@@ -425,38 +588,66 @@ final class WritingReviewSession: ObservableObject {
     /// Plans a restore in `base` with the marks carried there, then has the
     /// page make the edit itself, so it undoes as any edit does and nothing
     /// typed meanwhile is written over: it refuses if its text has moved on
-    /// from `base`. Only once it has is the restore recorded, against what
-    /// the page ended up holding, in a place in line taken before the edit,
-    /// so the save that follows carries after it.
+    /// from `base`. Once it has, the restore is owed and the writing saved:
+    /// it's recorded when a save commits a text that holds it. Not put back
+    /// where that save fails: the writer is told it isn't recorded yet, and
+    /// the restore stays theirs to undo.
+    ///
+    /// The app is held open in the background until then, so quitting
+    /// between the press and the save doesn't leave it made and unsaved.
     private func restore(
         in base: String,
         planning: @escaping @Sendable (LampWritingReview, String) -> Planned
     ) {
-        guard let writingID, let store, let review, let applyRestore else { return }
+        guard !restoring, let writingID, store != nil, let review, let applyRestore else { return }
+        restoring = true
         WritingReviewTexts.shared.remember(base, for: writingID)
         let known = WritingReviewTexts.shared.known(for: writingID)
+        let background = UIApplication.shared.beginBackgroundTask(withName: "Restore wording")
         Task { [weak self] in
-            let planned = await Task.detached(priority: .userInitiated) {
-                planning(review.carryingToText(base, from: known), base)
-            }.value
-            guard let self, self.writingID == writingID else { return }
-            guard case let .plan(plan) = planned else {
-                if case let .refused(why) = planned { self.refuseRestore(why) }
-                return
-            }
-            let place = WritingReviewWork.shared.reserve()
-            guard let restored = await applyRestore(Self.applying(plan, to: base), base) else {
-                place.giveUp()
-                if self.writingID == writingID { self.refuseRestore(WritingRestoreRefusal.moved) }
-                return
-            }
-            WritingReviewTexts.shared.remember(restored, for: writingID)
-            // Recorded in the file it was planned from, though marks were
-            // turned off meanwhile: the edit is made, and the record must say so.
-            self.change(in: place, store: store, writingID: writingID) {
-                $0.restoringWording(plan, from: base, to: restored, carryingFrom: known)
-            }
+            await self?.restore(
+                in: base, writingID: writingID, review: review, known: known,
+                applyRestore: applyRestore, planning: planning
+            )
+            self?.restoring = false
+            if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
         }
+    }
+
+    private func restore(
+        in base: String, writingID: String, review: LampWritingReview, known: [String],
+        applyRestore: @MainActor (String, String) async -> String?,
+        planning: @escaping @Sendable (LampWritingReview, String) -> Planned
+    ) async {
+        let planned = await Task.detached(priority: .userInitiated) {
+            planning(review.carryingToText(base, from: known), base)
+        }.value
+        guard self.writingID == writingID else { return }
+        guard case let .plan(plan) = planned else {
+            if case let .refused(why) = planned { refuseRestore(why) }
+            return
+        }
+        // A place in line taken before the edit, so the save that follows
+        // carries after the record, and a clear asked for meanwhile comes
+        // after it too.
+        let place = WritingReviewWork.shared.reserve()
+        guard let restored = await applyRestore(plan.applied(to: base), base) else {
+            place.giveUp()
+            if self.writingID == writingID { refuseRestore(WritingRestoreRefusal.moved) }
+            return
+        }
+        WritingReviewTexts.shared.remember(restored, for: writingID)
+        // Owed before the save is asked for, so whichever save holds it first
+        // records it: recorded in the file it was planned from, though marks
+        // are turned off meanwhile, since the edit is made.
+        let owed = WritingRestoreObligations.shared.owe(
+            plan, from: base, to: restored, carryingFrom: known, in: place, for: writingID
+        )
+        let saved = await saveRestored?() ?? false
+        guard WritingRestoreObligations.shared.isOwed(owed, for: writingID) else { return }
+        // Not recorded by its own save: the line doesn't wait on it.
+        WritingRestoreObligations.shared.release(owed, for: writingID)
+        if !saved, self.writingID == writingID { restoreUnsaved = true }
     }
 
     /// The selection stood in no change, as the page has them.
@@ -472,46 +663,13 @@ final class WritingReviewSession: ObservableObject {
         scheduleDraw()
     }
 
-    /// `text` with the plan's edits made, last first as it lists them.
-    nonisolated static func applying(_ plan: LampWritingReview.RestorePlan, to text: String) -> String {
-        let edited = NSMutableString(string: text)
-        for edit in plan.edits {
-            edited.replaceCharacters(in: edit.range, with: edit.replacement)
-        }
-        return edited as String
-    }
-
     /// For each marked range the page is sent, in order, what restoring it
-    /// would put back: the span the restore replaces, as it stands and with
-    /// the old wording in; or that it can't be, for something the writer did
-    /// (`.notExact`); or nil. As `restoring(_:in:)` answers for them all at
-    /// once, each with the marks it stands in, which name it.
-    nonisolated static func changes(in review: LampWritingReview, text: String) -> [WritingReviewChange?] {
+    /// would put back, or that it can't be for something the writer did, or
+    /// nil (`changes(in:ranges:)`).
+    nonisolated static func changes(in review: LampWritingReview, text: String) -> [LampWritingReview.Change?] {
         let ranges = review.highlightedRanges(in: text)
         guard !review.wordings.isEmpty else { return ranges.map { _ in nil } }
-        let source = text as NSString
-        return zip(ranges, review.restoring(ranges, in: text)).map { range, answer in
-            let id = WritingReviewChange.id(of: answer.marks)
-            switch answer.outcome {
-            case let .plan(plan):
-                guard let first = plan.edits.first else { return nil }
-                let span = plan.edits.dropFirst().reduce(first.range) { NSUnionRange($0, $1.range) }
-                let now = source.substring(with: span)
-                let before = NSMutableString(string: now)
-                // Last first, as the plan lists them.
-                for edit in plan.edits {
-                    before.replaceCharacters(
-                        in: NSRange(location: edit.range.location - span.location, length: edit.range.length),
-                        with: edit.replacement
-                    )
-                }
-                return WritingReviewChange(id: id, now: now, before: before as String)
-            case .notExact:
-                return WritingReviewChange(id: id, now: source.substring(with: range), reason: WritingReviewChange.edited)
-            case .notKept, .nothingTouched:
-                return nil
-            }
-        }
+        return review.changes(in: text, ranges: ranges)
     }
 
     // MARK: - Internals
@@ -519,20 +677,9 @@ final class WritingReviewSession: ObservableObject {
     /// Changes the marks file in line with the saves' carries, off the main
     /// actor, and takes up what was written, with the file's date read under
     /// the same lock.
-    ///
-    /// In `place`, where one was taken for it, rather than at the end.
-    /// `store` and `writingID`, where given, stand in for the session's own.
-    private func change(
-        in place: WritingReviewWork.Reservation? = nil,
-        store: LampWritingReviewStore? = nil,
-        writingID: String? = nil,
-        _ edit: @escaping @Sendable (LampWritingReview) -> LampWritingReview
-    ) {
-        guard let store = store ?? self.store, let writingID = writingID ?? self.writingID else {
-            place?.giveUp()
-            return
-        }
-        let work: @Sendable () async -> Void = { [weak self] in
+    private func change(_ edit: @escaping @Sendable (LampWritingReview) -> LampWritingReview) {
+        guard let store, let writingID else { return }
+        WritingReviewWork.shared.run { [weak self] in
             guard let written = try? store.updating(writingID: writingID, edit) else { return }
             await MainActor.run {
                 WritingReviewWork.marksChanged()
@@ -541,7 +688,6 @@ final class WritingReviewSession: ObservableObject {
                 self.apply(written.review, date: written.modified)
             }
         }
-        if let place { place.fill(work) } else { WritingReviewWork.shared.run(work) }
     }
 
     /// Reads the marks file again if its date has moved since it was last
@@ -603,7 +749,7 @@ final class WritingReviewSession: ObservableObject {
         }
     }
 
-    private func publish(count: Int, marked: String?, changes: [WritingReviewChange?], sendsMarks: Bool) {
+    private func publish(count: Int, marked: String?, changes: [LampWritingReview.Change?], sendsMarks: Bool) {
         if self.count != count { self.count = count }
         if sendsMarks {
             markedMarkdown = marked

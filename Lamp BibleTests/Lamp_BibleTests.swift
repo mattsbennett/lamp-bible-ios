@@ -10036,8 +10036,9 @@ final class WritingReviewSessionTests: XCTestCase {
     }
 
     /// A restore pressed on the page: the text with the old wording back is
-    /// handed to the page, worked out in the page's own text, and once the
-    /// page has taken it the mark is retired and what it held recorded.
+    /// handed to the page, worked out in the page's own text, and once a save
+    /// of the text the page took commits, the mark is retired and what it
+    /// held recorded.
     func testARestoreGoesThroughThePageAndIsRecorded() async throws {
         let id = "review-session-\(UUID().uuidString)"
         let store = LibrarySyncPass.reviewStore
@@ -10051,6 +10052,10 @@ final class WritingReviewSessionTests: XCTestCase {
         session.applyRestore = { text, expected in
             handed.append((text, expected))
             return text
+        }
+        session.saveRestored = {
+            await WritingRestoreObligations.shared.settle(writingID: id, saved: old)
+            return true
         }
         let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
         defer { following.cancel() }
@@ -10071,6 +10076,226 @@ final class WritingReviewSessionTests: XCTestCase {
         XCTAssertEqual(review.restorations.map(\.restored), [""])
         XCTAssertEqual(review.restorations.map { $0.discarded.trimmingCharacters(in: .whitespaces) }, ["alpha"])
         XCTAssertNil(session.restoreRefusal)
+        XCTAssertFalse(session.restoreUnsaved)
+    }
+
+    /// Only a save of a text holding the restore records it: one that took
+    /// the text before it (already in flight when it was made) doesn't, and
+    /// the restore waits, owed, for one that does.
+    func testARestoreIsRecordedOnlyByASaveHoldingIt() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let old = "Begin here. One two. End there."
+        let saved = "Begin here. One alpha two. End there."
+        try store.save(LampWritingReview(writingID: id).markingAssistantChange(from: old, to: saved))
+
+        let session = WritingReviewSession()
+        var restored: String?
+        session.applyRestore = { text, _ in
+            restored = text
+            return text
+        }
+        session.saveRestored = {
+            // The save in flight, of the text before the restore.
+            await WritingRestoreObligations.shared.settle(writingID: id, saved: saved)
+            return true
+        }
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where !session.canRestore { try await Task.sleep(for: .milliseconds(50)) }
+        session.restore(changeID: try XCTUnwrap(session.markedChanges.first??.id), pageText: saved)
+        for _ in 0..<50 where restored == nil { try await Task.sleep(for: .milliseconds(50)) }
+        try await Task.sleep(for: .milliseconds(100))
+        await WritingReviewWork.shared.drained()
+        XCTAssertTrue(try store.review(writingID: id).restorations.isEmpty, "not by a save without it")
+
+        // A later save, with the writer's typing beside the restored words.
+        await WritingRestoreObligations.shared.settle(writingID: id, saved: old.replacingOccurrences(of: "End", with: "The end"))
+        await WritingReviewWork.shared.drained()
+        let review = try store.review(writingID: id)
+        XCTAssertEqual(review.restorations.count, 1)
+        XCTAssertTrue(review.marks.isEmpty)
+
+        // Settled once: another save records nothing more.
+        await WritingRestoreObligations.shared.settle(writingID: id, saved: old)
+        await WritingReviewWork.shared.drained()
+        XCTAssertEqual(try store.review(writingID: id).restorations.count, 1)
+    }
+
+    /// A restore that can't be saved stays made, isn't put back, and the
+    /// writer is told it isn't recorded yet; the next save holding it
+    /// records it.
+    func testARestoreNotSavedIsSaidAndStaysOwed() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let old = "One two."
+        let saved = "One alpha two."
+        try store.save(LampWritingReview(writingID: id).markingAssistantChange(from: old, to: saved))
+
+        let session = WritingReviewSession()
+        var handed: [String] = []
+        session.applyRestore = { text, _ in
+            handed.append(text)
+            return text
+        }
+        session.saveRestored = { false }
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where !session.canRestore { try await Task.sleep(for: .milliseconds(50)) }
+        session.restore(changeID: try XCTUnwrap(session.markedChanges.first??.id), pageText: saved)
+        for _ in 0..<50 where !session.restoreUnsaved { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertTrue(session.restoreUnsaved)
+        XCTAssertEqual(handed, [old], "handed once, and never handed back")
+        await WritingReviewWork.shared.drained()
+        XCTAssertTrue(try store.review(writingID: id).restorations.isEmpty)
+
+        await WritingRestoreObligations.shared.settle(writingID: id, saved: old)
+        await WritingReviewWork.shared.drained()
+        XCTAssertEqual(try store.review(writingID: id).restorations.map(\.restored), [""])
+    }
+
+    /// A restore holds its place in line until its save: a clear asked for
+    /// meanwhile comes after its record, so a mark it makes on unread words
+    /// it put back is cleared too, not made again after the clear.
+    func testAClearDuringARestoresSaveComesAfterIt() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        // Changed twice, unread between: putting back the second change's
+        // wording puts back the first's, still to be read, and marks it.
+        let first = "One alpha two."
+        let saved = "One beta two."
+        let marked = LampWritingReview(writingID: id)
+            .markingAssistantChange(from: "One two.", to: first)
+            .markingAssistantChange(from: first, to: saved)
+        let range = try XCTUnwrap(marked.highlightedRanges(in: saved).first)
+        let plan = try XCTUnwrap(marked.restorePlan(for: range, in: saved))
+        XCTAssertEqual(plan.edits.map(\.unread), [true], "what it puts back is still to be read")
+        let old = plan.applied(to: saved)
+        XCTAssertFalse(marked.restoringWording(plan, from: saved, to: old).marks.isEmpty, "and is marked again")
+        try store.save(marked)
+
+        let session = WritingReviewSession()
+        session.applyRestore = { text, _ in text }
+        session.saveRestored = {
+            // Cleared while the save is made.
+            session.clearAll()
+            try? await Task.sleep(for: .milliseconds(100))
+            await WritingRestoreObligations.shared.settle(writingID: id, saved: old)
+            return true
+        }
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where !session.canRestore { try await Task.sleep(for: .milliseconds(50)) }
+        session.restore(changeID: try XCTUnwrap(session.markedChanges.first??.id), pageText: saved)
+        for _ in 0..<100 { 
+            if try store.review(writingID: id).restorations.count == 1 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        await WritingReviewWork.shared.drained()
+        let review = try store.review(writingID: id)
+        XCTAssertEqual(review.restorations.count, 1)
+        XCTAssertTrue(review.marks.isEmpty)
+        XCTAssertFalse(session.restoreUnsaved)
+    }
+
+    /// A restore whose save failed, recorded by a later save after every
+    /// mark was cleared meanwhile, leaves the unread words it put back
+    /// cleared too; a save that committed before it was made records none.
+    func testARestoreRecordedAfterAClearAllLeavesItCleared() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let first = "One alpha two."
+        let saved = "One beta two."
+        try store.save(LampWritingReview(writingID: id)
+            .markingAssistantChange(from: "One two.", to: first)
+            .markingAssistantChange(from: first, to: saved))
+
+        let session = WritingReviewSession()
+        session.applyRestore = { text, _ in text }
+        session.saveRestored = { false }
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where !session.canRestore { try await Task.sleep(for: .milliseconds(50)) }
+        session.restore(changeID: try XCTUnwrap(session.markedChanges.first??.id), pageText: saved)
+        for _ in 0..<50 where !session.restoreUnsaved { try await Task.sleep(for: .milliseconds(50)) }
+        session.clearAll()
+        await WritingReviewWork.shared.drained()
+
+        await WritingRestoreObligations.shared.settle(writingID: id, saved: first)
+        await WritingReviewWork.shared.drained()
+        let review = try store.review(writingID: id)
+        XCTAssertEqual(review.restorations.count, 1)
+        XCTAssertTrue(review.located(in: first).isEmpty, "cleared, as the clear would have")
+    }
+
+    /// The same marks restored again while the first is still owed (undone
+    /// and made again) are owed once.
+    func testARestoreMadeAgainIsOwedOnce() throws {
+        let old = "One two."
+        let text = "One alpha two."
+        let review = LampWritingReview(writingID: "w").markingAssistantChange(from: old, to: text)
+        let range = try XCTUnwrap(review.highlightedRanges(in: text).first)
+        let plan = try XCTUnwrap(review.restorePlan(for: range, in: text))
+        let id = "owed-\(UUID().uuidString)"
+        let obligations = WritingRestoreObligations.shared
+        let first = obligations.owe(plan, from: text, to: old, carryingFrom: [], in: nil, for: id)
+        let second = obligations.owe(plan, from: text, to: old, carryingFrom: [], in: nil, for: id)
+        XCTAssertFalse(obligations.isOwed(first, for: id))
+        XCTAssertTrue(obligations.isOwed(second, for: id))
+
+        // One that put back another passage too stays owed for it.
+        let both = "Alpha uno here. Beta dos there."
+        let two = LampWritingReview(writingID: "w").markingAssistantChange(from: "Alpha one here. Beta two there.", to: both)
+        let whole = try XCTUnwrap(two.restorePlan(for: NSRange(location: 0, length: (both as NSString).length), in: both))
+        XCTAssertEqual(whole.marks.count, 2)
+        let alpha = try XCTUnwrap(two.restorePlan(for: try XCTUnwrap(two.highlightedRanges(in: both).first), in: both))
+        let wide = obligations.owe(whole, from: both, to: whole.applied(to: both), carryingFrom: [], in: nil, for: id)
+        let narrow = obligations.owe(alpha, from: both, to: alpha.applied(to: both), carryingFrom: [], in: nil, for: id)
+        XCTAssertTrue(obligations.isOwed(wide, for: id))
+        XCTAssertTrue(obligations.isOwed(narrow, for: id))
+    }
+
+    /// One restore at a time: a second press while the first is still with
+    /// the page does nothing.
+    func testASecondRestoreWaitsForTheFirst() async throws {
+        let id = "review-session-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let old = "Alpha one here. Beta two there."
+        let saved = "Alpha uno here. Beta dos there."
+        try store.save(LampWritingReview(writingID: id).markingAssistantChange(from: old, to: saved))
+
+        let session = WritingReviewSession()
+        var handed = 0
+        var answer: CheckedContinuation<String?, Never>?
+        session.applyRestore = { _, _ in
+            handed += 1
+            return await withCheckedContinuation { answer = $0 }
+        }
+        session.saveRestored = { true }
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where session.markedChanges.compactMap({ $0 }).count < 2 { try await Task.sleep(for: .milliseconds(50)) }
+        let ids = session.markedChanges.compactMap { $0?.id }
+        XCTAssertEqual(ids.count, 2)
+        session.restore(changeID: ids[0], pageText: saved)
+        for _ in 0..<50 where answer == nil { try await Task.sleep(for: .milliseconds(50)) }
+        session.restore(changeID: ids[1], pageText: saved)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(handed, 1)
+        answer?.resume(returning: nil)
+        for _ in 0..<50 where session.restoreRefusal == nil { try await Task.sleep(for: .milliseconds(50)) }
+
+        // Answered: the next press goes through.
+        answer = nil
+        session.restore(changeID: ids[1], pageText: saved)
+        for _ in 0..<50 where answer == nil { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(handed, 2)
+        answer?.resume(returning: nil)
     }
 
     /// A page that has moved on refuses the text, and nothing is recorded.
@@ -10106,7 +10331,7 @@ final class WritingReviewSessionTests: XCTestCase {
         let ranges = stored.highlightedRanges(in: text)
         XCTAssertEqual(ranges.count, 2)
         let plan = try XCTUnwrap(stored.restorePlan(for: ranges[0], in: text))
-        let restored = WritingReviewSession.applying(plan, to: text)
+        let restored = plan.applied(to: text)
         XCTAssertEqual(restored, "Alpha one here. Beta dos there.")
 
         let result = stored.restoringWording(plan, from: text, to: restored, carryingFrom: [text])
@@ -10130,7 +10355,7 @@ final class WritingReviewSessionTests: XCTestCase {
         XCTAssertEqual(changes.map { $0?.before }, ["one", "two"])
         XCTAssertEqual(Set(changes.compactMap { $0?.id }).count, 2)
         for (change, mark) in zip(changes, review.located(in: text)) {
-            XCTAssertEqual(change?.id, WritingReviewChange.id(of: [mark.id]))
+            XCTAssertEqual(change?.id, LampWritingReview.Change.id(of: [mark.id]))
         }
 
         // Typed into: the record kept its wording, so the writer is told.
@@ -10141,7 +10366,7 @@ final class WritingReviewSessionTests: XCTestCase {
             .carryingWriterEdit(from: inserted, to: typed)
         let after = WritingReviewSession.changes(in: carried, text: typed)
         XCTAssertFalse(after.isEmpty)
-        XCTAssertTrue(after.allSatisfy { $0?.reason == WritingReviewChange.edited && $0?.before == nil }, "\(after)")
+        XCTAssertTrue(after.allSatisfy { $0?.reason == "edited" && $0?.before == nil }, "\(after)")
 
         // Kept nowhere: nothing said.
         var unkept = review

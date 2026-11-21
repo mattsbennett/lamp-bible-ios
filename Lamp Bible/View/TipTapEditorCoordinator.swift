@@ -3,6 +3,7 @@
 //  Lamp Bible
 //
 
+import LampCore
 import WebKit
 import SwiftUI
 
@@ -74,7 +75,7 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     /// after its document is replaced, which takes them off.
     private var reviewMarks: String?
     /// What each of those marked ranges would put back, in their order.
-    private var reviewChanges: [WritingReviewChange?] = []
+    private var reviewChanges: [LampWritingReview.Change?] = []
     /// The page is in Markdown editing, as last asked: only coming back from
     /// it rebuilds the rich-text document, and takes the marks off.
     private var inMarkdown = false
@@ -230,7 +231,7 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     /// or nil for none. Kept through typing by the page itself. `changes`
     /// says for each marked range, in order, what restoring it would put
     /// back, nil where nothing can be.
-    func setReviewMarks(_ marked: String?, changes: [WritingReviewChange?] = []) {
+    func setReviewMarks(_ marked: String?, changes: [LampWritingReview.Change?] = []) {
         reviewMarks = marked
         reviewChanges = marked == nil ? [] : changes
         guard isReady else { return }
