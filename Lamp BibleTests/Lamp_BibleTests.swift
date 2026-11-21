@@ -3841,6 +3841,203 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertNotEqual(written.manifest.entry(at: path)?.isMember, true, "deleted in the library")
     }
 
+    // MARK: - A document's review marks
+
+    /// A document's marks beside its writing's, in the phone's store.
+    private func keepDocumentReview(for writingID: String, document: String) throws -> LampWritingReview {
+        var review = LampWritingReview(writingID: writingID, document: document)
+            .markingAssistantChange(from: "Outline.", to: "Outline, in three parts.")
+        review.document = document
+        XCTAssertFalse(review.isEmpty)
+        try LibrarySyncPass.reviewStore.save(review)
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: writingID, document: document) }
+        return review
+    }
+
+    private func publishFromElsewhere(_ path: String, _ data: Data) async throws {
+        let previous = await server.file(path)?.revision
+        let revision = await server.seed(path, data)
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.recordingWrite(
+                path, revision: revision, replacing: previous, at: ModuleDatabase.nowMilliseconds()
+            )
+        }
+    }
+
+    /// Each document's marks go up at a path of their own, and the writing's
+    /// own path isn't written for them.
+    func testADocumentsReviewMarksGoUpAtTheirOwnPath() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        _ = try keepDocumentReview(for: writingID, document: "outline.md")
+        let path = try LampSyncFolderLayout.writingReviewPath(writingID: writingID, document: "outline.md")
+
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+
+        let uploaded = await server.file(path)
+        XCTAssertNotNil(uploaded)
+        let prose = await server.file(try LampSyncFolderLayout.writingReviewPath(writingID: writingID))
+        XCTAssertNil(prose, "the writing's own marks aren't these")
+        XCTAssertFalse(LibrarySyncPass.hasUnsentReviews(source: source))
+    }
+
+    /// A document's marks from another device are taken into that
+    /// document's record, never the writing's own.
+    func testADocumentsReviewMarksFromElsewhereAreTheDocuments() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        try keepReview(for: writingID)
+        let prose = try LibrarySyncPass.reviewStore.review(writingID: writingID)
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: writingID, document: "notes.md") }
+        var theirs = LampWritingReview(writingID: writingID, document: "notes.md")
+            .markingAssistantChange(from: "Notes.", to: "Notes, kept.")
+        theirs.document = "notes.md"
+        let path = try LampSyncFolderLayout.writingReviewPath(writingID: writingID, document: "notes.md")
+        try await publishFromElsewhere(path, try theirs.encoded())
+
+        _ = try await pass().run()
+
+        XCTAssertEqual(try LibrarySyncPass.reviewStore.review(writingID: writingID, document: "notes.md").marks, theirs.marks)
+        XCTAssertEqual(try LibrarySyncPass.reviewStore.review(writingID: writingID), prose, "the writing's own untouched")
+    }
+
+    /// A record arriving at a document's path that says it's another's is
+    /// not taken in anywhere.
+    func testAReviewPathIsTheRecordsOwnOrNothing() throws {
+        let path = try LampSyncFolderLayout.writingReviewPath(writingID: "w", document: "outline.md")
+        XCTAssertEqual(LibrarySyncPass.reviewPlace(of: path, record: { nil })?.document, "outline.md")
+        let prose = try LampSyncFolderLayout.writingReviewPath(writingID: "w")
+        XCTAssertNil(try XCTUnwrap(LibrarySyncPass.reviewPlace(of: prose, record: { nil })).document)
+
+        // A name too long to keep is a digest, and named by its record.
+        let long = String(repeating: "בראשית", count: 20) + ".md"
+        let digest = try LampSyncFolderLayout.writingReviewPath(writingID: "w", document: long)
+        XCTAssertNil(LampSyncFolderLayout.documentName(fromReviewKey: try XCTUnwrap(
+            LampSyncFolderLayout.reviewTarget(ofPath: digest)?.documentKey
+        )))
+        var record = LampWritingReview(writingID: "w", document: long)
+        XCTAssertEqual(LibrarySyncPass.reviewPlace(of: digest, record: { record })?.document, long)
+        record.document = "other.md"
+        XCTAssertNil(LibrarySyncPass.reviewPlace(of: digest, record: { record }), "a record of another document")
+    }
+
+    /// A document's marks deleted on another device go here too, and the
+    /// writing's own marks stay.
+    func testADocumentsMarksDeletedElsewhereLeaveTheWritingsOwn() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        try keepReview(for: writingID)
+        _ = try keepDocumentReview(for: writingID, document: "outline.md")
+        let path = try LampSyncFolderLayout.writingReviewPath(writingID: writingID, document: "outline.md")
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+
+        let revision = await server.file(path)?.revision
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(path, at: ModuleDatabase.nowMilliseconds() + 1_000, revision: revision)
+        }
+        _ = try await pass().run()
+
+        let url = try LibrarySyncPass.reviewStore.url(writingID: writingID, document: "outline.md")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "the document's marks went")
+        XCTAssertFalse(try LibrarySyncPass.reviewStore.review(writingID: writingID).isEmpty, "the writing's stayed")
+    }
+
+    /// A document the writer deletes here takes its marks with it, and their
+    /// deletion reaches the server with the next pass, so no device fetches
+    /// them again: those it held, and those another device sent that never
+    /// reached it.
+    func testADocumentDeletedHereTakesItsMarksEverywhere() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        let store = LibrarySyncPass.documentStore
+        addTeardownBlock { try? FileManager.default.removeItem(at: store.folderURL(writingID: writingID)) }
+        let body = Data("Outline, in three parts.".utf8)
+        XCTAssertTrue(try store.write(body, writingID: writingID, name: "outline.md", replacing: nil))
+        XCTAssertTrue(try store.write(Data("Notes.".utf8), writingID: writingID, name: "notes.md", replacing: nil))
+        _ = try keepDocumentReview(for: writingID, document: "outline.md")
+        let outline = try LampSyncFolderLayout.writingReviewPath(writingID: writingID, document: "outline.md")
+        let notes = try LampSyncFolderLayout.writingReviewPath(writingID: writingID, document: "notes.md")
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+        // Marks for the notes, sent from the Mac and not yet here.
+        var theirs = LampWritingReview(writingID: writingID, document: "notes.md")
+            .markingAssistantChange(from: "Notes.", to: "Notes, kept.")
+        theirs.document = "notes.md"
+        try await publishFromElsewhere(notes, try theirs.encoded())
+
+        XCTAssertNil(try LibrarySyncPass.deleteDocument(
+            writingID: writingID, name: "outline.md", seen: body, source: source, device: "iPhone"
+        ))
+        XCTAssertNil(try LibrarySyncPass.deleteDocument(
+            writingID: writingID, name: "notes.md", seen: Data("Notes.".utf8), source: source, device: "iPhone"
+        ))
+        let url = try LibrarySyncPass.reviewStore.url(writingID: writingID, document: "outline.md")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "gone here at once")
+
+        _ = try await pass().run()
+
+        let written = try await bundle()
+        XCTAssertNotEqual(written.manifest.entry(at: outline)?.isMember, true, "deleted in the library")
+        XCTAssertNotEqual(written.manifest.entry(at: notes)?.isMember, true, "though it never reached this device")
+        let fetched = try LibrarySyncPass.reviewStore.url(writingID: writingID, document: "notes.md")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fetched.path), "and not fetched")
+    }
+
+    /// A document written again elsewhere after the writer deleted it here
+    /// outlives the deletion, and so do the marks sent with it.
+    func testADocumentWrittenAgainElsewhereKeepsItsMarks() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        let store = LibrarySyncPass.documentStore
+        addTeardownBlock { try? FileManager.default.removeItem(at: store.folderURL(writingID: writingID)) }
+        let body = Data("Outline, in three parts.".utf8)
+        XCTAssertTrue(try store.write(body, writingID: writingID, name: "outline.md", replacing: nil))
+        _ = try keepDocumentReview(for: writingID, document: "outline.md")
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+        XCTAssertNil(try LibrarySyncPass.deleteDocument(
+            writingID: writingID, name: "outline.md", seen: body, source: source, device: "iPhone"
+        ))
+
+        // Written again on the Mac, with a new change marked.
+        try await Task.sleep(for: .milliseconds(20))
+        let documentPath = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        let again = "Outline, in four parts now."
+        try await publishFromElsewhere(documentPath, Data(again.utf8))
+        var theirs = LampWritingReview(writingID: writingID, document: "outline.md")
+            .markingAssistantChange(from: "Outline, in three parts.", to: again)
+        theirs.document = "outline.md"
+        let reviewPath = try LampSyncFolderLayout.writingReviewPath(writingID: writingID, document: "outline.md")
+        try await publishFromElsewhere(reviewPath, try theirs.encoded())
+
+        _ = try await pass().run()
+
+        XCTAssertEqual(try store.documents(writingID: writingID).map(\.text), [again], "the document outlived it")
+        XCTAssertFalse(try LibrarySyncPass.reviewStore.review(writingID: writingID, document: "outline.md").isEmpty,
+                       "and its marks")
+    }
+
+    /// Written again elsewhere with its marks as they were, the document
+    /// outlives the deletion here, and the marks it had come back with it.
+    func testADocumentWrittenAgainElsewhereKeepsTheMarksItHad() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        let store = LibrarySyncPass.documentStore
+        addTeardownBlock { try? FileManager.default.removeItem(at: store.folderURL(writingID: writingID)) }
+        let body = Data("Outline, in three parts.".utf8)
+        XCTAssertTrue(try store.write(body, writingID: writingID, name: "outline.md", replacing: nil))
+        let marks = try keepDocumentReview(for: writingID, document: "outline.md")
+        guard case .synced = try await pass().run() else { return XCTFail("expected a synced pass") }
+        XCTAssertNil(try LibrarySyncPass.deleteDocument(
+            writingID: writingID, name: "outline.md", seen: body, source: source, device: "iPhone"
+        ))
+
+        try await Task.sleep(for: .milliseconds(20))
+        let documentPath = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        try await publishFromElsewhere(documentPath, Data("Outline, in three parts. And a fourth.".utf8))
+
+        _ = try await pass().run()
+
+        XCTAssertEqual(try store.documents(writingID: writingID).count, 1, "the document outlived it")
+        XCTAssertEqual(try LibrarySyncPass.reviewStore.review(writingID: writingID, document: "outline.md").marks,
+                       marks.marks, "and the marks it had")
+        let reviewPath = try LampSyncFolderLayout.writingReviewPath(writingID: writingID, document: "outline.md")
+        let written = try await bundle()
+        XCTAssertEqual(written.manifest.entry(at: reviewPath)?.isMember, true, "kept in the library")
+    }
+
     private func saveNotesModule(notes: [String]) throws {
         try database.saveModule(Module(
             id: moduleId, type: .notes, name: "My Notes",
@@ -10465,5 +10662,48 @@ final class WritingDocumentTextTests: XCTestCase {
         let file = try document("sources.txt", plain)
         XCTAssertFalse(WritingDocumentText.isMarkdown(file.name))
         XCTAssertEqual(WritingDocumentText.plain(file.text, fontSize: 18).string, plain)
+    }
+}
+
+@MainActor
+final class WritingDocumentMarksTests: XCTestCase {
+    /// A document saved from the Files sheet carries its marks onto what was
+    /// written: typed before the marked words, they're still marked, and
+    /// found in the saved text as it is.
+    func testASavedDocumentCarriesItsMarks() async throws {
+        let writingID = "doc-marks-\(UUID().uuidString)"
+        let store = LibrarySyncPass.documentStore
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: store.folderURL(writingID: writingID))
+            try? LibrarySyncPass.reviewStore.remove(writingID: writingID, document: "outline.md")
+        }
+        let old = "Outline."
+        let body = "Outline, in three parts."
+        XCTAssertTrue(try store.write(Data(body.utf8), writingID: writingID, name: "outline.md", replacing: nil))
+        var review = LampWritingReview(writingID: writingID, document: "outline.md").markingAssistantChange(from: old, to: body)
+        review.document = "outline.md"
+        try LibrarySyncPass.reviewStore.save(review)
+        XCTAssertEqual(review.located(in: body).count, 1)
+
+        let typed = "First, a word. " + body
+        let saved = try await WritingDocuments.save(typed, writingID: writingID, name: "outline.md", opened: Data(body.utf8))
+        XCTAssertTrue(saved)
+
+        let carried = try LibrarySyncPass.reviewStore.review(writingID: writingID, document: "outline.md")
+        XCTAssertNotEqual(carried, review, "carried, not left anchored in the old text")
+        let found = carried.highlightedRanges(in: typed).map { (typed as NSString).substring(with: $0) }
+        XCTAssertEqual(found.map { $0.trimmingCharacters(in: .whitespaces) }, [", in three parts"].map { $0.trimmingCharacters(in: .whitespaces) })
+        XCTAssertNil(try? LibrarySyncPass.reviewStore.review(writingID: writingID).marks.first, "the writing's own has none")
+    }
+
+    /// A document with no marks is written as ever, and no record is made.
+    func testASavedDocumentWithoutMarksMakesNoRecord() async throws {
+        let writingID = "doc-marks-\(UUID().uuidString)"
+        let store = LibrarySyncPass.documentStore
+        addTeardownBlock { try? FileManager.default.removeItem(at: store.folderURL(writingID: writingID)) }
+        let saved = try await WritingDocuments.save("Notes.", writingID: writingID, name: "notes.md", opened: nil)
+        XCTAssertTrue(saved)
+        let url = try LibrarySyncPass.reviewStore.url(writingID: writingID, document: "notes.md")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 }

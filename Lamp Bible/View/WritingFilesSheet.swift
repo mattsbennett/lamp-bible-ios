@@ -8,22 +8,51 @@ typealias WritingDocument = LampWritingDocumentStore.Document
 /// them beside the prose: read and written through core's store, so a save
 /// never writes over a copy sync took in meanwhile.
 enum WritingDocuments {
-    /// The writing's documents, read off the main thread.
+    /// The writing's documents, read off the main thread. Each text read is
+    /// one its marks may be anchored in, so it's remembered for their carry.
+    @MainActor
     static func load(writingID: String) async -> [WritingDocument] {
-        await Task.detached(priority: .userInitiated) {
+        let documents = await Task.detached(priority: .userInitiated) {
             (try? LibrarySyncPass.documentStore.documents(writingID: writingID)) ?? []
         }.value
+        for document in documents {
+            WritingReviewTexts.shared.remember(document.text, for: writingID, document: document.name)
+        }
+        return documents
     }
 
     /// Writes the editor's text over what it opened (`opened`, nil for a new
     /// file). False, writing nothing, where the file changed meanwhile.
+    ///
+    /// The document's marks are carried onto what's written, from the texts
+    /// of it held here (`LampWritingDocumentReview.carry`): without that,
+    /// the first word typed after a mark would stray every one.
+    @MainActor
     static func save(_ text: String, writingID: String, name: String, opened: Data?) async throws -> Bool {
-        let saved = try await Task.detached(priority: .userInitiated) {
-            try LibrarySyncPass.documentStore.write(
-                Data(text.utf8), writingID: writingID, name: name, replacing: opened
-            )
+        if let opened {
+            WritingReviewTexts.shared.remember(String(decoding: opened, as: UTF8.self), for: writingID, document: name)
+        }
+        let known = WritingReviewTexts.shared.known(for: writingID, document: name)
+        let (saved, carried) = try await Task.detached(priority: .userInitiated) {
+            // Written and carried as one, under the lock a pass takes a
+            // download in under: a body sync put in between would have its
+            // marks carried onto text that's no longer the document's.
+            try LibrarySyncPass.documentChanges.withLock {
+                let saved = try LibrarySyncPass.documentStore.write(
+                    Data(text.utf8), writingID: writingID, name: name, replacing: opened
+                )
+                guard saved else { return (false, false) }
+                let carried = (try? LampWritingDocumentReview.carry(
+                    text, ofDocument: name, writingID: writingID, from: known, in: LibrarySyncPass.reviewStore
+                )) ?? false
+                return (true, carried)
+            }
         }.value
-        if saved { await ModuleSyncManager.shared.scheduleLibraryPass() }
+        if saved {
+            WritingReviewTexts.shared.remember(text, for: writingID, document: name)
+            if carried { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
+            await ModuleSyncManager.shared.scheduleLibraryPass()
+        }
         return saved
     }
 

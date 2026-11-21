@@ -17,17 +17,27 @@ final class WritingReviewTexts {
     /// the saves after it, few enough that a long manuscript costs little.
     static let kept = 24
 
-    private var texts: [String: [String]] = [:]
-
-    func remember(_ text: String, for writingID: String) {
-        var kept = texts[writingID, default: []]
-        guard kept.last != text else { return }
-        kept.append(text)
-        texts[writingID] = Array(kept.suffix(Self.kept))
+    /// A writing's prose (nil document) or one of the documents beside it:
+    /// each has texts of its own, and one's carried from another's would
+    /// take marks that were never made of it. A pair, never the two joined:
+    /// joined, writing "w" with "a.md" and writing "wa" with ".md" are one.
+    struct Place: Hashable {
+        let writingID: String
+        let document: String?
     }
 
-    func known(for writingID: String) -> [String] {
-        texts[writingID, default: []]
+    private var texts: [Place: [String]] = [:]
+
+    func remember(_ text: String, for writingID: String, document: String? = nil) {
+        let place = Place(writingID: writingID, document: document)
+        var kept = texts[place, default: []]
+        guard kept.last != text else { return }
+        kept.append(text)
+        texts[place] = Array(kept.suffix(Self.kept))
+    }
+
+    func known(for writingID: String, document: String? = nil) -> [String] {
+        texts[Place(writingID: writingID, document: document), default: []]
     }
 }
 
