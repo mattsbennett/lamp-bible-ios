@@ -33,6 +33,7 @@ extension AgentRemoteWriting {
 struct AskAssistantSheet: View {
     let writing: AgentRemoteWriting
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var client = AgentRemoteClient.shared
     /// The latest edits are on their way to the Mac.
     @State private var sendingEdits = false
 
@@ -49,15 +50,25 @@ struct AskAssistantSheet: View {
                 guard writing.syncFirst else { return }
                 await sendEdits()
             }
-            .navigationTitle("Ask the Assistant")
+            // One glass bar, the chat scrolling under it, as the reader's
+            // header is: the writing and who's answering, in the title.
+            .titled(writing.title, subtitle: answeringName ?? "Ask the Assistant")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Close")
                 }
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    /// The assistant answering in the writing's chat, once it's open.
+    private var answeringName: String? {
+        guard let chat = client.chat,
+              chat.summary.writingID?.caseInsensitiveCompare(writing.id) == .orderedSame else { return nil }
+        return chat.summary.providerName
     }
 
     /// Sync passes until what was saved is published, so it's on its way
@@ -564,17 +575,13 @@ struct AgentRemotePanel: View {
                 .onChange(of: chat.partialReply) { proxy.scrollTo(Self.chatEnd, anchor: .bottom) }
                 .onChange(of: chat.sending) { proxy.scrollTo(Self.chatEnd, anchor: .bottom) }
             }
-            // Kept in view, so the way back to the list never scrolls off.
-            // The header takes the place of the shared header's margin, so
-            // the messages don't make room for it twice.
-            .contentMargins(.top, 0, for: .scrollContent)
-            .safeAreaInset(edge: .top, spacing: 0) {
+            .modifier(ChatHeader(shown: writing == nil) {
                 chatHeader(chat)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
                     .padding(.top, topObstruction)
                     .background(.bar)
-            }
+            })
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     if chat.summary.writingID != nil { selectionLine }
@@ -773,19 +780,16 @@ struct AgentRemotePanel: View {
 
     private func chatHeader(_ chat: AgentRemoteChat) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            // A writing's own chat is the only one here: nothing to go back to.
-            if writing == nil {
-                Button {
-                    client.closeChat()
-                } label: {
-                    Label("Chats", systemImage: "chevron.left")
-                        .font(.subheadline.weight(.medium))
-                }
-                .buttonStyle(.borderless)
+            Button {
+                client.closeChat()
+            } label: {
+                Label("Chats", systemImage: "chevron.left")
+                    .font(.subheadline.weight(.medium))
             }
+            .buttonStyle(.borderless)
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
-                Text(writing?.title ?? chat.summary.subtitle.flatMap { chat.summary.writingID != nil ? $0 : nil } ?? chat.summary.title)
+                Text(chat.summary.subtitle.flatMap { chat.summary.writingID != nil ? $0 : nil } ?? chat.summary.title)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                 Text(chat.summary.providerName)
@@ -930,5 +934,52 @@ struct AgentRemotePanel: View {
         .padding(.top, 8)
         .padding(.bottom, composerBottomPadding)
         .background(.bar)
+    }
+}
+
+/// The open chat's header, kept in view over the messages so the way back to
+/// the list never scrolls off. It takes the place of the shared header's
+/// margin, so the messages don't make room for it twice. A writing's sheet
+/// has none: its own bar names the writing, and there's no list to go back to.
+private struct ChatHeader<Header: View>: ViewModifier {
+    let shown: Bool
+    @ViewBuilder let header: () -> Header
+
+    func body(content: Content) -> some View {
+        if shown {
+            content
+                .contentMargins(.top, 0, for: .scrollContent)
+                .safeAreaInset(edge: .top, spacing: 0, content: header)
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    /// A title over a subtitle in the bar: the system's own from iOS 26,
+    /// drawn in the bar's middle before it, where a subtitle isn't shown.
+    @ViewBuilder
+    func titled(_ title: String, subtitle: String) -> some View {
+        if #available(iOS 26.0, *) {
+            navigationTitle(title)
+                .navigationSubtitle(subtitle)
+        } else {
+            navigationTitle(title)
+                .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        VStack(spacing: 1) {
+                            Text(title)
+                                .font(.headline)
+                                .lineLimit(1)
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+        }
     }
 }
