@@ -4038,6 +4038,31 @@ final class LibrarySyncPassTests: XCTestCase {
         XCTAssertEqual(written.manifest.entry(at: reviewPath)?.isMember, true, "kept in the library")
     }
 
+    /// Marks left in the library for a document deleted there are swept,
+    /// though this device never held the document.
+    func testMarksOfADocumentDeletedInTheLibraryAreSwept() async throws {
+        let writingID = "review-\(UUID().uuidString)"
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: writingID, document: "outline.md") }
+        let documentPath = try LampWritingWorkspaceLayout.documentPath(writingID: writingID, name: "outline.md")
+        try await publishFromElsewhere(documentPath, Data("Outline, in three parts.".utf8))
+        var theirs = LampWritingReview(writingID: writingID, document: "outline.md")
+            .markingAssistantChange(from: "Outline.", to: "Outline, in three parts.")
+        theirs.document = "outline.md"
+        let reviewPath = try LampSyncFolderLayout.writingReviewPath(writingID: writingID, document: "outline.md")
+        try await publishFromElsewhere(reviewPath, try theirs.encoded())
+        let revision = await server.file(documentPath)?.revision
+        _ = try await LampSyncSettingsStore.update(in: storage) { bundle in
+            bundle.manifest = try bundle.manifest.removing(documentPath, at: ModuleDatabase.nowMilliseconds(), revision: revision)
+        }
+
+        _ = try await pass().run()
+
+        let url = try LibrarySyncPass.reviewStore.url(writingID: writingID, document: "outline.md")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "not kept here")
+        let written = try await bundle()
+        XCTAssertNotEqual(written.manifest.entry(at: reviewPath)?.isMember, true, "nor in the library")
+    }
+
     private func saveNotesModule(notes: [String]) throws {
         try database.saveModule(Module(
             id: moduleId, type: .notes, name: "My Notes",
@@ -10705,5 +10730,155 @@ final class WritingDocumentMarksTests: XCTestCase {
         XCTAssertTrue(saved)
         let url = try LibrarySyncPass.reviewStore.url(writingID: writingID, document: "notes.md")
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+}
+
+final class WritingDocumentMarkDrawingTests: XCTestCase {
+    private let start = String(LampWritingReview.markStart)
+    private let end = String(LampWritingReview.markEnd)
+    private let point = String(LampWritingReview.markPoint)
+
+    /// Marks drawn in a file: each passage tinted and a link to its place
+    /// among the passages, a point drawn as a caret, the markers gone.
+    func testMarksAreDrawnAndTheirMarkersGo() {
+        let text = NSAttributedString(string: "One \(start)two\(end) three\(point) four.")
+        let drawn = WritingDocumentText.drawingMarks(text, first: 3, open: nil)
+        XCTAssertEqual(drawn.text.string, "One two three\(WritingDocumentText.pointGlyph) four.")
+        XCTAssertEqual(drawn.next, 5)
+        XCTAssertNil(drawn.open)
+        let two = (drawn.text.string as NSString).range(of: "two")
+        XCTAssertEqual(drawn.text.attribute(.link, at: two.location, effectiveRange: nil) as? URL, WritingDocumentText.markLink(3))
+        let caret = (drawn.text.string as NSString).range(of: WritingDocumentText.pointGlyph)
+        XCTAssertEqual(drawn.text.attribute(.link, at: caret.location, effectiveRange: nil) as? URL, WritingDocumentText.markLink(4))
+        XCTAssertNil(drawn.text.attribute(.link, at: 0, effectiveRange: nil))
+    }
+
+    /// A marker before a line's block syntax doesn't stop it being read as
+    /// that block, and markers on lines that aren't drawn (a fence, a
+    /// table's alignment row) aren't lost: each passage is counted in order.
+    func testMarkersSurviveBlocksFencesAndTables() {
+        XCTAssertEqual(WritingDocumentText.clearingBlockSyntax("\(start)- item\(end)"), "- \(start)item\(end)")
+        XCTAssertEqual(WritingDocumentText.clearingBlockSyntax("\(start)## Head"), "## \(start)Head")
+        let prose = WritingDocumentText.prose("\(start)- item\(end)", fontSize: 18).string
+        XCTAssertFalse(prose.contains("- "), "still a list item")
+
+        let text = "Intro.\n\(start)```\ncode\n```\(end)\n| A | B |\n|--|--|\n| \(start)x\(end) | y |\n\(point)End."
+        let segments = WritingDocumentText.segments(text)
+        let all = segments.map { segment -> String in
+            switch segment {
+            case .markdown(let text), .code(let text): return text
+            case .table(let rows): return rows.flatMap { $0 }.joined()
+            }
+        }.joined()
+        XCTAssertEqual(WritingDocumentText.markers(in: all), WritingDocumentText.markers(in: text), "every marker kept, in order")
+        XCTAssertEqual(segments.count, 4)
+        if case .table(let rows) = segments[2] {
+            XCTAssertEqual(rows.map { $0.map(WritingDocumentText.unmarked) }, [["A", "B"], ["x", "y"]])
+        } else { XCTFail("a table") }
+    }
+
+    /// A passage after one Markdown hides (in a link's address) still names
+    /// its own change, and a link that names no passage is none.
+    func testAPassageKeepsItsPlaceThoughOneBeforeItIsHidden() {
+        let marked = WritingDocumentText.numbered("See [this](https://example.com/\(start)a\(end)) and \(start)that\(end).")
+        let prose = WritingDocumentText.prose(marked, fontSize: 18)
+        let drawn = WritingDocumentText.drawingMarks(prose, first: 0, open: nil)
+        XCTAssertFalse(drawn.text.string.contains(where: WritingDocumentText.isMarker), "no marker or place left drawn")
+        let that = (drawn.text.string as NSString).range(of: "that")
+        XCTAssertEqual(drawn.text.attribute(.link, at: that.location, effectiveRange: nil) as? URL, WritingDocumentText.markLink(1))
+        XCTAssertNil(WritingDocumentText.markIndex(URL(string: "lampmark:-1")!))
+
+        // A change to the address itself: drawn on the link's words, and the
+        // link still goes where it says.
+        let address = WritingDocumentText.numbered("Go [here](https://example.com/\(start)new\(end)).")
+        let linked = WritingDocumentText.drawingMarks(WritingDocumentText.prose(address, fontSize: 18), first: 0, open: nil).text
+        let caret = (linked.string as NSString).range(of: WritingDocumentText.pointGlyph)
+        XCTAssertEqual(linked.attribute(.link, at: caret.location, effectiveRange: nil) as? URL, WritingDocumentText.markLink(0))
+        let here = (linked.string as NSString).range(of: "here")
+        XCTAssertEqual(linked.attribute(.link, at: here.location, effectiveRange: nil) as? URL, URL(string: "https://example.com/new"))
+        XCTAssertEqual(WritingDocumentText.movingMarksOutOfLinks("[a](b\(start)c\(end))"), "\(point)[a](bc)")
+
+        // A change on a line that isn't drawn is a caret on the next that is.
+        XCTAssertEqual(WritingDocumentText.asPoints("\(start)\(end)"), point)
+        XCTAssertEqual(WritingDocumentText.asPoints("\(end)\(start)"), "\(end)\(start)", "another's edges kept")
+        let fenced = WritingDocumentText.segments("```\(start)swift\(end)\ncode\n```")
+        XCTAssertEqual(fenced, [.code("\(point)code")])
+
+        // A change across the words and the address stays one passage.
+        let across = WritingDocumentText.movingMarksOutOfLinks("[\(start)new](http://b.net\(end)) on")
+        XCTAssertEqual(across, "[\(start)new\(end)](http://b.net) on")
+        // A heading's level changed: a point after its syntax.
+        XCTAssertEqual(WritingDocumentText.clearingBlockSyntax("#\(start)#\(end) Title"), "## \(point)Title")
+        // A deletion in an empty last cell stays in its column.
+        XCTAssertEqual(WritingDocumentText.cells("| x | \(point) |"), ["x", point])
+        XCTAssertEqual(WritingDocumentText.cells("| x | y |\(end)"), ["x", "y\(end)"])
+
+        // A change Markdown leaves nothing of: a caret.
+        let bolded = WritingDocumentText.numbered("The \(start)**\(end)red dog\(start)**\(end) is there.")
+        let drawnBold = WritingDocumentText.drawingMarks(WritingDocumentText.prose(bolded, fontSize: 18), first: 0, open: nil).text
+        XCTAssertEqual(drawnBold.string.filter { String($0) == WritingDocumentText.pointGlyph }.count, 2)
+        let cellBold = WritingDocumentText.drawingMarks(WritingDocumentText.cell(bolded), first: 0, open: nil).text
+        XCTAssertEqual(String(cellBold.characters).filter { String($0) == WritingDocumentText.pointGlyph }.count, 2)
+
+        // An escape a marker stands in still reads.
+        let escaped = WritingDocumentText.prose("\\\(start)\(end)*literal\\\(start)\(end)*", fontSize: 18).string
+        XCTAssertEqual(WritingDocumentText.unmarked(escaped).filter { $0 != "\u{2038}" }, "*literal*")
+        // An address with parentheses in it.
+        XCTAssertEqual(
+            WritingDocumentText.movingMarksOutOfLinks("[l](https://x.com/a_(one)#\(start)new\(end))"),
+            "\(point)[l](https://x.com/a_(one)#new)"
+        )
+
+        // Emphasis a marker stands beside still reads as emphasis.
+        let italic = WritingDocumentText.prose("Now \(start)_italic_\(end) here.", fontSize: 18)
+        XCTAssertFalse(italic.string.contains("_"), "\(italic.string)")
+        // A change inside bold leaves the bold whole.
+        let bold = WritingDocumentText.prose("Now **\(start)red\(end)** words.", fontSize: 18)
+        XCTAssertFalse(bold.string.contains("*"), "\(bold.string)")
+        // A run of asterisks a marker split is whole again.
+        let doubled = WritingDocumentText.prose("*\(start)*\(end)bold*\(start)*\(end) now", fontSize: 18)
+        XCTAssertFalse(doubled.string.contains("*"), "\(doubled.string)")
+        // A link whose `](` a marker split is a link.
+        let formed = WritingDocumentText.prose("\(start)[\(end)title\(start)]\(end)(https://example.com)", fontSize: 18)
+        XCTAssertFalse(formed.string.contains("https"), "\(formed.string)")
+        // An autolink whose scheme was changed is still a link.
+        XCTAssertEqual(WritingDocumentText.movingMarksOutOfLinks("See <http\(start)s\(end)://example.com> now"),
+                       "See \(point)<https://example.com> now")
+        XCTAssertEqual(WritingDocumentText.movingMarksOutOfLinks("See http\(start)s\(end)://example.com now"),
+                       "See \(point)https://example.com now")
+        XCTAssertEqual(WritingDocumentText.movingMarksOutOfLinks("<\(start)mailto:x@test.com\(end)>"),
+                       "\(point)<mailto:x@test.com>")
+        XCTAssertEqual(WritingDocumentText.movingMarksOutOfLinks("![cap](media/\(start)new\(end))"),
+                       "\(point)![cap](media/new)")
+        XCTAssertEqual(WritingDocumentText.movingMarksOutOfLinks("[See](https://x.com/a_(b_(\(start)new\(end))))"),
+                       "\(point)[See](https://x.com/a_(b_(new)))")
+        let literal = "\\[a](http://\(start)new\(end).com)"
+        XCTAssertEqual(WritingDocumentText.movingMarksOutOfLinks(literal).hasPrefix("\\["), true, "an escaped bracket stays escaped")
+        XCTAssertEqual(WritingDocumentText.movingMarksOutOfLinks("[a](https://a.com)[b](https://\(start)new\(end).com)"),
+                       "[a](https://a.com)\(point)[b](https://new.com)")
+        XCTAssertEqual(WritingDocumentText.cells("| one \(start)| \(end)two | three |"), ["one\(point)", "two", "three"])
+        // Columns measured as drawn.
+        XCTAssertEqual(WritingDocumentText.columnWidths([["\(start)Door\(end)"]], size: 18, widest: 500),
+                       WritingDocumentText.columnWidths([["Door"]], size: 18, widest: 500))
+        // Whether a change stands in a code block.
+        let code = "Intro.\n```\nlet a = 1\n```\nAfter."
+        XCTAssertTrue(WritingDocumentText.inCode((code as NSString).range(of: "1"), of: code))
+        XCTAssertFalse(WritingDocumentText.inCode((code as NSString).range(of: "After"), of: code))
+        // An escaped pipe a marker stands in stays in its cell.
+        XCTAssertEqual(WritingDocumentText.cells("| x \\\(start)| y\(end) | z |").count, 2)
+
+        // A bare address made a link goes where it says.
+        XCTAssertEqual(WritingDocumentText.cleanedLink(URL(string: "https://example.com/%EE%80%80new%EE%80%81")!),
+                       URL(string: "https://example.com/new"))
+    }
+
+    /// The same drawn in SwiftUI's text: a cell's mark tinted, its link the
+    /// passage's.
+    func testACellsMarkIsDrawn() {
+        let cell = WritingDocumentText.cell("\(start)Door\(end) way")
+        let drawn = WritingDocumentText.drawingMarks(cell, first: 0, open: nil)
+        XCTAssertEqual(String(drawn.text.characters), "Door way")
+        XCTAssertEqual(drawn.text.runs.first?.link, WritingDocumentText.markLink(0))
+        XCTAssertEqual(drawn.next, 1)
     }
 }

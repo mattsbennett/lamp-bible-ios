@@ -386,6 +386,7 @@ struct DevotionalView: View {
                 writingID: devotional.meta.id,
                 writingTitle: devotional.meta.title,
                 canEdit: writingIsEditable,
+                showsMarks: showsReviewMarks,
                 fontSize: fontSize
             )
             .presentationDetents([.medium, .large])
@@ -1881,6 +1882,16 @@ struct DevotionalView: View {
         _ = try? store.write(Data("John 10:1-18\nPsalm 23\nEzekiel 34".utf8), writingID: id, name: "sources.txt", replacing: nil)
         let copy = LampWritingWorkspaceLayout.keptCopyName(of: "outline.md", device: "iPhone", at: Date())
         _ = try? store.write(Data("# Outline\n\n1. The shepherd knows his own".utf8), writingID: id, name: copy, replacing: nil)
+        // With `-ReviewMarksDemo YES` too, the outline as the assistant
+        // changed it: a point reworded, a cell rewritten, a line taken out.
+        guard UserDefaults.standard.bool(forKey: "ReviewMarksDemo") else { return }
+        let before = outline
+            .replacingOccurrences(of: "2. The sheep *know* his voice", with: "2. The sheep hear his voice")
+            .replacingOccurrences(of: "The only way in to the fold, and so to *life*", with: "The way in")
+            .replacingOccurrences(of: "## Images", with: "## Images\n\nThree pictures in one discourse.")
+        var marked = LampWritingReview(writingID: id, document: "outline.md").markingAssistantChange(from: before, to: outline)
+        marked.document = "outline.md"
+        _ = try? LibrarySyncPass.reviewStore.save(marked)
     }
 
     private func seedReviewMarksDemo() {
