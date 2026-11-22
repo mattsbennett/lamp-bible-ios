@@ -1082,29 +1082,22 @@ enum WritingDocumentText {
         case table([[String]])
     }
 
-    static func isDelimiterRow(_ line: String) -> Bool {
-        let trimmed = unmarked(line).trimmingCharacters(in: .whitespaces)
-        return trimmed.contains("|") && trimmed.contains("-") && trimmed.allSatisfy { "|:- ".contains($0) }
-    }
-
     /// A table row's cells, its outer pipes dropped and an escaped pipe kept
     /// as a pipe in its cell.
     static func cells(_ row: String) -> [String] {
         let row = LampWritingReviewMarkdown.keepingEscapes(row.trimmingCharacters(in: .whitespaces))
         var cells: [String] = []
         var cell = ""
-        var escaped = false
         var endsWithPipe = false
         for character in row {
             endsWithPipe = false
-            if escaped {
-                // Only an escaped pipe is the row's to read: any other escape
-                // is left for the cell's own Markdown.
-                if character != "|" { cell.append("\\") }
-                cell.append(character)
-                escaped = false
-            } else if character == "\\" {
-                escaped = true
+            if character == "|", cell.last == "\\" {
+                // A pipe straight after a backslash is the cell's, as GFM
+                // splits a row, though that backslash is escaped itself: only
+                // the one before the pipe goes, the rest is the cell's own
+                // Markdown.
+                cell.removeLast()
+                cell.append("|")
             } else if character == "|" {
                 cells.append(cell)
                 cell = ""
@@ -1113,7 +1106,6 @@ enum WritingDocumentText {
                 cell.append(character)
             }
         }
-        if escaped { cell.append("\\") }
         if !endsWithPipe { cells.append(cell) }
         // The edges outside the outer pipes hold no cell: a review marker
         // there goes into the cell beside it.
@@ -1139,6 +1131,19 @@ enum WritingDocumentText {
         return cells.map(trimmingAroundMarkers)
     }
 
+    /// A row as wide as its table's header, as Markdown reads one: a short
+    /// row filled with empty cells, a long one's extra cells left out, their
+    /// review markers kept as points in its last.
+    static func fitting(_ row: [String], to width: Int) -> [String] {
+        guard width > 0 else { return row }
+        if row.count < width { return row + Array(repeating: "", count: width - row.count) }
+        guard row.count > width else { return row }
+        var kept = Array(row.prefix(width))
+        let dropped = row.dropFirst(width).map { markers(in: $0) }.joined()
+        if !dropped.isEmpty { kept[width - 1] += LampWritingReviewMarkdown.asPoints(dropped) }
+        return kept
+    }
+
     /// A cell's spaces trimmed from its words, though review markers stand
     /// outside them: the markers kept, at the ends they stood at.
     static func trimmingAroundMarkers(_ cell: String) -> String {
@@ -1150,52 +1155,68 @@ enum WritingDocumentText {
         return markers(in: String(head)) + words + markers(in: String(tail.reversed()))
     }
 
-    /// Whether `range` of `text` stands in a fenced code block.
+    /// Whether `range` of `text` stands in code, as Markdown reads it: a
+    /// fenced or indented block, or an inline code span.
     static func inCode(_ range: NSRange, of text: String) -> Bool {
-        var offset = 0
-        var fence: (mark: Character, length: Int, start: Int)?
-        for line in text.components(separatedBy: "\n") {
-            let length = (line as NSString).length
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if let open = fence {
-                let run = trimmed.prefix(while: { $0 == open.mark }).count
-                if run >= open.length && run == trimmed.count {
-                    if range.location >= open.start, NSMaxRange(range) <= offset + length { return true }
-                    fence = nil
-                }
-            } else if let mark = trimmed.first, mark == "`" || mark == "~" {
-                let run = trimmed.prefix(while: { $0 == mark }).count
-                if run >= 3, mark == "~" || !trimmed.dropFirst(run).contains("`") { fence = (mark, run, offset) }
-            }
-            offset += length + 1
+        LampMarkdownModel(parsing: text).codeRanges.contains {
+            // A point (a deletion) is in code only strictly inside it: one
+            // at either edge stands just outside, beside the span.
+            range.length == 0
+                ? $0.location < range.location && range.location < NSMaxRange($0)
+                : range.location >= $0.location && NSMaxRange(range) <= NSMaxRange($0)
         }
-        if let open = fence, range.location >= open.start { return true }
-        return false
     }
 
-    /// The text cut where a fenced code block or a table starts and ends.
-    /// A fence's own lines and a table's alignment row are left out; a fence
-    /// never closed runs to the end, as Markdown reads it.
+    /// The text cut where a code block or a table starts and ends, as
+    /// Markdown reads them (core's parser, which reads as the editor page
+    /// does). A fence's own lines and a table's alignment row are left out;
+    /// a fence never closed runs to the end. Review markers are never
+    /// newlines, so the marked text's lines are the parsed text's, each with
+    /// its markers: what the parser finds by line is cut from them.
     static func segments(_ text: String) -> [Segment] {
-        var segments: [Segment] = []
-        var prose: [String] = []
-        var code: [String]?
-        var table: [[String]] = []
-        var fence: (mark: Character, length: Int)?
-        func endProse() {
-            if !prose.isEmpty { segments.append(.markdown(prose.joined(separator: "\n"))) }
-            prose = []
-        }
-        func endTable() {
-            if !table.isEmpty { segments.append(.table(table)) }
-            table = []
-        }
         let lines = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n")
-        var inTable = false
-        var skip = false
+        let bare = unmarked(lines.joined(separator: "\n"))
+        let model = LampMarkdownModel(parsing: bare)
+        // Where each line starts, to find the lines a block spans.
+        var starts: [Int] = []
+        var offset = 0
+        for line in bare.components(separatedBy: "\n") {
+            starts.append(offset)
+            offset += (line as NSString).length + 1
+        }
+        func line(of location: Int) -> Int {
+            var low = 0, high = starts.count - 1
+            while low < high {
+                let middle = (low + high + 1) / 2
+                if starts[middle] <= location { low = middle } else { high = middle - 1 }
+            }
+            return low
+        }
+        // The code blocks and tables, by the lines they span, outermost
+        // only, in order. One in a quote stays the quote's: its lines carry
+        // the quote's marks, and the quote is drawn as prose.
+        let quotes = model.blocks.filter { $0.kind == .blockQuote }.map(\.range)
+        let lists = model.blocks.filter { $0.kind == .listItem }.map(\.range)
+        var spans: [(kind: LampMarkdownModel.Block.Kind, first: Int, last: Int, inList: Bool)] = []
+        for block in model.blocks where block.kind == .codeBlock || block.kind == .table {
+            if quotes.contains(where: { NSLocationInRange(block.range.location, $0) }) { continue }
+            let first = line(of: block.range.location)
+            // Code opening on a list item's own line, after its marker, stays
+            // the item's: cut out, the marker would be drawn as code. (A
+            // table's range starts after its leading pipe.)
+            let before = (bare as NSString).substring(with: NSRange(
+                location: starts[first], length: block.range.location - starts[first]
+            ))
+            if block.kind == .codeBlock, !before.allSatisfy({ $0 == " " || $0 == "\t" }) { continue }
+            let last = line(of: max(block.range.location, NSMaxRange(block.range) - 1))
+            if let previous = spans.last, first <= previous.last { continue }
+            spans.append((block.kind, first, last, lists.contains { NSLocationInRange(block.range.location, $0) }))
+        }
+
+        var segments: [Segment] = []
         // Review markers on a line that isn't drawn (a fence's, a table's
         // alignment row), carried to the next that is, so none is lost.
         var pending = ""
@@ -1203,62 +1224,85 @@ enum WritingDocumentText {
             defer { pending = "" }
             return pending + line
         }
-        for (index, line) in lines.enumerated() {
-            if skip {
-                skip = false
-                continue
-            }
-            // Read without its review markers, which are drawn, not read.
-            let trimmed = unmarked(line).trimmingCharacters(in: .whitespaces)
-            let row = line.trimmingCharacters(in: .whitespaces)
-            if inTable {
-                // Its rows, their outer pipes optional, up to a line without one.
-                if trimmed.contains("|") {
-                    table.append(cells(taking(row)))
-                    continue
-                }
-                inTable = false
-                endTable()
-            }
-            if let open = fence {
-                let run = trimmed.prefix(while: { $0 == open.mark }).count
-                if run >= open.length && run == trimmed.count {
-                    fence = nil
-                    pending += LampWritingReviewMarkdown.asPoints(markers(in: line))
-                    segments.append(.code((code ?? []).joined(separator: "\n")))
-                    code = nil
-                } else {
-                    code?.append(taking(line))
-                }
-                continue
-            }
-            if let mark = trimmed.first, mark == "`" || mark == "~" {
-                let run = trimmed.prefix(while: { $0 == mark }).count
-                // Backticks after a backtick fence's own make a code span.
-                if run >= 3, mark == "~" || !trimmed.dropFirst(run).contains("`") {
-                    endProse()
-                    pending += LampWritingReviewMarkdown.asPoints(markers(in: line))
-                    fence = (mark, run)
-                    code = []
-                    continue
-                }
-            }
-            // A table is its header over the row that says how its columns
-            // align, which is left out; a line merely starting with a pipe
-            // is prose.
-            if trimmed.contains("|"), index + 1 < lines.count, isDelimiterRow(lines[index + 1]) {
-                endProse()
-                table = [cells(taking(row))]
-                pending += LampWritingReviewMarkdown.asPoints(markers(in: lines[index + 1]))
-                inTable = true
-                skip = true
-                continue
-            }
-            prose.append(taking(line))
+        func skipping(_ line: String) {
+            pending += LampWritingReviewMarkdown.asPoints(markers(in: line))
         }
-        endProse()
-        endTable()
-        if let code { segments.append(.code(code.joined(separator: "\n"))) }
+        func prose(_ range: Range<Int>) {
+            guard !range.isEmpty else { return }
+            let text = range.map { $0 == range.lowerBound ? taking(lines[$0]) : lines[$0] }
+            segments.append(.markdown(text.joined(separator: "\n")))
+        }
+        var next = 0
+        for span in spans {
+            prose(next..<span.first)
+            next = span.last + 1
+            let block = Array(lines[span.first...span.last])
+            if span.kind == .table {
+                // Its header, the row that says how its columns align (left
+                // out), and its rows, each as wide as the header.
+                let header = cells(taking(block[0].trimmingCharacters(in: .whitespaces)))
+                var rows = [header]
+                if block.count > 1 { skipping(block[1]) }
+                for row in block.dropFirst(2) {
+                    rows.append(fitting(cells(taking(row.trimmingCharacters(in: .whitespaces))), to: header.count))
+                }
+                segments.append(.table(rows))
+                continue
+            }
+            // Fenced where the line opens a fence as Markdown has one: a run
+            // of three, no backtick after a backtick fence's, and outside a
+            // list indented less than code is. Otherwise indented code, which
+            // may itself hold a line like a fence.
+            let raw = unmarked(block[0])
+            let indent = raw.prefix(while: { $0 == " " || $0 == "\t" })
+                .reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+            let opening = raw.trimmingCharacters(in: .whitespaces)
+            if let mark = opening.first, mark == "`" || mark == "~",
+               opening.prefix(while: { $0 == mark }).count >= 3,
+               mark == "~" || !opening.drop(while: { $0 == mark }).contains("`"),
+               span.inList || indent < 4 {
+                // Fenced: its fence lines left out, the closing one only
+                // where there is one (one never closed runs to the end).
+                let run = opening.prefix(while: { $0 == mark }).count
+                skipping(block[0])
+                var body = Array(block.dropFirst())
+                if let closing = body.last {
+                    let trimmed = unmarked(closing).trimmingCharacters(in: .whitespaces)
+                    if trimmed.count >= run, trimmed.allSatisfy({ $0 == mark }) {
+                        body.removeLast()
+                        segments.append(.code(body.enumerated().map { $0 == 0 ? taking($1) : $1 }.joined(separator: "\n")))
+                        skipping(closing)
+                        continue
+                    }
+                }
+                segments.append(.code(body.enumerated().map { $0 == 0 ? taking($1) : $1 }.joined(separator: "\n")))
+            } else {
+                // Indented: shown without the four spaces that make it code.
+                // Review markers among those spaces are kept, before the code,
+                // so marks shown or not, the code lies the same.
+                let body = block.map { line -> String in
+                    var line = Substring(line)
+                    var kept = ""
+                    var spaces = 0
+                    while let next = line.first, spaces < 4 {
+                        if isMarker(next) {
+                            kept.append(next)
+                        } else if next == " " {
+                            spaces += 1
+                        } else if next == "\t" {
+                            spaces = 4
+                        } else {
+                            break
+                        }
+                        line = line.dropFirst()
+                    }
+                    return kept + line
+                }
+                segments.append(.code(body.enumerated().map { $0 == 0 ? taking($1) : $1 }.joined(separator: "\n")))
+            }
+        }
+        prose(next..<lines.count)
+
         // Markers left over at the very end go on the last that's drawn.
         if !pending.isEmpty {
             switch segments.popLast() {

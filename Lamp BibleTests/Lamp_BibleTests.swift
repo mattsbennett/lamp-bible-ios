@@ -10685,8 +10685,9 @@ final class WritingDocumentTextTests: XCTestCase {
             .markdown("# Outline\n\n- one"),
             .code("let a = 1"),
             .markdown("After."),
-            .table([["A", "B"], ["1", "2"]]),
-            .markdown("End."),
+            // A line after a table's rows is a row of it, as the editor reads
+            // it (GFM): the table runs to a blank line.
+            .table([["A", "B"], ["1", "2"], ["End.", ""]]),
         ])
     }
 
@@ -10713,9 +10714,40 @@ final class WritingDocumentTextTests: XCTestCase {
         XCTAssertEqual(WritingDocumentText.segments("|x| = 1\n| a |"), [.markdown("|x| = 1\n| a |")])
         XCTAssertEqual(WritingDocumentText.segments("```a` b\nprose"), [.markdown("```a` b\nprose")])
         XCTAssertEqual(WritingDocumentText.segments("```\r\ncode\r\n```\r\nprose"), [.code("code"), .markdown("prose")])
-        XCTAssertEqual(WritingDocumentText.segments("A | B\n--|--\n| 1 | 2 |\nx | y\nprose"), [
-            .table([["A", "B"], ["1", "2"], ["x", "y"]]), .markdown("prose"),
+        XCTAssertEqual(WritingDocumentText.segments("A | B\n--|--\n| 1 | 2 |\nx | y\n\nprose"), [
+            .table([["A", "B"], ["1", "2"], ["x", "y"]]), .markdown("\nprose"),
         ])
+        // Read as the editor does: indented code is code, a fence in a quote
+        // stays the quote's, and a row's cells are the header's count.
+        XCTAssertEqual(WritingDocumentText.segments("para\n\n    code here\n\nafter"), [
+            .markdown("para\n"), .code("code here"), .markdown("\nafter"),
+        ])
+        XCTAssertEqual(WritingDocumentText.segments("> ```\n> code\n> ```"), [.markdown("> ```\n> code\n> ```")])
+        XCTAssertEqual(WritingDocumentText.segments("| A | B |\n|--|--|\n| 1 | 2 | 3 |"), [.table([["A", "B"], ["1", "2"]])])
+        XCTAssertEqual(WritingDocumentText.segments("paragraph\n| A | B |\n| ---\t| --- |\n| x | y |"), [
+            .markdown("paragraph"), .table([["A", "B"], ["x", "y"]]),
+        ])
+        XCTAssertEqual(WritingDocumentText.segments("-     alpha\n      beta"), [.markdown("-     alpha\n      beta")])
+        XCTAssertEqual(WritingDocumentText.segments("paragraph\n: - :\n| A | B |\n|--|--|\n| x | y |"), [
+            .markdown("paragraph\n: - :"), .table([["A", "B"], ["x", "y"]]),
+        ])
+        XCTAssertEqual(WritingDocumentText.cells("| x \\\\| y | z |"), ["x \\| y", "z"])
+        XCTAssertFalse(WritingDocumentText.inCode(NSRange(location: 3, length: 0), of: "`x` after"), "a point just after code")
+        XCTAssertTrue(WritingDocumentText.inCode(NSRange(location: 1, length: 0), of: "`x` after"), "a point in code")
+        XCTAssertEqual(WritingDocumentText.segments("foo\n    --\n| A | B |\n|--|--|\n| x | y |"), [
+            .markdown("foo\n    --"), .table([["A", "B"], ["x", "y"]]),
+        ])
+        XCTAssertEqual(WritingDocumentText.segments("intro\n| A | B |\n|---\u{0C}|---|\n|x|y|"), [
+            .markdown("intro"), .table([["A", "B"], ["x", "y"]]),
+        ])
+        XCTAssertEqual(WritingDocumentText.segments("para\n\n    ```a`b\n\nafter"), [
+            .markdown("para\n"), .code("```a`b"), .markdown("\nafter"),
+        ])
+        XCTAssertEqual(WritingDocumentText.segments("- item\n\n  ```\n  code\n  ```"), [
+            .markdown("- item\n"), .code("  code"),
+        ])
+        let marked = "para\n\n\u{E000}    alpha\u{E001}\n    beta"
+        XCTAssertEqual(WritingDocumentText.segments(marked), [.markdown("para\n"), .code("\u{E000}alpha\u{E001}\nbeta")])
     }
 
     func testMarkdownIsDrawnWithoutItsMarkersAndPlainTextAsItIs() throws {
@@ -10809,7 +10841,8 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         let prose = WritingDocumentText.prose(LampWritingReviewMarkdown.drawable("\(start)- item\(end)"), fontSize: 18).string
         XCTAssertFalse(prose.contains("- "), "still a list item")
 
-        let text = "Intro.\n\(start)```\ncode\n```\(end)\n| A | B |\n|--|--|\n| \(start)x\(end) | y |\n\(point)End."
+        // A blank line ends the table: a line straight after its rows is one.
+        let text = "Intro.\n\(start)```\ncode\n```\(end)\n| A | B |\n|--|--|\n| \(start)x\(end) | y |\n\n\(point)End."
         let segments = WritingDocumentText.segments(text)
         let all = segments.map { segment -> String in
             switch segment {
@@ -10891,8 +10924,10 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         // An autolink whose scheme was changed is still a link.
         XCTAssertEqual(LampWritingReviewMarkdown.movingMarksOutOfLinks("See <http\(start)s\(end)://example.com> now"),
                        "See \(point)<https://example.com> now")
+        // A bare address is words to the editor (no linkify), so its marks
+        // stay on them.
         XCTAssertEqual(LampWritingReviewMarkdown.movingMarksOutOfLinks("See http\(start)s\(end)://example.com now"),
-                       "See \(point)https://example.com now")
+                       "See http\(start)s\(end)://example.com now")
         XCTAssertEqual(LampWritingReviewMarkdown.movingMarksOutOfLinks("<\(start)mailto:x@test.com\(end)>"),
                        "\(point)<mailto:x@test.com>")
         XCTAssertEqual(LampWritingReviewMarkdown.movingMarksOutOfLinks("![cap](media/\(start)new\(end))"),
