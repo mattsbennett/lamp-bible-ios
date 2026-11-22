@@ -11040,4 +11040,31 @@ final class TappedCharacterTests: XCTestCase {
         let below = manager.characterIndex(tappedAt: CGPoint(x: secondRect.midX, y: secondRect.maxY + 40), in: container)
         XCTAssertTrue(NSLocationInRange(below, second), "\(below)")
     }
+
+    /// The reader raises its verse numbers off the line's baseline; the
+    /// letters after one are measured from their own, so a tap on a
+    /// descender stays on its line at the tightest spacing.
+    func testARaisedNumberDoesntLiftItsLine() {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 2
+        let body = UIFont.systemFont(ofSize: 24)
+        let storage = NSTextStorage(string: "1 Holy God\n2 Next line", attributes: [.font: body, .paragraphStyle: style])
+        storage.addAttributes([.font: UIFont.systemFont(ofSize: 14), .baselineOffset: 10], range: NSRange(location: 0, length: 1))
+        storage.addAttributes([.font: UIFont.systemFont(ofSize: 14), .baselineOffset: 10], range: NSRange(location: 11, length: 1))
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 400, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        storage.addLayoutManager(manager)
+        manager.addTextContainer(container)
+        manager.ensureLayout(for: container)
+
+        let y = (storage.string as NSString).range(of: "y")
+        let glyph = manager.glyphIndexForCharacter(at: y.location)
+        let rect = manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+        let baseline = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + manager.location(forGlyphAt: glyph).y
+        // Low on the descender of the "y".
+        let tap = CGPoint(x: rect.midX, y: baseline - body.descender * 0.9)
+        let tapped = manager.characterIndex(tappedAt: tap, in: container)
+        XCTAssertLessThan(tapped, 11, "\(tapped)")
+    }
 }

@@ -826,20 +826,24 @@ extension NSLayoutManager {
 
     /// From the top of the tallest letter on the line at `glyph` to the
     /// bottom of the deepest, without the spacing under them; the whole
-    /// line where it has no font to measure by.
+    /// line where it has no font to measure by. Each run is measured from
+    /// its own baseline, so a raised verse number doesn't lift the line's.
     private func letterBand(ofLineAt glyph: Int) -> ClosedRange<CGFloat> {
         var range = NSRange()
         let rect = lineFragmentRect(forGlyphAt: glyph, effectiveRange: &range)
-        let baseline = rect.minY + location(forGlyphAt: range.location).y
-        var ascent: CGFloat = 0
-        var descent: CGFloat = 0
-        textStorage?.enumerateAttribute(.font, in: characterRange(forGlyphRange: range, actualGlyphRange: nil)) { value, _, _ in
+        var top = CGFloat.infinity
+        var bottom = -CGFloat.infinity
+        textStorage?.enumerateAttribute(.font, in: characterRange(forGlyphRange: range, actualGlyphRange: nil)) { value, characters, _ in
             guard let font = value as? UIFont else { return }
-            ascent = max(ascent, font.ascender)
-            descent = max(descent, -font.descender)
+            let glyphs = glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
+            guard glyphs.length > 0 else { return }
+            let baseline = rect.minY + location(forGlyphAt: glyphs.location).y
+            top = min(top, baseline - font.ascender)
+            bottom = max(bottom, baseline - font.descender)
         }
-        guard ascent > 0 else { return rect.minY...rect.maxY }
-        return max(rect.minY, baseline - ascent)...min(rect.maxY, max(rect.minY, baseline + descent))
+        guard top < bottom else { return rect.minY...rect.maxY }
+        let lower = min(max(rect.minY, top), rect.maxY)
+        return lower...max(lower, min(rect.maxY, bottom))
     }
 }
 
