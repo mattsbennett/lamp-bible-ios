@@ -591,8 +591,10 @@ final class AgentRemoteClient: ObservableObject {
     /// The secret of the Mac being found again: a Mac of the same name that
     /// proves another secret isn't it, and isn't connected to in its place.
     private var recoverySecret: String?
-    /// The Mac last connected to, by name and proven secret.
-    private var lastConnected: (name: String, secret: String)?
+    /// The Mac last connected to, by the host it was found as and the
+    /// secret it proved: tied to that host, not only its name, which
+    /// another Mac may share.
+    private var lastConnected: (hostID: String, secret: String)?
     /// For finding the Mac and connecting to it, handshake and all.
     static let rediscoveryWait: TimeInterval = 15
 
@@ -606,7 +608,7 @@ final class AgentRemoteClient: ObservableObject {
         recoveryTarget = target
         // Checked only against a Mac this device was connected to under this
         // name: a first connection that never got through proves nothing.
-        recoverySecret = lastConnected?.name == target ? lastConnected?.secret : nil
+        recoverySecret = lastConnected?.hostID == host?.id ? lastConnected?.secret : nil
         let attempt = UUID()
         recoveryAttempt = attempt
         browse()
@@ -641,7 +643,13 @@ final class AgentRemoteClient: ObservableObject {
             guard lostRecoverably,
                   promptly || Date().timeIntervalSince(lastLossRetry) > Self.lossRetryInterval else { return }
             lastLossRetry = Date()
-            rediscover()
+            // Found again by browsing only when this device proved which Mac
+            // it was; one never connected to is tried where it was chosen.
+            if let host, lastConnected?.hostID == host.id {
+                rediscover()
+            } else if let host {
+                connect(to: host, chosen: false)
+            }
         case .stopped:
             start()
         default:
@@ -714,6 +722,24 @@ final class AgentRemoteClient: ObservableObject {
         browse()
     }
 
+    /// Another Mac answered as the one being found again: nothing more it
+    /// says is taken in, and which Mac to use is the person's to choose, not
+    /// Try Again's nor the next browse's, until they do.
+    private func rejectRecoveredMac() {
+        let name = host?.name ?? "your Mac"
+        rediscoveringLast = false
+        teardown()
+        lostRecoverably = false
+        host = nil
+        mustChooseHost = true
+        choosingHost = true
+        phase = .unavailable("Another Mac answered as \(name). Choose the Mac to use.")
+    }
+
+    /// Set when a Mac was turned away for not being the one found again:
+    /// kept through the panel closing, so reopening it doesn't connect to it.
+    private var mustChooseHost = false
+
     func stop() {
         rediscoveringLast = false
         lostRecoverably = false
@@ -722,13 +748,22 @@ final class AgentRemoteClient: ObservableObject {
         teardown()
         hosts = []
         chat = nil
-        choosingHost = false
+        choosingHost = mustChooseHost
         phase = .stopped
     }
 
     func retry() {
+        // After a loss: looked for again the same way, with its time limit
+        // and its check that it's that Mac.
+        // Only for a Mac this device proved it was connected to: one that
+        // never answered is tried again where it was chosen.
+        if lostRecoverably, let host, !choosingHost, lastConnected?.hostID == host.id {
+            lastLossRetry = Date()
+            rediscover()
+            return
+        }
         if let host, !choosingHost {
-            connect(to: host)
+            connect(to: host, chosen: false)
         } else {
             browse()
         }
@@ -833,18 +868,25 @@ final class AgentRemoteClient: ObservableObject {
             return
         }
         if let match = hosts.first(where: { $0.name == last }) ?? (hosts.count == 1 ? hosts.first : nil) {
-            connect(to: match)
+            connect(to: match, chosen: false)
         }
     }
 
     // MARK: - Connecting
 
-    /// `automatic` for recovery's own connection; any other, the person's
-    /// choice, ends recovery, its deadline and its check of which Mac it is.
-    func connect(to host: Host, pendingCode: String? = nil, automatic: Bool = false) {
+    /// `automatic` for recovery's own connection; any other ends recovery,
+    /// its deadline and its check of which Mac it is. `chosen` when the
+    /// person picked the Mac: the one last proven under its name may not be
+    /// it, so that proof goes; a connection made for them to the last Mac,
+    /// as on opening the panel, keeps it.
+    func connect(to host: Host, pendingCode: String? = nil, automatic: Bool = false, chosen: Bool = true) {
         if !automatic {
             rediscoveringLast = false
             recoverySecret = nil
+            mustChooseHost = false
+            // Another host chosen: the proof was another Mac's. The same one
+            // chosen again keeps it, for recovering it later.
+            if chosen, lastConnected?.hostID != host.id { lastConnected = nil }
         }
         closingReason = nil
         hostNamesRequests = false
@@ -892,7 +934,7 @@ final class AgentRemoteClient: ObservableObject {
             perform(session?.pair(code: code) ?? [])
             if case .needsCode = phase, let host { phase = .connecting(host.name) }
         } else if let host {
-            connect(to: host, pendingCode: code)
+            connect(to: host, pendingCode: code, chosen: false)
         }
     }
 
@@ -958,6 +1000,14 @@ final class AgentRemoteClient: ObservableObject {
     }
 
     private func perform(_ effects: [LampAgentRemoteDeviceConnection.Effect]) {
+        // A Mac found again by name that proves to be another: turned away
+        // before anything of this device's goes to it, its opening requests
+        // included.
+        if effects.contains(where: { if case .connected = $0 { true } else { false } }),
+           rediscoveringLast, let expected = recoverySecret, let secret = session?.hostSecret, secret != expected {
+            rejectRecoveredMac()
+            return
+        }
         // Everything the session has sealed goes out first, in its order:
         // what the steps below seal takes later numbers, and must follow it.
         for case let .send(data) in effects {
@@ -990,18 +1040,6 @@ final class AgentRemoteClient: ObservableObject {
                 guard let host else { break }
                 // Found again by name, but proven to be another Mac: not
                 // taken for the one that was lost, nor its chats dropped.
-                if rediscoveringLast, let expected = recoverySecret, let secret = session?.hostSecret, secret != expected {
-                    rediscoveringLast = false
-                    teardown()
-                    lostRecoverably = false
-                    // Not tried again by Try Again: which Mac is the person's
-                    // to choose, from those found.
-                    self.host = nil
-                    choosingHost = true
-                    phase = .unavailable("Another Mac answered as \(host.name). Choose the Mac to use.")
-                    // Nothing more this connection said is taken in.
-                    return
-                }
                 if let secret = session?.hostSecret {
                     if chatsHostSecret != secret {
                         // Another Mac's chats aren't this one's. What wasn't
@@ -1035,7 +1073,7 @@ final class AgentRemoteClient: ObservableObject {
                     chatsHostSecret = secret
                 }
                 phase = .connected(host.name)
-                if let secret = session?.hostSecret { lastConnected = (host.name, secret) }
+                if let secret = session?.hostSecret { lastConnected = (host.id, secret) }
                 lostRecoverably = false
                 rediscoveringLast = false
                 UserDefaults.standard.set(host.name, forKey: Self.lastHostKey)
@@ -1055,7 +1093,7 @@ final class AgentRemoteClient: ObservableObject {
             case .pairAgain:
                 pendingNotice = AgentRemoteProblemText.refused
                 // Recovery's own retry stays recovery's: no one chose anew.
-                if let host { connect(to: host, automatic: rediscoveringLast) } else { teardown(); phase = .unavailable(AgentRemoteProblemText.refused) }
+                if let host { connect(to: host, automatic: rediscoveringLast, chosen: false) } else { teardown(); phase = .unavailable(AgentRemoteProblemText.refused) }
             case let .failed(problem):
                 // Not reached is the network's doing; turned away is the Mac's.
                 if case .unreachable = problem { lostRecoverably = true } else { lostRecoverably = false }
