@@ -1529,6 +1529,29 @@ func restorePlaced() {
         check((parts.count > 1 ? parts[1] as? [String] : nil) == ["alpha", "beta"], "both passages drawn (read: \(String(describing: parts.count > 1 ? parts[1] : nil)))")
         check((parts.count > 2 ? parts[2] as? [String] : nil) == ["alpha", "A", "beta", "B"],
               "each offered its own change, by place (read: \(String(describing: parts.count > 2 ? parts[2] : nil)))")
+        copiedText()
+    }
+}
+
+// What's copied as plain text is the words as they read, not their
+// Markdown: nothing serialises the clipboard's text but the editor itself.
+func copiedText() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('*The Bible in English*');
+            const dom = document.querySelector('.ProseMirror');
+            dom.focus();
+            dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }));
+            const data = new DataTransfer();
+            dom.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }));
+            const plain = data.getData('text/plain');
+            rv.load('One deux three.\\n\\nFour five.');
+            return plain
+        })()
+        """) { r in
+        check(r as? String == "The Bible in English", "a copy's plain text is the words, not Markdown (read: \(String(describing: r)))")
         restoreWording()
     }
 }

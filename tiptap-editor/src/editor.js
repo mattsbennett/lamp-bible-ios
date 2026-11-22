@@ -1481,7 +1481,9 @@ function initEditor() {
       Markdown.configure({
         html: true,
         transformPastedText: true,
-        transformCopiedText: true,
+        // Copied as the words the reader sees (text/plain), not as Markdown;
+        // text/html still carries the formatting for apps that take it.
+        transformCopiedText: false,
         tightLists: true,
         indentation: {
           style: 'space',
