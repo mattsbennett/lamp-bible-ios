@@ -51,6 +51,21 @@ final class AgentRemoteClient: ObservableObject {
         didSet { if openChatID != oldValue { followAwaited() } }
     }
     @Published private(set) var isStartingChat = false
+    /// What the Mac's chats can run with: its providers, their models and
+    /// efforts, and whether each is signed in there. Nil until it says, and
+    /// from a Mac older than setup on devices, which offers no choices.
+    @Published private(set) var setup: LampAgentRemoteSetup?
+    /// A change of who answers in the open chat, on its way to the Mac.
+    @Published private(set) var isChangingChoices = false
+    /// Why the last change of who answers wasn't made, and the chat it was
+    /// asked for, where alone it's shown.
+    @Published var choicesProblem: String?
+    @Published private(set) var choicesProblemChatID: String?
+    private var choicesRequestChatID: String?
+    /// What a new chat of each kind (`LampAgentRemoteChatSummary.reader`,
+    /// `.writing`) is to start with, as chosen here before it has begun:
+    /// what isn't chosen is what the Mac would open it on.
+    @Published private(set) var newChatChoices: [String: LampAgentRemoteChoices] = [:]
     /// What went wrong with a request made from the list.
     @Published private(set) var listProblem: String?
     /// The Macs paired: the iCloud subscription names their pairings.
@@ -210,6 +225,7 @@ final class AgentRemoteClient: ObservableObject {
     /// The last chat asked for, so only its failure abandons the chat being
     /// opened.
     private var openRequest: UUID?
+    private var choicesRequest: UUID?
     /// The connected Mac names a question's request on its events, so a
     /// question without one was asked elsewhere, whatever its words.
     private var hostNamesRequests = false
@@ -754,6 +770,10 @@ final class AgentRemoteClient: ObservableObject {
         parkedUnsent[secret] = nil
         drafts = drafts.filter { !$0.key.hasPrefix(secret + "|") }
         selections = selections.filter { !$0.key.hasPrefix(secret + "|") }
+        // Its providers, and what was chosen among them.
+        setup = nil
+        newChatChoices = [:]
+        choicesProblem = nil
         chatsHostSecret = nil
         chooseAnotherHost()
     }
@@ -931,6 +951,10 @@ final class AgentRemoteClient: ObservableObject {
         startRequest = nil
         sendRequests = [:]
         chat?.sending = nil
+        // A change of who answers that wasn't heard back about: the chat is
+        // opened afresh on coming back, under whatever the Mac kept.
+        choicesRequest = nil
+        isChangingChoices = false
     }
 
     private func perform(_ effects: [LampAgentRemoteDeviceConnection.Effect]) {
@@ -993,6 +1017,10 @@ final class AgentRemoteClient: ObservableObject {
                             chat = nil
                             openChatID = nil
                             listProblem = nil
+                            // Another Mac's providers.
+                            setup = nil
+                            newChatChoices = [:]
+                            choicesProblem = nil
                         }
                         if let parked = parkedUnsent.removeValue(forKey: secret) {
                             unsent.merge(parked) { current, _ in current }
@@ -1020,6 +1048,8 @@ final class AgentRemoteClient: ObservableObject {
                 }
                 // How the turns waited for went while it was down.
                 if !awaited.isEmpty { seal(.listChats()) }
+                // What its chats can run with. An older Mac doesn't answer.
+                seal(.getSetup())
             case let .received(message):
                 handle(message)
             case .pairAgain:
@@ -1075,6 +1105,17 @@ final class AgentRemoteClient: ObservableObject {
         case .snapshot:
             guard let snapshot = message.snapshot else { return }
             let started = message.requestID != nil && message.requestID == startRequest?.id
+            // The chat under another provider is that provider's side of the
+            // conversation: what it holds says nothing of this device's
+            // questions, which were asked of the other, so none is settled by
+            // it. Nor is a snapshot sent because a window changed the chat.
+            let movedProvider = chat?.id == snapshot.summary.id && chat?.summary.provider != snapshot.summary.provider
+            if let requestID = message.requestID, requestID == choicesRequest {
+                choicesRequest = nil
+                isChangingChoices = false
+                // The Mac now remembers this choice for new chats too.
+                seal(.getSetup())
+            }
             guard started || snapshot.summary.id == openChatID else { return }
             // This device's requests, before what the snapshot settles of them
             // takes them out below.
@@ -1117,11 +1158,15 @@ final class AgentRemoteClient: ObservableObject {
             // A question the snapshot already holds has arrived, whether it
             // was still on its way or kept as not sent when a connection ended.
             let id = snapshot.summary.id
-            sendRequests = sendRequests.filter {
-                $0.value.chatID != id || !Self.holds(snapshot.messages, $0.value.words, known: $0.value.known)
-            }
-            if let kept = unsent[id], Self.holds(snapshot.messages, kept.words, known: kept.known) {
-                unsent[id] = nil
+            // By its words only on the same provider's side; what the Mac
+            // names by request (`askedBy`, below) settles it on any.
+            if !movedProvider {
+                sendRequests = sendRequests.filter {
+                    $0.value.chatID != id || !Self.holds(snapshot.messages, $0.value.words, known: $0.value.known)
+                }
+                if let kept = unsent[id], Self.holds(snapshot.messages, kept.words, known: kept.known) {
+                    unsent[id] = nil
+                }
             }
             // A Mac that names the request each question came with settles
             // what the connection ending left unsure: named, it went. Older
@@ -1207,6 +1252,8 @@ final class AgentRemoteClient: ObservableObject {
                let turn = awaited[event.chatID], Self.isSameTurn(turn.turnID, event.turnID) {
                 awaitedTurnEnded(in: event.chatID)
             }
+        case .setup:
+            if let setup = message.setup { self.setup = setup }
         case .failed:
             failed(message)
         case .pong:
@@ -1226,6 +1273,13 @@ final class AgentRemoteClient: ObservableObject {
 
     private func failed(_ message: LampAgentRemoteMessage) {
         let text = AgentRemoteFailureText.text(code: message.errorCode, message: message.errorMessage)
+        if let requestID = message.requestID, requestID == choicesRequest {
+            choicesRequest = nil
+            isChangingChoices = false
+            choicesProblem = text
+            choicesProblemChatID = choicesRequestChatID
+            return
+        }
         if message.errorCode == LampAgentRemoteFailure.aiOff {
             lostRecoverably = false
             teardown()
@@ -1384,6 +1438,7 @@ final class AgentRemoteClient: ObservableObject {
         // A new chat on its way opens itself when it comes.
         guard !isStartingChat else { return }
         listProblem = nil
+        choicesProblem = nil
         if let newChatKey { moveDraft(from: newChatKey, to: chatID) }
         openChatID = chatID
         chat = nil
@@ -1402,6 +1457,7 @@ final class AgentRemoteClient: ObservableObject {
         }
         chat = nil
         openChatID = nil
+        choicesProblem = nil
         seal(.listChats())
     }
 
@@ -1507,7 +1563,7 @@ final class AgentRemoteClient: ObservableObject {
         let summaries = [
             LampAgentRemoteChatSummary(
                 id: "demo-1", title: "Romans 5", subtitle: "Romans 5:20", kind: LampAgentRemoteChatSummary.reader,
-                provider: "claude", providerName: "Claude", updatedAt: now.addingTimeInterval(-600),
+                provider: "claude", providerName: "Claude", model: "opus", effort: "high", updatedAt: now.addingTimeInterval(-600),
                 preview: "Where sin increased, grace abounded all the more: Paul's word is a strong one.",
                 isRunning: true, acceptsMessages: true
             ),
@@ -1517,6 +1573,28 @@ final class AgentRemoteClient: ObservableObject {
                 preview: "The servant is pierced for our transgressions.", acceptsMessages: true
             ),
         ]
+        typealias C = LampAgentRemoteSetup.Connection
+        setup = LampAgentRemoteSetup(
+            providers: [
+                .init(id: "codex", name: "OpenAI Codex", shortName: "Codex", systemImage: "terminal",
+                      connection: C(state: demo == "signed-out" ? C.notConnected : C.connected),
+                      modelHint: "A model name the Codex CLI accepts.",
+                      effortHint: "A value your Codex accepts for model_reasoning_effort."),
+                .init(id: "claude", name: "Claude Code", shortName: "Claude", systemImage: "sparkles",
+                      connection: C(state: C.connected), models: ["opus", "sonnet", "haiku"],
+                      modelHint: "An alias such as opus, or a full model name.",
+                      efforts: ["low", "medium", "high", "xhigh", "max"],
+                      effortHint: "A level such as high. Claude Code names low to max.",
+                      defaultModel: "opus", defaultEffort: "high"),
+                .init(id: "openCode", name: "OpenCode", shortName: "OpenCode",
+                      systemImage: "chevron.left.forwardslash.chevron.right",
+                      connection: C(state: C.notInstalled), modelHint: "provider/model, or provider/model#variant.",
+                      effortIsOnTheModel: true),
+            ],
+            readerProvider: demo == "signed-out" ? "codex" : "claude",
+            writingProvider: "claude",
+            access: .init(modulesEnabled: true, allModules: false, personalStudy: true)
+        )
         switch demo {
         case "pair":
             phase = .needsCode(host: "Study Mac", notice: nil)
@@ -1576,6 +1654,87 @@ final class AgentRemoteClient: ObservableObject {
     }
     #endif
 
+    // MARK: - Who answers
+
+    /// Asks the Mac again what its chats can run with: on opening the setup,
+    /// where a provider may have been signed in since.
+    func refreshSetup() {
+        guard case .connected = phase else { return }
+        seal(.getSetup())
+    }
+
+    /// Moves the open chat to another provider, model or effort. The Mac
+    /// answers with the chat under its new choices, or says why not.
+    func setChoices(_ choices: LampAgentRemoteChoices) {
+        guard !choices.isEmpty, let openChatID, !isChangingChoices,
+              // A question not yet taken is the provider's it was asked of.
+              unsent[openChatID] == nil, !sendRequests.values.contains(where: { $0.chatID == openChatID })
+        else { return }
+        choicesProblem = nil
+        let request = LampAgentRemoteMessage.setChoices(choices, for: openChatID)
+        guard sealAndSend(request) else {
+            choicesProblem = Self.unsealable
+            return
+        }
+        choicesRequest = request.requestID
+        choicesRequestChatID = openChatID
+        isChangingChoices = true
+    }
+
+    /// What a new chat of this kind begins with, as the setup row shows it:
+    /// what was chosen here, else the Mac's defaults for its provider. Nil
+    /// throughout from a Mac that sends no setup.
+    func newChatShown(kind: String) -> LampAgentRemoteChoices {
+        guard let setup else { return LampAgentRemoteChoices() }
+        let chosen = newChatChoices[kind] ?? LampAgentRemoteChoices()
+        let providerID = chosen.provider ?? setup.defaultProvider(forKind: kind)
+        guard let provider = setup.provider(providerID) else { return chosen }
+        let model = chosen.model ?? provider.defaultModel
+        var effort = chosen.effort
+        if effort == nil {
+            // A model chosen here drops the effort carried on the old one,
+            // unless it was typed with one of its own, which is sent as the
+            // effort so the Mac writes it back on the model.
+            if provider.effortIsOnTheModel, let typed = chosen.model {
+                effort = typed.firstIndex(of: "#").map { String(typed[typed.index(after: $0)...]) } ?? ""
+            } else {
+                effort = provider.defaultEffort
+            }
+        }
+        return LampAgentRemoteChoices(provider: providerID, model: model, effort: effort)
+    }
+
+    /// What a new chat of this kind starts with, as far as it's chosen here:
+    /// a provider chosen anew starts on that provider's defaults. A model or
+    /// effort is kept with the provider it was chosen for, so the Mac's
+    /// default moving on doesn't pair it with another.
+    func chooseForNewChat(_ change: LampAgentRemoteChoices, kind: String) {
+        // The request already went with what was shown.
+        guard !isStartingChat else { return }
+        var chosen = newChatChoices[kind] ?? LampAgentRemoteChoices()
+        if let provider = change.provider, provider != chosen.provider {
+            chosen = LampAgentRemoteChoices(provider: provider)
+        }
+        if chosen.provider == nil { chosen.provider = setup?.defaultProvider(forKind: kind) }
+        if let model = change.model {
+            chosen.model = model
+            // An effort carried on the model doesn't outlast it, as on the Mac.
+            if setup?.provider(chosen.provider ?? setup?.defaultProvider(forKind: kind))?.effortIsOnTheModel == true {
+                chosen.effort = nil
+            }
+        }
+        if let effort = change.effort {
+            chosen.effort = effort
+            // An effort written on the model is that model's: kept with the
+            // model it was chosen for, not whatever the Mac's default
+            // becomes.
+            if let provider = setup?.provider(chosen.provider), provider.effortIsOnTheModel, chosen.model == nil {
+                chosen.model = provider.defaultModel
+            }
+        }
+        newChatChoices[kind] = chosen
+    }
+
     /// Starts a chat with its first message. Returns whether the words were
     /// taken, as `send` does.
     @discardableResult
@@ -1607,7 +1766,15 @@ final class AgentRemoteClient: ObservableObject {
     ) -> Bool {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !words.isEmpty, !isStartingChat, unsent[key] == nil else { return false }
-        let request = LampAgentRemoteMessage.startChat(newChat(words))
+        var begun = newChat(words)
+        // What the setup row showed, named whole, so the chat begins on just
+        // that: a Mac keeps a writing on whatever its pane pinned unless the
+        // provider, model and effort are named.
+        let shown = newChatShown(kind: begun.kind)
+        begun.provider = shown.provider ?? begun.provider
+        begun.model = shown.model ?? begun.model
+        begun.effort = shown.effort ?? begun.effort
+        let request = LampAgentRemoteMessage.startChat(begun)
         guard sealAndSend(request) else {
             keepForNewChat(Unsent(
                 words: words, problem: Self.unsealable, reading: reading, selection: selection,

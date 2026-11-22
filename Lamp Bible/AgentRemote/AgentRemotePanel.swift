@@ -159,6 +159,11 @@ struct AgentRemotePanel: View {
     @State private var scannerError: String?
     @FocusState private var composerFocused: Bool
     @FocusState private var codeFocused: Bool
+    /// A writing's message between Send and its stamp being read: it's
+    /// already this chat's, on the provider it has, so who answers is held.
+    @State private var stampingSend = false
+    /// The panel's height, which the opened setup takes at most a part of.
+    @State private var panelHeight: CGFloat = 0
     /// How far up the screen the onscreen keyboard reaches, nothing with a
     /// hardware keyboard: focus alone leaves the reader's bottom bar where it
     /// was, and the composer clear of it.
@@ -168,6 +173,7 @@ struct AgentRemotePanel: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
             .onAppear {
                 if writing != nil { selection = writing?.selection }
                 // Another chat left open isn't this writing's: its draft and
@@ -461,13 +467,20 @@ struct AgentRemotePanel: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            composer(
+            VStack(spacing: 0) {
+                AgentChatSetupBar(
+                    client: client, kind: LampAgentRemoteChatSummary.reader, summary: nil,
+                    about: referenceLabel, translation: reading.translationID,
+                    maxExpandedHeight: setupRoom
+                )
+                composer(
                 prompt: "Ask about \(referenceLabel)…",
                 isRunning: client.isStartingChat,
                 canSend: !client.isStartingChat && client.unsent[AgentRemoteClient.newChatKey] == nil,
                 onSend: { if client.startChat(draft, reading: reading) { draft = "" } },
                 onStop: nil
-            )
+                )
+            }
         }
     }
 
@@ -607,11 +620,21 @@ struct AgentRemotePanel: View {
             })
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
+                    AgentChatSetupBar(
+                        client: client, kind: chat.summary.kind, summary: chat.summary,
+                        about: chat.summary.writingID != nil ? (writing?.title ?? chat.summary.subtitle ?? "This writing") : referenceLabel,
+                        translation: chat.summary.writingID != nil ? nil : reading.translationID,
+                        // A message on its way holds the chat's provider too:
+                        // the Mac may still be preparing its turn.
+                        isRunning: chat.isRunning || chat.sending != nil || stampingSend,
+                        maxExpandedHeight: setupRoom
+                    )
                     if chat.summary.writingID != nil { selectionLine }
                     composer(
                         prompt: composerPrompt(for: chat.summary),
                         isRunning: chat.isRunning,
                         canSend: chat.summary.acceptsMessages && !chat.isRunning && chat.sending == nil
+                            && !client.isChangingChoices
                             && client.unsent[chat.id] == nil && sendingHeld == nil,
                         onSend: { sendInOpenChat(chat.summary) },
                         onStop: { client.cancel() }
@@ -624,6 +647,12 @@ struct AgentRemotePanel: View {
     }
 
     private static let chatEnd = "chat-end"
+
+    /// What the opened setup may take of the panel: in the reader's short
+    /// split it scrolls rather than push its own row out of the panel.
+    private var setupRoom: CGFloat {
+        panelHeight > 0 ? max(120, panelHeight * 0.4) : .infinity
+    }
 
     // MARK: - A writing's chat
 
@@ -668,6 +697,12 @@ struct AgentRemotePanel: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
+                AgentChatSetupBar(
+                    client: client, kind: LampAgentRemoteChatSummary.writing, summary: nil,
+                    about: writing?.title ?? "This writing",
+                    isRunning: stampingSend,
+                    maxExpandedHeight: setupRoom
+                )
                 selectionLine
                 composer(
                     prompt: "Ask about this writing…",
@@ -679,7 +714,9 @@ struct AgentRemotePanel: View {
                         let words = draft
                         let chosen = selection
                         let destination = draftDestination
+                        stampingSend = true
                         Task {
+                            defer { stampingSend = false }
                             guard let stamp = await AgentRemoteWritingStamp.current(writingID: writing.id) else {
                                 client.keepUnstamped(
                                     words, selection: chosen, writingID: writing.id, key: destination, startsChat: true
@@ -773,7 +810,9 @@ struct AgentRemotePanel: View {
         let chosen = selection
         let destination = draftDestination
         let known = Set(client.chat?.id == summary.id ? client.chat?.messages.map(\.id) ?? [] : [])
+        stampingSend = true
         Task {
+            defer { stampingSend = false }
             // Not read, it isn't sent: without the stamp the Mac would take it
             // as from an older phone and skip its check of its own copy.
             guard let stamp = await AgentRemoteWritingStamp.current(writingID: writingID) else {
@@ -916,6 +955,18 @@ struct AgentRemotePanel: View {
         return besideReader ? keyboardHeight + 8 : 8
     }
 
+    /// One line of the field, as drawn: the body's line and the field's
+    /// padding, scaled with the text.
+    @ScaledMetric(relativeTo: .body) private var composerFieldHeight: CGFloat = 38
+    @ScaledMetric(relativeTo: .body) private var composerButtonSize: CGFloat = 34
+
+    private func composerButtonImage(_ name: String) -> some View {
+        Image(systemName: name)
+            .resizable()
+            .scaledToFit()
+            .frame(width: composerButtonSize, height: composerButtonSize)
+    }
+
     private func composer(
         prompt: String,
         isRunning: Bool,
@@ -935,23 +986,22 @@ struct AgentRemotePanel: View {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(LampTheme.hairline)
                 }
-            if isRunning, let onStop {
-                Button(action: onStop) {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.title2)
+            // As tall as the field's one line and level with it, the field
+            // growing upward from the same bottom when it takes more lines.
+            Group {
+                if isRunning, let onStop {
+                    Button(action: onStop) { composerButtonImage("stop.circle.fill") }
+                        .accessibilityLabel("Stop Reply")
+                } else if isRunning {
+                    ProgressView()
+                } else {
+                    Button(action: onSend) { composerButtonImage("arrow.up.circle.fill") }
+                        .disabled(!canSend || !hasWords)
+                        .accessibilityLabel("Send")
                 }
-                .accessibilityLabel("Stop Reply")
-            } else if isRunning {
-                ProgressView()
-                    .frame(width: 28, height: 28)
-            } else {
-                Button(action: onSend) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                }
-                .disabled(!canSend || !hasWords)
-                .accessibilityLabel("Send")
             }
+            .frame(width: composerButtonSize, height: composerFieldHeight)
+            .contentShape(Rectangle())
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -1003,6 +1053,406 @@ private extension View {
                         .accessibilityElement(children: .combine)
                     }
                 }
+        }
+    }
+}
+
+/// Who answers in a chat, and what each message is sent with: one folded
+/// row over the composer, naming the provider, the model and what the chat
+/// is about, as the row over a Mac window's chat does. Opened, it holds the
+/// provider, model and effort menus and a card saying what the chat may
+/// read. It opens by itself when the provider can't answer on the Mac.
+///
+/// Over an open chat, a choice moves that chat, on the Mac too. Over the
+/// composer that begins a chat, it's what the chat will begin with.
+struct AgentChatSetupBar: View {
+    @ObservedObject var client: AgentRemoteClient
+    /// `LampAgentRemoteChatSummary.reader` or `.writing`.
+    let kind: String
+    /// The open chat, or nil for the chat the composer begins.
+    let summary: LampAgentRemoteChatSummary?
+    /// What the chat is about: the passage, or the writing.
+    let about: String
+    /// The translation a reader chat's passage is read in.
+    var translation: String?
+    /// A turn is running or on its way in this chat, or being sent.
+    var isRunning = false
+    /// The most the opened setup takes before it scrolls.
+    var maxExpandedHeight: CGFloat = .infinity
+    @State private var expandedHeight: CGFloat = 0
+
+    @AppStorage("agentRemote.showsSetup") private var showsSetup = false
+    /// Opened because the provider couldn't answer, so it folds again once
+    /// another is chosen or it's signed in.
+    @State private var openedForConnection = false
+    @State private var typing: Choice?
+    @State private var typed = ""
+    /// The provider a typed model or effort is for: a name means nothing to
+    /// another, so it isn't sent if the chat has moved meanwhile.
+    @State private var typingFor: String?
+
+    enum Choice: String, Identifiable {
+        case model = "Model"
+        case effort = "Effort"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        if let setup = client.setup {
+            let provider = provider(in: setup)
+            VStack(alignment: .leading, spacing: 10) {
+                toggle(provider)
+                if showsSetup {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            choices(setup, provider: provider)
+                            notices(provider)
+                            contextCard(setup)
+                        }
+                        .padding(.bottom, 2)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { expandedHeight = $0 }
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(height: min(expandedHeight, maxExpandedHeight))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar)
+            .onAppear { followConnection(provider) }
+            .onChange(of: provider?.connection) { followConnection(provider) }
+            .onChange(of: providerID) { typing = nil }
+            .alert(typing?.rawValue ?? "", isPresented: Binding(get: { typing != nil }, set: { if !$0 { typing = nil } }), presenting: typing) { choice in
+                TextField("Default", text: $typed)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Use Default") { chooseTyped(choice, "") }
+                Button("Cancel", role: .cancel) {}
+                Button("Done") { chooseTyped(choice, typed) }
+                    .keyboardShortcut(.defaultAction)
+            } message: { choice in
+                Text(choice == .model ? provider?.modelHint ?? "" : provider?.effortHint ?? "")
+            }
+        }
+    }
+
+    // MARK: What it runs with
+
+    private var chosenForNewChat: LampAgentRemoteChoices {
+        client.newChatChoices[kind] ?? LampAgentRemoteChoices()
+    }
+
+    private var providerID: String? {
+        summary?.provider ?? chosenForNewChat.provider ?? client.setup?.defaultProvider(forKind: kind)
+    }
+
+    private func provider(in setup: LampAgentRemoteSetup) -> LampAgentRemoteSetup.Provider? {
+        setup.provider(providerID)
+    }
+
+    /// A model typed with its variant on it (`provider/model#high`), split
+    /// as the Mac's menus show it, where the effort rides on the model.
+    private func split(_ model: String, _ provider: LampAgentRemoteSetup.Provider?) -> (model: String, variant: String?) {
+        guard provider?.effortIsOnTheModel == true, let hash = model.firstIndex(of: "#") else { return (model, nil) }
+        let variant = String(model[model.index(after: hash)...])
+        return (String(model[..<hash]), variant.isEmpty ? nil : variant)
+    }
+
+    /// The model the chat runs with: "" for the provider's default.
+    private func model(_ provider: LampAgentRemoteSetup.Provider?) -> String {
+        if let summary { return summary.model ?? "" }
+        return split(chosenForNewChat.model ?? provider?.defaultModel ?? "", provider).model
+    }
+
+    private func effort(_ provider: LampAgentRemoteSetup.Provider?) -> String {
+        if let summary { return summary.effort ?? "" }
+        if let effort = chosenForNewChat.effort { return effort }
+        // A model chosen here drops the effort carried on the old one, unless
+        // it was typed with one of its own.
+        if provider?.effortIsOnTheModel == true, let model = chosenForNewChat.model {
+            return split(model, provider).variant ?? ""
+        }
+        return provider?.defaultEffort ?? ""
+    }
+
+    private var providerName: String {
+        client.setup?.provider(providerID)?.shortName ?? summary?.providerName ?? "Your Mac"
+    }
+
+    /// An open chat can't be moved while it replies, or while a move is on
+    /// its way.
+    private var canChoose: Bool {
+        guard let summary else { return !client.isStartingChat && !isRunning }
+        return !isRunning && !client.isChangingChoices && summary.acceptsMessages
+            && client.unsent[summary.id] == nil
+    }
+
+    private func apply(_ change: LampAgentRemoteChoices) {
+        if summary != nil {
+            // Named with the provider it was chosen for, which the chat may
+            // have left meanwhile on the Mac.
+            var change = change
+            if change.provider == nil { change.provider = providerID }
+            client.setChoices(change)
+        } else {
+            client.chooseForNewChat(change, kind: kind)
+        }
+    }
+
+    private func choose(_ choice: Choice, _ value: String) {
+        // A typed value's alert can outlast what allowed it.
+        guard canChoose else { typing = nil; return }
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        apply(choice == .model ? LampAgentRemoteChoices(model: value) : LampAgentRemoteChoices(effort: value))
+        typing = nil
+    }
+
+    private func chooseTyped(_ choice: Choice, _ value: String) {
+        guard typingFor == providerID else { typing = nil; return }
+        choose(choice, value)
+    }
+
+    private func followConnection(_ provider: LampAgentRemoteSetup.Provider?) {
+        guard let connection = provider?.connection else { return }
+        if connection.needsAttention, !showsSetup {
+            withAnimation(.easeInOut(duration: 0.15)) { showsSetup = true }
+            openedForConnection = true
+        } else if connection.isConnected, openedForConnection {
+            withAnimation(.easeInOut(duration: 0.15)) { showsSetup = false }
+            openedForConnection = false
+        }
+    }
+
+    // MARK: The row
+
+    private func toggle(_ provider: LampAgentRemoteSetup.Provider?) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { showsSetup.toggle() }
+            openedForConnection = false
+            if showsSetup { client.refreshSetup() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(LampTheme.caption)
+                    .rotationEffect(.degrees(showsSetup ? 90 : 0))
+                if let image = provider?.systemImage {
+                    Image(systemName: image)
+                        .foregroundStyle(LampTheme.caption)
+                }
+                Text(LampAgentRemoteSetupLine.line(provider: providerName, model: model(provider), about: about))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color(uiColor: .label))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let connection = provider?.connection, connection.needsAttention {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel(connection.label)
+                }
+                Spacer(minLength: 0)
+                if client.isChangingChoices && summary != nil {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .frame(minHeight: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(showsSetup ? "Hides the chat's setup" : "Shows the provider, model and effort, and what each message is sent with")
+    }
+
+    // MARK: The menus
+
+    /// The three menus in a row, wrapping chip by chip where it won't fit,
+    /// each whole.
+    private func choices(_ setup: LampAgentRemoteSetup, provider: LampAgentRemoteSetup.Provider?) -> some View {
+        WrappingHStack(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+            menus(setup, provider: provider)
+        }
+        .disabled(!canChoose)
+        // The chips draw their own colours, which disabling doesn't dim.
+        .opacity(canChoose ? 1 : 0.5)
+    }
+
+    @ViewBuilder
+    private func menus(_ setup: LampAgentRemoteSetup, provider: LampAgentRemoteSetup.Provider?) -> some View {
+        Menu {
+            Picker("Provider", selection: Binding(
+                get: { providerID ?? "" },
+                set: { chosen in if chosen != providerID { apply(LampAgentRemoteChoices(provider: chosen)) } }
+            )) {
+                ForEach(setup.providers) { option in
+                    if option.connection.needsAttention {
+                        Label(option.shortName, systemImage: "exclamationmark.triangle").tag(option.id)
+                    } else {
+                        Text(option.shortName).tag(option.id)
+                    }
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            chip(providerName, systemImage: provider?.systemImage)
+        }
+        .accessibilityLabel("Provider")
+        .accessibilityValue(providerName)
+
+        if let provider {
+            let model = model(provider)
+            Menu {
+                choiceMenu(.model, value: model, offered: provider.models, provider: provider)
+            } label: {
+                chip(LampAgentRemoteSetupLine.choice(model, defaultLabel: "Default model"), isPlaceholder: model.isEmpty, maxTitleWidth: 170)
+            }
+            .accessibilityLabel("Model")
+
+            let effort = effort(provider)
+            Menu {
+                if provider.takesEffort(withModel: model) {
+                    choiceMenu(.effort, value: effort, offered: provider.efforts, provider: provider)
+                } else {
+                    Text(provider.effortNeedsModel)
+                }
+            } label: {
+                chip(LampAgentRemoteSetupLine.choice(effort, defaultLabel: "Default effort"), isPlaceholder: effort.isEmpty, maxTitleWidth: 120)
+            }
+            .accessibilityLabel("Effort")
+        }
+    }
+
+    /// The provider's default, the names it stands behind, and another typed.
+    @ViewBuilder
+    private func choiceMenu(_ choice: Choice, value: String, offered: [String], provider: LampAgentRemoteSetup.Provider) -> some View {
+        let current = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        Button {
+            choose(choice, "")
+        } label: {
+            if current.isEmpty { Label("\(provider.shortName) default", systemImage: "checkmark") } else { Text("\(provider.shortName) default") }
+        }
+        if !offered.isEmpty {
+            Section {
+                ForEach(offered, id: \.self) { option in
+                    Button {
+                        choose(choice, option)
+                    } label: {
+                        if current == option { Label(option, systemImage: "checkmark") } else { Text(option) }
+                    }
+                }
+            }
+        }
+        Section {
+            Button(current.isEmpty || offered.contains(current) ? "Other \(choice.rawValue)…" : "\(current)…") {
+                typed = current
+                typingFor = providerID
+                typing = choice
+            }
+        }
+    }
+
+    /// Capped where a typed name can run long, cut in the middle so it keeps
+    /// its family and its date, as the Mac's menus are.
+    private func chip(_ title: String, systemImage: String? = nil, isPlaceholder: Bool = false, maxTitleWidth: CGFloat? = nil) -> some View {
+        HStack(spacing: 5) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.caption)
+                    .foregroundStyle(LampTheme.caption)
+            }
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(isPlaceholder ? Color(uiColor: .secondaryLabel) : Color(uiColor: .label))
+                .frame(maxWidth: maxTitleWidth, alignment: .leading)
+                .fixedSize(horizontal: maxTitleWidth == nil, vertical: false)
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(LampTheme.caption)
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(LampTheme.card, in: Capsule())
+        .overlay { Capsule().strokeBorder(LampTheme.hairline) }
+        .fixedSize()
+    }
+
+    // MARK: What it says
+
+    @ViewBuilder
+    private func notices(_ provider: LampAgentRemoteSetup.Provider?) -> some View {
+        if let connection = provider?.connection, connection.needsAttention {
+            VStack(alignment: .leading, spacing: 2) {
+                Label("\(provider?.shortName ?? "This provider"): \(connection.label)", systemImage: "exclamationmark.triangle")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.orange)
+                if let remedy = connection.remedy {
+                    Text(remedy)
+                        .font(.caption)
+                        .foregroundStyle(LampTheme.caption)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        if summary != nil, isRunning {
+            Text("Wait for the reply to finish to change who answers.")
+                .font(.caption)
+                .foregroundStyle(LampTheme.caption)
+        }
+        if let problem = client.choicesProblem, let summary, client.choicesProblemChatID == summary.id {
+            Text(problem)
+                .font(.footnote)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// What each message is sent with, in one card, as on the Mac.
+    private func contextCard(_ setup: LampAgentRemoteSetup) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: kind == LampAgentRemoteChatSummary.writing ? "square.and.pencil" : "book")
+                    .foregroundStyle(LampTheme.caption)
+                Text(about)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                if let translation, !translation.isEmpty {
+                    Text(translation)
+                        .foregroundStyle(Color(uiColor: .secondaryLabel))
+                        .lineLimit(1)
+                }
+            }
+            .font(.subheadline)
+            if kind == LampAgentRemoteChatSummary.writing {
+                Text("The assistant may change this writing. What it changes is marked for you to review.")
+                    .font(.caption)
+                    .foregroundStyle(LampTheme.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let access = setup.access {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if access.readOnly {
+                        Label("Read-only", systemImage: "lock")
+                        Text("·").foregroundStyle(.tertiary)
+                    }
+                    Text(access.modules)
+                        .lineLimit(2)
+                }
+                .font(.caption)
+                .foregroundStyle(LampTheme.caption)
+            }
+            Text("Providers and module access are set in Lamp Bible on your Mac, in Settings › AI & Agents.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous)
+                .strokeBorder(LampTheme.hairline)
         }
     }
 }
