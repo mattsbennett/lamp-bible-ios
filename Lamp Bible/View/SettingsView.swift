@@ -732,6 +732,8 @@ struct SettingsView: View {
                             .foregroundStyle(LampTheme.caption)
                     }
                     .textCase(nil)
+
+                    AgentTurnNotificationSettingsSection()
                 }
 
                 Section {
@@ -1814,5 +1816,72 @@ extension UIDevice {
     /// The SF Symbol drawn for this device.
     var kindSymbol: String {
         userInterfaceIdiom == .pad ? "ipad" : "iphone"
+    }
+}
+
+/// Whether a turn asked for from here tells when it ends, as the Mac's
+/// setting does for its own windows. Asked of the system when turned on,
+/// not at launch; left on if refused, so allowing it later is all it takes.
+private struct AgentTurnNotificationSettingsSection: View {
+    @AppStorage(AgentTurnNotifications.enabledKey) private var enabled = false
+    @AppStorage(AgentTurnNotifications.showsReplyKey) private var showsReply = true
+    @State private var refused = false
+
+    var body: some View {
+        Section {
+            Toggle(isOn: $enabled) {
+                Label {
+                    Text("Notify when a chat finishes a turn")
+                } icon: {
+                    LampIconTile(systemName: "bell.badge", color: .indigo)
+                }
+            }.tint(.accentColor)
+            Toggle(isOn: $showsReply) {
+                Label {
+                    Text("Show the start of the reply")
+                } icon: {
+                    LampIconTile(systemName: "text.bubble", color: .indigo)
+                }
+            }
+            .tint(.accentColor)
+            .disabled(!enabled)
+            if refused {
+                Button {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    Label("Notifications are off for Lamp Bible. Allow them in Settings.", systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                }
+            }
+        } header: {
+            Text("Notifications").lampSectionHeader()
+        } footer: {
+            Text("When a chat you asked from this device finishes while you’re elsewhere. With Lamp closed, your Mac tells you through your iCloud account, when both are signed in to it, and your other devices signed in to it may show it too. Not for one on screen or one you stopped. With the reply shown, its opening words appear in Notification Center. Whether they're kept in your iCloud to send is the Mac's own setting of this name.")
+                .foregroundStyle(LampTheme.caption)
+        }
+        .textCase(nil)
+        .onChange(of: enabled, initial: true) { _, isOn in
+            guard isOn else {
+                refused = false
+                AgentTurnPush.refresh()
+                return
+            }
+            Task {
+                refused = !(await AgentTurnNotifications.requestAuthorization())
+                AgentTurnPush.refresh()
+            }
+        }
+        .onChange(of: showsReply) { AgentTurnPush.refresh() }
+        // Allowed in Settings meanwhile: said here on coming back.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            guard enabled, refused else { return }
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                let allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+                DispatchQueue.main.async { if allowed { refused = false } }
+            }
+        }
     }
 }

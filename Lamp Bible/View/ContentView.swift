@@ -86,6 +86,16 @@ struct ContentView: View {
                 deepLinkManager.pendingWritingID = nil
                 Task { linkedWriting = await LinkedWriting.load(id: id) }
             }
+            // A tapped notification of the assistant finishing: the writing,
+            // with its chat over it.
+            .onChange(of: deepLinkManager.pendingAssistantWritingID, initial: true) { _, id in
+                guard let id else { return }
+                deepLinkManager.pendingAssistantWritingID = nil
+                Task { linkedWriting = await LinkedWriting.load(id: id, opensAssistant: true) }
+            }
+            .sheet(item: $deepLinkManager.pendingReaderChat) { _ in
+                ReaderChatSheet()
+            }
             .sheet(item: $linkedWriting) { linked in
                 LinkedWritingSheet(linked: linked)
             }

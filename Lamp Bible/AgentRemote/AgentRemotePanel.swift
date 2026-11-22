@@ -101,6 +101,29 @@ struct AskAssistantSheet: View {
 
 }
 
+/// A reader chat opened from its notification, over whatever screen Lamp is
+/// on: the Chat panel, in a sheet, sending without a passage, as the
+/// writing's assistant does.
+struct ReaderChatSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var client = AgentRemoteClient.shared
+
+    var body: some View {
+        NavigationStack {
+            AgentRemotePanel(reading: LampAgentRemoteReading(), referenceLabel: "Reader Chat", toolText: .current)
+                .titled("Reader Chat", subtitle: client.chat?.summary.providerName ?? "Your Mac")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { dismiss() } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Close")
+                    }
+                }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
 /// The reader's Chat panel: the Mac's reader chats, followed and continued
 /// from here, each message sent with where this device is reading. Given a
 /// writing, it's that writing's chat with the assistant instead.

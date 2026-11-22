@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UserNotifications
 import UIKit
 import WidgetKit
 
@@ -33,6 +34,29 @@ class DeepLinkManager: ObservableObject {
     @Published var pendingDeckImportURL: URL? = nil
     /// A writing a lampbible://writing link asked for.
     @Published var pendingWritingID: String? = nil
+    /// A writing whose assistant a tapped turn notification asked for.
+    @Published var pendingAssistantWritingID: String? = nil
+    /// A reader chat a tapped turn notification asked for, shown in a sheet
+    /// over whatever screen Lamp is on.
+    @Published var pendingReaderChat: PendingReaderChat? = nil
+
+    struct PendingReaderChat: Identifiable, Equatable {
+        let id: String
+    }
+
+    /// Where a tapped notification of a finished turn leads: a writing's
+    /// assistant, over the writing; or a reader chat, in a sheet. Nothing,
+    /// with the AI features turned off since.
+    func show(_ route: AgentTurnRoute) {
+        guard AIFeatures.shared.isEnabled else { return }
+        switch route {
+        case .writing(let id):
+            pendingAssistantWritingID = id
+        case .readerChat(let id):
+            AgentRemoteClient.shared.show(chatID: id)
+            pendingReaderChat = PendingReaderChat(id: id)
+        }
+    }
 
     private init() {}
 
@@ -415,6 +439,16 @@ final class LampBibleAppDelegate: NSObject, UIApplicationDelegate {
     ) -> UIInterfaceOrientationMask {
         Self.supportedOrientations
     }
+
+    /// The notification delegate is set before launch finishes, so a tap
+    /// that launches Lamp is heard too.
+    func application(
+        _ application: UIApplication,
+        willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = AgentTurnNotificationDelegate.shared
+        return true
+    }
 }
 
 @main
@@ -458,6 +492,8 @@ struct LampBibleApp: App {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 WidgetDataService.shared.refreshWidget()
+                // The subscription that tells of a finished turn by iCloud.
+                AgentTurnPush.refresh()
                 // Start debounce + polling for user settings
                 UserSettingsSyncManager.shared.startSync()
                 // Full sync from remote on foreground

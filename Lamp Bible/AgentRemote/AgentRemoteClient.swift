@@ -3,6 +3,7 @@ import Foundation
 import LampCore
 import Network
 import UIKit
+import UserNotifications
 
 /// The phone's window onto the Mac's agent chats.
 ///
@@ -45,11 +46,17 @@ final class AgentRemoteClient: ObservableObject {
     /// The chat open, once its snapshot has come.
     @Published private(set) var chat: AgentRemoteChat?
     /// The chat asked for, which `chat` becomes when its snapshot comes.
-    @Published private(set) var openChatID: String?
+    /// Turns waited for in other chats are followed by the list.
+    @Published private(set) var openChatID: String? {
+        didSet { if openChatID != oldValue { followAwaited() } }
+    }
     @Published private(set) var isStartingChat = false
     /// What went wrong with a request made from the list.
     @Published private(set) var listProblem: String?
-    @Published private(set) var rememberedHosts: [LampAgentRemoteRememberedHost]
+    /// The Macs paired: the iCloud subscription names their pairings.
+    @Published private(set) var rememberedHosts: [LampAgentRemoteRememberedHost] {
+        didSet { if rememberedHosts.map(\.deviceID) != oldValue.map(\.deviceID) { AgentTurnPush.refresh() } }
+    }
     /// Set when someone asks to choose another Mac, so a single one found
     /// isn't connected to again on its own.
     @Published private(set) var choosingHost = false
@@ -207,6 +214,33 @@ final class AgentRemoteClient: ObservableObject {
     /// question without one was asked elsewhere, whatever its words.
     private var hostNamesRequests = false
 
+    /// A turn this device asked for, still running on the Mac, to tell the
+    /// person of when it ends out of their sight (`AgentTurnNotifications`).
+    struct AwaitedTurn: Equatable {
+        var title: AgentTurnNotifications.Title
+        var route: AgentTurnRoute
+        /// The reply as saved, once the Mac has sent it.
+        var reply: String?
+        /// What went wrong, when the Mac said.
+        var failure: String?
+        /// The question the turn began with, whose reply is the one to tell.
+        var turnID: UUID?
+        /// The pairing it was asked under, whose Mac's pushes are known or not.
+        var deviceID: String?
+        let since: Date
+    }
+    /// By chat id. While any is running the connection stays, with no panel
+    /// showing, and Lamp asks iOS for time to hear it end once it's left.
+    private(set) var awaited: [String: AwaitedTurn] = [:]
+    /// How long a turn is waited for before it's taken as never ending.
+    static let awaitedLimit: TimeInterval = 2 * 60 * 60
+    /// How often the list is asked for while a turn waited for runs in a
+    /// chat other than the one open, whose events the Mac doesn't send.
+    static let awaitedListInterval: TimeInterval = 10
+    private var awaitedListTimer: Timer?
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var lifecycleObservers: [NSObjectProtocol] = []
+
     private static let lastHostKey = "agentRemote.lastHostName"
     static let localNetworkDenied = "Lamp Bible needs Local Network access to find your Mac. Allow it for Lamp Bible in Settings, then try again."
     /// How long a Mac has to answer a remembered key: it answers at once
@@ -220,9 +254,18 @@ final class AgentRemoteClient: ObservableObject {
             .dropFirst()
             .sink { [weak self] enabled in
                 MainActor.assumeIsolated {
-                    if !enabled { self?.stop() }
+                    if !enabled { self?.awaited = [:]; self?.stop() }
                 }
             }
+        let center = NotificationCenter.default
+        lifecycleObservers = [
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.enteredBackground() }
+            },
+            center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.becameActive() }
+            },
+        ]
     }
 
     // MARK: - Finding the Mac
@@ -236,7 +279,293 @@ final class AgentRemoteClient: ObservableObject {
     /// A Chat panel went away: the connection ends with the last of them.
     func panelDisappeared() {
         panelsShowing = max(0, panelsShowing - 1)
-        if panelsShowing == 0 { stop() }
+        lastNeeded = Date()
+        stopIfUnneeded()
+    }
+
+    /// Ends the connection once nothing needs it: no panel showing, and no
+    /// turn this device asked for still to be heard ending.
+    private func stopIfUnneeded() {
+        dropStaleAwaited()
+        guard panelsShowing == 0, awaited.isEmpty else {
+            lastNeeded = Date()
+            return
+        }
+        // A question still on its way: the Mac may begin its turn yet, so the
+        // connection waits for its answer, a while at most.
+        let asking = startRequest != nil || !sendRequests.isEmpty
+        if asking, AgentTurnNotifications.isEnabledNow, Date().timeIntervalSince(lastNeeded) < Self.askingWait {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                MainActor.assumeIsolated { self?.stopIfUnneeded() }
+            }
+            return
+        }
+        stop()
+    }
+
+    /// When a panel or a turn last needed the connection.
+    private var lastNeeded = Date()
+    /// How long a question sent as its panel closed holds the connection
+    /// for the Mac to begin its turn.
+    static let askingWait: TimeInterval = 60
+
+    /// The reader chat a tapped notification asked for: opened now, or once
+    /// a connection has come, by the Chat panel the reader shows.
+    func show(chatID: String) {
+        if case .connected = phase, chat?.id != chatID {
+            open(chatID)
+        } else if chat?.id != chatID {
+            openChatID = chatID
+            chat = nil
+        }
+    }
+
+    // MARK: - Turns this device waits for
+
+    /// A turn this device asked for began in `chatID`.
+    private func awaitTurn(in chatID: String, turnID: UUID?) {
+        guard AgentTurnNotifications.isEnabledNow else { return }
+        let summary = chats.first(where: { $0.id == chatID }) ?? (chat?.id == chatID ? chat?.summary : nil)
+        guard let summary else { return }
+        awaited[chatID] = AwaitedTurn(
+            title: AgentTurnNotifications.title(of: summary),
+            route: AgentTurnNotifications.route(of: summary),
+            turnID: turnID,
+            deviceID: rememberedHosts.first(where: { $0.hostSecret == chatsHostSecret })?.deviceID,
+            since: Date()
+        )
+        if UIApplication.shared.applicationState == .background { holdForAwaited() }
+        followAwaited()
+    }
+
+    /// The turn waited for in `chatID` ended: told, unless its chat is on
+    /// screen. `preview` is the list's last words, for a turn whose end was
+    /// learned from the list rather than heard.
+    /// The turn waited for in `chatID` ended: told, unless its chat is on
+    /// screen. A reply is quoted only when it's known to answer the turn's
+    /// question: heard as it came, or after that question in the chat open.
+    /// Learned from the list, which says only that nothing is running, the
+    /// notification says no more than that it finished.
+    private func awaitedTurnEnded(in chatID: String, learnedFromList: Bool = false) {
+        guard let turn = awaited.removeValue(forKey: chatID) else { return }
+        let pushedAlready = hasHeard(chatID: chatID, turnID: turn.turnID?.uuidString)
+        let watched = UIApplication.shared.applicationState == .active && panelsShowing > 0 && chat?.id == chatID
+        if !watched, !pushedAlready {
+            let open = chat?.id == chatID ? chat : nil
+            let outcome: AgentTurnNotifications.Outcome
+            // The chat's notice is this turn's only while no later turn began.
+            let notice = turn.reply == nil && !Self.isSuperseded(turn.turnID, in: open?.messages ?? []) ? open?.view.notice : nil
+            if let failure = turn.failure ?? notice {
+                outcome = .failed(failure)
+            } else if let reply = turn.reply ?? open.flatMap({ Self.reply(to: turn.turnID, in: $0.messages) }) {
+                outcome = .replied(reply)
+            } else {
+                // How it ended isn't known here: the list says only that
+                // nothing runs, and a turn stopped before any words has no
+                // reply. The Mac's push, if it comes, says.
+                outcome = .finished
+            }
+            postUnlessPushed(outcome, turn: turn, chatID: chatID)
+        } else {
+            noteHeard(chatID: chatID, turnID: turn.turnID?.uuidString)
+        }
+        followAwaited()
+        // After what's being handled now: the connection may end with it.
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.stopIfUnneeded()
+                if self.awaited.isEmpty { self.releaseBackgroundTime() }
+            }
+        }
+    }
+
+    /// Whether an event is of the turn waited for: by the turn it names,
+    /// where both are known.
+    nonisolated static func isSameTurn(_ awaited: UUID?, _ event: UUID?) -> Bool {
+        guard let awaited, let event else { return true }
+        return awaited == event
+    }
+
+    /// Whether a question asked after `turnID` shows its turn is over, the
+    /// chat having gone on to another while this device wasn't following.
+    nonisolated static func isSuperseded(_ turnID: UUID?, in messages: [LampAgentRemoteChatMessage]) -> Bool {
+        guard let turnID, let asked = messages.firstIndex(where: { $0.id == turnID }) else { return false }
+        return messages[messages.index(after: asked)...].contains { $0.role == LampAgentRemoteChatMessage.user }
+    }
+
+    /// The assistant's reply to the question `turnID`, if the chat has one
+    /// after it.
+    static func reply(to turnID: UUID?, in messages: [LampAgentRemoteChatMessage]) -> String? {
+        guard let turnID, let asked = messages.firstIndex(where: { $0.id == turnID }) else { return nil }
+        return messages[messages.index(after: asked)...]
+            .prefix { $0.role != LampAgentRemoteChatMessage.user }
+            .last { $0.role == LampAgentRemoteChatMessage.assistant }?.text
+    }
+
+    /// The last turn heard ending in each chat, this device's own, or shown
+    /// by iCloud's push, so the same turn isn't told twice.
+    private var heard: [String: (turnID: String?, at: Date)] = [:]
+
+    func noteHeard(chatID: String, turnID: String?) {
+        heard[chatID] = (turnID, Date())
+    }
+
+    /// Posts the turn's notification, unless iCloud's push of it has been
+    /// shown since the turn began, while Lamp wasn't there to see it come:
+    /// the push says how it ended, which this may not know.
+    /// Heard, for the push of the same turn, only once this has posted, and
+    /// only when it says how the turn ended: a push that does still shows.
+    private func postUnlessPushed(_ outcome: AgentTurnNotifications.Outcome, turn: AwaitedTurn, chatID: String) {
+        // Held until the notification is with the system: with Lamp left,
+        // iOS would otherwise suspend it between the look and the post.
+        let hold = BackgroundHold(name: "Agent turn alert")
+        let release: @Sendable () -> Void = { hold.end() }
+        UNUserNotificationCenter.current().getDeliveredNotifications { [weak self] delivered in
+            for shown in delivered {
+                if let pushed = AgentTurnPush.turn(fromPush: shown.request.content.userInfo) {
+                    AgentTurnPush.notePushSeen(from: pushed.deviceID)
+                }
+            }
+            // A push is shown under an identifier of iOS's own: known by what
+            // it carries.
+            let pushed = delivered.contains { shown in
+                guard shown.date >= turn.since,
+                      let pushed = AgentTurnPush.turn(fromPush: shown.request.content.userInfo),
+                      pushed.chatID == chatID else { return false }
+                // A late push of the chat's turn before isn't this one's.
+                guard let mine = turn.turnID?.uuidString, let theirs = pushed.turnID else { return true }
+                return mine.caseInsensitiveCompare(theirs) == .orderedSame
+            }
+            guard !pushed else { return release() }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    // With Lamp left, and this Mac's pushes known to come, its
+                    // push of this turn tells: two would alert twice, as iOS
+                    // can't fold a push into a notification already shown.
+                    if UIApplication.shared.applicationState == .background, AgentTurnPush.isSubscribed,
+                       let deviceID = turn.deviceID, AgentTurnPush.pushSeen(from: deviceID) {
+                        return release()
+                    }
+                    if outcome != .finished { self?.noteHeard(chatID: chatID, turnID: turn.turnID?.uuidString) }
+                    AgentTurnNotifications.post(
+                        outcome, title: turn.title, route: turn.route, chatID: chatID, completion: release
+                    )
+                }
+            }
+        }
+    }
+    /// How long a turn heard ending stands for a push of the same chat that
+    /// names no turn, or one from a Mac that names it otherwise.
+    static let heardWindow: TimeInterval = 10 * 60
+
+    /// Whether a push telling of a turn in `chatID` says nothing new: the
+    /// turn was heard ending here, or the chat is on screen now.
+    func hasHeard(chatID: String, turnID: String?) -> Bool {
+        if UIApplication.shared.applicationState == .active, panelsShowing > 0, chat?.id == chatID,
+           case .connected = phase {
+            return true
+        }
+        guard let last = heard[chatID] else { return false }
+        if let turnID, let heardID = last.turnID {
+            return turnID.caseInsensitiveCompare(heardID) == .orderedSame
+        }
+        return Date().timeIntervalSince(last.at) < Self.heardWindow
+    }
+
+    private func dropStaleAwaited() {
+        let now = Date()
+        awaited = awaited.filter { now.timeIntervalSince($0.value.since) < Self.awaitedLimit }
+    }
+
+    /// Asks for the list now and then while a turn waited for runs in a chat
+    /// other than the one open: the Mac sends events for the open one only.
+    /// Kept running while any turn is waited for, which also lets one that
+    /// outlives `awaitedLimit` go, and the connection with it.
+    private func followAwaited() {
+        guard !awaited.isEmpty else {
+            awaitedListTimer?.invalidate()
+            awaitedListTimer = nil
+            return
+        }
+        guard awaitedListTimer == nil else { return }
+        awaitedListTimer = Timer.scheduledTimer(withTimeInterval: Self.awaitedListInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.dropStaleAwaited()
+                guard !self.awaited.isEmpty else {
+                    self.followAwaited()
+                    self.releaseBackgroundTime()
+                    self.stopIfUnneeded()
+                    return
+                }
+                switch self.phase {
+                case .connected:
+                    if self.awaited.keys.contains(where: { $0 != self.openChatID }) { self.seal(.listChats()) }
+                // Lost while a turn is waited for: found again once the
+                // network's back, in Lamp, without waiting to come back to it.
+                case .stopped, .unavailable:
+                    if UIApplication.shared.applicationState == .active { self.start() }
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    /// What the list says of the turns waited for.
+    private func checkAwaited(against summaries: [LampAgentRemoteChatSummary]) {
+        for summary in summaries where awaited[summary.id] != nil && !summary.isRunning {
+            awaitedTurnEnded(in: summary.id, learnedFromList: true)
+        }
+        // Gone from the Mac's list: deleted there, with nothing to tell. An
+        // empty list says more of the Mac (its library not open) than of
+        // the chat, and retires nothing.
+        let listed = Set(summaries.map(\.id))
+        let gone = awaited.keys.filter { !listed.contains($0) }
+        guard !summaries.isEmpty, !gone.isEmpty else { return }
+        for chatID in gone { awaited[chatID] = nil }
+        followAwaited()
+        if awaited.isEmpty { releaseBackgroundTime() }
+        stopIfUnneeded()
+    }
+
+    private func enteredBackground() {
+        dropStaleAwaited()
+        // A question still on its way may begin a turn to wait for.
+        let asking = AgentTurnNotifications.isEnabledNow && (startRequest != nil || !sendRequests.isEmpty)
+        if !awaited.isEmpty || asking { holdForAwaited() }
+    }
+
+    /// Back in Lamp with a turn still waited for: to hear how it ended, the
+    /// connection comes back, panel or not.
+    private func becameActive() {
+        releaseBackgroundTime()
+        dropStaleAwaited()
+        guard !awaited.isEmpty else { return }
+        switch phase {
+        case .connected:
+            seal(.listChats())
+        case .stopped, .unavailable:
+            start()
+        default:
+            break
+        }
+    }
+
+    /// The time iOS gives an app it has left to finish, used to hear a turn
+    /// end: half a minute or so, after which Lamp is suspended.
+    private func holdForAwaited() {
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Agent turn") { [weak self] in
+            MainActor.assumeIsolated { self?.releaseBackgroundTime() }
+        }
+    }
+
+    private func releaseBackgroundTime() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     /// Begins looking for Macs, if not already connected or connecting.
@@ -298,6 +627,8 @@ final class AgentRemoteClient: ObservableObject {
             memory.forget(remembered.id)
         }
         rememberedHosts = memory.hosts
+        awaited = [:]
+        releaseBackgroundTime()
         chats = []
         chat = nil
         openChatID = nil
@@ -510,6 +841,9 @@ final class AgentRemoteClient: ObservableObject {
                         if let earlier = chatsHostSecret {
                             parkedUnsent[earlier] = unsent
                             unsent = [:]
+                            // Another Mac's turns, which this one can't tell of.
+                            awaited = [:]
+                            followAwaited()
                             chatWritings = [:]
                             chats = []
                             chat = nil
@@ -537,6 +871,8 @@ final class AgentRemoteClient: ObservableObject {
                     openRequest = request.requestID
                     seal(request)
                 }
+                // How the turns waited for went while it was down.
+                if !awaited.isEmpty { seal(.listChats()) }
             case let .received(message):
                 handle(message)
             case .pairAgain:
@@ -560,10 +896,14 @@ final class AgentRemoteClient: ObservableObject {
         case .chats:
             chats = message.chats ?? []
             noteWritings(chats)
+            checkAwaited(against: chats)
         case .snapshot:
             guard let snapshot = message.snapshot else { return }
             let started = message.requestID != nil && message.requestID == startRequest?.id
             guard started || snapshot.summary.id == openChatID else { return }
+            // This device's requests, before what the snapshot settles of them
+            // takes them out below.
+            let ours = Set(sendRequests.keys).union(unsent.values.compactMap(\.requestID))
             // Words typed while the new chat was on its way belong to it.
             if started, let startKey = startRequest?.key {
                 moveDraft(from: startKey, to: snapshot.summary.id)
@@ -581,6 +921,11 @@ final class AgentRemoteClient: ObservableObject {
                 chat?.apply(snapshot)
             } else {
                 chat = AgentRemoteChat(snapshot)
+            }
+            followAwaited()
+            if let turn = awaited[snapshot.summary.id],
+               !snapshot.summary.isRunning || Self.isSuperseded(turn.turnID, in: snapshot.messages) {
+                awaitedTurnEnded(in: snapshot.summary.id)
             }
             if started, let start = startRequest {
                 // The new chat comes before its first turn: the question is
@@ -608,6 +953,13 @@ final class AgentRemoteClient: ObservableObject {
             // Macs say nothing, and the note stays.
             if let askedBy = snapshot.askedBy {
                 let went = Set(askedBy.map(\.requestID))
+                // This device's question, its turn still running, its start
+                // missed while the connection was down: waited for now.
+                if snapshot.summary.isRunning, awaited[id] == nil,
+                   let last = snapshot.messages.last(where: { $0.role == LampAgentRemoteChatMessage.user }),
+                   let asked = askedBy.first(where: { $0.messageID == last.id }), ours.contains(asked.requestID) {
+                    awaitTurn(in: id, turnID: last.id)
+                }
                 for (key, kept) in unsent where kept.requestID.map(went.contains) == true {
                     unsent[key] = nil
                 }
@@ -643,6 +995,9 @@ final class AgentRemoteClient: ObservableObject {
                         chat?.sending = nil
                     }
                 }
+                if event.kind == LampAgentRemoteChatEvent.turnStarted, !arrived.isEmpty {
+                    awaitTurn(in: event.chatID, turnID: event.turnID ?? asked.id)
+                }
                 let kept = unsent.compactMap { key, value in
                     value.requestID.map { AgentRemoteAcknowledgement.Pending(id: $0, chatID: key, words: value.words, known: value.known) }
                 }
@@ -652,6 +1007,14 @@ final class AgentRemoteClient: ObservableObject {
                 )
                 for (key, value) in unsent where value.requestID.map(arrivedKept.contains) == true {
                     unsent[key] = nil
+                }
+            }
+            if let turn = awaited[event.chatID], Self.isSameTurn(turn.turnID, event.turnID) {
+                if event.kind == LampAgentRemoteChatEvent.reply, let said = event.message,
+                   said.role == LampAgentRemoteChatMessage.assistant {
+                    awaited[event.chatID]?.reply = said.text
+                } else if event.kind == LampAgentRemoteChatEvent.failed {
+                    awaited[event.chatID]?.failure = event.text ?? "Something went wrong on your Mac."
                 }
             }
             if let index = chats.firstIndex(where: { $0.id == event.chatID }) {
@@ -664,6 +1027,10 @@ final class AgentRemoteClient: ObservableObject {
                         SyncCoordinator.shared.syncAfterChange()
                     }
                 }
+            }
+            if event.kind == LampAgentRemoteChatEvent.turnEnded,
+               let turn = awaited[event.chatID], Self.isSameTurn(turn.turnID, event.turnID) {
+                awaitedTurnEnded(in: event.chatID)
             }
         case .failed:
             failed(message)
@@ -842,7 +1209,13 @@ final class AgentRemoteClient: ObservableObject {
     }
 
     func closeChat() {
-        if let openChatID { seal(.closeChat(openChatID)) }
+        // A chat with a question on its way, or a turn waited for, stays
+        // followed on the Mac, so its turn is heard beginning and ending;
+        // opening another chat replaces it there.
+        if let openChatID, awaited[openChatID] == nil,
+           !sendRequests.values.contains(where: { $0.chatID == openChatID }) {
+            seal(.closeChat(openChatID))
+        }
         chat = nil
         openChatID = nil
         seal(.listChats())
@@ -934,6 +1307,10 @@ final class AgentRemoteClient: ObservableObject {
 
     func cancel() {
         guard let chat else { return }
+        // Stopped here: its reader was there, and isn't told.
+        awaited[chat.id] = nil
+        if awaited.isEmpty { releaseBackgroundTime() }
+        followAwaited()
         seal(.cancel(chat.id))
     }
 
@@ -1095,4 +1472,25 @@ final class AgentRemoteClient: ObservableObject {
     #if DEBUG
     private var demoWritingChat = false
     #endif
+}
+
+/// Time asked of iOS to finish something once Lamp is left, given back once,
+/// from whichever thread finishes it or when iOS calls time.
+final class BackgroundHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task = UIBackgroundTaskIdentifier.invalid
+
+    @MainActor
+    init(name: String) {
+        task = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in self?.end() }
+    }
+
+    func end() {
+        lock.lock()
+        let ending = task
+        task = .invalid
+        lock.unlock()
+        guard ending != .invalid else { return }
+        DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(ending) }
+    }
 }

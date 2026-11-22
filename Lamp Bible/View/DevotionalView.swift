@@ -44,12 +44,18 @@ struct LinkedWriting: Identifiable {
     var id: String { devotional.meta.id }
     let devotional: Devotional
     let moduleId: String
+    /// Opened with its assistant's chat over it, from a turn's notification.
+    var opensAssistant = false
 
     /// The writing of this id, read off the main thread; nil if it's gone.
-    static func load(id: String) async -> LinkedWriting? {
-        let entry = await Task.detached { try? ModuleDatabase.shared.getDevotionalEntry(id: id) }.value
+    /// A Mac's chat may name it in another case than it's kept in here.
+    static func load(id: String, opensAssistant: Bool = false) async -> LinkedWriting? {
+        let entry = await Task.detached {
+            [id, id.uppercased(), id.lowercased()].lazy
+                .compactMap { (try? ModuleDatabase.shared.getDevotionalEntry(id: $0)).flatMap { $0 } }.first
+        }.value
         guard let entry, let devotional = entry.toDevotional() else { return nil }
-        return LinkedWriting(devotional: devotional, moduleId: entry.moduleId)
+        return LinkedWriting(devotional: devotional, moduleId: entry.moduleId, opensAssistant: opensAssistant)
     }
 }
 
@@ -67,7 +73,8 @@ struct LinkedWritingSheet: View {
             DevotionalView(
                 devotional: linked.devotional,
                 moduleId: linked.moduleId,
-                onNavigateToVerse: onNavigateToVerse
+                onNavigateToVerse: onNavigateToVerse,
+                opensAssistant: linked.opensAssistant
             )
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -89,6 +96,9 @@ struct DevotionalView: View {
     var onBack: (() -> Void)?
     var onNavigateToVerse: ((Int) -> Void)?
     let initialMode: DevotionalViewMode
+    /// Asks the assistant as it opens, as a tapped turn notification does.
+    let opensAssistant: Bool
+    @State private var openedAssistant = false
 
     // State
     @State private var devotional: Devotional
@@ -213,7 +223,8 @@ struct DevotionalView: View {
         case error
     }
 
-    init(devotional: Devotional, moduleId: String, initialMode: DevotionalViewMode = .read, onBack: (() -> Void)? = nil, onNavigateToVerse: ((Int) -> Void)? = nil) {
+    init(devotional: Devotional, moduleId: String, initialMode: DevotionalViewMode = .read, onBack: (() -> Void)? = nil, onNavigateToVerse: ((Int) -> Void)? = nil, opensAssistant: Bool = false) {
+        self.opensAssistant = opensAssistant
         self.initialDevotional = devotional
         self.moduleId = moduleId
         self.onBack = onBack
@@ -375,6 +386,11 @@ struct DevotionalView: View {
             if UserDefaults.standard.bool(forKey: "OtherFilesDemo") { seedOtherFilesDemo() }
             #endif
             await reloadDocuments()
+        }
+        .task {
+            guard opensAssistant, !openedAssistant, AIFeatures.shared.isEnabled else { return }
+            openedAssistant = true
+            askAssistant()
         }
         .onReceive(NotificationCenter.default.publisher(for: .writingDocumentsDidChange)) { _ in
             Task { await reloadDocuments() }

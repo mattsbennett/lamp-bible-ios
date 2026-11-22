@@ -8,6 +8,7 @@
 //  memory as core's connection asks, the message on its way, and the words.
 //
 
+import CloudKit
 import LampCore
 import XCTest
 @testable import Lamp_Bible
@@ -218,5 +219,148 @@ final class AgentRemoteTests: XCTestCase {
         XCTAssertEqual(AgentRemoteFailureText.text(code: "later", message: "Something new."), "Something new.")
         XCTAssertEqual(AgentRemoteProblemText.text(.refused), AgentRemoteProblemText.refused)
         XCTAssertEqual(AgentRemoteProblemText.text(.unreachable("No route.")), "No route.")
+    }
+
+    // MARK: - Turn notifications
+
+    func testATurnRouteComesBackFromItsNotification() {
+        for route in [AgentTurnRoute.readerChat("A1B2"), .writing("w-1")] {
+            XCTAssertEqual(AgentTurnRoute(userInfo: route.userInfo), route)
+        }
+        XCTAssertNil(AgentTurnRoute(userInfo: ["lampTurnRouteKind": "later", "lampTurnRouteID": "x"]))
+        XCTAssertNil(AgentTurnRoute(userInfo: ["lampTurnRouteKind": "writing", "lampTurnRouteID": ""]))
+        // One notification per chat, the Mac's push of a turn in its place.
+        XCTAssertEqual(AgentTurnNotifications.identifier(chatID: "writing:w1"), "lamp.agent-turn.writing:w1")
+    }
+
+    @MainActor
+    func testANotificationSaysTheReplyAsPlainWords() {
+        XCTAssertEqual(
+            AgentTurnNotifications.excerpt(of: "## Grace\n\n**Grace** is [favour](https://x.org) shown.\n\n```\ncode\n```"),
+            "Grace Grace is favour shown."
+        )
+        let long = String(repeating: "word ", count: 80)
+        let cut = AgentTurnNotifications.excerpt(of: long)
+        XCTAssertTrue(cut.hasSuffix("\u{2026}"))
+        XCTAssertLessThanOrEqual(cut.count, 181)
+        XCTAssertEqual(AgentTurnNotifications.body(for: .replied("Yes."), showsReply: false), "Replied.")
+        XCTAssertEqual(AgentTurnNotifications.body(for: .replied(""), showsReply: true), "Replied.")
+        XCTAssertEqual(AgentTurnNotifications.body(for: .failed("Usage limit."), showsReply: true), "Couldn\u{2019}t finish: Usage limit.")
+        XCTAssertEqual(AgentTurnNotifications.body(for: .finished, showsReply: true), "Finished.")
+    }
+
+    @MainActor
+    func testANotificationIsNamedForItsChat() {
+        let reader = LampAgentRemoteChatSummary(
+            id: "c1", title: "What does born again mean?", kind: LampAgentRemoteChatSummary.reader,
+            provider: "claude", providerName: "Claude", acceptsMessages: true
+        )
+        XCTAssertEqual(
+            AgentTurnNotifications.title(of: reader),
+            .init(title: "Reader Chat", subtitle: "What does born again mean?")
+        )
+        XCTAssertEqual(AgentTurnNotifications.route(of: reader), .readerChat("c1"))
+        let writing = LampAgentRemoteChatSummary(
+            id: "writing:w1", title: "Assistant", subtitle: "Walking by Faith", kind: LampAgentRemoteChatSummary.writing,
+            writingID: "w1", provider: "claude", providerName: "Claude", acceptsMessages: true
+        )
+        XCTAssertEqual(AgentTurnNotifications.title(of: writing), .init(title: "Walking by Faith"))
+        XCTAssertEqual(AgentTurnNotifications.route(of: writing), .writing("w1"))
+    }
+
+    /// The reply told is the one after the turn's own question, never an
+    /// earlier answer or the question itself.
+    @MainActor
+    func testTheReplyToldAnswersTheTurnsQuestion() {
+        func message(_ role: String, _ text: String) -> LampAgentRemoteChatMessage {
+            LampAgentRemoteChatMessage(id: UUID(), role: role, text: text, date: Date())
+        }
+        let earlier = message(LampAgentRemoteChatMessage.user, "First?")
+        let earlierReply = message(LampAgentRemoteChatMessage.assistant, "First answer.")
+        let asked = message(LampAgentRemoteChatMessage.user, "Second?")
+        let reply = message(LampAgentRemoteChatMessage.assistant, "Second answer.")
+        XCTAssertEqual(AgentRemoteClient.reply(to: asked.id, in: [earlier, earlierReply, asked, reply]), "Second answer.")
+        XCTAssertNil(AgentRemoteClient.reply(to: asked.id, in: [earlier, earlierReply, asked]), "Stopped before answering")
+        XCTAssertNil(AgentRemoteClient.reply(to: UUID(), in: [earlier, earlierReply]))
+        XCTAssertNil(AgentRemoteClient.reply(to: nil, in: [earlier, earlierReply]))
+        let later = message(LampAgentRemoteChatMessage.user, "Third?")
+        XCTAssertNil(AgentRemoteClient.reply(to: asked.id, in: [asked, later, reply]), "Not a later question's answer")
+    }
+
+    // MARK: - iCloud push
+
+    func testTheSubscriptionAsksForThisDevicesTurnsAndSaysThemAsWritten() throws {
+        let wanted = AgentTurnPush.Wanted(deviceIDs: ["d2", "d1"], showsReply: true)
+        let subscription = AgentTurnPush.subscription(for: wanted, id: "agent-turn-ended.X")
+        XCTAssertEqual(subscription.recordType, AgentTurnPush.recordType)
+        XCTAssertEqual(subscription.querySubscriptionOptions, [.firesOnRecordCreation, .firesOnRecordUpdate])
+        // CloudKit's copy of a predicate can't be evaluated here: read as written.
+        let format = subscription.predicate.predicateFormat
+        XCTAssertTrue(format.hasPrefix("deviceID IN"), format)
+        XCTAssertTrue(format.contains("\"d1\"") && format.contains("\"d2\""), format)
+        let info = try XCTUnwrap(subscription.notificationInfo)
+        XCTAssertEqual(info.titleLocalizationArgs, ["title"])
+        XCTAssertEqual(info.subtitleLocalizationArgs, ["subtitle"])
+        XCTAssertEqual(info.alertLocalizationArgs, ["body"])
+        XCTAssertEqual(info.category, AgentTurnNotifications.categoryIdentifier)
+        // A collapse id is sent as it is, never read from the record: one for
+        // every chat would fold different chats' alerts together.
+        XCTAssertNil(info.collapseIDKey)
+        // CloudKit sends three fields at most.
+        XCTAssertEqual(Set(info.desiredKeys ?? []), ["chatID", "turnID", "deviceID"])
+        // Without the reply, only the words that hold none of it.
+        let quiet = AgentTurnPush.subscription(for: .init(deviceIDs: ["d1"], showsReply: false), id: "agent-turn-ended.X")
+        XCTAssertEqual(quiet.notificationInfo?.alertLocalizationArgs, ["summary"])
+        // The same wish, however its Macs are ordered, is saved once.
+        XCTAssertEqual(wanted.fingerprint, AgentTurnPush.Wanted(deviceIDs: ["d1", "d2"], showsReply: true).fingerprint)
+        XCTAssertNotEqual(wanted.fingerprint, AgentTurnPush.Wanted(deviceIDs: ["d1", "d2"], showsReply: false).fingerprint)
+    }
+
+    func testAPushLeadsBackToItsChat() throws {
+        func push(_ fields: [String: Any], subscription: String = "agent-turn-ended.X") -> [AnyHashable: Any] {
+            [
+                "aps": ["alert": ["title": "Reader Chat", "body": "Replied."]],
+                "ck": [
+                    "ce": 2, "cid": AgentTurnPush.containerIdentifier, "nid": UUID().uuidString,
+                    "qry": [
+                        "dbs": 2, "fo": 2, "rid": "turn.d1.c1", "sid": subscription,
+                        "zid": "_defaultZone", "zoid": "_defaultOwner", "af": fields,
+                    ],
+                ],
+            ]
+        }
+        let reader = try XCTUnwrap(AgentTurnPush.turn(fromPush: push(["chatID": "c1", "turnID": "T1", "deviceID": "d1"])))
+        XCTAssertEqual(reader.route, .readerChat("c1"))
+        XCTAssertEqual(reader.turnID, "T1")
+        XCTAssertEqual(reader.deviceID, "d1")
+        let writing = try XCTUnwrap(AgentTurnPush.turn(fromPush: push(["chatID": "writing:w1"])))
+        XCTAssertEqual(writing.route, .writing("w1"))
+        XCTAssertNil(writing.turnID)
+        XCTAssertEqual(writing.deviceID, "d1", "Named by the record when the field is left out")
+        XCTAssertNil(AgentTurnPush.turn(fromPush: push(["chatID": "c1"], subscription: "someone-else")))
+        // Fields left out of the push: the record's name says the chat.
+        let pruned = try XCTUnwrap(AgentTurnPush.turn(fromPush: push([:])))
+        XCTAssertEqual(pruned.route, .readerChat("c1"))
+        XCTAssertEqual(pruned.deviceID, "d1")
+        XCTAssertEqual(AgentTurnPush.parts(ofRecordName: "turn.d1.writing:w.1")?.chatID, "writing:w.1")
+        XCTAssertNil(AgentTurnPush.parts(ofRecordName: "turn..c1"))
+        XCTAssertNil(AgentTurnPush.parts(ofRecordName: "other.d1.c1"))
+        XCTAssertNil(AgentTurnPush.turn(fromPush: ["aps": ["alert": "Reading time"]]))
+    }
+
+    /// A turn's events are matched by the turn they name, and a later
+    /// question shows an earlier turn is over.
+    func testATurnIsKnownByItsOwnQuestion() {
+        let first = UUID(), second = UUID()
+        XCTAssertTrue(AgentRemoteClient.isSameTurn(first, first))
+        XCTAssertFalse(AgentRemoteClient.isSameTurn(first, second))
+        XCTAssertTrue(AgentRemoteClient.isSameTurn(first, nil), "An older Mac names no turn")
+        XCTAssertTrue(AgentRemoteClient.isSameTurn(nil, second))
+        let asked = LampAgentRemoteChatMessage(id: first, role: LampAgentRemoteChatMessage.user, text: "A?", date: Date())
+        let answer = LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.assistant, text: "A.", date: Date())
+        let next = LampAgentRemoteChatMessage(id: second, role: LampAgentRemoteChatMessage.user, text: "B?", date: Date())
+        XCTAssertFalse(AgentRemoteClient.isSuperseded(first, in: [asked, answer]))
+        XCTAssertTrue(AgentRemoteClient.isSuperseded(first, in: [asked, answer, next]))
+        XCTAssertFalse(AgentRemoteClient.isSuperseded(UUID(), in: [asked, answer, next]))
     }
 }

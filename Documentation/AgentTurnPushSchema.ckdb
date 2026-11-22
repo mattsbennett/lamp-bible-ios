@@ -1,0 +1,58 @@
+// The CloudKit record a Mac saves when a turn a phone asked for ends, which
+// the phone's subscription turns into a push (Lamp Bible/AgentRemote/AgentTurnPush.swift).
+//
+// Container iCloud.com.neus.lamp-bible, private database, default zone.
+// Both apps use the Production environment (a Developer ID Mac can use no
+// other). Production makes neither record types nor subscription types on
+// first use: both are made in Development and deployed. Once, before the
+// feature can work:
+//
+//  0. Sign the Mac with CloudKit for this container: an entitlements file
+//     (icloud-services CloudKit, the container, and the same
+//     icloud-container-environment build setting) and a Developer ID
+//     provisioning profile carrying them. Until then the Mac writes no
+//     records (it checks its own signature) and the phone's subscription
+//     never fires: only the phone's own notifications, while Lamp runs.
+//  1. Define the record type below in Development: in CloudKit Console
+//     (Schema > Record Types, with the indexes marked QUERYABLE/SORTABLE
+//     below), or with `xcrun cktool import-schema --environment development`.
+//     Import replaces the Development schema whole, so use it only while the
+//     container has no other record types.
+//  2. Make the subscription type in Development: install the phone app built
+//     with `LAMP_CLOUDKIT_ENVIRONMENT=Development` (the entitlement reads that
+//     build setting; Production otherwise), signed in to iCloud, pair it
+//     with a Mac, and turn on Settings > AI Features > Notify when a chat
+//     finishes a turn. It saves the subscription Production will need.
+//  3. In CloudKit Console, Deploy Schema Changes to Production.
+//  4. Install the usual (Production) build again.
+//
+// recordName: turn.<deviceID>.<chatID>, written over by the chat's next turn.
+// The alert's fields (title, subtitle, summary, body) are plain, as a push
+// needs them: body holds the reply's opening only while the Mac's "Show the
+// start of the reply" is on. A subscription is the account's: its pushes go
+// to every device signed in to the same iCloud with Lamp.
+
+DEFINE SCHEMA
+
+    RECORD TYPE AgentTurnEnded (
+        "___createTime" TIMESTAMP,
+        "___createdBy"  REFERENCE,
+        "___etag"       STRING,
+        "___modTime"    TIMESTAMP,
+        "___modifiedBy" REFERENCE,
+        "___recordID"   REFERENCE QUERYABLE,
+        deviceID        STRING QUERYABLE,
+        chatID          STRING,
+        kind            STRING,
+        writingID       STRING,
+        turnID          STRING,
+        title           STRING,
+        subtitle        STRING,
+        outcome         STRING,
+        summary         STRING,
+        body            STRING,
+        endedAt         TIMESTAMP QUERYABLE SORTABLE,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_world"
+    );
