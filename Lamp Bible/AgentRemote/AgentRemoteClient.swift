@@ -591,6 +591,14 @@ final class AgentRemoteClient: ObservableObject {
     /// The secret of the Mac being found again: a Mac of the same name that
     /// proves another secret isn't it, and isn't connected to in its place.
     private var recoverySecret: String?
+    /// The proven Mac's secret while a loss is being recovered from: kept
+    /// through failed attempts, let go when the person chooses a Mac or it's
+    /// found again.
+    private var pinnedSecret: String?
+    /// The name of the Mac the pin is for: kept while recovery tries
+    /// same-named candidates, dropped for a Mac of another name.
+    private var pinnedName: String?
+
     /// The Mac last connected to, by the host it was found as and the
     /// secret it proved: tied to that host, not only its name, which
     /// another Mac may share.
@@ -606,9 +614,16 @@ final class AgentRemoteClient: ObservableObject {
         guard let target = host?.name else { return }
         rediscoveringLast = true
         recoveryTarget = target
-        // Checked only against a Mac this device was connected to under this
-        // name: a first connection that never got through proves nothing.
-        recoverySecret = lastConnected?.hostID == host?.id ? lastConnected?.secret : nil
+        // Checked against the Mac this device proved it was connected to,
+        // pinned for the whole recovery: an attempt that failed with a
+        // same-named Mac doesn't loosen it. A first connection that never got
+        // through proves nothing, and pins nothing.
+        if pinnedSecret != nil, pinnedName != target { pinnedSecret = nil }
+        if pinnedSecret == nil, let id = host?.id, lastConnected?.hostID == id {
+            pinnedSecret = lastConnected?.secret
+            pinnedName = target
+        }
+        recoverySecret = pinnedSecret
         let attempt = UUID()
         recoveryAttempt = attempt
         browse()
@@ -634,6 +649,25 @@ final class AgentRemoteClient: ObservableObject {
         }
     }
 
+    /// A direct retry made without the person, to a Mac never proven: said
+    /// to have failed if it hasn't answered in a while, not left turning.
+    private func armConnectDeadline() {
+        guard case .connecting = phase, let target = host?.name, let watched = connection else { return }
+        let attempt = UUID()
+        recoveryAttempt = attempt
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.rediscoveryWait) { [weak self] in
+            MainActor.assumeIsolated {
+                // Only over the connection it was set for: a newer one, from a
+                // panel opened meanwhile, has its own course.
+                guard let self, self.recoveryAttempt == attempt, self.connection === watched,
+                      case .connecting = self.phase else { return }
+                self.teardown()
+                self.lostRecoverably = true
+                self.phase = .unavailable("\(target) couldn\u{2019}t be reached. Check it\u{2019}s open and on the same network.")
+            }
+        }
+    }
+
     /// `promptly` on coming back to Lamp; otherwise, as from the waited
     /// turn's timer, no oftener than `lossRetryInterval`, so a Mac that stays
     /// away leaves its message and buttons up between tries.
@@ -645,10 +679,11 @@ final class AgentRemoteClient: ObservableObject {
             lastLossRetry = Date()
             // Found again by browsing only when this device proved which Mac
             // it was; one never connected to is tried where it was chosen.
-            if let host, lastConnected?.hostID == host.id {
+            if let host, (pinnedSecret != nil && pinnedName == host.name) || lastConnected?.hostID == host.id {
                 rediscover()
             } else if let host {
                 connect(to: host, chosen: false)
+                armConnectDeadline()
             }
         case .stopped:
             start()
@@ -743,6 +778,10 @@ final class AgentRemoteClient: ObservableObject {
     func stop() {
         rediscoveringLast = false
         lostRecoverably = false
+        // Closed, the recovery is over: what opens next is a fresh start.
+        pinnedSecret = nil
+        pinnedName = nil
+        recoveryAttempt = nil
         browser?.cancel()
         browser = nil
         teardown()
@@ -753,11 +792,14 @@ final class AgentRemoteClient: ObservableObject {
     }
 
     func retry() {
+        // The person's attempt now: no automatic deadline over it.
+        recoveryAttempt = nil
         // After a loss: looked for again the same way, with its time limit
         // and its check that it's that Mac.
         // Only for a Mac this device proved it was connected to: one that
         // never answered is tried again where it was chosen.
-        if lostRecoverably, let host, !choosingHost, lastConnected?.hostID == host.id {
+        if lostRecoverably, let host, !choosingHost,
+           (pinnedSecret != nil && pinnedName == host.name) || lastConnected?.hostID == host.id {
             lastLossRetry = Date()
             rediscover()
             return
@@ -773,6 +815,7 @@ final class AgentRemoteClient: ObservableObject {
     func chooseAnotherHost() {
         // The person's choice now, not the lost connection's.
         lostRecoverably = false
+        pinnedSecret = nil
         rediscoveringLast = false
         teardown()
         choosingHost = true
@@ -884,6 +927,11 @@ final class AgentRemoteClient: ObservableObject {
             rediscoveringLast = false
             recoverySecret = nil
             mustChooseHost = false
+            if chosen {
+                pinnedSecret = nil
+                // No automatic deadline over the person's own attempt.
+                recoveryAttempt = nil
+            }
             // Another host chosen: the proof was another Mac's. The same one
             // chosen again keeps it, for recovering it later.
             if chosen, lastConnected?.hostID != host.id { lastConnected = nil }
@@ -928,6 +976,9 @@ final class AgentRemoteClient: ObservableObject {
     func pair(code: String) {
         guard LampPresentationRemotePairing.normalizedCode(code) != nil else { return }
         // A code entered is a pairing the person chose: recovery's over.
+        recoveryAttempt = nil
+        pinnedSecret = nil
+        pinnedName = nil
         rediscoveringLast = false
         recoverySecret = nil
         if session?.isWaitingForCode == true, connection != nil {
@@ -1074,6 +1125,7 @@ final class AgentRemoteClient: ObservableObject {
                 }
                 phase = .connected(host.name)
                 if let secret = session?.hostSecret { lastConnected = (host.id, secret) }
+                pinnedSecret = nil
                 lostRecoverably = false
                 rediscoveringLast = false
                 UserDefaults.standard.set(host.name, forKey: Self.lastHostKey)
