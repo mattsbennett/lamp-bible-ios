@@ -1757,13 +1757,13 @@ struct DevotionalView: View {
                             if let carry {
                                 if let previous { WritingReviewWork.shared.carry(carry, from: previous, to: keptMarkdown, savedAs: committed) } else { carry.reservation.giveUp() }
                             }
-                            // Taken together: a restore owed after them was
-                            // made in neither text.
-                            let current = markdownContent
+                            // The writer's text unknown: this view is going,
+                            // and another may hold a restore it never saw.
+                            // Nothing is taken as undone.
                             let owedThen = WritingRestoreObligations.shared.owedNow(for: devToSave.meta.id)
                             Task {
                                 await WritingRestoreObligations.shared.settle(
-                                    writingID: devToSave.meta.id, saved: keptMarkdown, current: current, owedThen: owedThen
+                                    writingID: devToSave.meta.id, saved: keptMarkdown, owedThen: owedThen
                                 )
                             }
                         }
