@@ -505,7 +505,7 @@ final class AgentRemoteClient: ObservableObject {
                 // Lost while a turn is waited for: found again once the
                 // network's back, in Lamp, without waiting to come back to it.
                 case .stopped, .unavailable:
-                    if UIApplication.shared.applicationState == .active { self.start() }
+                    if UIApplication.shared.applicationState == .active { self.reconnectIfLost(promptly: false) }
                 default:
                     break
                 }
@@ -531,6 +531,9 @@ final class AgentRemoteClient: ObservableObject {
     }
 
     private func enteredBackground() {
+        // A ping unanswered by now isn't judged while Lamp is away: its
+        // background time is for hearing a turn end.
+        probe = nil
         dropStaleAwaited()
         // A question still on its way may begin a turn to wait for.
         let asking = AgentTurnNotifications.isEnabledNow && (startRequest != nil || !sendRequests.isEmpty)
@@ -539,17 +542,97 @@ final class AgentRemoteClient: ObservableObject {
 
     /// Back in Lamp with a turn still waited for: to hear how it ended, the
     /// connection comes back, panel or not.
+    /// When a lost connection was last made again without asking.
+    private var lastLossRetry = Date.distantPast
+    static let lossRetryInterval: TimeInterval = 30
+
     private func becameActive() {
         releaseBackgroundTime()
         dropStaleAwaited()
-        guard !awaited.isEmpty else { return }
+        // Back in Lamp with a chat on screen or a turn waited for: the
+        // connection may have ended while Lamp was away, which a word to the
+        // Mac shows at once rather than at the next message.
+        guard !awaited.isEmpty || panelsShowing > 0 else { return }
         switch phase {
         case .connected:
-            seal(.listChats())
-        case .stopped, .unavailable:
+            probeConnection()
+            if !awaited.isEmpty { seal(.listChats()) }
+        default:
+            reconnectIfLost()
+        }
+    }
+
+    /// Whether the last connection was ended by the network rather than by
+    /// the Mac's word (remote chats off, this device turned away), so it's
+    /// made again on its own, to the same Mac, never another one found.
+    private var lostRecoverably = false
+    /// Browsing to find the Mac a lost connection was to, and only it.
+    private var rediscoveringLast = false
+    /// Its name, as browsing finds Macs.
+    private var recoveryTarget: String?
+    /// The search under way, whose time limit is its own.
+    private var recoveryAttempt: UUID?
+    static let rediscoveryWait: TimeInterval = 10
+
+    /// Looks for the Mac a lost connection was to by browsing, as it may be
+    /// at another address now, and connects to it alone, never another that
+    /// happens to show. Not found in a while, the loss is said again, with
+    /// Try Again and Choose Another Mac.
+    private func rediscover() {
+        guard let target = host?.name else { return }
+        rediscoveringLast = true
+        recoveryTarget = target
+        let attempt = UUID()
+        recoveryAttempt = attempt
+        browse()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.rediscoveryWait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.rediscoveringLast, self.recoveryAttempt == attempt,
+                      self.phase == .searching, self.connection == nil else { return }
+                self.rediscoveringLast = false
+                self.browser?.cancel()
+                self.browser = nil
+                self.phase = .unavailable("\(target) couldn\u{2019}t be found. Check it\u{2019}s open and on the same network.")
+            }
+        }
+    }
+
+    /// `promptly` on coming back to Lamp; otherwise, as from the waited
+    /// turn's timer, no oftener than `lossRetryInterval`, so a Mac that stays
+    /// away leaves its message and buttons up between tries.
+    private func reconnectIfLost(promptly: Bool = true) {
+        switch phase {
+        case .unavailable:
+            guard lostRecoverably,
+                  promptly || Date().timeIntervalSince(lastLossRetry) > Self.lossRetryInterval else { return }
+            lastLossRetry = Date()
+            rediscover()
+        case .stopped:
             start()
         default:
             break
+        }
+    }
+
+    /// The ping asked since coming back, unanswered: a connection iOS ended
+    /// while Lamp was away can look open until something is sent on it.
+    private var probe: UUID?
+    static let probeWait: TimeInterval = 5
+
+    private func probeConnection() {
+        guard case .connected = phase, let watched = connection else { return }
+        let id = UUID()
+        probe = id
+        seal(.ping)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.probeWait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.probe == id, self.connection === watched else { return }
+                self.probe = nil
+                // No word back: lost, and made again as any loss is.
+                watched.cancel()
+                self.connection = nil
+                self.perform(self.session?.closed(byHost: false, reason: nil) ?? [])
+            }
         }
     }
 
@@ -587,6 +670,8 @@ final class AgentRemoteClient: ObservableObject {
     }
 
     func stop() {
+        rediscoveringLast = false
+        lostRecoverably = false
         browser?.cancel()
         browser = nil
         teardown()
@@ -606,6 +691,9 @@ final class AgentRemoteClient: ObservableObject {
 
     /// Lets someone pick from the Macs found rather than the one chosen.
     func chooseAnotherHost() {
+        // The person's choice now, not the lost connection's.
+        lostRecoverably = false
+        rediscoveringLast = false
         teardown()
         choosingHost = true
         browse()
@@ -691,6 +779,10 @@ final class AgentRemoteClient: ObservableObject {
     private func connectIfOneIsClear() {
         guard phase == .searching, connection == nil, !choosingHost else { return }
         let last = UserDefaults.standard.string(forKey: Self.lastHostKey)
+        if rediscoveringLast {
+            if let match = hosts.first(where: { $0.name == recoveryTarget }) { connect(to: match) }
+            return
+        }
         if let match = hosts.first(where: { $0.name == last }) ?? (hosts.count == 1 ? hosts.first : nil) {
             connect(to: match)
         }
@@ -863,6 +955,8 @@ final class AgentRemoteClient: ObservableObject {
                     chatsHostSecret = secret
                 }
                 phase = .connected(host.name)
+                lostRecoverably = false
+                rediscoveringLast = false
                 UserDefaults.standard.set(host.name, forKey: Self.lastHostKey)
                 rememberedHosts = memory.hosts
                 // Back where this device was before the connection dropped.
@@ -879,10 +973,37 @@ final class AgentRemoteClient: ObservableObject {
                 pendingNotice = AgentRemoteProblemText.refused
                 if let host { connect(to: host) } else { teardown(); phase = .unavailable(AgentRemoteProblemText.refused) }
             case let .failed(problem):
+                // Not reached is the network's doing; turned away is the Mac's.
+                if case .unreachable = problem { lostRecoverably = true } else { lostRecoverably = false }
                 teardown()
                 phase = .unavailable(AgentRemoteProblemText.text(problem))
             case .lost:
                 teardown()
+                // Lost while Lamp was away, as iOS ends a suspended app's
+                // connections, and found so once someone's looking again:
+                // connected again without asking, once in a while; a second
+                // loss soon after is said, as the Mac may really be gone.
+                let wanted = panelsShowing > 0 || !awaited.isEmpty
+                if closingReason == nil, wanted, UIApplication.shared.applicationState == .active,
+                   Date().timeIntervalSince(lastLossRetry) > Self.lossRetryInterval, let host {
+                    lastLossRetry = Date()
+                    lostRecoverably = true
+                    phase = .unavailable("The connection to \(host.name) was lost.")
+                    // After what's being handled now, which was the old
+                    // connection's.
+                    DispatchQueue.main.async { [weak self] in
+                        MainActor.assumeIsolated {
+                            // Still wanted: not stopped, nor connected by hand, meanwhile.
+                            guard let self, case .unavailable = self.phase, self.lostRecoverably,
+                                  self.panelsShowing > 0 || !self.awaited.isEmpty else { return }
+                            self.rediscover()
+                        }
+                    }
+                    break
+                }
+                // Ended by the network, not the Mac's word: worth making again
+                // on coming back, to the same Mac.
+                lostRecoverably = closingReason == nil
                 phase = .unavailable(closingReason ?? "The connection to \(host?.name ?? "your Mac") was lost.")
                 closingReason = nil
             }
@@ -1034,6 +1155,10 @@ final class AgentRemoteClient: ObservableObject {
             }
         case .failed:
             failed(message)
+        case .pong:
+            // The Mac answered the ping sent on coming back: alive. Nothing
+            // read before it proves that, as it may have waited in a buffer.
+            probe = nil
         default:
             // `accepted` is the session's; anything else is a kind a later
             // Lamp knows.
@@ -1044,6 +1169,7 @@ final class AgentRemoteClient: ObservableObject {
     private func failed(_ message: LampAgentRemoteMessage) {
         let text = AgentRemoteFailureText.text(code: message.errorCode, message: message.errorMessage)
         if message.errorCode == LampAgentRemoteFailure.aiOff {
+            lostRecoverably = false
             teardown()
             phase = .unavailable(text)
             return
