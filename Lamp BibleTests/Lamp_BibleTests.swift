@@ -10667,105 +10667,86 @@ final class WritingDocumentTextTests: XCTestCase {
         return try XCTUnwrap(store.documents(writingID: id).first)
     }
 
-    func testAFileIsCutWhereACodeBlockOrATableIs() {
-        let text = """
-        # Outline
-
-        - one
-        ```swift
-        let a = 1
-        ```
-        After.
-        | A | B |
-        |:--|--:|
-        | 1 | 2 |
-        End.
-        """
-        XCTAssertEqual(WritingDocumentText.segments(text), [
-            .markdown("# Outline\n\n- one"),
-            .code("let a = 1"),
-            .markdown("After."),
-            // A line after a table's rows is a row of it, as the editor reads
-            // it (GFM): the table runs to a blank line.
-            .table([["A", "B"], ["1", "2"], ["End.", ""]]),
-        ])
+    /// Read as the writer's editor reads a writing's files (core's
+    /// LampProse): a soft wrap joins, two `>` lines keep their break, and a
+    /// code block or a table is a piece of its own.
+    func testAFileIsReadAsTheEditorReadsIt() {
+        let pieces = WritingDocumentText.pieces(
+            "# Title\n\nThe first is that\nthe day is near.\n\n> one\n> two\n\n- a\n  wraps\n- b\n\n```swift\nlet x = 1\n```\n\n| A | B |\n|--|--|\n| 1 | 2 |\n\nEnd.",
+            fontSize: 18
+        )
+        XCTAssertEqual(pieces.count, 4)
+        guard pieces.count == 4 else { return }
+        guard case .prose(let first) = pieces[0], case .code(let code, _) = pieces[1],
+              case .table(let rows, _) = pieces[2], case .prose(let last) = pieces[3] else {
+            return XCTFail("prose, code, table, prose")
+        }
+        XCTAssertEqual(first.string, "Title\nThe first is that the day is near.\none\u{2028}two\n•\ta wraps\n•\tb")
+        XCTAssertEqual(code, "let x = 1")
+        XCTAssertEqual(rows.map { $0.map { String($0.characters) } }, [["A", "B"], ["1", "2"]])
+        XCTAssertEqual(last.string, "End.")
     }
 
-    func testATablesCellsAreItsOwn() {
-        XCTAssertEqual(WritingDocumentText.cells("| Door \\| gate | 10:7 |"), ["Door | gate", "10:7"])
-        XCTAssertEqual(WritingDocumentText.cells("a | b"), ["a", "b"])
-        XCTAssertEqual(WritingDocumentText.cells("| | B |"), ["", "B"])
-        XCTAssertEqual(WritingDocumentText.cells("| C:\\Users\\a | \\d+ \\* |"), ["C:\\Users\\a", "\\d+ \\*"])
-        XCTAssertEqual(String(WritingDocumentText.cell("\\*literal\\*").characters), "*literal*")
-        XCTAssertEqual(String(WritingDocumentText.cell("**Door** gate").characters), "Door gate")
-
-    }
-
-    func testAFenceClosesOnlyOnItsOwnMarkAtItsLength() {
-        let text = "~~~~\n```\nstill code\n~~~\n~~~~~\nprose"
-        XCTAssertEqual(WritingDocumentText.segments(text), [
-            .code("```\nstill code\n~~~"),
-            .markdown("prose"),
-        ])
-        XCTAssertEqual(WritingDocumentText.segments("```\nnever closed\n# not a heading"), [
-            .code("never closed\n# not a heading"),
-        ])
-        XCTAssertEqual(WritingDocumentText.segments("```\n```"), [.code("")])
-        XCTAssertEqual(WritingDocumentText.segments("|x| = 1\n| a |"), [.markdown("|x| = 1\n| a |")])
-        XCTAssertEqual(WritingDocumentText.segments("```a` b\nprose"), [.markdown("```a` b\nprose")])
-        XCTAssertEqual(WritingDocumentText.segments("```\r\ncode\r\n```\r\nprose"), [.code("code"), .markdown("prose")])
-        XCTAssertEqual(WritingDocumentText.segments("A | B\n--|--\n| 1 | 2 |\nx | y\n\nprose"), [
-            .table([["A", "B"], ["1", "2"], ["x", "y"]]), .markdown("\nprose"),
-        ])
-        // Read as the editor does: indented code is code, a fence in a quote
-        // stays the quote's, and a row's cells are the header's count.
-        XCTAssertEqual(WritingDocumentText.segments("para\n\n    code here\n\nafter"), [
-            .markdown("para\n"), .code("code here"), .markdown("\nafter"),
-        ])
-        XCTAssertEqual(WritingDocumentText.segments("> ```\n> code\n> ```"), [.markdown("> ```\n> code\n> ```")])
-        XCTAssertEqual(WritingDocumentText.segments("| A | B |\n|--|--|\n| 1 | 2 | 3 |"), [.table([["A", "B"], ["1", "2"]])])
-        XCTAssertEqual(WritingDocumentText.segments("paragraph\n| A | B |\n| ---\t| --- |\n| x | y |"), [
-            .markdown("paragraph"), .table([["A", "B"], ["x", "y"]]),
-        ])
-        XCTAssertEqual(WritingDocumentText.segments("-     alpha\n      beta"), [.markdown("-     alpha\n      beta")])
-        XCTAssertEqual(WritingDocumentText.segments("paragraph\n: - :\n| A | B |\n|--|--|\n| x | y |"), [
-            .markdown("paragraph\n: - :"), .table([["A", "B"], ["x", "y"]]),
-        ])
-        XCTAssertEqual(WritingDocumentText.cells("| x \\\\| y | z |"), ["x \\| y", "z"])
-        XCTAssertFalse(WritingDocumentText.inCode(NSRange(location: 3, length: 0), of: "`x` after"), "a point just after code")
-        XCTAssertTrue(WritingDocumentText.inCode(NSRange(location: 1, length: 0), of: "`x` after"), "a point in code")
-        XCTAssertEqual(WritingDocumentText.segments("foo\n    --\n| A | B |\n|--|--|\n| x | y |"), [
-            .markdown("foo\n    --"), .table([["A", "B"], ["x", "y"]]),
-        ])
-        XCTAssertEqual(WritingDocumentText.segments("intro\n| A | B |\n|---\u{0C}|---|\n|x|y|"), [
-            .markdown("intro"), .table([["A", "B"], ["x", "y"]]),
-        ])
-        XCTAssertEqual(WritingDocumentText.segments("para\n\n    ```a`b\n\nafter"), [
-            .markdown("para\n"), .code("```a`b"), .markdown("\nafter"),
-        ])
-        XCTAssertEqual(WritingDocumentText.segments("- item\n\n  ```\n  code\n  ```"), [
-            .markdown("- item\n"), .code("  code"),
-        ])
-        let marked = "para\n\n\u{E000}    alpha\u{E001}\n    beta"
-        XCTAssertEqual(WritingDocumentText.segments(marked), [.markdown("para\n"), .code("\u{E000}alpha\u{E001}\nbeta")])
+    /// The editor's own blocks: a footnote's text kept to it, a recording on
+    /// its own line, and an ordered list starting where the writer did.
+    func testTheEditorsOwnBlocksAreKept() {
+        let pieces = WritingDocumentText.pieces("[^1]: A note\nBack to the argument.\n\n[Clip](media/abc)\n\n3. three\n4. four", fontSize: 18)
+        guard case .prose(let text) = pieces.first, pieces.count == 1 else { return XCTFail("one piece") }
+        let lines = text.string.components(separatedBy: "\n")
+        XCTAssertEqual(lines.first, "1\tA note")
+        XCTAssertEqual(lines.dropFirst().first, "Back to the argument.")
+        XCTAssertTrue(lines.contains { $0.hasSuffix(" Clip") }, "\(lines)")
+        XCTAssertTrue(lines.contains("3.\tthree"), "\(lines)")
+        // A footnote's marker is its label, raised.
+        guard case .prose(let referred) = WritingDocumentText.pieces("A claim.[^1]\n\n[^1]: Its source.", fontSize: 18).first else {
+            return XCTFail("prose")
+        }
+        XCTAssertTrue(referred.string.hasPrefix("A claim.1\n"), referred.string)
+        let at = (referred.string as NSString).range(of: "1").location
+        XCTAssertGreaterThan(referred.attribute(.baselineOffset, at: at, effectiveRange: nil) as? CGFloat ?? 0, 0)
     }
 
     func testMarkdownIsDrawnWithoutItsMarkersAndPlainTextAsItIs() throws {
-        let markdown = WritingDocumentText.prose(
-            try document("outline.md", "# Title\n- **bold** point\n> quoted").text, fontSize: 18
+        let markdown = WritingDocumentText.proseOf(
+            try document("outline.md", "# Title\n- **bold** point\n> quoted").text
         ).string
         XCTAssertFalse(markdown.contains("#"))
         XCTAssertFalse(markdown.contains("**"))
         XCTAssertFalse(markdown.contains("- "))
         XCTAssertFalse(markdown.contains(">"))
         XCTAssertTrue(markdown.contains("bold point"))
-        let linked = WritingDocumentText.prose("See [John 10](lampbible://verse/43010001).", fontSize: 18)
+        let linked = WritingDocumentText.proseOf("See [John 10](lampbible://verse/43010001).")
         let at = (linked.string as NSString).range(of: "John 10").location
         XCTAssertEqual(linked.attribute(.link, at: at, effectiveRange: nil) as? URL, URL(string: "lampbible://verse/43010001"))
         let plain = "# kept\n- as typed"
         let file = try document("sources.txt", plain)
         XCTAssertFalse(WritingDocumentText.isMarkdown(file.name))
         XCTAssertEqual(WritingDocumentText.plain(file.text, fontSize: 18).string, plain)
+    }
+}
+
+/// The start, end and point markers in `text`, their places left out.
+func markerKinds(_ text: String) -> String {
+    text.filter { $0 == LampWritingReview.markStart || $0 == LampWritingReview.markEnd || $0 == LampWritingReview.markPoint }
+}
+
+/// A table row's cells as the Files reader reads them: placed as the
+/// sheet places a document's markers, under a header `width` wide.
+func tableCells(_ row: String, width: Int = 2) -> [String] {
+    let header = "|" + String(repeating: " h |", count: width) + "\n|" + String(repeating: "--|", count: width) + "\n"
+    let text = LampWritingReviewMarkdown.drawable(header + row)
+    for case .table(let rows, _) in WritingDocumentText.pieces(text, fontSize: 18) {
+        return rows.last.map { $0.map { String($0.characters) } } ?? []
+    }
+    return []
+}
+
+extension WritingDocumentText {
+    /// A file's prose pieces as one text, for tests that read its words.
+    static func proseOf(_ markdown: String) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        for case .prose(let piece) in pieces(markdown, fontSize: 18) { out.append(piece) }
+        return out
     }
 }
 
@@ -10838,30 +10819,164 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
     func testMarkersSurviveBlocksFencesAndTables() {
         XCTAssertEqual(LampWritingReviewMarkdown.clearingBlockSyntax("\(start)- item\(end)"), "- \(start)item\(end)")
         XCTAssertEqual(LampWritingReviewMarkdown.clearingBlockSyntax("\(start)## Head"), "## \(start)Head")
-        let prose = WritingDocumentText.prose(LampWritingReviewMarkdown.drawable("\(start)- item\(end)"), fontSize: 18).string
+        let prose = WritingDocumentText.proseOf(LampWritingReviewMarkdown.drawable("\(start)- item\(end)")).string
         XCTAssertFalse(prose.contains("- "), "still a list item")
 
-        // A blank line ends the table: a line straight after its rows is one.
-        let text = "Intro.\n\(start)```\ncode\n```\(end)\n| A | B |\n|--|--|\n| \(start)x\(end) | y |\n\n\(point)End."
-        let segments = WritingDocumentText.segments(text)
-        let all = segments.map { segment -> String in
-            switch segment {
-            case .markdown(let text), .code(let text): return text
-            case .table(let rows): return rows.flatMap { $0 }.joined()
-            }
-        }.joined()
-        XCTAssertEqual(WritingDocumentText.markers(in: all), WritingDocumentText.markers(in: text), "every marker kept, in order")
-        XCTAssertEqual(segments.count, 4)
-        if case .table(let rows) = segments[2] {
-            XCTAssertEqual(rows.map { $0.map(WritingDocumentText.unmarked) }, [["A", "B"], ["x", "y"]])
+        let text = LampWritingReviewMarkdown.drawable(
+            "Intro.\n\(start)```\ncode\n```\(end)\n| A | B |\n|--|--|\n| \(start)x\(end) | y |\n\n\(point)End."
+        )
+        let pieces = WritingDocumentText.pieces(text, fontSize: 18)
+        XCTAssertEqual(markerKinds(pieces.map(\.marked).joined()), markerKinds(text), "every marker kept, in order")
+        XCTAssertEqual(pieces.count, 4)
+        if pieces.count == 4, case .table(let rows, _) = pieces[2] {
+            XCTAssertEqual(rows.map { $0.map { WritingDocumentText.unmarked(String($0.characters)) } }, [["A", "B"], ["x", "y"]])
         } else { XCTFail("a table") }
+        if case .prose(let end) = pieces.last { XCTAssertEqual(WritingDocumentText.unmarked(end.string), "End.") }
+    }
+
+    /// Markers on a table's syntax are moved where they leave it a table:
+    /// outside a row's pipes into its cells, off the alignment row onto the
+    /// row after.
+    func testATablesSyntaxKeepsItsMarkersOff() {
+        let outside = tableCells("\(start)| x | y |\(end)")
+        XCTAssertEqual(outside.map(WritingDocumentText.unmarked), ["x", "y"])
+        XCTAssertEqual(markerKinds(outside.joined()), "\(start)\(end)")
+        let text = LampWritingReviewMarkdown.numbered("| A | B |\n|--|--|\(start)\(end)\n| x | y |")
+        let pieces = WritingDocumentText.pieces(text, fontSize: 18)
+        guard pieces.count == 1, case .table(let rows, _) = pieces[0] else { return XCTFail("a table") }
+        XCTAssertEqual(rows.map { $0.map { WritingDocumentText.unmarked(String($0.characters)) } }, [["A", "B"], ["x", "y"]])
+        XCTAssertEqual(markerKinds(String(rows[1][0].characters)), point)
+    }
+
+    /// What Codex found a marker could do to the parse, each kept from it.
+    func testMarkersNeverChangeWhatTheFileReadsAs() {
+        func pieces(_ text: String) -> [WritingDocumentText.Piece] {
+            WritingDocumentText.pieces(LampWritingReviewMarkdown.numbered(text), fontSize: 18)
+        }
+        func proseText(_ pieces: [WritingDocumentText.Piece]) -> String {
+            pieces.compactMap { if case .prose(let text) = $0 { return text.string } else { return nil } }.joined(separator: "|")
+        }
+        // A point on the blank line that ends a table.
+        let afterTable = pieces("| A |\n|--|\n| x |\n\(point)\nAfter.")
+        XCTAssertEqual(afterTable.count, 2)
+        if case .table(let rows, _) = afterTable.first { XCTAssertEqual(rows.count, 2) } else { XCTFail("a table") }
+        XCTAssertEqual(WritingDocumentText.unmarked(proseText(afterTable)), "After.")
+        XCTAssertEqual(markerKinds(proseText(afterTable)), point)
+        // A quoted fence's language changed: still a quoted fence.
+        let quoted = pieces("> ```\(start)sw\(end)\n> code\n> ```")
+        if quoted.count == 1, case .code(let code, _) = quoted[0] { XCTAssertEqual(WritingDocumentText.unmarked(code), "code") } else { XCTFail("code") }
+        // One passage's end and the next one's start both dropped with the
+        // cells they stood in: the two left aren't joined.
+        let dropped = pieces("| A |\n|--|\n| \(start)x | gone\(end) |\n| q | \(start)gone |\n| r\(end) |")
+        if case .table(let rows, _) = dropped.first {
+            XCTAssertEqual(rows.map { $0.map { markerKinds(String($0.characters)) } }, [[""], [point], [""], [""]])
+        } else { XCTFail("a table") }
+        // An item opening with code keeps its number.
+        XCTAssertTrue(proseText(WritingDocumentText.pieces("3. ```\n   code\n   ```\n4. four", fontSize: 18)).contains("3."))
+        // CRLF endings.
+        let crlf = pieces("| A |\r\n|--|\r\n| \(start)x |\(end)\r\n")
+        if case .table(let rows, _) = crlf.first { XCTAssertEqual(markerKinds(String(rows[1][0].characters)), "\(start)\(end)") } else { XCTFail("a table") }
+        // A footnote's label marked is still a footnote.
+        let footnote = proseText(pieces("\(start)[^1]: A note\(end)\nBack."))
+        XCTAssertTrue(WritingDocumentText.unmarked(footnote).hasPrefix("1\tA note\nBack."), footnote)
+        // A change of only the pipe between two cells: a point.
+        XCTAssertEqual(markerKinds(tableCells("| one \(start)| \(end)two |").joined()), point)
+        // Anything else that would read differently is drawn as written.
+        let setext = proseText(pieces("Title\n==\(start)=\(end)\n\nNext."))
+        XCTAssertEqual(setext, "Title\nNext.")
+        // ...a paragraph at a time: a marked rule costs only itself.
+        let rule = proseText(pieces("First \(start)change\(end).\n\n---\(start)\(end)\n\nSecond."))
+        XCTAssertEqual(markerKinds(rule), "\(start)\(end)", rule)
+        // A marker in a link definition's label can't send the link elsewhere.
+        guard case .prose(let linked) = pieces("[text][ref] and \(start)new\(end).\n\n[\(start)ref\(end)]: https://one.example\n[ref]: https://two.example").first else {
+            return XCTFail("prose")
+        }
+        let at = (linked.string as NSString).range(of: "text").location
+        XCTAssertEqual(linked.attribute(.link, at: at, effectiveRange: nil) as? URL, URL(string: "https://one.example"))
+        // A point on a blank line in code stays in the code.
+        let blankInCode = pieces("```\ncode\n\(point)\n```\nAfter \(start)x\(end).")
+        if case .code(let code, _) = blankInCode.first { XCTAssertEqual(markerKinds(code), point) } else { XCTFail("code") }
+        XCTAssertEqual(markerKinds(proseText(blankInCode)), "\(start)\(end)")
+        // A file emptied keeps what was taken out to tap.
+        XCTAssertEqual(markerKinds(proseText(pieces("\(point)"))), point)
+        // Code in a quote is set in with it.
+        if case .code(_, let indent) = WritingDocumentText.pieces("> ```\n> code\n> ```", fontSize: 18).first {
+            XCTAssertGreaterThan(indent, 0)
+        } else { XCTFail("code") }
+    }
+
+    /// Labels drawn though what they label is empty, and a footnote
+    /// referred to twice in a row is referred to twice.
+    func testLabelsAndReferencesAreAllDrawn() {
+        func prose(_ text: String) -> String {
+            WritingDocumentText.pieces(text, fontSize: 18).compactMap { if case .prose(let t) = $0 { return t.string } else { return nil } }.joined()
+        }
+        XCTAssertTrue(prose("1.\n2. Next").hasPrefix("1.\t"), prose("1.\n2. Next"))
+        XCTAssertTrue(prose("A[^1][^1].\n\n[^1]: n").hasPrefix("A11."), prose("A[^1][^1].\n\n[^1]: n"))
+        // Numbered as the editor numbers them: by first reference.
+        let numbered = prose("A[^b] and[^a].\n\n[^a]: first\n\n[^b]: second")
+        XCTAssertTrue(numbered.hasPrefix("A1 and2."), numbered)
+        XCTAssertTrue(numbered.contains("2\tfirst") && numbered.contains("1\tsecond"), numbered)
+        // A reference that's a link's words still goes there.
+        guard case .prose(let linked) = WritingDocumentText.pieces("See [[^1]](https://x.example).\n\n[^1]: n", fontSize: 18).first else {
+            return XCTFail("prose")
+        }
+        let at = (linked.string as NSString).range(of: "1").location
+        XCTAssertEqual(linked.attribute(.link, at: at, effectiveRange: nil) as? URL, URL(string: "https://x.example"))
+    }
+
+    /// Codex's third round: markers kept off an indented code block's
+    /// indent, a point after a table, and a whole-line recording's edges.
+    func testMoreMarkersKeptFromTheParse() {
+        func pieces(_ text: String) -> [WritingDocumentText.Piece] {
+            WritingDocumentText.pieces(LampWritingReviewMarkdown.numbered(text), fontSize: 18)
+        }
+        func all(_ pieces: [WritingDocumentText.Piece]) -> String { pieces.map(\.marked).joined() }
+        let indented = pieces("Para.\n\n\(point)    code\n\nAfter \(start)x\(end).")
+        XCTAssertEqual(indented.count, 3)
+        XCTAssertEqual(markerKinds(all(indented)), "\(point)\(start)\(end)")
+        let afterTable = pieces("| A |\n|--|\n| \(start)x\(end) |\n\n\(point)")
+        XCTAssertEqual(afterTable.count, 1)
+        XCTAssertEqual(markerKinds(all(afterTable)), "\(start)\(end)\(point)")
+        let clip = pieces("Before.\n\n\(start)[Clip](media/abc)\(end)\n\nAfter.")
+        XCTAssertEqual(markerKinds(all(clip)), "\(start)\(end)")
+        XCTAssertTrue(WritingDocumentText.unmarked(all(clip)).contains("Clip"))
+        // Round four: a header-only table's point stays on its header.
+        let headerOnly = pieces("| A | B |\n|--|--|\n\n\(point)")
+        XCTAssertEqual(headerOnly.count, 1)
+        XCTAssertEqual(markerKinds(all(headerOnly)), point)
+        // A footnote's label in code is code's.
+        let example = pieces("```\n[^\(start)label\(end)]: example\n```")
+        if case .code(let code, _) = example.first { XCTAssertTrue(code.contains("[^\(start)"), code) } else { XCTFail("code") }
+        // Indented code that starts with backticks keeps its marks where they are.
+        let literal = pieces("Para.\n\n    \(start)```\(end)\n    more")
+        if case .code(let code, _) = literal.last { XCTAssertTrue(code.hasPrefix("\(start)"), code) } else { XCTFail("code") }
+    }
+
+    /// A table's footnote references numbered as the prose's are, and the
+    /// numbers set by the text's own references, not a note's.
+    func testFootnotesAreNumberedAsTheEditorNumbersThem() {
+        let pieces = WritingDocumentText.pieces("| A |\n|--|\n| x[^source] |\n\n[^source]: s", fontSize: 18)
+        if case .table(let rows, _) = pieces.first { XCTAssertEqual(String(rows[1][0].characters), "x1") } else { XCTFail("a table") }
+        let nested = WritingDocumentText.footnoteNumbers(LampProse.blocks("A[^a] then[^b].\n\n[^a]: see[^c]\n\n[^b]: b\n\n[^c]: c"))
+        XCTAssertEqual(nested, ["a": "1", "b": "2", "c": "3"])
+    }
+
+    /// A passage whose end the parse leaves out (a row's cells past its
+    /// header's are dropped) is a point, not a highlight running on.
+    func testAPassageWithoutItsEndIsAPoint() {
+        let text = LampWritingReviewMarkdown.numbered("| A |\n|--|\n| \(start)x | y\(end) |\n\nAfter.")
+        let pieces = WritingDocumentText.pieces(text, fontSize: 18)
+        let all = pieces.map(\.marked).joined()
+        XCTAssertFalse(all.contains(start), "no start left open")
+        XCTAssertTrue(all.contains(point))
     }
 
     /// A passage after one Markdown hides (in a link's address) still names
     /// its own change, and a link that names no passage is none.
     func testAPassageKeepsItsPlaceThoughOneBeforeItIsHidden() {
         let marked = LampWritingReviewMarkdown.drawable("See [this](https://example.com/\(start)a\(end)) and \(start)that\(end).")
-        let prose = WritingDocumentText.prose(marked, fontSize: 18)
+        let prose = WritingDocumentText.proseOf(marked)
         let drawn = WritingDocumentText.drawingMarks(prose, first: 0, open: nil)
         XCTAssertFalse(drawn.text.string.contains(where: WritingDocumentText.isMarker), "no marker or place left drawn")
         let that = (drawn.text.string as NSString).range(of: "that")
@@ -10871,7 +10986,7 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         // A change to the address itself: drawn on the link's words, and the
         // link still goes where it says.
         let address = LampWritingReviewMarkdown.drawable("Go [here](https://example.com/\(start)new\(end)).")
-        let linked = WritingDocumentText.drawingMarks(WritingDocumentText.prose(address, fontSize: 18), first: 0, open: nil).text
+        let linked = WritingDocumentText.drawingMarks(WritingDocumentText.proseOf(address), first: 0, open: nil).text
         let caret = (linked.string as NSString).range(of: WritingDocumentText.pointGlyph)
         XCTAssertEqual(linked.attribute(.link, at: caret.location, effectiveRange: nil) as? URL, WritingDocumentText.markLink(0))
         let here = (linked.string as NSString).range(of: "here")
@@ -10881,8 +10996,8 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         // A change on a line that isn't drawn is a caret on the next that is.
         XCTAssertEqual(LampWritingReviewMarkdown.asPoints("\(start)\(end)"), point)
         XCTAssertEqual(LampWritingReviewMarkdown.asPoints("\(end)\(start)"), "\(end)\(start)", "another's edges kept")
-        let fenced = WritingDocumentText.segments("```\(start)swift\(end)\ncode\n```")
-        XCTAssertEqual(fenced, [.code("\(point)code")])
+        let fenced = WritingDocumentText.pieces("```\(start)swift\(end)\ncode\n```", fontSize: 18)
+        if fenced.count == 1, case .code(let code, _) = fenced[0] { XCTAssertEqual(code, "\(point)code") } else { XCTFail("code") }
 
         // A change across the words and the address stays one passage.
         let across = LampWritingReviewMarkdown.movingMarksOutOfLinks("[\(start)new](http://b.net\(end)) on")
@@ -10890,18 +11005,18 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         // A heading's level changed: a point after its syntax.
         XCTAssertEqual(LampWritingReviewMarkdown.clearingBlockSyntax("#\(start)#\(end) Title"), "## \(point)Title")
         // A deletion in an empty last cell stays in its column.
-        XCTAssertEqual(WritingDocumentText.cells("| x | \(point) |"), ["x", point])
-        XCTAssertEqual(WritingDocumentText.cells("| x | y |\(end)"), ["x", "y\(end)"])
+        XCTAssertEqual(tableCells("| x | \(point) |").map(markerKinds), ["", point])
+        XCTAssertEqual(markerKinds(tableCells("| \(start)x | y |\(end)").joined()), "\(start)\(end)", "a marker past the last pipe kept")
 
         // A change Markdown leaves nothing of: a caret.
         let bolded = LampWritingReviewMarkdown.drawable("The \(start)**\(end)red dog\(start)**\(end) is there.")
-        let drawnBold = WritingDocumentText.drawingMarks(WritingDocumentText.prose(bolded, fontSize: 18), first: 0, open: nil).text
+        let drawnBold = WritingDocumentText.drawingMarks(WritingDocumentText.proseOf(bolded), first: 0, open: nil).text
         XCTAssertEqual(drawnBold.string.filter { String($0) == WritingDocumentText.pointGlyph }.count, 2)
         let cellBold = WritingDocumentText.drawingMarks(WritingDocumentText.cell(bolded), first: 0, open: nil).text
         XCTAssertEqual(String(cellBold.characters).filter { String($0) == WritingDocumentText.pointGlyph }.count, 2)
 
         // An escape a marker stands in still reads.
-        let escaped = WritingDocumentText.prose(LampWritingReviewMarkdown.drawable("\\\(start)\(end)*literal\\\(start)\(end)*"), fontSize: 18).string
+        let escaped = WritingDocumentText.proseOf(LampWritingReviewMarkdown.drawable("\\\(start)\(end)*literal\\\(start)\(end)*")).string
         XCTAssertEqual(WritingDocumentText.unmarked(escaped).filter { $0 != "\u{2038}" }, "*literal*")
         // An address with parentheses in it.
         XCTAssertEqual(
@@ -10910,16 +11025,16 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         )
 
         // Emphasis a marker stands beside still reads as emphasis.
-        let italic = WritingDocumentText.prose(LampWritingReviewMarkdown.drawable("Now \(start)_italic_\(end) here."), fontSize: 18)
+        let italic = WritingDocumentText.proseOf(LampWritingReviewMarkdown.drawable("Now \(start)_italic_\(end) here."))
         XCTAssertFalse(italic.string.contains("_"), "\(italic.string)")
         // A change inside bold leaves the bold whole.
-        let bold = WritingDocumentText.prose(LampWritingReviewMarkdown.drawable("Now **\(start)red\(end)** words."), fontSize: 18)
+        let bold = WritingDocumentText.proseOf(LampWritingReviewMarkdown.drawable("Now **\(start)red\(end)** words."))
         XCTAssertFalse(bold.string.contains("*"), "\(bold.string)")
         // A run of asterisks a marker split is whole again.
-        let doubled = WritingDocumentText.prose(LampWritingReviewMarkdown.drawable("*\(start)*\(end)bold*\(start)*\(end) now"), fontSize: 18)
+        let doubled = WritingDocumentText.proseOf(LampWritingReviewMarkdown.drawable("*\(start)*\(end)bold*\(start)*\(end) now"))
         XCTAssertFalse(doubled.string.contains("*"), "\(doubled.string)")
         // A link whose `](` a marker split is a link.
-        let formed = WritingDocumentText.prose(LampWritingReviewMarkdown.drawable("\(start)[\(end)title\(start)]\(end)(https://example.com)"), fontSize: 18)
+        let formed = WritingDocumentText.proseOf(LampWritingReviewMarkdown.drawable("\(start)[\(end)title\(start)]\(end)(https://example.com)"))
         XCTAssertFalse(formed.string.contains("https"), "\(formed.string)")
         // An autolink whose scheme was changed is still a link.
         XCTAssertEqual(LampWritingReviewMarkdown.movingMarksOutOfLinks("See <http\(start)s\(end)://example.com> now"),
@@ -10938,7 +11053,9 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         XCTAssertEqual(LampWritingReviewMarkdown.movingMarksOutOfLinks(literal).hasPrefix("\\["), true, "an escaped bracket stays escaped")
         XCTAssertEqual(LampWritingReviewMarkdown.movingMarksOutOfLinks("[a](https://a.com)[b](https://\(start)new\(end).com)"),
                        "[a](https://a.com)\(point)[b](https://new.com)")
-        XCTAssertEqual(WritingDocumentText.cells("| one \(start)| \(end)two | three |"), ["one\(point)", "two", "three"])
+        let split = tableCells("| one \(start)| \(end)two | three |", width: 3)
+        XCTAssertEqual(split.map { WritingDocumentText.unmarked($0).trimmingCharacters(in: .whitespaces) }, ["one", "two", "three"])
+        XCTAssertEqual(markerKinds(split.joined()), point, "only the pipe changed: a point \(split)")
         // Columns measured as drawn.
         XCTAssertEqual(WritingDocumentText.columnWidths([["\(start)Door\(end)"]], size: 18, widest: 500),
                        WritingDocumentText.columnWidths([["Door"]], size: 18, widest: 500))
@@ -10947,7 +11064,7 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         XCTAssertTrue(WritingDocumentText.inCode((code as NSString).range(of: "1"), of: code))
         XCTAssertFalse(WritingDocumentText.inCode((code as NSString).range(of: "After"), of: code))
         // An escaped pipe a marker stands in stays in its cell.
-        XCTAssertEqual(WritingDocumentText.cells("| x \\\(start)| y\(end) | z |").count, 2)
+        XCTAssertEqual(tableCells("| x \\\(start)| y\(end) | z |").count, 2)
 
         // A bare address made a link goes where it says.
         XCTAssertEqual(WritingDocumentText.cleanedLink(URL(string: "https://example.com/%EE%80%80new%EE%80%81")!),
@@ -10964,9 +11081,9 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         XCTAssertTrue(lines[0].first.map(WritingDocumentText.isMarker) == false && lines[0].contains(String(point)), "the address's change a point")
         XCTAssertTrue(lines[2].contains("x.com/\(start)"), "the code's where it was")
         // A fence's markers carried onto a heading leave it a heading.
-        let carried = WritingDocumentText.segments(LampWritingReviewMarkdown.drawable("```\ncode\n\(start)```\(end)\n## Head"))
-        if case .markdown(let after) = carried.last {
-            XCTAssertFalse(WritingDocumentText.prose(after, fontSize: 18).string.contains("#"), "\(after)")
+        let carried = WritingDocumentText.pieces(LampWritingReviewMarkdown.drawable("```\ncode\n\(start)```\(end)\n## Head"), fontSize: 18)
+        if case .prose(let after) = carried.last {
+            XCTAssertFalse(after.string.contains("#"), "\(after.string)")
         } else { XCTFail("prose after the code") }
     }
 

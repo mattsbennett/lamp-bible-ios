@@ -4,6 +4,7 @@
 //
 
 import ImageIO
+import LampCore
 import UIKit
 
 /// A note's Markdown as the reader sees it, drawn natively.
@@ -92,7 +93,7 @@ enum NoteMarkdown {
     /// A picture, as wide as the note up to its own width, with its caption
     /// under it. One not on this device yet, as before a sync brings it,
     /// is named where it will be.
-    private static func picture(_ url: URL?, caption: String, fontSize: CGFloat, serif: Bool) -> NSAttributedString {
+    static func picture(_ url: URL?, caption: String, fontSize: CGFloat, serif: Bool) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
         style.paragraphSpacingBefore = fontSize * 0.3
         style.paragraphSpacing = fontSize * 0.3
@@ -204,7 +205,7 @@ enum NoteMarkdown {
 
     // MARK: Inline
 
-    private struct InlineLink {
+    struct InlineLink {
         let range: NSRange
         let verseId: Int
         let endVerseId: Int?
@@ -222,6 +223,18 @@ enum NoteMarkdown {
         guard let parsed = try? AttributedString(markdown: text, options: options) else {
             return (NSAttributedString(string: text, attributes: attributes), [], [])
         }
+        return inline(parsed: parsed, attributes: attributes, fontSize: fontSize, bold: bold, serif: serif, linksTapped: linksTapped)
+    }
+
+    /// Inline text already read, its runs carrying Foundation's attributes
+    /// (`inlinePresentationIntent`, `link`, `imageURL`), as
+    /// `AttributedString(markdown:)` and core's `LampProseText` both give it.
+    /// `footnoteNumbers` is what each footnote's label is shown as, where
+    /// the reader numbers them as the editor does.
+    static func inline(
+        parsed: AttributedString, attributes: [NSAttributedString.Key: Any], fontSize: CGFloat, bold: Bool, serif: Bool,
+        linksTapped: Bool = false, footnoteNumbers: [String: String] = [:]
+    ) -> (text: NSAttributedString, links: [InlineLink], pictures: [(id: String, caption: String)]) {
         let out = NSMutableAttributedString()
         var links: [InlineLink] = []
         var pictures: [(id: String, caption: String)] = []
@@ -238,6 +251,25 @@ enum NoteMarkdown {
             )
             if intent.contains(.strikethrough) {
                 runAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
+            if let label = run[LampFootnoteReferenceAttribute.self] {
+                // A footnote's marker, `[^1]`, as the editor draws it: its
+                // number raised and small. Any review marker in it is kept.
+                runAttributes[.font] = font(size: fontSize * 0.7, bold: bold, italic: false, code: false, serif: serif)
+                runAttributes[.baselineOffset] = fontSize * 0.35
+                if let url = run.link {
+                    runAttributes[.foregroundColor] = UIColor.lampLink
+                    if linksTapped { runAttributes[.link] = url }
+                }
+                // Each one: references alike in a row are one run.
+                let shown = piece.replacing(#/\[\^([^\]]*)\]/#) { match in
+                    let written = String(match.output.1)
+                    return footnoteNumbers[LampWritingReviewMarkdown.unmarked(written)].map {
+                        LampWritingReviewMarkdown.markers(in: written) + $0
+                    } ?? written
+                }
+                out.append(NSAttributedString(string: shown == piece ? (footnoteNumbers[label] ?? label) : shown, attributes: runAttributes))
+                continue
             }
             if let id = mediaID(run.imageURL) {
                 // The span stays in its sentence, marked as having a picture.

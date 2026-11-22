@@ -398,8 +398,8 @@ struct WritingFileView: View {
                         .padding(20)
                 } else if WritingDocumentText.isMarkdown(document.name) {
                     VStack(alignment: .leading, spacing: 14) {
-                        ForEach(Array(drawnSegments(of: document).enumerated()), id: \.offset) { _, drawn in
-                            block(drawn.segment, first: drawn.first, open: drawn.open)
+                        ForEach(Array(drawnPieces(of: document).enumerated()), id: \.offset) { _, drawn in
+                            block(drawn.piece, first: drawn.first, open: drawn.open)
                         }
                     }
                     .padding(.vertical, 16)
@@ -495,18 +495,12 @@ struct WritingFileView: View {
 
     /// Each block to draw, with the place of the first passage it opens and
     /// a passage still open from the block before.
-    private func drawnSegments(of document: WritingDocument) -> [(segment: WritingDocumentText.Segment, first: Int, open: Int?)] {
+    private func drawnPieces(of document: WritingDocument) -> [(piece: WritingDocumentText.Piece, first: Int, open: Int?)] {
         var first = 0
         var open: Int?
-        return WritingDocumentText.segments(shownText(of: document)).map { segment in
-            let text: String
-            switch segment {
-            case .markdown(let prose): text = prose
-            case .code(let code): text = code
-            case .table(let rows): text = rows.flatMap { $0 }.joined()
-            }
-            let drawn = (segment, first, open)
-            (first, open) = LampWritingReviewMarkdown.passing(text, first: first, open: open)
+        return WritingDocumentText.pieces(shownText(of: document), fontSize: fontSize).map { piece in
+            let drawn = (piece, first, open)
+            (first, open) = LampWritingReviewMarkdown.passing(piece.marked, first: first, open: open)
             return drawn
         }
     }
@@ -514,26 +508,28 @@ struct WritingFileView: View {
     /// Prose wraps; a code block and a table keep their lines and columns,
     /// scrolled sideways where they're wider than the sheet.
     @ViewBuilder
-    private func block(_ segment: WritingDocumentText.Segment, first: Int, open: Int?) -> some View {
-        switch segment {
-        case .markdown(let text):
-            let prose = WritingDocumentText.prose(text, fontSize: fontSize)
+    private func block(_ piece: WritingDocumentText.Piece, first: Int, open: Int?) -> some View {
+        switch piece {
+        case .prose(let prose):
             WritingFileText(text: WritingDocumentText.drawingMarks(prose, first: first, open: open).text, onMark: choose)
                 .padding(.horizontal, 20)
-        case .code(let text):
+        case .code(let text, let indent):
             ScrollView(.horizontal) {
                 Text(WritingDocumentText.drawingMarks(AttributedString(text), first: first, open: open).text)
                     .font(.system(size: fontSize * 0.8, design: .monospaced))
                     .fixedSize()
                     .textSelection(.enabled)
                     .padding(.horizontal, 20)
+                    .padding(.leading, indent)
             }
             .environment(\.openURL, markAction)
             // A mark is drawn as its text is, not in the link colour.
             .tint(.primary)
-        case .table(let rows):
+        case .table(let rows, let indent):
             let size = fontSize * 0.9
-            let widths = WritingDocumentText.columnWidths(rows, size: size, widest: fontSize * 14)
+            let widths = WritingDocumentText.columnWidths(
+                rows.map { $0.map { String($0.characters) } }, size: size, widest: fontSize * 14
+            )
             let cells = drawnCells(rows, first: first, open: open)
             ScrollView(.horizontal) {
                 Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
@@ -555,22 +551,23 @@ struct WritingFileView: View {
                 }
                 .textSelection(.enabled)
                 .padding(.horizontal, 20)
+                .padding(.leading, indent)
             }
             .environment(\.openURL, markAction)
             .tint(.primary)
         }
     }
 
-    /// A table's cells read as Markdown, their marks drawn, in reading order.
-    private func drawnCells(_ rows: [[String]], first: Int, open: Int?) -> [[AttributedString]] {
+    /// A table's cells, their marks drawn, in reading order.
+    private func drawnCells(_ rows: [[AttributedString]], first: Int, open: Int?) -> [[AttributedString]] {
         var first = first
         var open = open
         return rows.map { row in
             row.map { cell in
-                let drawn = WritingDocumentText.drawingMarks(WritingDocumentText.cell(cell), first: first, open: open)
+                let drawn = WritingDocumentText.drawingMarks(cell, first: first, open: open)
                 first = drawn.next
                 open = drawn.open
-                return drawn.text
+                return WritingDocumentText.trimmed(drawn.text)
             }
         }
     }
@@ -834,16 +831,652 @@ enum WritingDocumentText {
         return NSAttributedString(string: text, attributes: attributes)
     }
 
-    /// Markdown prose, its links kept to be opened. Review markers in it,
-    /// placed by core where the Markdown still reads as it did
-    /// (`LampWritingReviewMarkdown.drawable`), stay in what's drawn, for
-    /// `drawingMarks` to draw.
-    /// Each line's block syntax cleared again first: a fence's markers,
-    /// carried to the line after it when the blocks are cut, may stand
-    /// before a heading's or a list's.
-    static func prose(_ text: String, fontSize: CGFloat) -> NSAttributedString {
-        let lines = text.components(separatedBy: "\n").map(LampWritingReviewMarkdown.clearingBlockSyntax)
-        return NoteMarkdown.render(lines.joined(separator: "\n"), fontSize: fontSize, serif: true, linksTapped: true).text
+    // MARK: Blocks
+
+    /// One piece of a Markdown file as the reader lays it out: prose drawn
+    /// as one text, and a code block or a table set apart, wider than the
+    /// sheet where it must be. Review markers stay in each, for
+    /// `drawingMarks`.
+    enum Piece {
+        case prose(NSAttributedString)
+        /// `indent`: how far in the quotations and list items holding it set
+        /// it.
+        case code(String, indent: CGFloat = 0)
+        /// Its rows' cells, the header's first.
+        case table([[AttributedString]], indent: CGFloat = 0)
+
+        /// This piece where it reads as `plain` (the same piece read without
+        /// its markers) does, and `plain` where it doesn't: for prose, a
+        /// paragraph at a time, so one marker that changed its paragraph's
+        /// reading costs only that paragraph its marks.
+        func merged(onto plain: Piece) -> Piece {
+            switch (self, plain) {
+            case (.prose(let text), .prose(let bare)):
+                let marked = Self.paragraphs(of: text)
+                let read = Self.paragraphs(of: bare)
+                guard marked.count == read.count else { return plain }
+                let out = NSMutableAttributedString()
+                for (mine, theirs) in zip(marked, read) { out.append(mine.shape == theirs.shape ? mine.text : theirs.text) }
+                return .prose(out)
+            case (.code(let code, _), .code(let bare, _)):
+                return unmarked(code) == bare ? self : plain
+            case (.table(let rows, _), .table(let bare, _)):
+                // A space the parser kept beside a marker draws as nothing;
+                // where a cell's link goes does.
+                let cell: (AttributedString) -> String = { cell in
+                    unmarked(String(cell.characters)).trimmingCharacters(in: .whitespaces) + "|"
+                        + cell.runs.compactMap { $0.link.map { (cleanedLink($0) ?? $0).absoluteString } }.joined(separator: " ")
+                }
+                return rows.map { $0.map(cell) } == bare.map { $0.map(cell) } ? self : plain
+            default:
+                return plain
+            }
+        }
+
+        /// Each paragraph with its break, and its shape: its words without
+        /// their markers, how it's indented and set where its words begin,
+        /// and where its links go. What a marker that changed the reading
+        /// would change.
+        private static func paragraphs(of text: NSAttributedString) -> [(text: NSAttributedString, shape: String)] {
+            var out: [(text: NSAttributedString, shape: String)] = []
+            let string = text.string as NSString
+            string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byParagraphs) { words, range, enclosing, _ in
+                var at = range.location
+                while at < NSMaxRange(range), (0xE000...0xE01A).contains(string.character(at: at)) { at += 1 }
+                var shape = unmarked(words ?? "").trimmingCharacters(in: .whitespaces)
+                if at < string.length {
+                    let style = text.attribute(.paragraphStyle, at: at, effectiveRange: nil) as? NSParagraphStyle
+                    let font = text.attribute(.font, at: at, effectiveRange: nil) as? UIFont
+                    shape += "|\(style?.headIndent ?? 0)|\(style?.firstLineHeadIndent ?? 0)|\(font?.fontName ?? "")|\(font?.pointSize ?? 0)"
+                }
+                text.enumerateAttribute(.link, in: range) { link, _, _ in
+                    guard let url = link as? URL else { return }
+                    shape += "|" + (cleanedLink(url) ?? url).absoluteString
+                }
+                out.append((text.attributedSubstring(from: enclosing), shape))
+            }
+            return out
+        }
+
+        /// Its words with their markers, for counting passages across it.
+        var marked: String {
+            switch self {
+            case .prose(let text): return text.string
+            case .code(let code, _): return code
+            case .table(let rows, _): return rows.flatMap { $0 }.map { String($0.characters) }.joined()
+            }
+        }
+    }
+
+    /// A file's Markdown as the writer's editor reads it, by core
+    /// (`LampProse`, a writing's options: a soft wrap joins), laid out in
+    /// the writing's serif, its review markers drawn where they're safe to.
+    ///
+    /// A marker is a character to the parser, and wherever one stands it
+    /// can change what a line reads as. So the file is read twice, with its
+    /// markers and without, and a piece keeps its markers only where it
+    /// reads exactly as it does without them; elsewhere it's drawn as
+    /// written, its changes still listed under the count. The common cases
+    /// (a fence's or a table's own lines, a blank line, a footnote's label)
+    /// are moved first, so they keep theirs.
+    static func pieces(_ markdown: String, fontSize: CGFloat) -> [Piece] {
+        let text = markdown.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        let plain = layout(unmarked(text), fontSize: fontSize)
+        guard text.contains(where: isMarker) else { return plain }
+        guard !plain.isEmpty else {
+            // Nothing left to read: what was taken out still to tap.
+            let points = LampWritingReviewMarkdown.asPoints(markers(in: text))
+            return [.prose(NSAttributedString(string: points, attributes: NoteMarkdown.baseAttributes(fontSize: fontSize, serif: true)))]
+        }
+        let marked = layout(settlingSyntaxLines(placingEnds(text)), fontSize: fontSize)
+        guard marked.count == plain.count else { return plain }
+        return pointingUnpaired(zip(marked, plain).map { $0.merged(onto: $1) })
+    }
+
+    private static func layout(_ text: String, fontSize: CGFloat) -> [Piece] {
+        let blocks = LampProse.blocks(text, options: .writing)
+        var layout = ProseLayout(fontSize: fontSize, footnoteNumbers: footnoteNumbers(blocks))
+        layout.add(blocks, depth: 0, quote: 0)
+        layout.flush()
+        return layout.pieces
+    }
+
+    /// What each footnote is shown as, as the editor numbers them
+    /// (footnote-numbering.js): those defined, 1, 2, 3 in the order they're
+    /// first referred to, then any nothing refers to in the order written.
+    /// A reference nothing defines keeps its label.
+    static func footnoteNumbers(_ blocks: [LampProseBlock]) -> [String: String] {
+        var defined: [String] = []
+        var referred: [String] = []
+        func texts(_ blocks: [LampProseBlock]) {
+            for block in blocks {
+                switch block {
+                case .heading(_, let text), .paragraph(let text): refer(text)
+                case .quote(let inner): texts(inner)
+                case .list(_, _, let items): items.forEach { texts($0.blocks) }
+                case .table(let headers, let rows): (headers + rows.flatMap { $0 }).forEach(refer)
+                case .footnote(let label, _):
+                    // Numbered by the text's own references, as the editor
+                    // numbers them; one inside a note doesn't count.
+                    defined.append(unmarked(label))
+                case .code, .html, .audio, .picture, .rule: break
+                }
+            }
+        }
+        func refer(_ text: LampProseText) {
+            for run in text.text.runs {
+                guard let label = run[LampFootnoteReferenceAttribute.self] else { continue }
+                // References alike in a row are one run; one is enough here.
+                referred.append(unmarked(label))
+            }
+        }
+        texts(blocks)
+        var numbers: [String: String] = [:]
+        for label in referred + defined where defined.contains(label) && numbers[label] == nil {
+            numbers[label] = String(numbers.count + 1)
+        }
+        return numbers
+    }
+
+    /// Each end marker given the place of the start it closes, so a passage
+    /// is known by both its edges: should the parse lose one edge of each
+    /// of two passages, the two left aren't taken for one.
+    static func placingEnds(_ text: String) -> String {
+        let characters = Array(text)
+        var out = ""
+        var open: String?
+        var at = 0
+        while at < characters.count {
+            let character = characters[at]
+            out.append(character)
+            if character == LampWritingReview.markStart || character == LampWritingReview.markPoint {
+                var place = ""
+                var next = at + 1
+                while next < characters.count, LampWritingReviewMarkdown.placeDigit(characters[next]) != nil {
+                    place.append(characters[next])
+                    next += 1
+                }
+                if !place.isEmpty, next < characters.count, characters[next] == LampWritingReviewMarkdown.placeEnd {
+                    out += place + String(LampWritingReviewMarkdown.placeEnd)
+                    if character == LampWritingReview.markStart { open = place }
+                    at = next
+                }
+            } else if character == LampWritingReview.markEnd {
+                if let place = open { out += place + String(LampWritingReviewMarkdown.placeEnd) }
+                open = nil
+            }
+            at += 1
+        }
+        return out
+    }
+
+    /// The marked text with markers taken off what's only syntax, where
+    /// they'd stop it reading as it does: a fence's lines (the first's into
+    /// its code, the last's onto the code's end), a table's alignment row
+    /// (onto the row after), a row's outer pipes (moved inside them), a
+    /// change of only the pipe between two cells (a point), a footnote's
+    /// label, and a blank line (onto the next line with words). Core's
+    /// placement leaves code as written (`LampWritingReviewMarkdown.drawable`),
+    /// fences included, since a surface that checks its parse refuses them;
+    /// this one draws them. Whatever this misses, `pieces` catches.
+    static func settlingSyntaxLines(_ marked: String) -> String {
+        var lines = marked.components(separatedBy: "\n")
+        let bareLines = lines.map(unmarked)
+        guard lines.count > 1 || marked.contains(where: isMarker) else { return marked }
+        let model = LampMarkdownModel(parsing: bareLines.joined(separator: "\n"))
+        var starts: [Int] = []
+        var offset = 0
+        for line in bareLines {
+            starts.append(offset)
+            offset += (line as NSString).length + 1
+        }
+        func line(of location: Int) -> Int {
+            var low = 0, high = starts.count - 1
+            while low < high {
+                let middle = (low + high + 1) / 2
+                if starts[middle] <= location { low = middle } else { high = middle - 1 }
+            }
+            return low
+        }
+        func taking(_ index: Int) -> String {
+            let found = markers(in: lines[index])
+            if !found.isEmpty { lines[index] = unmarked(lines[index]) }
+            return found
+        }
+        /// Markers put on a line where its words begin: after its quote
+        /// marks and indent, then past any block syntax there.
+        func putting(_ moved: String, onto index: Int, code: Bool) {
+            guard !moved.isEmpty else { return }
+            let prefix = containerPrefix(lines[index])
+            let placed = String(prefix) + moved + lines[index].dropFirst(prefix.count)
+            lines[index] = code ? placed : LampWritingReviewMarkdown.clearingBlockSyntax(placed)
+        }
+        // Lines a code block or a table holds, which a blank line's markers
+        // aren't moved onto, and a blank line in code keeps its own.
+        var held = Set<Int>()
+        var tables = Set<Int>()
+        var tableRows: [Int: Int] = [:]
+        // For each line of a code block, the last line of its code.
+        var codeEnds: [Int: Int] = [:]
+        for block in model.blocks.sorted(by: { $0.range.location < $1.range.location }) {
+            let first = line(of: block.range.location)
+            let last = line(of: max(block.range.location, NSMaxRange(block.range) - 1))
+            if block.kind == .codeBlock || block.kind == .table { held.formUnion(first...last) }
+            if block.kind == .table {
+                tables.formUnion(first...last)
+                // A row that isn't the alignment row, to take markers in.
+                for index in first...last { tableRows[index] = index == first + 1 ? first : index }
+            }
+            switch block.kind {
+            case .codeBlock:
+                // A fence opens within three spaces of its container, or
+                // is closed by its own mark; four in, it's indented code.
+                let opener = fence(opening: bareLines[first])
+                let indent = bareLines[first].prefix { $0 == " " || $0 == ">" }.filter { $0 == " " }.count
+                let fenced = opener.map { indent < 4 || (last > first && closes(bareLines[last], $0)) } ?? false
+                guard fenced, let fence = opener else {
+                    // Indented code: a marker before the indent moved past
+                    // it, or the line isn't code.
+                    for index in first...last {
+                        let head = lines[index].prefix { isMarker($0) || $0 == " " || $0 == "\t" || $0 == ">" }
+                        guard head.contains(where: isMarker) else { continue }
+                        lines[index] = String(head.filter { !isMarker($0) }) + markers(in: String(head)) + lines[index].dropFirst(head.count)
+                    }
+                    for index in first...last { codeEnds[index] = last }
+                    continue
+                }
+                let opening = taking(first)
+                // A fence never closed runs to the end of its container.
+                let closes = last > first && closes(bareLines[last], fence)
+                let closing = closes ? taking(last) : ""
+                let inner = (first + 1)..<(closes ? last : last + 1)
+                for index in first...last { codeEnds[index] = inner.isEmpty ? first : inner.upperBound - 1 }
+                if inner.isEmpty {
+                    // Nothing in the block: onto the line after it, the line
+                    // before, or, alone in the file, left where it was.
+                    let moved = LampWritingReviewMarkdown.asPoints(opening + closing)
+                    if last + 1 < lines.count {
+                        putting(moved, onto: last + 1, code: false)
+                    } else if first > 0 {
+                        lines[first - 1] += moved
+                    } else {
+                        lines[first] += moved
+                    }
+                } else {
+                    putting(LampWritingReviewMarkdown.asPoints(opening), onto: inner.lowerBound, code: true)
+                    lines[inner.upperBound - 1] += LampWritingReviewMarkdown.asPoints(closing)
+                }
+            case .table where last > first:
+                let alignment = taking(first + 1)
+                if !alignment.isEmpty {
+                    let moved = LampWritingReviewMarkdown.asPoints(alignment)
+                    if first + 2 <= last { lines[first + 2] = insideRow(moved, lines[first + 2]) } else { lines[first] += moved }
+                }
+                for index in first...last where index != first + 1 {
+                    lines[index] = keepingMarkersInsidePipes(lines[index])
+                }
+            default:
+                break
+            }
+        }
+        for index in lines.indices where !held.contains(index) {
+            // A footnote's label read as its label.
+            let bare = unmarked(lines[index])
+            if lines[index] != bare, let label = bare.prefixMatch(of: #/ {0,3}\[\^[^\]\s]+\]:[ \t]?/#) {
+                var moved = ""
+                var kept = ""
+                var rest = Substring(lines[index])
+                while kept.count < bare[label.range].count, let character = rest.first {
+                    rest = rest.dropFirst()
+                    if isMarker(character) { moved.append(character) } else { kept.append(character) }
+                }
+                lines[index] = kept + moved + rest
+            }
+        }
+        // A blank line kept blank: its markers onto the next line with words
+        // that's prose, else the one before, else left where they were.
+        let isBlank: (Int) -> Bool = { unmarked(lines[$0]).allSatisfy { $0 == " " || $0 == "\t" } }
+        for index in lines.indices where !held.contains(index) && isBlank(index) && lines[index].contains(where: isMarker) {
+            let moved = LampWritingReviewMarkdown.asPoints(markers(in: lines[index]))
+            if let next = lines.indices[(index + 1)...].first(where: { !isBlank($0) }), !held.contains(next) {
+                lines[index] = unmarked(lines[index])
+                putting(moved, onto: next, code: false)
+            } else if let before = lines.indices[..<index].last(where: { !isBlank($0) }), !held.contains(before) {
+                lines[index] = unmarked(lines[index])
+                lines[before] += moved
+            } else if let before = lines.indices[..<index].last(where: { !isBlank($0) }) {
+                // Only a table or code to go to: into its last cell, or onto
+                // the end of its code.
+                lines[index] = unmarked(lines[index])
+                if let row = tableRows[before] {
+                    lines[row] = keepingMarkersInsidePipes(lines[row] + moved)
+                } else {
+                    lines[codeEnds[before] ?? before] += moved
+                }
+            }
+        }
+        for index in lines.indices where !held.contains(index) && lines[index].contains(where: isMarker) {
+            lines[index] = markersIntoCaption(lines[index])
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// A picture or recording on a line of its own with the markers around
+    /// it moved into its caption, where they leave it on a line of its own.
+    private static func markersIntoCaption(_ line: String) -> String {
+        let bare = unmarked(line)
+        guard bare.wholeMatch(of: #/\s*!?\[[^\]]*\]\((?:media/|lamp-media://)[^)\s]+\)\s*/#) != nil,
+              let open = line.firstIndex(of: "["), let close = line.range(of: "](") else { return line }
+        let head = line[..<open]
+        guard let end = line[close.upperBound...].firstIndex(of: ")") else { return line }
+        let tail = line[line.index(after: end)...]
+        let before = markers(in: String(head.filter { $0 != "!" }))
+        let after = markers(in: String(tail))
+        guard !before.isEmpty || !after.isEmpty else { return line }
+        let bang = head.contains("!") ? "!" : ""
+        let indent = head.filter { $0 == " " || $0 == "\t" }
+        return indent + bang + "[" + before + line[line.index(after: open)..<close.lowerBound] + after
+            + line[close.lowerBound...end]
+    }
+
+    /// A line's quote marks and indent, which hold it in its container.
+    private static func containerPrefix(_ line: String) -> Substring {
+        line.prefix { $0 == " " || $0 == "\t" || $0 == ">" }
+    }
+
+    /// The fence a line opens, its quote marks and indent aside: its
+    /// character and length.
+    private static func fence(opening line: String) -> (character: Character, length: Int)? {
+        let rest = line.drop { $0 == " " || $0 == "\t" || $0 == ">" }
+        guard let character = rest.first, character == "`" || character == "~" else { return nil }
+        let length = rest.prefix { $0 == character }.count
+        return length >= 3 ? (character, length) : nil
+    }
+
+    /// Whether a line closes a fence: the same character, at least as long,
+    /// and nothing after but spaces.
+    private static func closes(_ line: String, _ fence: (character: Character, length: Int)) -> Bool {
+        let rest = line.drop { $0 == " " || $0 == "\t" || $0 == ">" }
+        let run = rest.prefix { $0 == fence.character }
+        return run.count >= fence.length && rest.dropFirst(run.count).allSatisfy { $0 == " " || $0 == "\t" }
+    }
+
+    /// `markers` put at the start of a table row's first cell's words.
+    private static func insideRow(_ markers: String, _ row: String) -> String {
+        let prefix = containerPrefix(row)
+        let rest = row.dropFirst(prefix.count)
+        guard rest.first == "|" else { return prefix + markers + rest }
+        let cell = rest.dropFirst()
+        let space = cell.prefix { $0 == " " || $0 == "\t" }
+        return prefix + "|" + space + markers + cell.dropFirst(space.count)
+    }
+
+    /// A table row with markers standing outside its outer pipes moved in
+    /// past them, where they'd be cells of their own, and a change of only
+    /// the pipe between two cells made a point, which neither cell draws.
+    private static func keepingMarkersInsidePipes(_ row: String) -> String {
+        var row = row
+        let isMarkerOrSpace: (Character) -> Bool = { isMarker($0) || $0 == " " || $0 == "\t" || $0 == ">" }
+        // Before the first pipe, the quote marks holding the row kept.
+        let head = row.prefix(while: isMarkerOrSpace)
+        if head.contains(where: isMarker), row.dropFirst(head.count).first == "|" {
+            let prefix = String(head.filter { !isMarker($0) })
+            row = insideRow(markers(in: String(head)), prefix + row.dropFirst(head.count))
+        }
+        // After the last.
+        let tail = String(row.reversed().prefix { isMarker($0) || $0 == " " || $0 == "\t" }.reversed())
+        let body = row.dropLast(tail.count)
+        if tail.contains(where: isMarker), body.last == "|", !body.dropLast().hasSuffix("\\") {
+            // At the end of the last cell's words, before its spaces.
+            let cell = body.dropLast()
+            let space = String(cell.reversed().prefix { $0 == " " || $0 == "\t" }.reversed())
+            row = cell.dropLast(space.count) + markers(in: tail) + space + "|"
+        }
+        return row.replacing(#/\x{E000}([\x{E010}-\x{E01A}]*)([ \t]*)\|([ \t]*)\x{E001}[\x{E010}-\x{E01A}]*/#) { match in
+            "\u{E002}\(match.output.1)\(match.output.2)|\(match.output.3)"
+        }
+    }
+
+    /// The pieces with each passage the parse kept only one edge of drawn
+    /// safely: a start without its end a point, rather than highlighted on
+    /// to the end of the file, and an end without its start left out.
+    private static func pointingUnpaired(_ pieces: [Piece]) -> [Piece] {
+        var starts = Set<Int>()
+        var ends = Set<Int>()
+        for piece in pieces {
+            for found in placedMarkers(in: piece.marked as NSString) {
+                if found.marker == 0xE000 { starts.insert(found.place) }
+                if found.marker == 0xE001 { ends.insert(found.place) }
+            }
+        }
+        let lostEnd = starts.subtracting(ends)
+        let lostStart = ends.subtracting(starts)
+        guard !lostEnd.isEmpty || !lostStart.isEmpty else { return pieces }
+        // Each edge to change, as the range it stands in (the marker and its
+        // place) and what it becomes; latest first, so earlier ranges hold.
+        func edits(_ text: NSString) -> [(range: NSRange, with: String)] {
+            placedMarkers(in: text).compactMap { found -> (NSRange, String)? in
+                if found.marker == 0xE000, lostEnd.contains(found.place) {
+                    return (NSRange(location: found.at, length: 1), String(LampWritingReview.markPoint))
+                }
+                if found.marker == 0xE001, lostStart.contains(found.place) {
+                    return (NSRange(location: found.at, length: found.length), "")
+                }
+                return nil
+            }.reversed()
+        }
+        return pieces.map { piece in
+            switch piece {
+            case .prose(let text):
+                let out = NSMutableAttributedString(attributedString: text)
+                for edit in edits(text.string as NSString) { out.mutableString.replaceCharacters(in: edit.range, with: edit.with) }
+                return .prose(out)
+            case .code(let code, let indent):
+                let out = NSMutableString(string: code)
+                for edit in edits(code as NSString) { out.replaceCharacters(in: edit.range, with: edit.with) }
+                return .code(out as String, indent: indent)
+            case .table(let rows, let indent):
+                return .table(rows.map { row in
+                    row.map { cell in
+                        // Only a cell with an edge to change is rebuilt, so
+                        // every other keeps the attributes it was drawn with.
+                        let changes = edits(String(cell.characters) as NSString)
+                        guard !changes.isEmpty else { return cell }
+                        var out = cell
+                        for edit in changes {
+                            let source = String(out.characters) as NSString
+                            let start = out.characters.index(out.startIndex, offsetBy: source.substring(to: edit.range.location).count)
+                            let end = out.characters.index(start, offsetBy: source.substring(with: edit.range).count)
+                            var replacement = AttributedString(edit.with)
+                            replacement.mergeAttributes(out[start..<end].runs.first?.attributes ?? AttributeContainer())
+                            out.replaceSubrange(start..<end, with: replacement)
+                        }
+                        return out
+                    }
+                }, indent: indent)
+            }
+        }
+    }
+
+    /// Each start, end and point marker in `text` with the place written
+    /// after it, where it stands and how long it is with its place (UTF-16;
+    /// every marker and digit is one unit). One with no place is left out.
+    private static func placedMarkers(in text: NSString) -> [(at: Int, length: Int, marker: unichar, place: Int)] {
+        var out: [(at: Int, length: Int, marker: unichar, place: Int)] = []
+        var at = 0
+        while at < text.length {
+            let unit = text.character(at: at)
+            guard (0xE000...0xE002).contains(unit) else {
+                at += 1
+                continue
+            }
+            var next = at + 1
+            var place = 0
+            while next < text.length, (0xE010...0xE019).contains(text.character(at: next)) {
+                place = place * 10 + Int(text.character(at: next) - 0xE010)
+                next += 1
+            }
+            if next > at + 1, next < text.length, text.character(at: next) == 0xE01A {
+                out.append((at, next + 1 - at, unit, place))
+                at = next + 1
+            } else {
+                at += 1
+            }
+        }
+        return out
+    }
+
+    /// The blocks walked in reading order, nested blocks indented, each code
+    /// block and table cutting the prose around it.
+    private struct ProseLayout {
+        let fontSize: CGFloat
+        var footnoteNumbers: [String: String] = [:]
+        var pieces: [Piece] = []
+        var flow = NSMutableAttributedString()
+        var step: CGFloat { fontSize * 1.4 }
+
+        mutating func flush() {
+            guard flow.length > 0 else { return }
+            pieces.append(.prose(flow))
+            flow = NSMutableAttributedString()
+        }
+
+        /// `depth` is how many list items hold these blocks, `quote` how
+        /// many quotations. `marker` opens the first of them, for an item.
+        /// What's in a list sits close; top-level blocks, a list among them,
+        /// sit a paragraph apart (`wide`, for the first).
+        mutating func add(_ blocks: [LampProseBlock], depth: Int, quote: Int, marker: String? = nil, wide: Bool = true) {
+            // An item or footnote with nothing in it keeps its label.
+            if blocks.isEmpty, let marker {
+                paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: !wide)
+                return
+            }
+            var marker = marker
+            for (index, block) in blocks.enumerated() {
+                let close = index == 0 ? !wide : depth > 0
+                switch block {
+                case .heading(let level, let text):
+                    let size = fontSize * (level == 1 ? 1.3 : level == 2 ? 1.2 : 1.1)
+                    paragraph(inline(text.text, size: size, bold: true), depth: depth, quote: quote, marker: marker, close: close)
+                case .paragraph(let text):
+                    paragraph(inline(text.text, size: fontSize), depth: depth, quote: quote, marker: marker, close: close)
+                case .quote(let inner):
+                    if let marker { paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: close) }
+                    add(inner, depth: depth, quote: quote + 1, wide: marker == nil && !close)
+                case .list(let ordered, let start, let items):
+                    if let marker { paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: close) }
+                    for (number, item) in items.enumerated() {
+                        let shown: String
+                        switch item.checked {
+                        case .some(true): shown = "☑\u{FE0E}"
+                        case .some(false): shown = "☐"
+                        case .none: shown = ordered ? "\(start + number)." : "•"
+                        }
+                        add(item.blocks, depth: depth + 1, quote: quote, marker: shown, wide: number == 0 && !close && marker == nil)
+                    }
+                case .code(let language, let code):
+                    // An item opening with code keeps its number.
+                    if let marker { paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: close) }
+                    flush()
+                    // A marker the fence's info took is kept with its code.
+                    pieces.append(.code(
+                        LampWritingReviewMarkdown.asPoints(markers(in: language ?? "")) + code, indent: indent(depth: depth, quote: quote)
+                    ))
+                case .table(let headers, let rows):
+                    if let marker { paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: close) }
+                    flush()
+                    let cells = ([headers] + rows).map { $0.map { WritingDocumentText.numberingFootnotes($0.text, footnoteNumbers, size: fontSize * 0.9) } }
+                    pieces.append(.table(cells, indent: indent(depth: depth, quote: quote)))
+                case .html(let html):
+                    paragraph(plain(html, size: fontSize), depth: depth, quote: quote, marker: marker, close: close)
+                case .footnote(let label, let inner):
+                    add(inner, depth: depth + 1, quote: quote, marker: markers(in: label) + (footnoteNumbers[unmarked(label)] ?? unmarked(label)))
+                case .audio(let caption, let path):
+                    let line = NSMutableAttributedString()
+                    let symbol = NSTextAttachment()
+                    symbol.image = UIImage(systemName: "waveform", withConfiguration: UIImage.SymbolConfiguration(pointSize: fontSize * 0.85))?
+                        .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
+                    line.append(NSAttributedString(attachment: symbol))
+                    line.append(plain(" " + markers(in: path) + (caption.isEmpty ? "Recording" : caption), size: fontSize))
+                    paragraph(line, depth: depth, quote: quote, marker: marker, close: close)
+                case .picture(let caption, let path):
+                    let picture = NSMutableAttributedString(attributedString: NoteMarkdown.picture(
+                        nil, caption: markers(in: path) + caption, fontSize: fontSize, serif: true
+                    ))
+                    paragraph(picture, depth: depth, quote: quote, marker: marker, close: close)
+                case .rule:
+                    var attributes = NoteMarkdown.baseAttributes(fontSize: fontSize, serif: true)
+                    attributes[.foregroundColor] = UIColor.separator
+                    paragraph(NSAttributedString(string: "———", attributes: attributes), depth: depth, quote: quote, marker: marker, close: close)
+                }
+                marker = nil
+            }
+        }
+
+        /// How far in the quotations and items holding a block set it.
+        private func indent(depth: Int, quote: Int) -> CGFloat {
+            CGFloat(quote) * fontSize + CGFloat(depth) * step
+        }
+
+        private func plain(_ text: String, size: CGFloat) -> NSAttributedString {
+            NSAttributedString(string: text, attributes: NoteMarkdown.baseAttributes(fontSize: size, serif: true))
+        }
+
+        /// Inline text in the writing's serif, a link kept on its words to be
+        /// opened, a picture in it named after its line.
+        private func inline(_ text: AttributedString, size: CGFloat, bold: Bool = false) -> NSAttributedString {
+            let read = NoteMarkdown.inline(
+                parsed: text, attributes: NoteMarkdown.baseAttributes(fontSize: size, bold: bold, serif: true),
+                fontSize: size, bold: bold, serif: true, linksTapped: true, footnoteNumbers: footnoteNumbers
+            )
+            let out = NSMutableAttributedString(attributedString: read.text)
+            // A break the writer made is a line within the paragraph.
+            out.mutableString.replaceOccurrences(of: "\n", with: "\u{2028}", range: NSRange(location: 0, length: out.length))
+            for picture in read.pictures {
+                out.append(NSAttributedString(string: "\u{2028}", attributes: NoteMarkdown.baseAttributes(fontSize: size, serif: true)))
+                out.append(NoteMarkdown.picture(nil, caption: picture.caption, fontSize: fontSize, serif: true))
+            }
+            return out
+        }
+
+        /// One paragraph of the prose, indented for the items and quotations
+        /// holding it, a quotation's in the secondary colour.
+        private mutating func paragraph(_ text: NSAttributedString, depth: Int, quote: Int, marker: String?, close: Bool) {
+            let style = NSMutableParagraphStyle()
+            style.lineSpacing = fontSize * 0.35
+            let indent = CGFloat(quote) * fontSize + CGFloat(depth) * step
+            style.headIndent = indent
+            style.firstLineHeadIndent = indent
+            if flow.length > 0 { style.paragraphSpacingBefore = close ? fontSize * 0.25 : fontSize * 0.7 }
+            let line = NSMutableAttributedString()
+            if let marker {
+                // The item's marker hangs in the step before its words.
+                style.firstLineHeadIndent = indent - step
+                style.tabStops = [NSTextTab(textAlignment: .left, location: indent)]
+                style.defaultTabInterval = step
+                line.append(NSAttributedString(string: marker + "\t", attributes: NoteMarkdown.baseAttributes(fontSize: fontSize, serif: true)))
+            }
+            line.append(text)
+            let whole = NSRange(location: 0, length: line.length)
+            line.addAttribute(.paragraphStyle, value: style, range: whole)
+            if quote > 0 {
+                // Its words in the secondary colour; a link keeps its own.
+                line.enumerateAttribute(.foregroundColor, in: whole) { color, range, _ in
+                    if (color as? UIColor) == UIColor.label {
+                        line.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: range)
+                    }
+                }
+            }
+            if flow.length > 0 {
+                // The break ends the paragraph before, and is styled as it.
+                let before = flow.attributes(at: flow.length - 1, effectiveRange: nil)
+                flow.append(NSAttributedString(string: "\n", attributes: [
+                    .paragraphStyle: before[.paragraphStyle] ?? style,
+                    .font: before[.font] ?? UIFont.systemFont(ofSize: fontSize),
+                ]))
+            }
+            flow.append(line)
+        }
     }
 
     // MARK: Review marks
@@ -1051,16 +1684,52 @@ enum WritingDocumentText {
         return (out, index, current)
     }
 
+    /// A cell's footnote references as the prose shows them: each its
+    /// number, raised and small.
+    static func numberingFootnotes(_ cell: AttributedString, _ numbers: [String: String], size: CGFloat) -> AttributedString {
+        var out = AttributedString()
+        for run in cell.runs {
+            var piece = AttributedString(cell[run.range])
+            if let label = run[LampFootnoteReferenceAttribute.self] {
+                let written = String(piece.characters)
+                let shown = written.replacing(#/\[\^([^\]]*)\]/#) { match in
+                    let label = String(match.output.1)
+                    return numbers[unmarked(label)].map { markers(in: label) + $0 } ?? label
+                }
+                var raised = AttributedString(shown == written ? (numbers[label] ?? label) : shown)
+                raised.mergeAttributes(run.attributes)
+                raised.baselineOffset = size * 0.35
+                raised.font = Font(LampTheme.serif(size: size * 0.7, weight: .regular))
+                piece = raised
+            }
+            out += piece
+        }
+        return out
+    }
+
+    /// A drawn cell without the spaces at its edges, which the parser keeps
+    /// beside a review marker and trims where there's none.
+    static func trimmed(_ cell: AttributedString) -> AttributedString {
+        var cell = cell
+        while let first = cell.characters.first, first == " " || first == "\t" {
+            cell.removeSubrange(cell.startIndex..<cell.characters.index(after: cell.startIndex))
+        }
+        while let last = cell.characters.last, last == " " || last == "\t" {
+            cell.removeSubrange(cell.characters.index(before: cell.endIndex)..<cell.endIndex)
+        }
+        return cell
+    }
+
     /// Each column as wide as its widest cell, up to `widest`, past which
-    /// its cells wrap.
+    /// its cells wrap: measured from the words as drawn, the review markers
+    /// out of them.
     static func columnWidths(_ rows: [[String]], size: CGFloat, widest: CGFloat) -> [CGFloat] {
         let columns = rows.map(\.count).max() ?? 0
         return (0..<columns).map { column in
             let measured = rows.enumerated().map { index, row -> CGFloat in
                 guard column < row.count else { return 0 }
                 let font = LampTheme.serif(size: size, weight: index == 0 ? .semibold : .regular)
-                // As drawn: without the review markers in it.
-                let text = String(cell(unmarked(row[column])).characters) as NSString
+                let text = unmarked(row[column]).trimmingCharacters(in: .whitespaces) as NSString
                 return ceil(text.size(withAttributes: [.font: font]).width) + 2
             }
             return min(widest, max(size, measured.max() ?? 0))
@@ -1075,86 +1744,6 @@ enum WritingDocumentText {
         )) ?? AttributedString(text)
     }
 
-    enum Segment: Equatable {
-        case markdown(String)
-        case code(String)
-        /// Its rows' cells, the header's first.
-        case table([[String]])
-    }
-
-    /// A table row's cells, its outer pipes dropped and an escaped pipe kept
-    /// as a pipe in its cell.
-    static func cells(_ row: String) -> [String] {
-        let row = LampWritingReviewMarkdown.keepingEscapes(row.trimmingCharacters(in: .whitespaces))
-        var cells: [String] = []
-        var cell = ""
-        var endsWithPipe = false
-        for character in row {
-            endsWithPipe = false
-            if character == "|", cell.last == "\\" {
-                // A pipe straight after a backslash is the cell's, as GFM
-                // splits a row, though that backslash is escaped itself: only
-                // the one before the pipe goes, the rest is the cell's own
-                // Markdown.
-                cell.removeLast()
-                cell.append("|")
-            } else if character == "|" {
-                cells.append(cell)
-                cell = ""
-                endsWithPipe = true
-            } else {
-                cell.append(character)
-            }
-        }
-        if !endsWithPipe { cells.append(cell) }
-        // The edges outside the outer pipes hold no cell: a review marker
-        // there goes into the cell beside it.
-        if !row.hasSuffix("|"), unmarked(row).hasSuffix("|"), cells.count > 1,
-           unmarked(cells[cells.count - 1]).trimmingCharacters(in: .whitespaces).isEmpty {
-            let trailing = markers(in: cells.removeLast())
-            cells[cells.count - 1] += trailing
-        }
-        if unmarked(row).hasPrefix("|"), !cells.isEmpty {
-            let leading = markers(in: cells.removeFirst())
-            if !cells.isEmpty { cells[0] = leading + cells[0] }
-        }
-        // A passage that was only a pipe between two cells (a column split)
-        // is a point in the first.
-        if cells.count > 1 {
-            for index in cells.indices.dropLast() {
-                guard let start = cells[index].firstMatch(of: #/\x{E000}([\x{E010}-\x{E019}]*\x{E01A}?)\s*$/#),
-                      cells[index + 1].firstMatch(of: #/^\s*\x{E001}/#) != nil else { continue }
-                cells[index].replaceSubrange(start.range, with: "\u{E002}\(start.output.1)")
-                cells[index + 1] = cells[index + 1].replacing(#/^\s*\x{E001}/#, with: "", maxReplacements: 1)
-            }
-        }
-        return cells.map(trimmingAroundMarkers)
-    }
-
-    /// A row as wide as its table's header, as Markdown reads one: a short
-    /// row filled with empty cells, a long one's extra cells left out, their
-    /// review markers kept as points in its last.
-    static func fitting(_ row: [String], to width: Int) -> [String] {
-        guard width > 0 else { return row }
-        if row.count < width { return row + Array(repeating: "", count: width - row.count) }
-        guard row.count > width else { return row }
-        var kept = Array(row.prefix(width))
-        let dropped = row.dropFirst(width).map { markers(in: $0) }.joined()
-        if !dropped.isEmpty { kept[width - 1] += LampWritingReviewMarkdown.asPoints(dropped) }
-        return kept
-    }
-
-    /// A cell's spaces trimmed from its words, though review markers stand
-    /// outside them: the markers kept, at the ends they stood at.
-    static func trimmingAroundMarkers(_ cell: String) -> String {
-        let edge: (Character) -> Bool = { $0 == " " || $0 == "\t" || isMarker($0) }
-        let head = cell.prefix(while: edge)
-        let rest = cell.dropFirst(head.count)
-        let tail = rest.reversed().prefix(while: edge)
-        let words = rest.dropLast(tail.count)
-        return markers(in: String(head)) + words + markers(in: String(tail.reversed()))
-    }
-
     /// Whether `range` of `text` stands in code, as Markdown reads it: a
     /// fenced or indented block, or an inline code span.
     static func inCode(_ range: NSRange, of text: String) -> Bool {
@@ -1165,158 +1754,6 @@ enum WritingDocumentText {
                 ? $0.location < range.location && range.location < NSMaxRange($0)
                 : range.location >= $0.location && NSMaxRange(range) <= NSMaxRange($0)
         }
-    }
-
-    /// The text cut where a code block or a table starts and ends, as
-    /// Markdown reads them (core's parser, which reads as the editor page
-    /// does). A fence's own lines and a table's alignment row are left out;
-    /// a fence never closed runs to the end. Review markers are never
-    /// newlines, so the marked text's lines are the parsed text's, each with
-    /// its markers: what the parser finds by line is cut from them.
-    static func segments(_ text: String) -> [Segment] {
-        let lines = text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .components(separatedBy: "\n")
-        let bare = unmarked(lines.joined(separator: "\n"))
-        let model = LampMarkdownModel(parsing: bare)
-        // Where each line starts, to find the lines a block spans.
-        var starts: [Int] = []
-        var offset = 0
-        for line in bare.components(separatedBy: "\n") {
-            starts.append(offset)
-            offset += (line as NSString).length + 1
-        }
-        func line(of location: Int) -> Int {
-            var low = 0, high = starts.count - 1
-            while low < high {
-                let middle = (low + high + 1) / 2
-                if starts[middle] <= location { low = middle } else { high = middle - 1 }
-            }
-            return low
-        }
-        // The code blocks and tables, by the lines they span, outermost
-        // only, in order. One in a quote stays the quote's: its lines carry
-        // the quote's marks, and the quote is drawn as prose.
-        let quotes = model.blocks.filter { $0.kind == .blockQuote }.map(\.range)
-        let lists = model.blocks.filter { $0.kind == .listItem }.map(\.range)
-        var spans: [(kind: LampMarkdownModel.Block.Kind, first: Int, last: Int, inList: Bool)] = []
-        for block in model.blocks where block.kind == .codeBlock || block.kind == .table {
-            if quotes.contains(where: { NSLocationInRange(block.range.location, $0) }) { continue }
-            let first = line(of: block.range.location)
-            // Code opening on a list item's own line, after its marker, stays
-            // the item's: cut out, the marker would be drawn as code. (A
-            // table's range starts after its leading pipe.)
-            let before = (bare as NSString).substring(with: NSRange(
-                location: starts[first], length: block.range.location - starts[first]
-            ))
-            if block.kind == .codeBlock, !before.allSatisfy({ $0 == " " || $0 == "\t" }) { continue }
-            let last = line(of: max(block.range.location, NSMaxRange(block.range) - 1))
-            if let previous = spans.last, first <= previous.last { continue }
-            spans.append((block.kind, first, last, lists.contains { NSLocationInRange(block.range.location, $0) }))
-        }
-
-        var segments: [Segment] = []
-        // Review markers on a line that isn't drawn (a fence's, a table's
-        // alignment row), carried to the next that is, so none is lost.
-        var pending = ""
-        func taking(_ line: String) -> String {
-            defer { pending = "" }
-            return pending + line
-        }
-        func skipping(_ line: String) {
-            pending += LampWritingReviewMarkdown.asPoints(markers(in: line))
-        }
-        func prose(_ range: Range<Int>) {
-            guard !range.isEmpty else { return }
-            let text = range.map { $0 == range.lowerBound ? taking(lines[$0]) : lines[$0] }
-            segments.append(.markdown(text.joined(separator: "\n")))
-        }
-        var next = 0
-        for span in spans {
-            prose(next..<span.first)
-            next = span.last + 1
-            let block = Array(lines[span.first...span.last])
-            if span.kind == .table {
-                // Its header, the row that says how its columns align (left
-                // out), and its rows, each as wide as the header.
-                let header = cells(taking(block[0].trimmingCharacters(in: .whitespaces)))
-                var rows = [header]
-                if block.count > 1 { skipping(block[1]) }
-                for row in block.dropFirst(2) {
-                    rows.append(fitting(cells(taking(row.trimmingCharacters(in: .whitespaces))), to: header.count))
-                }
-                segments.append(.table(rows))
-                continue
-            }
-            // Fenced where the line opens a fence as Markdown has one: a run
-            // of three, no backtick after a backtick fence's, and outside a
-            // list indented less than code is. Otherwise indented code, which
-            // may itself hold a line like a fence.
-            let raw = unmarked(block[0])
-            let indent = raw.prefix(while: { $0 == " " || $0 == "\t" })
-                .reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
-            let opening = raw.trimmingCharacters(in: .whitespaces)
-            if let mark = opening.first, mark == "`" || mark == "~",
-               opening.prefix(while: { $0 == mark }).count >= 3,
-               mark == "~" || !opening.drop(while: { $0 == mark }).contains("`"),
-               span.inList || indent < 4 {
-                // Fenced: its fence lines left out, the closing one only
-                // where there is one (one never closed runs to the end).
-                let run = opening.prefix(while: { $0 == mark }).count
-                skipping(block[0])
-                var body = Array(block.dropFirst())
-                if let closing = body.last {
-                    let trimmed = unmarked(closing).trimmingCharacters(in: .whitespaces)
-                    if trimmed.count >= run, trimmed.allSatisfy({ $0 == mark }) {
-                        body.removeLast()
-                        segments.append(.code(body.enumerated().map { $0 == 0 ? taking($1) : $1 }.joined(separator: "\n")))
-                        skipping(closing)
-                        continue
-                    }
-                }
-                segments.append(.code(body.enumerated().map { $0 == 0 ? taking($1) : $1 }.joined(separator: "\n")))
-            } else {
-                // Indented: shown without the four spaces that make it code.
-                // Review markers among those spaces are kept, before the code,
-                // so marks shown or not, the code lies the same.
-                let body = block.map { line -> String in
-                    var line = Substring(line)
-                    var kept = ""
-                    var spaces = 0
-                    while let next = line.first, spaces < 4 {
-                        if isMarker(next) {
-                            kept.append(next)
-                        } else if next == " " {
-                            spaces += 1
-                        } else if next == "\t" {
-                            spaces = 4
-                        } else {
-                            break
-                        }
-                        line = line.dropFirst()
-                    }
-                    return kept + line
-                }
-                segments.append(.code(body.enumerated().map { $0 == 0 ? taking($1) : $1 }.joined(separator: "\n")))
-            }
-        }
-        prose(next..<lines.count)
-
-        // Markers left over at the very end go on the last that's drawn.
-        if !pending.isEmpty {
-            switch segments.popLast() {
-            case .markdown(let text): segments.append(.markdown(text + pending))
-            case .code(let text): segments.append(.code(text + pending))
-            case .table(var rows):
-                if rows.isEmpty || rows[rows.count - 1].isEmpty { rows.append([pending]) } else {
-                    rows[rows.count - 1][rows[rows.count - 1].count - 1] += pending
-                }
-                segments.append(.table(rows))
-            case nil: segments.append(.markdown(pending))
-            }
-        }
-        return segments
     }
 }
 
