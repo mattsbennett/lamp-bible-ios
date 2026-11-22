@@ -17,15 +17,29 @@ export const MARK_START = ''
 export const MARK_END = ''
 export const MARK_POINT = ''
 
+// A passage's place among the marks the host sent, written after its start
+// or point marker in private-use digits (U+E010 to U+E019) and closed by
+// U+E01A, by a host that moves markers out of syntax the parser drops (a
+// link's address): the passages can then stand in another order than the
+// marks, and are paired with the host's changes by place, not by order.
+export const PLACE_END = '\uE01A'
+
+export function placeDigit(character) {
+  const code = character.charCodeAt(0)
+  return character.length === 1 && code >= 0xE010 && code <= 0xE019 ? code - 0xE010 : null
+}
+
 export function isMarker(character) {
   return character === MARK_START || character === MARK_END || character === MARK_POINT
+    || placeDigit(character) !== null || character === PLACE_END
 }
 
 // Where the markers stand in a run of text pieces, each `{ pos, text }` with
 // `pos` its position in the document, in order. Returns the marks as ranges
 // in the document the markers are taken out of — `{ from, to }`, with
-// `from === to` for a point — and each marker's own position, for taking
-// them out. Null where the markers do not pair, which a host never sends.
+// `from === to` for a point, and `place` where the host wrote one — and each
+// marker's own position, for taking them out. Null where the markers do not
+// pair, which a host never sends.
 export function readMarkers(pieces) {
   const markers = []
   for (const piece of pieces) {
@@ -37,22 +51,36 @@ export function readMarkers(pieces) {
   }
   const ranges = []
   let open = null
+  // The place written after the marker at `index`, if one is.
+  const placeAfter = index => {
+    let value = 0
+    let at = index + 1
+    while (at < markers.length && placeDigit(markers[at].character) !== null) {
+      value = value * 10 + placeDigit(markers[at].character)
+      at += 1
+    }
+    return at > index + 1 && at < markers.length && markers[at].character === PLACE_END ? value : undefined
+  }
   markers.forEach((marker, index) => {
     // Every marker before this one is taken out, and each was one position.
     const at = marker.pos - index
     if (marker.character === MARK_START) {
       if (open !== null) throw new Error('nested')
-      open = at
+      open = { from: at, place: placeAfter(index) }
     } else if (marker.character === MARK_END) {
       if (open === null) throw new Error('unopened')
-      ranges.push({ from: open, to: at })
+      ranges.push(placed({ from: open.from, to: at }, open.place))
       open = null
-    } else {
-      ranges.push({ from: at, to: at })
+    } else if (marker.character === MARK_POINT) {
+      ranges.push(placed({ from: at, to: at }, placeAfter(index)))
     }
   })
   if (open !== null) return null
   return { ranges, positions: markers.map(marker => marker.pos) }
+}
+
+function placed(range, place) {
+  return place === undefined ? range : { ...range, place }
 }
 
 // `ranges` less every span in `taken`, each `[from, to]`: what of the marks

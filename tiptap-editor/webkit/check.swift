@@ -1498,8 +1498,38 @@ func restoreButton() {
             let sent = probe.reviewRestores.last
             check(sent?.id == "m1" && sent?.plain == "One deux three.\n\nFour five.",
                   "the change goes back by its id, with the page's text (read: \(String(describing: sent)))")
-            restoreWording()
+            restorePlaced()
         }
+    }
+}
+
+// A host that moved markers out of syntax the parser drops writes each
+// passage's place after its marker: the passages are paired with the host's
+// changes by place, not by the order they stand in, and the places are taken
+// out with the markers.
+func restorePlaced() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.load('Two passages: alpha and beta.');
+            const placed = rv.setReviewMarks(
+                'Two passages: \\uE000\\uE011\\uE01Aalpha\\uE001 and \\uE000\\uE010\\uE01Abeta\\uE001.',
+                [{ id: 'b', now: 'beta', before: 'B' }, { id: 'a', now: 'alpha', before: 'A' }]
+            );
+            const marks = Array.from(document.querySelectorAll('.review-mark')).map(m => m.textContent);
+            document.querySelector('.review-restore').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            const panel = document.querySelector('.review-popover');
+            const texts = panel ? Array.from(panel.querySelectorAll('.review-popover-text')).map(t => t.textContent) : [];
+            rv.load('One deux three.\\n\\nFour five.');
+            return [placed, marks, texts]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(parts.first as? Bool == true, "placed markers are placed, their places taken out (read: \(String(describing: r)))")
+        check((parts.count > 1 ? parts[1] as? [String] : nil) == ["alpha", "beta"], "both passages drawn (read: \(String(describing: parts.count > 1 ? parts[1] : nil)))")
+        check((parts.count > 2 ? parts[2] as? [String] : nil) == ["alpha", "A", "beta", "B"],
+              "each offered its own change, by place (read: \(String(describing: parts.count > 2 ? parts[2] : nil)))")
+        restoreWording()
     }
 }
 

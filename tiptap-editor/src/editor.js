@@ -1076,7 +1076,7 @@ function markdownMarking(from, to) {
     tr.insert(from - offset, editor.schema.text(MARK_START, startMarks))
     return serialize(tr.doc)
   }
-  const unmarked = marked => marked.replace(/[\uE000\uE001\uE002]/g, '')
+  const unmarked = marked => marked.replace(/[\uE000-\uE002\uE010-\uE01A]/g, '')
   const doc = editor.state.doc
   const endChoices = choices(doc, to)
   const startChoices = choices(doc, from)
@@ -1793,15 +1793,17 @@ window.editorAPI = {
   // the words as Markdown and an id the host knows its marks by; or
   // `{ id, now, reason: 'edited' }` where it can't be, for something the
   // writer did; or null, saying nothing. Missing entries are null. Only the
-  // words cross over, never a position.
+  // words cross over, never a position. A marker with its place written
+  // after it is paired with the change at that place, since the host may
+  // have moved it out of syntax the parser drops, out of order.
   setReviewMarks(markedMarkdown, changes) {
     if (!editor) return false
     reviewMarksShown = Boolean(markedMarkdown)
     const placed = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
     if (placed === null) return false
     closeReviewPopover()
-    const ranges = placed.map((range, index) => {
-      const change = Array.isArray(changes) ? changes[index] : null
+    const ranges = placed.map(({ place, ...range }, index) => {
+      const change = Array.isArray(changes) ? changes[place ?? index] : null
       if (!change || typeof change.id !== 'string' || typeof change.now !== 'string') return range
       if (change.reason === 'edited') return { ...range, change: { id: change.id, now: change.now, reason: 'edited' } }
       if (typeof change.before !== 'string') return range

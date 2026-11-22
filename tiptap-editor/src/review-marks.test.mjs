@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { MARK_START, MARK_END, MARK_POINT, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
+import { MARK_START, MARK_END, MARK_POINT, PLACE_END, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
 
 // A mark across a word, read where the markers are taken out.
 {
@@ -69,3 +69,21 @@ assert.deepEqual(withoutSpans([{ from: 1, to: 3 }], []), [{ from: 1, to: 3 }])
 }
 
 console.log('review-marks: ok')
+
+// A place written after a start or point is read, and its digits taken out
+// with the markers; the passages can then stand out of order.
+{
+  const place = n => [...String(n)].map(d => String.fromCharCode(0xE010 + Number(d))).join('') + PLACE_END
+  const text = `${MARK_POINT}${place(1)}[${MARK_START}${place(0)}later${MARK_END}] and ${MARK_POINT}${place(12)}.`
+  const read = readMarkers([{ pos: 1, text }])
+  assert.deepEqual(read.ranges.map(range => range.place), [1, 0, 12])
+  assert.deepEqual(read.ranges.map(range => [range.from, range.to]), [[1, 1], [2, 7], [13, 13]])
+  // Every marker and digit taken out, one position each.
+  assert.equal(read.positions.length, [...text].filter(c => c >= '\uE000' && c <= '\uE01A').length)
+}
+
+// An older host writes no places: none read, and the order pairs them.
+{
+  const read = readMarkers([{ pos: 1, text: `One ${MARK_START}deux${MARK_END} three.` }])
+  assert.equal(read.ranges[0].place, undefined)
+}
