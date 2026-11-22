@@ -10953,6 +10953,34 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         if case .code(let code, _) = literal.last { XCTAssertTrue(code.hasPrefix("\(start)"), code) } else { XCTFail("code") }
     }
 
+    /// An address written out is a link to tap, though the editor reads it
+    /// as words; a mark on part of it keeps that part the mark's.
+    func testAddressesWrittenOutAreTappable() {
+        let (start, end) = (LampWritingReview.markStart, LampWritingReview.markEnd)
+        let text = LampWritingReviewMarkdown.numbered(
+            "See https://example.com/\(start)new\(end) or https://plain.example, `https://code.example`, [it](https://made.example) and https://foot.example/a[^1].\n\n[^1]: n"
+        )
+        guard case .prose(let prose) = WritingDocumentText.pieces(text, fontSize: 18).first else { return XCTFail("prose") }
+        let drawn = WritingDocumentText.linkingAddresses(WritingDocumentText.drawingMarks(prose, first: 0, open: nil).text)
+        let string = drawn.string as NSString
+        func link(_ words: String) -> URL? { drawn.attribute(.link, at: string.range(of: words).location, effectiveRange: nil) as? URL }
+        XCTAssertNil(link("https://example.com/"), "cut by a mark: words, not a link to part of it")
+        XCTAssertEqual(link("new"), WritingDocumentText.markLink(0))
+        XCTAssertEqual(link("https://plain.example"), URL(string: "https://plain.example"))
+        XCTAssertNil(link("https://code.example"), "code is code")
+        XCTAssertEqual(link("it"), URL(string: "https://made.example"))
+        XCTAssertNil(link("https://foot.example"), "a footnote's number isn't taken into it")
+        guard case .prose(let pictured) = WritingDocumentText.pieces("See https://example.com/![diagram](media/abc) now.", fontSize: 18).first else {
+            return XCTFail("prose")
+        }
+        let shown = WritingDocumentText.linkingAddresses(pictured)
+        XCTAssertNil(shown.attribute(.link, at: (shown.string as NSString).range(of: "https").location, effectiveRange: nil),
+                     "a picture's caption isn't taken into an address")
+        var cell = AttributedString("Mail alice@example.com")
+        cell = WritingDocumentText.linkingAddresses(cell)
+        XCTAssertEqual(cell.runs.compactMap(\.link).first, URL(string: "mailto:alice@example.com"))
+    }
+
     /// A table's footnote references numbered as the prose's are, and the
     /// numbers set by the text's own references, not a note's.
     func testFootnotesAreNumberedAsTheEditorNumbersThem() {

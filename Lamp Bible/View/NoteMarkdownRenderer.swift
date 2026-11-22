@@ -273,7 +273,9 @@ enum NoteMarkdown {
             }
             if let id = mediaID(run.imageURL) {
                 // The span stays in its sentence, marked as having a picture.
-                out.append(NSAttributedString(string: piece, attributes: runAttributes))
+                var caption = runAttributes
+                caption[.pictureCaption] = true
+                out.append(NSAttributedString(string: piece, attributes: caption))
                 let symbol = NSTextAttachment()
                 symbol.image = UIImage(systemName: "photo", withConfiguration: UIImage.SymbolConfiguration(pointSize: fontSize * 0.7))?
                     .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
@@ -328,6 +330,12 @@ enum NoteMarkdown {
         ) else { return base }
         return UIFont(descriptor: descriptor, size: size)
     }
+}
+
+extension NSAttributedString.Key {
+    /// A picture's caption drawn in its sentence: the picture's words, not
+    /// the writer's prose, so nothing reads it as part of the text around.
+    static let pictureCaption = NSAttributedString.Key("LampPictureCaption")
 }
 
 /// A picture in a note, laid out against the line it sits on: as wide as the

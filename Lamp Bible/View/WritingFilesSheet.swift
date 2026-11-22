@@ -511,7 +511,10 @@ struct WritingFileView: View {
     private func block(_ piece: WritingDocumentText.Piece, first: Int, open: Int?) -> some View {
         switch piece {
         case .prose(let prose):
-            WritingFileText(text: WritingDocumentText.drawingMarks(prose, first: first, open: open).text, onMark: choose)
+            WritingFileText(
+                text: WritingDocumentText.linkingAddresses(WritingDocumentText.drawingMarks(prose, first: first, open: open).text),
+                onMark: choose
+            )
                 .padding(.horizontal, 20)
         case .code(let text, let indent):
             ScrollView(.horizontal) {
@@ -567,7 +570,7 @@ struct WritingFileView: View {
                 let drawn = WritingDocumentText.drawingMarks(cell, first: first, open: open)
                 first = drawn.next
                 open = drawn.open
-                return WritingDocumentText.trimmed(drawn.text)
+                return WritingDocumentText.linkingAddresses(WritingDocumentText.trimmed(drawn.text))
             }
         }
     }
@@ -1703,6 +1706,55 @@ enum WritingDocumentText {
                 piece = raised
             }
             out += piece
+        }
+        return out
+    }
+
+    /// Drawn prose with each web or email address written out in it made
+    /// a link, as a reader expects (core's `LampBareLinks`). Only for
+    /// drawing: the editor reads a bare address as words, and so does
+    /// everything that decides what the file says. What the reader drew
+    /// that isn't plain words (a link the writer made, a review mark or
+    /// caret, a footnote's number, a picture, code) is spoken for, and an
+    /// address against any of it is left as words.
+    static func linkingAddresses(_ text: NSAttributedString) -> NSAttributedString {
+        var taken: [NSRange] = []
+        text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attributes, range, _ in
+            let font = attributes[.font] as? UIFont
+            if attributes[.link] != nil || attributes[.attachment] != nil || attributes[.pictureCaption] != nil
+                || (attributes[.baselineOffset] as? CGFloat ?? 0) != 0
+                || font?.fontDescriptor.symbolicTraits.contains(.traitMonoSpace) == true {
+                taken.append(range)
+            }
+        }
+        let parts = LampBareLinks.links(in: text.string, excluding: taken)
+        guard !parts.isEmpty else { return text }
+        let out = NSMutableAttributedString(attributedString: text)
+        for part in parts {
+            out.addAttributes([.link: part.url, .foregroundColor: UIColor.lampLink], range: part.range)
+        }
+        return out
+    }
+
+    /// The same for a table's cell.
+    static func linkingAddresses(_ cell: AttributedString) -> AttributedString {
+        var taken: [NSRange] = []
+        var at = 0
+        for run in cell.runs {
+            let length = (String(cell[run.range].characters) as NSString).length
+            if run.link != nil || run.imageURL != nil || run.inlinePresentationIntent?.contains(.code) == true
+                || (run.baselineOffset ?? 0) != 0 {
+                taken.append(NSRange(location: at, length: length))
+            }
+            at += length
+        }
+        let parts = LampBareLinks.links(in: String(cell.characters), excluding: taken)
+        guard !parts.isEmpty else { return cell }
+        var out = cell
+        for part in parts {
+            guard let range = Range(part.range, in: out) else { continue }
+            out[range].link = part.url
+            out[range].foregroundColor = Color(uiColor: .lampLink)
         }
         return out
     }
