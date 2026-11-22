@@ -27,8 +27,8 @@ iCloud Drive/Lamp Bible/
 │   │   └── media/
 │   │       ├── image-abc123.jpg
 │   │       └── audio-def456.m4a
-│   └── Devotionals/
-│       ├── my-devotional.md
+│   └── Writing/
+│       ├── my-writing.md
 │       └── media/
 │           ├── header-image.jpg
 │           └── meditation-audio.m4a
@@ -39,7 +39,7 @@ iCloud Drive/Lamp Bible/
     │   ├── All_Notes.md
     │   └── media/
     │       └── ...
-    └── Devotionals/
+    └── Writing/
         ├── walking-by-faith.md
         ├── All_Writing.md
         └── media/
@@ -363,18 +363,19 @@ Example:
 - Existing notes are merged by verse reference
 - Footnotes are renumbered to sequential IDs (1, 2, 3...)
 
-### Devotionals Import
+### Writing Import
 
-1. Place `.md` files in `Import/Devotionals/`
-2. Place any media files in `Import/Devotionals/media/`
-3. Open the app - import happens automatically on sync
-4. Successfully imported files are deleted
+1. Place `.md` files in `Import/Writing/`
+2. Place any media files in `Import/Writing/media/`
+3. Open the app: what's new in the folder is offered for review, at launch and on returning to the app
 
 **Import behavior:**
-- Each file creates one devotional entry
-- New UUIDs are generated for imported devotionals
+- Core's writing import plans the folder; nothing is imported until it's ticked in the review sheet
+- A file's `id` is kept; a file without one takes an id made from its path, so importing it again updates the same writing
+- Nothing in the folder is written or deleted
 - Media files are copied to local storage
-- Timestamps are updated to import time
+
+Before November 2026 the folder was `Import/Devotionals/`. The app renames an earlier folder to `Import/Writing/` (and `Export/Devotionals/` to `Export/Writing/`) when it next uses it, unless the new folder already holds something; then the earlier one is left for the person to move. A file without an `id` imported from the earlier folder took its id from a path starting `Devotionals/`, so after the rename it is offered as a new writing.
 
 ### Error Handling
 
@@ -399,17 +400,17 @@ Example:
 - Creates individual files per book, plus `All_Notes.md`
 - All media consolidated in `Export/Notes/media/`
 
-### Devotionals Export
+### Writing Export
 
-**Export single devotional:**
-- Open devotional → Share → Export to Markdown
-- Creates `Export/Devotionals/{title}.md`
-- Media copied to `Export/Devotionals/media/`
+**Export single writing:**
+- Open the writing → Share → Export to Markdown
+- Creates `Export/Writing/{title}.md`
+- Media copied to `Export/Writing/media/`
 
-**Export all devotionals:**
-- Go to Settings → Export → Devotionals → Export All
+**Export all writing:**
+- From My Writing → Export All
 - Creates individual files per writing, plus `All_Writing.md`
-- All media consolidated in `Export/Devotionals/media/`
+- All media consolidated in `Export/Writing/media/`
 
 ### Footnote ID Transformation
 

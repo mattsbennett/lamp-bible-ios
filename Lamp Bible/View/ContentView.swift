@@ -24,7 +24,7 @@ struct ContentView: View {
     @State private var showingDevotionalImport = false
     /// A finished import, said without an alert to dismiss.
     @State private var importToast: LampToast?
-    /// What the iCloud Import/Devotionals folder holds that's new, offered
+    /// What the iCloud Import/Writing folder holds that's new, offered
     /// for review.
     @State private var dropFolderImport: PendingWritingImport?
     /// A writing a link opened from anywhere but another writing.

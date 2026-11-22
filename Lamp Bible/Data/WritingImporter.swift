@@ -92,7 +92,7 @@ enum WritingImporter {
     }
 }
 
-/// The iCloud Documents/Import/Devotionals folder, read as an import offered
+/// The iCloud Documents/Import/Writing folder, read as an import offered
 /// for review. Nothing in it is written or deleted: a file stays where the
 /// person put it, and importing the folder again updates what it made.
 enum WritingDropFolder {
@@ -105,13 +105,26 @@ enum WritingDropFolder {
     static func pendingImport() async -> PendingWritingImport? {
         guard await SyncCoordinator.shared.settings.backend.usesICloudDocuments,
               let folder = DevotionalImportExportManager.shared.importDirectoryURL else { return nil }
-        return await pendingImport(in: folder)
+        return await pendingImport(
+            in: folder, earlierFolder: DevotionalImportExportManager.shared.earlierImportDirectoryURL
+        )
     }
 
-    static func pendingImport(in folder: URL, defaults: UserDefaults = .standard) async -> PendingWritingImport? {
+    /// `earlierFolder`, the folder's name before writing was renamed, is
+    /// moved to `folder` first.
+    static func pendingImport(
+        in folder: URL, earlierFolder: URL? = nil, defaults: UserDefaults = .standard
+    ) async -> PendingWritingImport? {
         let reviewed = defaults.string(forKey: reviewedKey)
         return await Task.detached(priority: .utility) { () -> PendingWritingImport? in
             let fileManager = FileManager.default
+            var folder = folder
+            // A move that couldn't be made this time leaves the earlier
+            // folder the one to read, rather than its files unoffered.
+            if let earlierFolder,
+               DevotionalImportExportManager.moveEarlierFolder(from: earlierFolder, to: folder) == .failed {
+                folder = earlierFolder
+            }
             guard fileManager.fileExists(atPath: folder.path) else {
                 try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
                 return nil

@@ -317,6 +317,83 @@ final class DevotionalFolderTransferTests: XCTestCase {
         XCTAssertTrue(isDirectory.boolValue)
     }
 
+    // MARK: - The earlier folder name
+
+    /// `Import/Devotionals`, from before writing was renamed, is moved to
+    /// `Import/Writing` whole, and what it holds is offered from there.
+    func testAnEarlierDevotionalsFolderIsMovedToWritingAndOffered() async throws {
+        let fileManager = FileManager.default
+        let earlier = folder.appendingPathComponent("Devotionals", isDirectory: true)
+        let current = folder.appendingPathComponent("Writing", isDirectory: true)
+        try fileManager.createDirectory(at: earlier.appendingPathComponent("media"), withIntermediateDirectories: true)
+        try "---\ntitle: \"Moved\"\nlastModified: 2026-02-01\n---\n\nFrom the old folder."
+            .write(to: earlier.appendingPathComponent("moved.md"), atomically: true, encoding: .utf8)
+        try Data([1]).write(to: earlier.appendingPathComponent("media/photo.png"))
+
+        let pending = await WritingDropFolder.pendingImport(in: current, earlierFolder: earlier, defaults: defaults)
+
+        XCTAssertFalse(fileManager.fileExists(atPath: earlier.path))
+        XCTAssertTrue(fileManager.fileExists(atPath: current.appendingPathComponent("moved.md").path))
+        XCTAssertTrue(fileManager.fileExists(atPath: current.appendingPathComponent("media/photo.png").path))
+        XCTAssertEqual(try XCTUnwrap(pending).plan.items.map(\.title), ["Moved"])
+    }
+
+    /// Where both folders hold something, nothing is moved or merged, so no
+    /// writing is parted from its pictures; an empty earlier folder, as an
+    /// older Lamp makes, is removed, and an empty new one gives way.
+    func testFoldersThatBothHoldSomethingAreLeftAsTheyAre() throws {
+        let fileManager = FileManager.default
+        let earlier = folder.appendingPathComponent("Devotionals", isDirectory: true)
+        let current = folder.appendingPathComponent("Writing", isDirectory: true)
+        try fileManager.createDirectory(at: earlier, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: current, withIntermediateDirectories: true)
+        try "old".write(to: earlier.appendingPathComponent("old.md"), atomically: true, encoding: .utf8)
+        try "new".write(to: current.appendingPathComponent("new.md"), atomically: true, encoding: .utf8)
+
+        DevotionalImportExportManager.moveEarlierFolder(from: earlier, to: current)
+
+        XCTAssertEqual(try fileManager.contentsOfDirectory(atPath: earlier.path), ["old.md"])
+        XCTAssertEqual(try fileManager.contentsOfDirectory(atPath: current.path), ["new.md"])
+
+        // Emptied, the earlier folder goes, `.DS_Store` and all.
+        try fileManager.removeItem(at: earlier.appendingPathComponent("old.md"))
+        try Data().write(to: earlier.appendingPathComponent(".DS_Store"))
+        DevotionalImportExportManager.moveEarlierFolder(from: earlier, to: current)
+        XCTAssertFalse(fileManager.fileExists(atPath: earlier.path))
+        XCTAssertEqual(try fileManager.contentsOfDirectory(atPath: current.path), ["new.md"])
+    }
+
+    /// A new folder made empty, at a look before anything was dropped in,
+    /// gives way to the earlier folder with everything in it.
+    func testAnEmptyNewFolderGivesWayToTheEarlierOne() throws {
+        let fileManager = FileManager.default
+        let earlier = folder.appendingPathComponent("Devotionals", isDirectory: true)
+        let current = folder.appendingPathComponent("Writing", isDirectory: true)
+        try fileManager.createDirectory(at: earlier, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: current, withIntermediateDirectories: true)
+        try "old".write(to: earlier.appendingPathComponent("old.md"), atomically: true, encoding: .utf8)
+
+        DevotionalImportExportManager.moveEarlierFolder(from: earlier, to: current)
+
+        XCTAssertFalse(fileManager.fileExists(atPath: earlier.path))
+        XCTAssertEqual(try fileManager.contentsOfDirectory(atPath: current.path), ["old.md"])
+    }
+
+    /// A folder named `.DS_Store` is not Finder's file, and isn't removed.
+    func testAFolderNamedLikeFindersFileIsKept() throws {
+        let fileManager = FileManager.default
+        let earlier = folder.appendingPathComponent("Devotionals", isDirectory: true)
+        let current = folder.appendingPathComponent("Writing", isDirectory: true)
+        try fileManager.createDirectory(at: earlier.appendingPathComponent(".DS_Store"), withIntermediateDirectories: true)
+        try "kept".write(to: earlier.appendingPathComponent(".DS_Store/kept.md"), atomically: true, encoding: .utf8)
+        try fileManager.createDirectory(at: current, withIntermediateDirectories: true)
+        try "new".write(to: current.appendingPathComponent("new.md"), atomically: true, encoding: .utf8)
+
+        DevotionalImportExportManager.moveEarlierFolder(from: earlier, to: current)
+
+        XCTAssertTrue(fileManager.fileExists(atPath: earlier.appendingPathComponent(".DS_Store/kept.md").path))
+    }
+
     // MARK: - Export
 
     func testAWritingIsWrittenOutAsMarkdownNamedAfterIt() throws {
