@@ -789,6 +789,60 @@ struct AnnotatedTextView: View {
     }
 }
 
+// MARK: - Tapped Character
+
+extension NSLayoutManager {
+    /// The character a tap at `point`, in `container`'s coordinates, is on.
+    /// TextKit 1 counts a line's spacing, and its paragraph's after the last
+    /// line, as part of that line, below its letters, so a tap a little high
+    /// on a line, in the gap over its letters, took the line above: a
+    /// reference tapped opened the one printed over it. Of the line the
+    /// point falls in and the line after, the one whose letters are nearer
+    /// takes the tap.
+    func characterIndex(tappedAt point: CGPoint, in container: NSTextContainer) -> Int {
+        let hit = glyphIndex(for: point, in: container)
+        var line = point.y
+        if hit < numberOfGlyphs {
+            var range = NSRange()
+            lineFragmentRect(forGlyphAt: hit, effectiveRange: &range)
+            var bands = [letterBand(ofLineAt: hit)]
+            if NSMaxRange(range) < numberOfGlyphs,
+               textContainer(forGlyphAt: NSMaxRange(range), effectiveRange: nil) === container {
+                bands.append(letterBand(ofLineAt: NSMaxRange(range)))
+            }
+            func distance(_ band: ClosedRange<CGFloat>) -> CGFloat {
+                point.y < band.lowerBound ? band.lowerBound - point.y : max(0, point.y - band.upperBound)
+            }
+            if let nearest = bands.min(by: { distance($0) < distance($1) }) {
+                line = (nearest.lowerBound + nearest.upperBound) / 2
+            }
+        }
+        return characterIndex(
+            for: CGPoint(x: point.x, y: line),
+            in: container,
+            fractionOfDistanceBetweenInsertionPoints: nil
+        )
+    }
+
+    /// From the top of the tallest letter on the line at `glyph` to the
+    /// bottom of the deepest, without the spacing under them; the whole
+    /// line where it has no font to measure by.
+    private func letterBand(ofLineAt glyph: Int) -> ClosedRange<CGFloat> {
+        var range = NSRange()
+        let rect = lineFragmentRect(forGlyphAt: glyph, effectiveRange: &range)
+        let baseline = rect.minY + location(forGlyphAt: range.location).y
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        textStorage?.enumerateAttribute(.font, in: characterRange(forGlyphRange: range, actualGlyphRange: nil)) { value, _, _ in
+            guard let font = value as? UIFont else { return }
+            ascent = max(ascent, font.ascender)
+            descent = max(descent, -font.descender)
+        }
+        guard ascent > 0 else { return rect.minY...rect.maxY }
+        return max(rect.minY, baseline - ascent)...min(rect.maxY, max(rect.minY, baseline + descent))
+    }
+}
+
 // MARK: - Tappable Commentary Text View
 
 /// Custom UITextView that uses tap gestures instead of URL-based link handling
@@ -845,9 +899,8 @@ private class TappableCommentaryTextView: UITextView {
 
         // Get character index at tap location
         let characterIndex = textKit1LayoutManager.characterIndex(
-            for: locationInTextContainer,
-            in: textKit1TextContainer,
-            fractionOfDistanceBetweenInsertionPoints: nil
+            tappedAt: locationInTextContainer,
+            in: textKit1TextContainer
         )
 
         guard characterIndex < textKit1TextStorage.length else { return }

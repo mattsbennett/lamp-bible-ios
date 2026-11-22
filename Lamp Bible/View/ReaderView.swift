@@ -1365,9 +1365,8 @@ struct ChapterTextView: UIViewRepresentable {
             )
 
             let characterIndex = textView.layoutManager.characterIndex(
-                for: adjustedPoint,
-                in: textView.textContainer,
-                fractionOfDistanceBetweenInsertionPoints: nil
+                tappedAt: adjustedPoint,
+                in: textView.textContainer
             )
 
             // A tap away from selected text ends the selection, and nothing

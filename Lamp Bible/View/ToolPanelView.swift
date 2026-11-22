@@ -4603,9 +4603,8 @@ private class TappableNoteTextView: UITextView {
         )
 
         let characterIndex = textKit1LayoutManager.characterIndex(
-            for: locationInTextContainer,
-            in: textKit1TextContainer,
-            fractionOfDistanceBetweenInsertionPoints: nil
+            tappedAt: locationInTextContainer,
+            in: textKit1TextContainer
         )
 
         guard characterIndex < textKit1TextStorage.length else {

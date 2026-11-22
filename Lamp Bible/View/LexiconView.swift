@@ -1875,9 +1875,8 @@ private class TappableTextView: UITextView {
 
         // Get character index at tap location
         let characterIndex = textKit1LayoutManager.characterIndex(
-            for: locationInTextContainer,
-            in: textKit1TextContainer,
-            fractionOfDistanceBetweenInsertionPoints: nil
+            tappedAt: locationInTextContainer,
+            in: textKit1TextContainer
         )
 
         guard characterIndex < textKit1TextStorage.length else { return }

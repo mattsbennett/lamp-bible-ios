@@ -10980,3 +10980,64 @@ final class WritingDocumentMarkDrawingTests: XCTestCase {
         XCTAssertEqual(drawn.next, 1)
     }
 }
+
+final class TappedCharacterTests: XCTestCase {
+    /// Two short paragraphs, wide apart: 20 points of line spacing and 30
+    /// after the first paragraph, all of which TextKit 1 puts below the first
+    /// paragraph's letters.
+    private func layout() -> (NSLayoutManager, NSTextContainer, NSTextStorage) {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 20
+        style.paragraphSpacing = 30
+        let storage = NSTextStorage(string: "Whence Matt\nReciprocal Kgs", attributes: [
+            .font: UIFont.systemFont(ofSize: 17),
+            .paragraphStyle: style,
+        ])
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 400, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        storage.addLayoutManager(manager)
+        manager.addTextContainer(container)
+        manager.ensureLayout(for: container)
+        return (manager, container, storage)
+    }
+
+    func testATapJustOverALinesLettersTakesThatLine() {
+        let (manager, container, storage) = layout()
+        let second = (storage.string as NSString).range(of: "Kgs")
+        let first = (storage.string as NSString).range(of: "Matt")
+        let secondRect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: second, actualCharacterRange: nil), in: container)
+        let firstLine = manager.lineFragmentRect(forGlyphAt: manager.glyphIndexForCharacter(at: first.location), effectiveRange: nil)
+        let font = UIFont.systemFont(ofSize: 17)
+        let secondGlyph = manager.glyphIndexForCharacter(at: second.location)
+        let baseline = manager.lineFragmentRect(forGlyphAt: secondGlyph, effectiveRange: nil).minY
+            + manager.location(forGlyphAt: secondGlyph).y
+        // A few points over the second line's letters: still inside the
+        // first line's fragment, under its spacing.
+        let tap = CGPoint(x: secondRect.midX, y: baseline - font.ascender - 4)
+        XCTAssertLessThan(tap.y, firstLine.maxY)
+        let plain = manager.characterIndex(for: tap, in: container, fractionOfDistanceBetweenInsertionPoints: nil)
+        XCTAssertLessThan(plain, second.location, "TextKit alone gives the line above")
+        let tapped = manager.characterIndex(tappedAt: tap, in: container)
+        XCTAssertTrue(NSLocationInRange(tapped, second), "\(tapped)")
+    }
+
+    func testATapOnALinesLettersKeepsThatLine() {
+        let (manager, container, storage) = layout()
+        let first = (storage.string as NSString).range(of: "Matt")
+        let second = (storage.string as NSString).range(of: "Kgs")
+        let firstRect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: first, actualCharacterRange: nil), in: container)
+        let firstGlyph = manager.glyphIndexForCharacter(at: first.location)
+        let baseline = manager.lineFragmentRect(forGlyphAt: firstGlyph, effectiveRange: nil).minY
+            + manager.location(forGlyphAt: firstGlyph).y
+        // On the first line's letters, and just under them.
+        for y in [baseline - 6, baseline + 3] {
+            let tapped = manager.characterIndex(tappedAt: CGPoint(x: firstRect.midX, y: y), in: container)
+            XCTAssertTrue(NSLocationInRange(tapped, first), "\(y): \(tapped)")
+        }
+        // Below the last line, which has no line after it.
+        let secondRect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: second, actualCharacterRange: nil), in: container)
+        let below = manager.characterIndex(tappedAt: CGPoint(x: secondRect.midX, y: secondRect.maxY + 40), in: container)
+        XCTAssertTrue(NSLocationInRange(below, second), "\(below)")
+    }
+}
