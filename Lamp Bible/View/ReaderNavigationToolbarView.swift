@@ -751,6 +751,32 @@ struct WindowControlsInsetReader: UIViewRepresentable {
     final class Probe: UIView {
         var onChange: ((WindowControlsInsets) -> Void)?
         private var reported: WindowControlsInsets?
+        /// Held to the safe area with corner adaptation, so Auto Layout
+        /// moves it, and lays this out again, whenever the window's controls
+        /// come, go or move. Measured only when this view's own size or safe
+        /// area changed, the room kept went stale: a window put beside
+        /// another kept the back button under its controls.
+        private let adapted = UIView()
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            if #available(iOS 26.0, *) {
+                adapted.isHidden = true
+                adapted.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(adapted)
+                let guide = layoutGuide(for: .safeArea(cornerAdaptation: .horizontal))
+                NSLayoutConstraint.activate([
+                    adapted.leftAnchor.constraint(equalTo: guide.leftAnchor),
+                    adapted.rightAnchor.constraint(equalTo: guide.rightAnchor),
+                    adapted.topAnchor.constraint(equalTo: topAnchor),
+                    adapted.heightAnchor.constraint(equalToConstant: 0),
+                ])
+            }
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
 
         override func layoutSubviews() {
             super.layoutSubviews()
@@ -762,12 +788,16 @@ struct WindowControlsInsetReader: UIViewRepresentable {
             report()
         }
 
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            setNeedsLayout()
+        }
+
         private func report() {
             var value = WindowControlsInsets()
-            if #available(iOS 26.0, *) {
-                let adapted = edgeInsets(for: .safeArea(cornerAdaptation: .horizontal))
-                let left = max(0, adapted.left - safeAreaInsets.left)
-                let right = max(0, adapted.right - safeAreaInsets.right)
+            if #available(iOS 26.0, *), window != nil {
+                let left = max(0, adapted.frame.minX - safeAreaInsets.left)
+                let right = max(0, bounds.maxX - adapted.frame.maxX - safeAreaInsets.right)
                 let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
                 value.leading = rightToLeft ? right : left
                 value.trailing = rightToLeft ? left : right
