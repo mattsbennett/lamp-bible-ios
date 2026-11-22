@@ -153,40 +153,58 @@ enum AgentTurnNotifications {
 /// Lamp in front, since it's sent only when its chat is out of view; the
 /// reading reminder keeps the system's default of not showing then. A tap on
 /// a turn's leads back to its chat.
+///
+/// The completion-handler forms, each handler called on the main queue: the
+/// system's completion of a tap updates the app's snapshot, which UIKit
+/// asserts is on the main thread, and an `async` method returning on the
+/// cooperative pool brought Lamp down there (2026-11-22, a tapped push).
 final class AgentTurnNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     static let shared = AgentTurnNotificationDelegate()
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
         let content = notification.request.content
-        guard content.categoryIdentifier == AgentTurnNotifications.categoryIdentifier else { return [] }
-        // iCloud's push: not shown here for another device's turn, one this
-        // device heard end, or one on screen; and, shown, it's heard, so the
-        // phone's own word of the same turn isn't given again.
-        if let pushed = AgentTurnPush.turn(fromPush: content.userInfo) {
-            AgentTurnPush.notePushSeen(from: pushed.deviceID)
-            let shows = await MainActor.run { () -> Bool in
-                guard AgentTurnNotifications.isEnabledNow, AgentTurnPush.belongsHere(pushed),
-                      !AgentRemoteClient.shared.hasHeard(chatID: pushed.chatID, turnID: pushed.turnID) else { return false }
-                AgentRemoteClient.shared.noteHeard(chatID: pushed.chatID, turnID: pushed.turnID)
-                return true
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                completionHandler(Self.presentation(of: content))
             }
-            return shows ? [.banner, .sound, .list] : []
         }
-        return [.banner, .sound, .list]
     }
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
         let content = response.notification.request.content
-        guard content.categoryIdentifier == AgentTurnNotifications.categoryIdentifier,
-              let route = AgentTurnRoute(userInfo: content.userInfo)
-                ?? AgentTurnPush.turn(fromPush: content.userInfo)?.route else { return }
-        if let pushed = AgentTurnPush.turn(fromPush: content.userInfo) { AgentTurnPush.notePushSeen(from: pushed.deviceID) }
-        await MainActor.run { DeepLinkManager.shared.show(route) }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                if content.categoryIdentifier == AgentTurnNotifications.categoryIdentifier {
+                    let pushed = AgentTurnPush.turn(fromPush: content.userInfo)
+                    if let pushed { AgentTurnPush.notePushSeen(from: pushed.deviceID) }
+                    if let route = AgentTurnRoute(userInfo: content.userInfo) ?? pushed?.route {
+                        DeepLinkManager.shared.show(route)
+                    }
+                }
+                completionHandler()
+            }
+        }
+    }
+
+    /// iCloud's push: not shown here for another device's turn, one this
+    /// device heard end, or one on screen; and, shown, it's heard, so the
+    /// phone's own word of the same turn isn't given again.
+    @MainActor
+    private static func presentation(of content: UNNotificationContent) -> UNNotificationPresentationOptions {
+        guard content.categoryIdentifier == AgentTurnNotifications.categoryIdentifier else { return [] }
+        guard let pushed = AgentTurnPush.turn(fromPush: content.userInfo) else { return [.banner, .sound, .list] }
+        AgentTurnPush.notePushSeen(from: pushed.deviceID)
+        guard AgentTurnNotifications.isEnabledNow, AgentTurnPush.belongsHere(pushed),
+              !AgentRemoteClient.shared.hasHeard(chatID: pushed.chatID, turnID: pushed.turnID) else { return [] }
+        AgentRemoteClient.shared.noteHeard(chatID: pushed.chatID, turnID: pushed.turnID)
+        return [.banner, .sound, .list]
     }
 }
