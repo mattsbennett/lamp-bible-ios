@@ -1540,18 +1540,21 @@ func copiedText() {
         (() => {
             const rv = window.editorAPI;
             rv.setMode('edit');
-            rv.load('*The Bible in English*');
             const dom = document.querySelector('.ProseMirror');
-            dom.focus();
-            dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }));
-            const data = new DataTransfer();
-            dom.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }));
-            const plain = data.getData('text/plain');
+            const copied = markdown => {
+                rv.load(markdown);
+                dom.focus();
+                dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }));
+                const data = new DataTransfer();
+                dom.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }));
+                return data.getData('text/plain');
+            };
+            const plain = [copied('*The Bible in English*'), copied('One **two**\\n\\nThree')];
             rv.load('One deux three.\\n\\nFour five.');
             return plain
         })()
         """) { r in
-        check(r as? String == "The Bible in English", "a copy's plain text is the words, not Markdown (read: \(String(describing: r)))")
+        check((r as? [String]) == ["The Bible in English", "One two\n\nThree"], "a copy's plain text is the words, not Markdown, a paragraph to a block (read: \(String(describing: r)))")
         restoreWording()
     }
 }

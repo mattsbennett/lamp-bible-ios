@@ -1384,6 +1384,25 @@ function placeReviewMarks(markedMarkdown) {
   return tr.doc.eq(editor.state.doc) ? read.ranges : null
 }
 
+// What a copy puts on the clipboard as plain text: the words of what is
+// selected and nothing else, a block to a paragraph and a line break to a
+// line. TipTap's own reads everything between the selection's two ends,
+// which for cells chosen in a table takes the cells between them too.
+const PlainTextCopy = Extension.create({
+  name: 'plainTextCopy',
+  // Ahead of TipTap's, which would otherwise answer first.
+  priority: 1000,
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      props: {
+        clipboardTextSerializer: slice => slice.content.textBetween(
+          0, slice.content.size, '\n\n', leaf => leaf.type.name === 'hardBreak' ? '\n' : ''
+        ),
+      },
+    })]
+  },
+})
+
 const ReviewMarks = Extension.create({
   name: 'reviewMarks',
   addProseMirrorPlugins() {
@@ -1494,6 +1513,7 @@ function initEditor() {
       VerseReferences,
       Search,
       ReviewMarks,
+      PlainTextCopy,
       FootnoteRef,
       FootnoteDefinition,
       AudioBlock,
