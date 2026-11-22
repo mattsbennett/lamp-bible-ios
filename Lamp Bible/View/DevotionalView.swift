@@ -1657,7 +1657,9 @@ struct DevotionalView: View {
             }
 
             // A restore owed for the writing is recorded if this text holds it.
-            await WritingRestoreObligations.shared.settle(writingID: devotional.meta.id, saved: savedMarkdown)
+            await WritingRestoreObligations.shared.settle(
+                writingID: devotional.meta.id, saved: savedMarkdown, current: markdownContent
+            )
 
             // Check sync status after save
             await checkSyncStatus()
@@ -1755,7 +1757,15 @@ struct DevotionalView: View {
                             if let carry {
                                 if let previous { WritingReviewWork.shared.carry(carry, from: previous, to: keptMarkdown, savedAs: committed) } else { carry.reservation.giveUp() }
                             }
-                            Task { await WritingRestoreObligations.shared.settle(writingID: devToSave.meta.id, saved: keptMarkdown) }
+                            // Taken together: a restore owed after them was
+                            // made in neither text.
+                            let current = markdownContent
+                            let owedThen = WritingRestoreObligations.shared.owedNow(for: devToSave.meta.id)
+                            Task {
+                                await WritingRestoreObligations.shared.settle(
+                                    writingID: devToSave.meta.id, saved: keptMarkdown, current: current, owedThen: owedThen
+                                )
+                            }
                         }
                         return .saved(committed)
                     }

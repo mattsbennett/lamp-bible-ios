@@ -486,7 +486,11 @@ struct WritingFileView: View {
     /// text shown.
     private func shownText(of document: WritingDocument) -> String {
         guard let marks, marks.text == document.text else { return document.text }
-        return WritingDocumentText.numbered(marks.marked)
+        // Placed for Markdown where it's read as Markdown (core leaves code
+        // alone); plain text keeps each marker where it stands, since what
+        // it draws is what's written.
+        guard WritingDocumentText.isMarkdown(document.name) else { return LampWritingReviewMarkdown.numbered(marks.marked) }
+        return LampWritingReviewMarkdown.drawable(marks.marked)
     }
 
     /// Each block to draw, with the place of the first passage it opens and
@@ -502,7 +506,7 @@ struct WritingFileView: View {
             case .table(let rows): text = rows.flatMap { $0 }.joined()
             }
             let drawn = (segment, first, open)
-            (first, open) = WritingDocumentText.passing(text, first: first, open: open)
+            (first, open) = LampWritingReviewMarkdown.passing(text, first: first, open: open)
             return drawn
         }
     }
@@ -830,52 +834,25 @@ enum WritingDocumentText {
         return NSAttributedString(string: text, attributes: attributes)
     }
 
-    /// Markdown prose, its links kept to be opened. Review markers in it
-    /// stay in what's drawn, for `drawingMarks` to draw; one before a
-    /// line's block syntax is moved after it first, so the line still reads
-    /// as its heading, list item or quote.
+    /// Markdown prose, its links kept to be opened. Review markers in it,
+    /// placed by core where the Markdown still reads as it did
+    /// (`LampWritingReviewMarkdown.drawable`), stay in what's drawn, for
+    /// `drawingMarks` to draw.
+    /// Each line's block syntax cleared again first: a fence's markers,
+    /// carried to the line after it when the blocks are cut, may stand
+    /// before a heading's or a list's.
     static func prose(_ text: String, fontSize: CGFloat) -> NSAttributedString {
-        let lines = text.components(separatedBy: "\n").map { clearingBlockSyntax(movingMarksOutOfLinks($0)) }
+        let lines = text.components(separatedBy: "\n").map(LampWritingReviewMarkdown.clearingBlockSyntax)
         return NoteMarkdown.render(lines.joined(separator: "\n"), fontSize: fontSize, serif: true, linksTapped: true).text
     }
 
     // MARK: Review marks
 
-    /// The markers core puts at a mark's edges (`markedMarkdown(in:)`), as
-    /// the editor page reads them: a passage's start and end, and a point
-    /// where words were taken out.
-    static func isMarker(_ character: Character) -> Bool {
-        character == LampWritingReview.markStart || character == LampWritingReview.markEnd
-            || character == LampWritingReview.markPoint || placeDigit(character) != nil || character == placeEnd
-    }
-
-    /// Each passage's place is written after its start or point marker, in
-    /// private-use digits, so it survives Markdown dropping a marker it
-    /// reads as part of something else — a link's address — and every
-    /// passage after still names its own change.
-    static let placeEnd: Character = "\u{E01A}"
-
-    static func placeDigit(_ character: Character) -> Int? {
-        guard let scalar = character.unicodeScalars.first, character.unicodeScalars.count == 1,
-              (0xE010...0xE019).contains(scalar.value) else { return nil }
-        return Int(scalar.value - 0xE010)
-    }
-
-    /// `marked` with each passage's place after its marker, in order.
-    static func numbered(_ marked: String) -> String {
-        var out = ""
-        var next = 0
-        for character in marked {
-            out.append(character)
-            guard character == LampWritingReview.markStart || character == LampWritingReview.markPoint else { continue }
-            for digit in String(next) {
-                out.unicodeScalars.append(Unicode.Scalar(0xE010 + UInt32(digit.wholeNumberValue ?? 0))!)
-            }
-            out.append(placeEnd)
-            next += 1
-        }
-        return out
-    }
+    /// The markers, and each passage's place written after its own, as
+    /// core writes them (`LampWritingReviewMarkdown`).
+    static func isMarker(_ character: Character) -> Bool { LampWritingReviewMarkdown.isMarker(character) }
+    static func unmarked(_ text: String) -> String { LampWritingReviewMarkdown.unmarked(text) }
+    static func markers(in text: String) -> String { LampWritingReviewMarkdown.markers(in: text) }
 
     /// The place written after the marker at `index` in `characters`, and
     /// where it ends; nil where none is written.
@@ -883,179 +860,13 @@ enum WritingDocumentText {
         var at = index + 1
         var value = 0
         var digits = 0
-        while at < characters.count, let digit = placeDigit(characters[at]) {
+        while at < characters.count, let digit = LampWritingReviewMarkdown.placeDigit(characters[at]) {
             value = value * 10 + digit
             digits += 1
             at += 1
         }
-        guard digits > 0, at < characters.count, characters[at] == placeEnd else { return nil }
+        guard digits > 0, at < characters.count, characters[at] == LampWritingReviewMarkdown.placeEnd else { return nil }
         return (value, at)
-    }
-
-    static func unmarked(_ text: String) -> String { text.filter { !isMarker($0) } }
-    static func markers(in text: String) -> String { text.filter(isMarker) }
-
-    /// Where a stretch of marked text leaves the count of passages, and a
-    /// passage still open at its end, from where it took them up.
-    static func passing(_ text: String, first: Int, open: Int?) -> (next: Int, open: Int?) {
-        var next = first
-        var open = open
-        let characters = Array(text)
-        for (index, character) in characters.enumerated() {
-            switch character {
-            case LampWritingReview.markStart, LampWritingReview.markPoint:
-                let place = Self.place(after: index, in: characters)?.place ?? next
-                if character == LampWritingReview.markStart { open = place }
-                next = place + 1
-            case LampWritingReview.markEnd: open = nil
-            default: break
-            }
-        }
-        return (next, open)
-    }
-
-    /// Review markers inside a link's address moved out before its words,
-    /// each passage as a point: in the address they'd be taken into where
-    /// the link goes, and the change they mark would have nothing to tap.
-    /// A point, not a passage around the words, which may be marked
-    /// themselves.
-    static func movingMarksOutOfLinks(_ line: String) -> String {
-        guard line.contains(where: isMarker) else { return line }
-        let escapesKept = keepingInlineSyntax(line)
-        // An address may hold parentheses, balanced two deep; a bracket a
-        // backslash escapes opens no link.
-        return escapesKept.replacing(#/(\\?)(!?)\[([^\]]*)\]\(((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\)/#) { match in
-            let address = String(match.output.4)
-            guard match.output.1.isEmpty, address.contains(where: isMarker) else { return String(match.output.0) }
-            let moved = sortingOut(markers(in: address))
-            // Before an image's `!` too, so it's still an image.
-            return "\(match.output.1)\(moved.before)\(match.output.2)[\(match.output.3)\(moved.ending)](\(unmarked(address)))\(moved.after)"
-        }
-        // An autolink, in angle brackets or bare: its markers before it, so
-        // it's still read as a link and goes where it says.
-        .replacing(#/<([\x{E000}-\x{E01A}]*[A-Za-z][A-Za-z0-9+.\-\x{E000}-\x{E01A}]*:[^\s<>]*)>/#) { match in
-            let link = String(match.output.1)
-            guard link.contains(where: isMarker) else { return String(match.output.0) }
-            let moved = sortingOut(markers(in: link))
-            return moved.before + moved.ending + "<\(unmarked(link))>" + moved.after
-        }
-        .replacing(#/(^|[^\w(<\x{E000}-\x{E01A}])([A-Za-z][A-Za-z0-9+.\-\x{E000}-\x{E01A}]*:\/\/[^\s<>()]+)/#) { match in
-            let link = String(match.output.2)
-            guard link.contains(where: isMarker) else { return String(match.output.0) }
-            let moved = sortingOut(markers(in: link))
-            return match.output.1 + moved.before + moved.ending + unmarked(link) + moved.after
-        }
-    }
-
-    /// Markers taken out of text that isn't drawn as written (a link's
-    /// address), sorted by where they go: passages begun and ended there as
-    /// points before it; an end of one begun before it, at its end; a start
-    /// of one running on past it, after it.
-    static func sortingOut(_ markers: String) -> (before: String, ending: String, after: String) {
-        var before = ""
-        var ending = ""
-        var after = ""
-        var group: String?
-        for character in asPoints(markers) {
-            if character == LampWritingReview.markEnd {
-                ending.append(character)
-            } else if character == LampWritingReview.markStart {
-                group = String(character)
-            } else if character == LampWritingReview.markPoint {
-                group = nil
-                before.append(character)
-            } else if group != nil {
-                group?.append(character)
-                if character == placeEnd, let started = group {
-                    after += started
-                    group = nil
-                }
-            } else {
-                before.append(character)
-            }
-        }
-        if let group { after += group }
-        return (before, ending, after)
-    }
-
-    /// Review markers standing between a backslash and the character it
-    /// escapes moved after that character, so the escape still reads.
-    static func keepingEscapes(_ line: String) -> String {
-        line.replacing(#/\\([\x{E000}-\x{E01A}]+)([!-\/:-@\[-`{-~])/#) { match in
-            "\\\(match.output.2)\(match.output.1)"
-        }
-    }
-
-    /// The line's inline syntax kept as it reads without review markers:
-    /// escapes whole, and markers stepped inside an emphasis's `*` or `_`,
-    /// whose meaning hangs on what stands beside them, which a marker (read
-    /// as a letter) would change. Repeated until nothing moves, so a run of
-    /// delimiters a marker split comes back together.
-    static func keepingInlineSyntax(_ line: String) -> String {
-        guard line.contains(where: isMarker) else { return line }
-        var kept = keepingEscapes(line)
-        for _ in 0..<8 {
-            let before = kept
-            // Syntax a marker split put back together: a run of `*`, `_` or
-            // backticks, a link's `](`, an image's `![`. The markers go on
-            // after the run, or before the bracket.
-            kept = kept.replacing(#/([*_`])([\x{E000}-\x{E01A}]+)(\1)/#) { "\($0.output.1)\($0.output.3)\($0.output.2)" }
-            kept = kept.replacing(#/\]([\x{E000}-\x{E01A}]+)\(/#) { "\($0.output.1)](" }
-            kept = kept.replacing(#/!([\x{E000}-\x{E01A}]+)\[/#) { "\($0.output.1)![" }
-            // A whole run of delimiters only, never part of one.
-            kept = kept.replacing(#/([^\\_*\x{E000}-\x{E01A}]|^)([\x{E000}-\x{E01A}]+)([_*]+)(?=\S)/#) {
-                "\($0.output.1)\($0.output.3)\($0.output.2)"
-            }
-            // Not an escaped one, which is no delimiter.
-            kept = kept.replacing(#/([^\s\\_*\x{E000}-\x{E01A}])([_*]+)([\x{E000}-\x{E01A}]+)/#) {
-                "\($0.output.1)\($0.output.3)\($0.output.2)"
-            }
-            if kept == before { break }
-        }
-        return kept
-    }
-
-    /// Markers from text that isn't drawn (a link's address, a fence's line,
-    /// a table's alignment row), each passage begun and ended among them
-    /// made a point, so it has a caret to tap; a start or end belonging to
-    /// a passage outside them kept as it is.
-    static func asPoints(_ markers: String) -> String {
-        let characters = Array(markers)
-        // Which starts are ended among these.
-        var open: [Int] = []
-        var ended: Set<Int> = []
-        var closing: Set<Int> = []
-        for (index, character) in characters.enumerated() {
-            if character == LampWritingReview.markStart {
-                open.append(index)
-            } else if character == LampWritingReview.markEnd, let start = open.popLast() {
-                ended.insert(start)
-                closing.insert(index)
-            }
-        }
-        var out = ""
-        for (index, character) in characters.enumerated() {
-            if closing.contains(index) { continue }
-            out.append(ended.contains(index) ? LampWritingReview.markPoint : character)
-        }
-        return out
-    }
-
-    /// A line with any review marker standing before its block's own syntax
-    /// (a heading's `#`, a list's marker, a quote's `>`) moved after it.
-    static func clearingBlockSyntax(_ line: String) -> String {
-        let bare = unmarked(line)
-        guard let match = bare.prefixMatch(of: #/\s*(?:#{1,6}\s+|[-*+]\s+|\d{1,9}[.)]\s+|>\s?)/#) else { return line }
-        let syntax = bare[match.range].count
-        var head = ""
-        var moved = ""
-        var rest = Substring(line)
-        while head.count < syntax, let character = rest.first {
-            rest = rest.dropFirst()
-            if isMarker(character) { moved.append(character) } else { head.append(character) }
-        }
-        // A change to the syntax alone, begun and ended in it, a point.
-        return head + asPoints(moved) + rest
     }
 
     /// A mark's tint, as the editor page draws it, and its edge's colour.
@@ -1258,7 +1069,6 @@ enum WritingDocumentText {
 
     /// A table cell's inline Markdown, or the cell as written where it won't read.
     static func cell(_ text: String) -> AttributedString {
-        let text = movingMarksOutOfLinks(text)
         return (try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible)
@@ -1280,7 +1090,7 @@ enum WritingDocumentText {
     /// A table row's cells, its outer pipes dropped and an escaped pipe kept
     /// as a pipe in its cell.
     static func cells(_ row: String) -> [String] {
-        let row = keepingEscapes(row.trimmingCharacters(in: .whitespaces))
+        let row = LampWritingReviewMarkdown.keepingEscapes(row.trimmingCharacters(in: .whitespaces))
         var cells: [String] = []
         var cell = ""
         var escaped = false
@@ -1414,7 +1224,7 @@ enum WritingDocumentText {
                 let run = trimmed.prefix(while: { $0 == open.mark }).count
                 if run >= open.length && run == trimmed.count {
                     fence = nil
-                    pending += asPoints(markers(in: line))
+                    pending += LampWritingReviewMarkdown.asPoints(markers(in: line))
                     segments.append(.code((code ?? []).joined(separator: "\n")))
                     code = nil
                 } else {
@@ -1427,7 +1237,7 @@ enum WritingDocumentText {
                 // Backticks after a backtick fence's own make a code span.
                 if run >= 3, mark == "~" || !trimmed.dropFirst(run).contains("`") {
                     endProse()
-                    pending += asPoints(markers(in: line))
+                    pending += LampWritingReviewMarkdown.asPoints(markers(in: line))
                     fence = (mark, run)
                     code = []
                     continue
@@ -1439,7 +1249,7 @@ enum WritingDocumentText {
             if trimmed.contains("|"), index + 1 < lines.count, isDelimiterRow(lines[index + 1]) {
                 endProse()
                 table = [cells(taking(row))]
-                pending += asPoints(markers(in: lines[index + 1]))
+                pending += LampWritingReviewMarkdown.asPoints(markers(in: lines[index + 1]))
                 inTable = true
                 skip = true
                 continue

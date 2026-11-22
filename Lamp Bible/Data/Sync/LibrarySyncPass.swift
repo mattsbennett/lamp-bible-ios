@@ -461,22 +461,6 @@ struct LibrarySyncPass {
         LampWritingReviewStore(rootURL: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0])
     }
 
-    /// The writing and document a review file is for, the document by its
-    /// name: nil for the writing's own prose. A document whose key is a
-    /// digest of a name too long to keep is named by its record (`record`,
-    /// asked only then), and the path must be the one that name makes, so a
-    /// file routed to another's place is never taken for its marks.
-    nonisolated static func reviewPlace(
-        of path: String, record: () -> LampWritingReview?
-    ) -> (writingID: String, document: String?)? {
-        guard let target = LampSyncFolderLayout.reviewTarget(ofPath: path) else { return nil }
-        guard let key = target.documentKey else { return (target.writingID, nil) }
-        guard let name = LampSyncFolderLayout.documentName(fromReviewKey: key) ?? record()?.document,
-              (try? LampSyncFolderLayout.writingReviewPath(writingID: target.writingID, document: name)) == path
-        else { return nil }
-        return (target.writingID, name)
-    }
-
     /// The record held here at a review path, read as it stands.
     nonisolated static func heldReview(at path: String) -> LampWritingReview? {
         let url = reviewStore.rootURL.appendingPathComponent(path)
@@ -512,9 +496,9 @@ struct LibrarySyncPass {
     }
 
     /// The writing a workspace folder is named for, among those with marks
-    /// kept here: a folder's name is made from its writing's id one way only.
+    /// kept here (`LampWritingWorkspaceLayout.writingID(ofFolder:among:)`).
     nonisolated static func markedWriting(ofFolder folder: String) -> String? {
-        (try? reviewStore.writingIDs())?.first { LampWritingWorkspaceLayout.directoryName(for: $0) == folder }
+        LampWritingWorkspaceLayout.writingID(ofFolder: folder, among: (try? reviewStore.writingIDs()) ?? [])
     }
 
     static func confirmsByReading(_ kind: LampSyncFileKind) -> Bool {
@@ -805,20 +789,12 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             now: Int64(Date().timeIntervalSince1970 * 1_000)
         )
         gathered.deletedLocally.merge(reviewDeletions) { max($0, $1) }
-        // A document's marks share its fate, judged here for each record of
-        // one, by the document's own path:
-        // - held here, brought back by a download or made again, they're the
-        //   document's, and no deletion of them goes up;
-        // - deleted here, they're deleted wherever the server holds them,
-        //   though they never reached this device, while that deletion still
-        //   stands over the write it deleted (one another device made since
-        //   outlives it, and so do its marks);
-        // - deleted in the library, they're deleted too;
-        // - never in it, a deletion of them already asked for goes up;
-        // - otherwise none does.
-        // A deletion going up is dated after the write the manifest holds for
-        // the marks, so a clock running behind can't let that write bring them
-        // back. A deleted writing's are core's sweep's, above.
+        // A document's marks share its fate (`LampWritingDocumentReview.fate`),
+        // judged here for each record of one by the document's own path,
+        // though the marks never reached this device. A deletion going up is
+        // dated after the write the manifest holds for the marks, so a clock
+        // running behind can't let that write bring them back. A deleted
+        // writing's are core's sweep's, above.
         let written = Dictionary(manifest.members.map { ($0.path, $0.presentSince ?? 0) }, uniquingKeysWith: max)
         let documentsHeld = try LibrarySyncPass.documentStore.held()
         // The write a deletion here deleted is the one it names, or, deleted
@@ -836,7 +812,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             .compactMap { LampWritingWorkspaceLayout.document(ofPath: $0) }
         for path in Set(written.keys).union(gathered.deletedLocally.keys) where reviewDeletions[path] == nil {
             guard let target = LampSyncFolderLayout.reviewTarget(ofPath: path), let key = target.documentKey else { continue }
-            let named = LibrarySyncPass.reviewPlace(of: path, record: { LibrarySyncPass.heldReview(at: path) })?.document
+            let named = LampWritingDocumentReview.place(of: path, record: LibrarySyncPass.heldReview(at: path))?.document
                 ?? documentsKnown.first {
                     LampWritingWorkspaceLayout.directoryName(for: target.writingID) == $0.folder
                         && LampSyncFolderLayout.reviewDocumentKey(writingID: target.writingID, document: $0.name) == key
@@ -851,41 +827,38 @@ final class PhonePassLibrary: LampSyncPassLibrary {
                 }
                 continue
             }
-            let place = (writingID: target.writingID, document: name)
             let document = manifest.entry(at: documentPath)
-            var deletion: Int64?
-            if documentsHeld[documentPath] != nil {
-                deletion = nil
-            } else if let change = deletedHere[documentPath] {
-                // As the plan weighs the document's own deletion: it stands over
-                // the write it deleted, and over any made before it.
-                var stands = true
-                if let document, document.isMember {
-                    let deleted = [change.revision, fileRecords.record(documentPath, in: source)?.effectiveRevision]
-                    let named = document.revision.map { write in
-                        deleted.contains { $0.map { LampSyncConditionalWrite.namesSameRevision($0, write) } ?? false }
-                    } ?? false
-                    stands = named || (written[documentPath].map { $0 <= change.at } ?? true)
-                }
-                deletion = stands ? max(gathered.deletedLocally[path] ?? 0, change.at) : nil
-            } else if let document, !document.isMember {
-                // Deleted in the library, though no deletion here asked: its
-                // marks go too, as its own device would have swept them.
-                deletion = max(gathered.deletedLocally[path] ?? 0, Int64(Date().timeIntervalSince1970 * 1_000))
-            } else if document == nil {
-                deletion = gathered.deletedLocally[path]
+            let change = deletedHere[documentPath]
+            // The revision the deletion here deleted, as core compares it:
+            // the one it names, or, deleted while its own upload ran, the one
+            // that upload made, which this device's records keep.
+            let deletedRevision: String? = change.flatMap { change in
+                guard let write = document?.revision else { return change.revision }
+                let named = [change.revision, fileRecords.record(documentPath, in: source)?.effectiveRevision]
+                    .contains { $0.map { LampSyncConditionalWrite.namesSameRevision($0, write) } ?? false }
+                return named ? write : change.revision
             }
-            guard let at = deletion else {
-                gathered.deletedLocally[path] = nil
+            let fate = LampWritingDocumentReview.fate(
+                held: documentsHeld[documentPath] != nil,
+                deletedHere: change.map { (at: $0.at, revision: deletedRevision) },
+                document: document.map { (revision: $0.revision, isMember: $0.isMember) },
+                documentWritten: written[documentPath],
+                asked: gathered.deletedLocally[path],
+                now: Int64(Date().timeIntervalSince1970 * 1_000)
+            )
+            switch fate {
+            case .none:
                 continue
+            case .cancelled:
+                gathered.deletedLocally[path] = nil
+            case .deleted(let at):
+                try reviews.remove(writingID: target.writingID, document: name)
+                gathered.deletedLocally[path] = written[path].map { max(at, $0 + 1) } ?? at
             }
-            try reviews.remove(writingID: place.writingID, document: name)
-            gathered.deletedLocally[path] = written[path].map { max(at, $0 + 1) } ?? at
         }
         // The writing's own and each document's beside it, a file each.
-        for kept in try reviews.reviewed() {
-            let path = try LampSyncFolderLayout.writingReviewPath(writingID: kept.writingID, documentKey: kept.documentKey)
-            guard let place = LibrarySyncPass.reviewPlace(of: path, record: { LibrarySyncPass.heldReview(at: path) })
+        for path in try reviews.paths() {
+            guard let place = LampWritingDocumentReview.place(of: path, record: LibrarySyncPass.heldReview(at: path))
             else { continue }
             // Sent from a copy, read under the file's lock: a clear landing
             // while the pass runs can't leave the bytes sent unlike the
@@ -960,10 +933,10 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         // Marks changed here and not yet sent, for a document held here, are
         // dated when they were written, so a document that outlived a
         // deletion keeps them though their own upload failed.
-        for kept in (try? reviews.reviewed()) ?? [] where kept.documentKey != nil {
-            guard let path = try? LampSyncFolderLayout.writingReviewPath(writingID: kept.writingID, documentKey: kept.documentKey),
-                  let name = LibrarySyncPass.reviewPlace(of: path, record: { LibrarySyncPass.heldReview(at: path) })?.document,
-                  let documentPath = try? LampWritingWorkspaceLayout.documentPath(writingID: kept.writingID, name: name),
+        for path in (try? reviews.paths()) ?? [] {
+            guard let place = LampWritingDocumentReview.place(of: path, record: LibrarySyncPass.heldReview(at: path)),
+                  let name = place.document,
+                  let documentPath = try? LampWritingWorkspaceLayout.documentPath(writingID: place.writingID, name: name),
                   heldDocuments[documentPath] != nil else { continue }
             var saved = gathered.savedAt[documentPath]
             let url = reviews.rootURL.appendingPathComponent(path)
@@ -1078,7 +1051,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             // download goes back up, by the plan on the next pass, or by
             // `reconcile` when both sides changed.
             let arrived = try Data(contentsOf: url)
-            guard let place = LibrarySyncPass.reviewPlace(of: path, record: { try? LampWritingReview.decoded(from: arrived) })
+            guard let place = LampWritingDocumentReview.place(of: path, record: try? LampWritingReview.decoded(from: arrived))
             else { return nil }
             try LibrarySyncPass.reviewStore.takeIn(downloaded: arrived, writingID: place.writingID, document: place.document)
             await MainActor.run { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
@@ -1105,7 +1078,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
                 // when this device had marks or clears the download lacked.
                 let reviews = LibrarySyncPass.reviewStore
                 let arrived = try Data(contentsOf: url)
-                guard let place = LibrarySyncPass.reviewPlace(of: path, record: { try? LampWritingReview.decoded(from: arrived) })
+                guard let place = LampWritingDocumentReview.place(of: path, record: try? LampWritingReview.decoded(from: arrived))
                 else { continue }
                 let differs = try reviews.takeIn(downloaded: arrived, writingID: place.writingID, document: place.document)
                 await MainActor.run { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
@@ -1156,7 +1129,7 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         case .writingReview:
             // The file at that path only: a document's record gone elsewhere
             // isn't the writing's own.
-            guard let place = LibrarySyncPass.reviewPlace(of: path, record: { LibrarySyncPass.heldReview(at: path) })
+            guard let place = LampWritingDocumentReview.place(of: path, record: LibrarySyncPass.heldReview(at: path))
             else { return }
             try LibrarySyncPass.reviewStore.remove(writingID: place.writingID, document: place.document)
             await MainActor.run { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
@@ -1529,13 +1502,10 @@ extension LibrarySyncPass {
     /// marks the server lacked, which goes back up.
     static func hasUnsentReviews(source: String) -> Bool {
         let reviews = reviewStore
-        guard let kept = try? reviews.reviewed(), !kept.isEmpty,
+        guard let paths = try? reviews.paths(), !paths.isEmpty,
               let records = try? ModuleDatabase.shared.libraryRecords(source: source) else { return false }
-        return kept.contains { kept in
-            guard let path = try? LampSyncFolderLayout.writingReviewPath(
-                      writingID: kept.writingID, documentKey: kept.documentKey
-                  ),
-                  let digest = try? LampSyncContentRevision.digest(forFileAt: reviews.rootURL.appendingPathComponent(path))
+        return paths.contains { path in
+            guard let digest = try? LampSyncContentRevision.digest(forFileAt: reviews.rootURL.appendingPathComponent(path))
             else { return false }
             return records.record(path, in: source)?.uploadedDigest != digest
         }
