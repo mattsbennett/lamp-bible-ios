@@ -572,7 +572,13 @@ final class AgentRemoteClient: ObservableObject {
     private var recoveryTarget: String?
     /// The search under way, whose time limit is its own.
     private var recoveryAttempt: UUID?
-    static let rediscoveryWait: TimeInterval = 10
+    /// The secret of the Mac being found again: a Mac of the same name that
+    /// proves another secret isn't it, and isn't connected to in its place.
+    private var recoverySecret: String?
+    /// The Mac last connected to, by name and proven secret.
+    private var lastConnected: (name: String, secret: String)?
+    /// For finding the Mac and connecting to it, handshake and all.
+    static let rediscoveryWait: TimeInterval = 15
 
     /// Looks for the Mac a lost connection was to by browsing, as it may be
     /// at another address now, and connects to it alone, never another that
@@ -582,17 +588,30 @@ final class AgentRemoteClient: ObservableObject {
         guard let target = host?.name else { return }
         rediscoveringLast = true
         recoveryTarget = target
+        // Checked only against a Mac this device was connected to under this
+        // name: a first connection that never got through proves nothing.
+        recoverySecret = lastConnected?.name == target ? lastConnected?.secret : nil
         let attempt = UUID()
         recoveryAttempt = attempt
         browse()
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.rediscoveryWait) { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.rediscoveringLast, self.recoveryAttempt == attempt,
-                      self.phase == .searching, self.connection == nil else { return }
+                guard let self, self.rediscoveringLast, self.recoveryAttempt == attempt else { return }
+                // Only while still looking or connecting: found and answered,
+                // asking for a code, or already said to have failed (no Local
+                // Network access, another version), the search is over.
+                switch self.phase {
+                case .searching, .connecting: break
+                default: return
+                }
+                // Not found, or found but not answering: said, with the
+                // buttons, rather than left turning.
                 self.rediscoveringLast = false
                 self.browser?.cancel()
                 self.browser = nil
-                self.phase = .unavailable("\(target) couldn\u{2019}t be found. Check it\u{2019}s open and on the same network.")
+                self.teardown()
+                self.lostRecoverably = true
+                self.phase = .unavailable("\(target) couldn\u{2019}t be reached. Check it\u{2019}s open and on the same network.")
             }
         }
     }
@@ -617,12 +636,22 @@ final class AgentRemoteClient: ObservableObject {
     /// The ping asked since coming back, unanswered: a connection iOS ended
     /// while Lamp was away can look open until something is sent on it.
     private var probe: UUID?
+    /// Pings sent on this connection and not yet answered. Pongs come back
+    /// in order, so the probe is answered only by the last ping's: an
+    /// earlier one, delivered late, leaves it waiting.
+    private var pingsOutstanding = 0
+    private weak var pingedConnection: NWConnection?
     static let probeWait: TimeInterval = 5
 
     private func probeConnection() {
         guard case .connected = phase, let watched = connection else { return }
         let id = UUID()
         probe = id
+        if pingedConnection !== watched {
+            pingedConnection = watched
+            pingsOutstanding = 0
+        }
+        pingsOutstanding += 1
         seal(.ping)
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.probeWait) { [weak self] in
             MainActor.assumeIsolated {
@@ -780,7 +809,7 @@ final class AgentRemoteClient: ObservableObject {
         guard phase == .searching, connection == nil, !choosingHost else { return }
         let last = UserDefaults.standard.string(forKey: Self.lastHostKey)
         if rediscoveringLast {
-            if let match = hosts.first(where: { $0.name == recoveryTarget }) { connect(to: match) }
+            if let match = hosts.first(where: { $0.name == recoveryTarget }) { connect(to: match, automatic: true) }
             return
         }
         if let match = hosts.first(where: { $0.name == last }) ?? (hosts.count == 1 ? hosts.first : nil) {
@@ -790,7 +819,13 @@ final class AgentRemoteClient: ObservableObject {
 
     // MARK: - Connecting
 
-    func connect(to host: Host, pendingCode: String? = nil) {
+    /// `automatic` for recovery's own connection; any other, the person's
+    /// choice, ends recovery, its deadline and its check of which Mac it is.
+    func connect(to host: Host, pendingCode: String? = nil, automatic: Bool = false) {
+        if !automatic {
+            rediscoveringLast = false
+            recoverySecret = nil
+        }
         closingReason = nil
         hostNamesRequests = false
         browser?.cancel()
@@ -830,6 +865,9 @@ final class AgentRemoteClient: ObservableObject {
     /// for has closed while someone scanned, a new one answers with it.
     func pair(code: String) {
         guard LampPresentationRemotePairing.normalizedCode(code) != nil else { return }
+        // A code entered is a pairing the person chose: recovery's over.
+        rediscoveringLast = false
+        recoverySecret = nil
         if session?.isWaitingForCode == true, connection != nil {
             perform(session?.pair(code: code) ?? [])
             if case .needsCode = phase, let host { phase = .connecting(host.name) }
@@ -926,6 +964,20 @@ final class AgentRemoteClient: ObservableObject {
                 }
             case .connected:
                 guard let host else { break }
+                // Found again by name, but proven to be another Mac: not
+                // taken for the one that was lost, nor its chats dropped.
+                if rediscoveringLast, let expected = recoverySecret, let secret = session?.hostSecret, secret != expected {
+                    rediscoveringLast = false
+                    teardown()
+                    lostRecoverably = false
+                    // Not tried again by Try Again: which Mac is the person's
+                    // to choose, from those found.
+                    self.host = nil
+                    choosingHost = true
+                    phase = .unavailable("Another Mac answered as \(host.name). Choose the Mac to use.")
+                    // Nothing more this connection said is taken in.
+                    return
+                }
                 if let secret = session?.hostSecret {
                     if chatsHostSecret != secret {
                         // Another Mac's chats aren't this one's. What wasn't
@@ -955,6 +1007,7 @@ final class AgentRemoteClient: ObservableObject {
                     chatsHostSecret = secret
                 }
                 phase = .connected(host.name)
+                if let secret = session?.hostSecret { lastConnected = (host.name, secret) }
                 lostRecoverably = false
                 rediscoveringLast = false
                 UserDefaults.standard.set(host.name, forKey: Self.lastHostKey)
@@ -971,7 +1024,8 @@ final class AgentRemoteClient: ObservableObject {
                 handle(message)
             case .pairAgain:
                 pendingNotice = AgentRemoteProblemText.refused
-                if let host { connect(to: host) } else { teardown(); phase = .unavailable(AgentRemoteProblemText.refused) }
+                // Recovery's own retry stays recovery's: no one chose anew.
+                if let host { connect(to: host, automatic: rediscoveringLast) } else { teardown(); phase = .unavailable(AgentRemoteProblemText.refused) }
             case let .failed(problem):
                 // Not reached is the network's doing; turned away is the Mac's.
                 if case .unreachable = problem { lostRecoverably = true } else { lostRecoverably = false }
@@ -1157,8 +1211,12 @@ final class AgentRemoteClient: ObservableObject {
             failed(message)
         case .pong:
             // The Mac answered the ping sent on coming back: alive. Nothing
-            // read before it proves that, as it may have waited in a buffer.
-            probe = nil
+            // read before it proves that, as it may have waited in a buffer,
+            // nor a pong to an earlier ping.
+            if pingedConnection === connection, pingsOutstanding > 0 {
+                pingsOutstanding -= 1
+                if pingsOutstanding == 0 { probe = nil }
+            }
         default:
             // `accepted` is the session's; anything else is a kind a later
             // Lamp knows.
