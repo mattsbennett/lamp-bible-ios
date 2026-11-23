@@ -402,7 +402,7 @@ struct DevotionalView: View {
                 writingID: devotional.meta.id,
                 writingTitle: devotional.meta.title,
                 canEdit: writingIsEditable,
-                showsMarks: showsReviewMarks,
+                showsMarks: marksReviewable,
                 fontSize: fontSize
             )
             .presentationDetents([.medium, .large])
@@ -493,12 +493,17 @@ struct DevotionalView: View {
             DeckViewerView(entry: entry)
         }
         .task(id: devotional.meta.id) { await reloadLinkedDecks() }
+        #if DEBUG
+        // Seeded once per writing opened, not each time Edit draws the marks
+        // again, which would bring back ones cleared.
+        .task(id: devotional.meta.id) {
+            if marksReviewable, UserDefaults.standard.bool(forKey: "ReviewMarksDemo") { seedReviewMarksDemo() }
+        }
+        #endif
         // The writing's review marks, followed while it's open and marks are
-        // shown; another writing, or marks turned off, starts again.
+        // shown (while editing); another writing, or marks turned off or the
+        // mode left, starts again.
         .task(id: ReviewFollowing(writingID: devotional.meta.id, isShown: showsReviewMarks)) {
-            #if DEBUG
-            if showsReviewMarks, UserDefaults.standard.bool(forKey: "ReviewMarksDemo") { seedReviewMarksDemo() }
-            #endif
             await reviewSession.follow(writingID: devotional.meta.id, text: markdownContent, isShown: showsReviewMarks)
         }
         .onChange(of: markdownContent) { _, text in reviewSession.textChanged(text) }
@@ -1637,7 +1642,7 @@ struct DevotionalView: View {
             // The marks' carry takes its place in line before the save waits
             // on the database: a clear asked for meanwhile comes after it.
             let previous = persistedMarkdown
-            let carry = showsReviewMarks ? WritingReviewWork.shared.reserveCarry(for: devotional.meta.id) : nil
+            let carry = marksReviewable ? WritingReviewWork.shared.reserveCarry(for: devotional.meta.id) : nil
             let written: Int?
             do {
                 written = try await ModuleSyncManager.shared.saveDevotional(
@@ -1746,7 +1751,7 @@ struct DevotionalView: View {
         let previous = persistedMarkdown
         persistedMarkdown = markdownContent
         // In line before the write, as a save's carry always is.
-        let carry = showsReviewMarks ? WritingReviewWork.shared.reserveCarry(for: devotional.meta.id) : nil
+        let carry = marksReviewable ? WritingReviewWork.shared.reserveCarry(for: devotional.meta.id) : nil
 
         // A detached write, so it finishes even if the view goes; kept, so
         // what depends on it (asking the assistant) can wait for it. A newer
@@ -1862,13 +1867,21 @@ struct DevotionalView: View {
 
     // MARK: - Review marks
 
-    /// Whether the assistant's changes are marked here: the writer asked for
-    /// it, AI is on, and the writing is one the assistant may change.
-    private var showsReviewMarks: Bool {
+    /// Whether the assistant's changes to this writing are kept marked (the
+    /// writer asked for it, AI is on, and the writing is one the assistant
+    /// may change): the marks carried through its saves, and its files'
+    /// shown, whatever mode it's in.
+    private var marksReviewable: Bool {
         #if DEBUG
         if UserDefaults.standard.bool(forKey: "ReviewMarksDemo") { return aiFeatures.isEnabled && writingIsEditable }
         #endif
         return aiFeatures.marksReviews && writingIsEditable
+    }
+
+    /// Whether they're drawn now: only while editing, since reviewing one
+    /// clears it or puts wording back. Reading shows the writing as it reads.
+    private var showsReviewMarks: Bool {
+        marksReviewable && mode == .edit
     }
 
     #if DEBUG

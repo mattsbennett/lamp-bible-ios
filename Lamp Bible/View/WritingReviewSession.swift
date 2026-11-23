@@ -465,6 +465,9 @@ final class WritingReviewSession: ObservableObject {
     private var writingID: String?
     /// One of the writing's files, followed in place of its prose.
     private var document: String?
+    /// Counts each follow, so a reload from one superseded (marks turned
+    /// off on leaving Edit) isn't drawn.
+    private var following = 0
     private var store: LampWritingReviewStore?
     private var review: LampWritingReview?
     private var text = ""
@@ -492,6 +495,8 @@ final class WritingReviewSession: ObservableObject {
         drawGeneration += 1
         self.writingID = writingID
         self.document = document
+        following += 1
+        let follow = following
         self.text = text
         WritingReviewTexts.shared.remember(text, for: writingID, document: document)
         review = nil
@@ -506,12 +511,12 @@ final class WritingReviewSession: ObservableObject {
         let listening = Task { [weak self] in
             for await _ in changes {
                 guard let self else { return }
-                await self.reloadIfMoved()
+                await self.reloadIfMoved(for: follow)
             }
         }
         defer { listening.cancel() }
         while !Task.isCancelled {
-            await reloadIfMoved()
+            await reloadIfMoved(for: follow)
             try? await Task.sleep(for: Self.checkInterval)
         }
     }
@@ -771,14 +776,14 @@ final class WritingReviewSession: ObservableObject {
     /// Reads the marks file again if its date has moved since it was last
     /// read: the record and its date together, under the file's lock, so a
     /// write can never be taken for the one before it.
-    private func reloadIfMoved() async {
-        guard let store, let writingID else { return }
+    private func reloadIfMoved(for follow: Int) async {
+        guard following == follow, let store, let writingID else { return }
         let document = self.document
         let read = await Task.detached(priority: .utility) {
             try? store.snapshot(writingID: writingID, document: document)
         }.value
         guard let read, read.modified != fileDate, self.writingID == writingID, self.document == document,
-              !Task.isCancelled else { return }
+              following == follow, self.store != nil, !Task.isCancelled else { return }
         apply(read.modified == nil ? nil : read.review, date: read.modified)
     }
 
