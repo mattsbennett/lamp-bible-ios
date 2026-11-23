@@ -28,7 +28,7 @@ import {
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
 import { findBareAddresses } from './bare-links.js'
-import { codeFence, fencedLines } from './code-fence.js'
+import { codeFence, codeLines } from './code-fence.js'
 import { searchPattern, findMatches } from './search.js'
 import { traceDocument, placeByTrace, markdownRange, aroundLink, wholeLines, tidyKeeping } from './review-trace.js'
 import { MARK_START, MARK_END, MARK_POINT, PLACE_END, placeDigit, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
@@ -62,7 +62,7 @@ function resolveAudioBlocks(md) {
 // not in or next to fenced code, whose lines are code (code-fence.js).
 function resolveBlockquoteLineBreaks(md) {
   const lines = md.split('\n')
-  const fenced = fencedLines(lines, { nested: true })
+  const fenced = codeLines(md)
   const result = []
 
   for (let i = 0; i < lines.length; i++) {

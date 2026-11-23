@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { codeFence, fencedLines } from './code-fence.js'
+import { codeFence, fencedLines, codeLines } from './code-fence.js'
 
 assert.equal(codeFence(''), '```')
 assert.equal(codeFence('plain code'), '```')
@@ -16,13 +16,22 @@ assert.deepEqual(fencedLines(lines('````\n```\n~~~~\n`````\nb')), [true, true, t
 assert.deepEqual(fencedLines(lines('``` a`b\nc')), [false, false])
 // Text after a closing run keeps the fence open; an unclosed one runs on.
 assert.deepEqual(fencedLines(lines('```\n``` x\nc')), [true, true, true])
-// Four spaces in: a fence only where indentation is allowed, as in a list.
+// Four spaces in, at the top level: no fence.
 assert.deepEqual(fencedLines(lines('    ```\ncode')), [false, false])
-assert.deepEqual(fencedLines(lines('    ```\ncode\n    ```\nb'), { nested: true }), [true, true, true, false])
-// In a quote, at any depth, when nested.
-assert.deepEqual(fencedLines(lines('> ```\n> x\n> ```\nb')), [false, false, false, false])
-assert.deepEqual(fencedLines(lines('> ```\n> x\n> ```\nb'), { nested: true }), [true, true, true, false])
-assert.deepEqual(fencedLines(lines('> > ~~~\n> > x\n> > ~~~'), { nested: true }), [true, true, true])
+
+// Code anywhere, as markdown-it reads it: in a list item, in a quote at any
+// depth, and ending with its quote when it is not closed.
+assert.deepEqual(codeLines('- a\n\n    ```\n    x\n    ```\nb'), [false, false, true, true, true, false])
+assert.deepEqual(codeLines('> ```\n> x\n> ```\nb'), [true, true, true, false])
+assert.deepEqual(codeLines('> > ~~~\n> > x\n> > ~~~'), [true, true, true])
+assert.deepEqual(codeLines('> ```\n> code\n\nOutside\n\n> first\n> second'), [true, true, false, false, false, false, false])
+// Codex's case: a line indented in a quote's paragraph is the paragraph's.
+assert.deepEqual(codeLines('> before\n>     ~~~\n> after\n> last'), [false, false, false, false])
+// A lone \r ends no line here, and moves none.
+assert.deepEqual(codeLines('a\rb\n```\nx\n```'), [false, true, true, true])
+assert.deepEqual(codeLines('```\r\nx\r\n```\r\nb'), [true, true, true, false])
+assert.deepEqual(codeLines('no fence here'), [false])
+
 // A line ending of \r\n is not text after the fence.
 assert.deepEqual(fencedLines(lines('```\r\ncode\r\n```\r\nb')), [true, true, true, false])
 

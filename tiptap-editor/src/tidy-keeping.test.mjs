@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { tidyKeeping } from './review-trace.js'
 import { tidyMarkdown as oldTidy } from './tidy-old.test-only.mjs'
-import { fencedLines } from './code-fence.js'
+import { codeLines } from './code-fence.js'
 
 const cases = [
   '> Line 1\\\n> Line 2', '> Line 1  \n> Line 2', '> Line 1\n>\n> Line 2', '> a\n>  \n>\n> b',
@@ -23,7 +23,7 @@ for (const input of cases) {
   // Where nothing is fenced, what the old tidying wrote, byte for byte; in
   // fenced code, every character kept, its line ending too.
   const lines = input.split('\n')
-  const fenced = fencedLines(lines, { nested: true })
+  const fenced = codeLines(input)
   if (!fenced.includes(true)) {
     assert.equal(text, oldTidy(input), JSON.stringify(input))
   } else {

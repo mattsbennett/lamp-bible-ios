@@ -26,7 +26,7 @@ import { MarkdownSerializerState } from '@tiptap/pm/markdown'
 import markdownit from 'markdown-it'
 import { decodeLabels } from './footnote-numbering.js'
 import { marksInMarkdown, noteDefinitions, characterMap, characterAlignment } from './review-align.js'
-import { fencedLines } from './code-fence.js'
+import { codeLines } from './code-fence.js'
 
 const md = markdownit()
 function scanDelims(text, pos) {
@@ -371,9 +371,16 @@ export function tidyKeeping(serialized) {
   let kept = Int32Array.from({ length: text.length }, (_, i) => i)
   // Each match of `pattern` replaced by the spans `keep` gives of it, but
   // for one on a line of fenced code, kept whole.
+  // Which lines are code, found again only when the text has changed.
+  let codeFor = null
+  let code = null
+  const codeNow = () => {
+    if (codeFor !== text) { code = codeLines(text); codeFor = text }
+    return code
+  }
   const keeping = (pattern, keep) => {
     const lines = text.split('\n')
-    const fenced = fencedLines(lines, { nested: true })
+    const fenced = codeNow()
     const starts = []
     let offset = 0
     for (const line of lines) { starts.push(offset); offset += line.length + 1 }
@@ -419,7 +426,7 @@ export function tidyKeeping(serialized) {
   let offset = 0
   for (const line of lines) { starts.push(offset); offset += line.length + 1 }
   const item = /^(\s*)([-*+]|\d+\.)\s/
-  const fenced = fencedLines(lines, { nested: true })
+  const fenced = codeNow()
   let out = ''
   const map = []
   let inList = false

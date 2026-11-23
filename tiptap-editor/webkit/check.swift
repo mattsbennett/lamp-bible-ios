@@ -236,11 +236,13 @@ func survives() {
 func fences() {
     let fenced = "Before.\\n\\n````\\nfirst\\n```\\nstill code\\n````\\n\\nAfter."
     js("""
-    window.editorAPI.load('\(fenced)');
-    const once = window.editorAPI.getContent();
-    window.editorAPI.load(once);
-    [once, window.editorAPI.getContent(), document.querySelectorAll('.ProseMirror pre').length,
-     document.querySelector('.ProseMirror pre')?.textContent ?? '']
+    (() => {
+      window.editorAPI.load('\(fenced)');
+      const once = window.editorAPI.getContent();
+      window.editorAPI.load(once);
+      return [once, window.editorAPI.getContent(), document.querySelectorAll('.ProseMirror pre').length,
+        document.querySelector('.ProseMirror pre')?.textContent ?? '']
+    })()
     """) { r in
         let parts = r as? [Any] ?? []
         let once = parts.first as? String ?? ""
@@ -264,7 +266,17 @@ func codeLikeProse() {
             let parts = r as? [String] ?? []
             check(parts.first == "> ```\n> x\\\n> \n> y  \n> ```", "and so is code in a quote, its empty line written as the serializer writes one in any quote (read: \(parts.first.debugDescription))")
             check(parts.count == 2 && parts[1] == "x\\\n\ny  ", "and shown as written (read: \(parts.dropFirst()))")
-            bareLinks()
+            // Codex's cases: code is what markdown-it reads as code. A quote's
+            // line indented in its paragraph is not a fence, and a fence left
+            // open ends with its quote, so later quotes keep their lines.
+            let indented = "> before\\n>     ~~~\\n> after\\n> last"
+            let open = "> ```\\n> code\\n\\nOutside\\n\\n> first\\n> second"
+            js("(() => { window.editorAPI.load('\(indented)'); const a = window.editorAPI.getContent(); window.editorAPI.load('\(open)'); return [a, window.editorAPI.getContent()] })()") { r in
+                let parts = r as? [String] ?? []
+                check(parts.first?.hasSuffix("\n> after\n> last") == true, "a quote's indented line of tildes is not code (read: \(parts.first.debugDescription))")
+                check(parts.count == 2 && parts[1].hasSuffix("> first\n> second"), "and a fence left open in a quote ends with it (read: \(parts.last.debugDescription))")
+                bareLinks()
+            }
         }
     }
 }
