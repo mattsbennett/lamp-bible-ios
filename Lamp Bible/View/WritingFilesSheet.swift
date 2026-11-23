@@ -668,7 +668,7 @@ struct WritingDocumentPage: View {
             coordinator?.setReviewMarks(marked, changes: changes)
         }
         coordinator.onReviewClear = { [weak review] marked, pageText in
-            review?.clear(markedMarkdown: marked, pageText: pageText)
+            review?.clear(markedMarkdown: marked, pageText: pageText, answersPage: true)
         }
         coordinator.onReviewRestore = { [weak review] changeID, pageText in
             review?.restore(changeID: changeID, pageText: pageText)

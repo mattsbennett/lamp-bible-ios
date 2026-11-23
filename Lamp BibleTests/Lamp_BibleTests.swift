@@ -10249,6 +10249,72 @@ extension WritingConditionalSaveTests {
 /// of the session's: none waits on a report that may never match.
 @MainActor
 final class WritingReviewSessionTests: XCTestCase {
+    /// The page takes a ✓'s marks off as it's pressed, and can't always
+    /// tell at a block's edge what the record keeps: so every clear it makes
+    /// is answered with the marks as they stand, even when the record didn't
+    /// change or the clear placed nowhere.
+    @MainActor
+    func testAClearFromThePageIsAlwaysAnsweredWithTheMarks() async throws {
+        let id = "review-answer-\(UUID().uuidString)"
+        let store = LibrarySyncPass.reviewStore
+        addTeardownBlock { try? LibrarySyncPass.reviewStore.remove(writingID: id) }
+        let before = "# Title\n\nOpening."
+        let saved = "# Title\n\nOpening. The shepherd calls his own sheep by name."
+        try store.save(LampWritingReview(writingID: id).markingAssistantChange(from: before, to: saved))
+
+        let session = WritingReviewSession()
+        var sent: [String?] = []
+        session.onMarksChanged = { marked, _ in sent.append(marked) }
+        let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+        defer { following.cancel() }
+        for _ in 0..<50 where session.count == 0 { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(session.count, 1)
+        let drawn = try XCTUnwrap(sent.last ?? nil)
+        let start = String(LampWritingReview.markStart), end = String(LampWritingReview.markEnd)
+
+        // A clear of the heading, which holds no mark: the record is as it
+        // was, and the marks go back all the same.
+        var count = sent.count
+        session.clear(markedMarkdown: "\(start)# Title\(end)\n\nOpening. The shepherd calls his own sheep by name.", pageText: nil, answersPage: true)
+        for _ in 0..<50 where sent.count == count { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(sent.count, count + 1, "answered though nothing changed")
+        XCTAssertEqual(sent.last, drawn)
+        XCTAssertEqual(session.count, 1)
+
+        // A clear placed nowhere: answered at once.
+        count = sent.count
+        session.clear(markedMarkdown: "\(start)Some other text\(end)", pageText: nil, answersPage: true)
+        for _ in 0..<50 where sent.count == count { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(sent.count, count + 1, "answered though placed nowhere")
+        XCTAssertEqual(sent.last, drawn)
+
+        // Typed into alongside: the answer still arrives. (The race where
+        // typing settles mid-draw is held by `needsResend` staying owed until
+        // a draw publishes; too quick to catch here.)
+        count = sent.count
+        session.clear(markedMarkdown: "\(start)Some other text\(end)", pageText: nil, answersPage: true)
+        session.textChanged(saved + " Amen.")
+        for _ in 0..<60 where sent.count == count { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertGreaterThan(sent.count, count, "answered though typing overtook the draw")
+
+        // The page ahead of the text held here: answered in the page's text,
+        // not the older one.
+        let ahead = saved + " Amen. More words."
+        count = sent.count
+        session.clear(markedMarkdown: ahead.replacingOccurrences(of: "# Title", with: "\(start)# Title\(end)"), pageText: ahead, answersPage: true)
+        for _ in 0..<60 where sent.count == count { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertGreaterThan(sent.count, count)
+        XCTAssertTrue((sent.last ?? nil)?.contains("More words.") == true, "drawn in the page's text")
+
+        // The selection's action takes nothing off the page: a clear of it
+        // that changes nothing sends nothing.
+        for _ in 0..<60 { try await Task.sleep(for: .milliseconds(50)) }
+        count = sent.count
+        session.clear(markedMarkdown: "\(start)Some other text\(end)", pageText: nil)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(sent.count, count, "nothing sent for the selection's no-op")
+    }
+
     func testClearsAheadOfTheirTextLandAsTypingGoesOn() async throws {
         let id = "review-session-\(UUID().uuidString)"
         let store = LibrarySyncPass.reviewStore

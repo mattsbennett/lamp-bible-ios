@@ -1965,7 +1965,7 @@ struct DevotionalView: View {
             coordinator?.setReviewMarks(marked, changes: changes)
         }
         coordinator.onReviewClear = { [weak reviewSession] marked, pageText in
-            reviewSession?.clear(markedMarkdown: marked, pageText: pageText)
+            reviewSession?.clear(markedMarkdown: marked, pageText: pageText, answersPage: true)
         }
         coordinator.onReviewRestore = { [weak reviewSession] changeID, pageText in
             reviewSession?.restore(changeID: changeID, pageText: pageText)

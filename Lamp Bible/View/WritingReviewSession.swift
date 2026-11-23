@@ -479,9 +479,15 @@ final class WritingReviewSession: ObservableObject {
     private var fileDate: Date?
     private var settleTask: Task<Void, Never>?
     private var drawGeneration = 0
-    /// The page refused the last marks sent (its text was a moment ahead of
-    /// this one's), so the next draw sends them again.
-    private var needsResend = false
+    /// The marks are owed to the page (it refused the last set, or took a
+    /// passage's marks off itself), so the next draw sends them. Counted,
+    /// so a draw begun before a newer ask settles only what it began with.
+    private var needsResend: Bool {
+        get { resendAsked > resendSent }
+        set { if newValue { resendAsked += 1 } else { resendSent = resendAsked } }
+    }
+    private var resendAsked = 0
+    private var resendSent = 0
     /// The text a refused set of marks was last sent again for. Refused
     /// again for the same text, they wait for the text to change.
     private var resentFor: String?
@@ -583,10 +589,10 @@ final class WritingReviewSession: ObservableObject {
     /// it touches (`clearing(_:in:carryingFrom:)`): `text` can be a moment
     /// behind the latest marks, and carried whole into it, a mark with no
     /// words there would be retired by a clear of some other passage.
-    private func clear(range: NSRange, in text: String, writingID: String) {
+    private func clear(range: NSRange, in text: String, writingID: String, answersPage: Bool = false, answerIn pageText: String? = nil) {
         WritingReviewTexts.shared.remember(text, for: writingID, document: document)
         let known = WritingReviewTexts.shared.known(for: writingID, document: document)
-        change { $0.clearing(range, in: text, carryingFrom: known) }
+        change(answersPage: answersPage, answerIn: pageText ?? text, heldAtPress: self.text) { $0.clearing(range, in: text, carryingFrom: known) }
     }
 
     /// Clears the range the page marked in the Markdown it sent.
@@ -603,13 +609,44 @@ final class WritingReviewSession: ObservableObject {
     /// marker can change how the page writes what's round it, so that's
     /// text the page never held. A page that sends no text of its own clears
     /// only where it matches the writing here. As on the Mac.
-    func clear(markedMarkdown marked: String, pageText: String? = nil) {
+    ///
+    /// `answersPage`: the page has already taken the passage's marks off
+    /// (a ✓ pressed there), so the clear is answered with the marks as they
+    /// stand however it goes (`resendMarks`). Not for the selection's
+    /// action, which takes nothing off the page.
+    func clear(markedMarkdown marked: String, pageText: String? = nil, answersPage: Bool = false) {
         guard let writingID else { return }
         if let range = LampWritingReview.markedRange(in: marked, of: text) {
-            clear(range: LampWritingReviewMarkdown.takingInSyntax(range, of: text), in: text, writingID: writingID)
+            // Answered in the page's own text where it sent one: matched
+            // here across markup it wrote differently, it can still be
+            // ahead.
+            clear(
+                range: LampWritingReviewMarkdown.takingInSyntax(range, of: text), in: text, writingID: writingID,
+                answersPage: answersPage, answerIn: pageText
+            )
         } else if let pageText, let range = LampWritingReview.markedRange(in: marked, of: pageText) {
-            clear(range: LampWritingReviewMarkdown.takingInSyntax(range, of: pageText), in: pageText, writingID: writingID)
+            // The page's text is ahead of (or behind) the one held here:
+            // the answer is drawn in it, so marks the page moved for typing
+            // not yet reported aren't put back where they were. The text
+            // held stays the editor's last report.
+            clear(range: LampWritingReviewMarkdown.takingInSyntax(range, of: pageText), in: pageText, writingID: writingID, answersPage: answersPage)
+        } else if answersPage {
+            // Placed nowhere: the page has already taken the passage's
+            // marks off, so it's sent back what stands, in its own text
+            // where it sent one.
+            resendMarks(in: pageText)
         }
+    }
+
+    /// The marks drawn and sent to the page now, whether or not the record
+    /// changed. The page takes a ✓'s marks off at once, cut to what
+    /// `clearing` keeps; at a block's edge (a heading's `#`, a fence, a
+    /// blank line) it can't always tell, so every clear it makes is answered
+    /// with the marks as they stand, which puts back anything it took off
+    /// that the record keeps. As on the Mac.
+    private func resendMarks(in pageText: String? = nil) {
+        needsResend = true
+        draw(sendsMarks: true, in: pageText)
     }
 
     func clearAll() {
@@ -772,11 +809,28 @@ final class WritingReviewSession: ObservableObject {
     /// Changes the marks file in line with the saves' carries, off the main
     /// actor, and takes up what was written, with the file's date read under
     /// the same lock.
-    private func change(_ edit: @escaping @Sendable (LampWritingReview) -> LampWritingReview) {
+    /// `answersPage`: made for a clear the page has already drawn, so the
+    /// marks are sent back however it went (`resendMarks`): written, the
+    /// same as before, or not written at all.
+    private func change(
+        answersPage: Bool = false, answerIn pressText: String? = nil, heldAtPress: String? = nil,
+        _ edit: @escaping @Sendable (LampWritingReview) -> LampWritingReview) {
         guard let store, let writingID else { return }
         let document = self.document
         WritingReviewWork.shared.run { [weak self] in
-            guard let written = try? store.updating(writingID: writingID, document: document, edit) else { return }
+            // Answered in the text the press was made in, unless the editor
+            // has reported a newer one since: that's the page's now.
+            @MainActor func answerText(_ session: WritingReviewSession) -> String? {
+                session.text == heldAtPress ? pressText : nil
+            }
+            guard let written = try? store.updating(writingID: writingID, document: document, edit) else {
+                guard answersPage else { return }
+                await MainActor.run {
+                    guard let self, self.writingID == writingID, self.document == document, self.store != nil else { return }
+                    self.resendMarks(in: answerText(self))
+                }
+                return
+            }
             await MainActor.run {
                 WritingReviewWork.marksChanged()
                 // A file's counts are shown in the Files list, which reads them
@@ -784,7 +838,14 @@ final class WritingReviewSession: ObservableObject {
                 if document != nil { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
                 // Not for a writing left since, nor once marks were turned off.
                 guard let self, self.writingID == writingID, self.document == document, self.store != nil else { return }
-                self.apply(written.review, date: written.modified)
+                // Drawn if the record moved; answered either way. Owed
+                // from here, so typing settling before the draw lands
+                // doesn't make it a count only.
+                if answersPage { self.needsResend = true }
+                let answerIn = answersPage ? answerText(self) : nil
+                if !self.apply(written.review, date: written.modified, in: answerIn), answersPage {
+                    self.resendMarks(in: answerIn)
+                }
             }
         }
     }
@@ -803,11 +864,14 @@ final class WritingReviewSession: ObservableObject {
         apply(read.modified == nil ? nil : read.review, date: read.modified)
     }
 
-    private func apply(_ review: LampWritingReview?, date: Date?) {
+    /// Whether it drew: not when the record is as it was.
+    @discardableResult
+    private func apply(_ review: LampWritingReview?, date: Date?, in drawnText: String? = nil) -> Bool {
         fileDate = date
-        guard review != self.review else { return }
+        guard review != self.review else { return false }
         self.review = review
-        draw(sendsMarks: true)
+        draw(sendsMarks: true, in: drawnText)
+        return true
     }
 
     private func scheduleDraw() {
@@ -826,15 +890,18 @@ final class WritingReviewSession: ObservableObject {
         }
     }
 
-    private func draw(sendsMarks: Bool) {
+    /// `drawnText`: the page's own text, for an answer to its clear, where
+    /// it isn't the one held here; the count is then drawn again from the
+    /// held text, which stays the editor's last report.
+    private func draw(sendsMarks: Bool, in drawnText: String? = nil) {
         drawGeneration += 1
         let generation = drawGeneration
-        if sendsMarks { needsResend = false }
+        let asked = resendAsked
         guard let review, !review.isEmpty else {
-            publish(count: 0, marked: nil, changes: [], sendsMarks: sendsMarks)
+            publish(count: 0, marked: nil, changes: [], sendsMarks: sendsMarks, settling: asked)
             return
         }
-        let text = self.text
+        let text = drawnText ?? self.text
         // Drawn from the marks carried into the text as it is now, each from
         // the text it's anchored in: typed into since they were saved, a
         // marked passage would otherwise be found nowhere until the next save
@@ -859,13 +926,31 @@ final class WritingReviewSession: ObservableObject {
                 return (drawing.passageCount, marked, changes)
             }.value
             guard let self, self.drawGeneration == generation else { return }
-            self.publish(count: drawn.0, marked: drawn.1, changes: drawn.2, sendsMarks: sendsMarks)
+            // An answer drawn in the page's text where the text held here
+            // has since moved: drawn and sent again in the held one once it
+            // settles, which the editor's report moves on to. None sent
+            // from the page's text: the page takes no marks at all without
+            // checking its text, and the newer one may hold some.
+            let snapshotMoved = drawnText != nil && text != self.text
+            if snapshotMoved {
+                self.needsResend = true
+                self.scheduleDraw()
+                if drawn.1 == nil { return }
+            }
+            self.publish(count: drawn.0, marked: drawn.1, changes: drawn.2, sendsMarks: sendsMarks, settling: asked)
         }
     }
 
-    private func publish(count: Int, marked: String?, changes: [LampWritingReview.Change?], sendsMarks: Bool) {
+    /// `settling`: the asks to resend made before the draw began, which a
+    /// sending draw has answered. Owed no longer only once sent: a draw
+    /// overtaken by another (typing settling, a count only) leaves them
+    /// owed, and one asked for during the draw is still owed after it.
+    private func publish(
+        count: Int, marked: String?, changes: [LampWritingReview.Change?], sendsMarks: Bool, settling asked: Int? = nil
+    ) {
         if self.count != count { self.count = count }
         if sendsMarks {
+            resendSent = max(resendSent, asked ?? resendAsked)
             markedMarkdown = marked
             markedChanges = changes
             if marked == nil, unshownMarks != 0 { unshownMarks = 0 }
