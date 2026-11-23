@@ -26,6 +26,7 @@ import { MarkdownSerializerState } from '@tiptap/pm/markdown'
 import markdownit from 'markdown-it'
 import { decodeLabels } from './footnote-numbering.js'
 import { marksInMarkdown, noteDefinitions, characterMap, characterAlignment } from './review-align.js'
+import { fencedLines } from './code-fence.js'
 
 const md = markdownit()
 function scanDelims(text, pos) {
@@ -364,17 +365,41 @@ export function traceDocument(editor, doc, tidy, written = null) {
 // - a quote line's trailing backslash, or two trailing spaces;
 // - an empty quote line between two that have words;
 // - a blank line inside a list, before another item.
+// Never in fenced code, whose every character is the writer's.
 export function tidyKeeping(serialized) {
   let text = serialized
   let kept = Int32Array.from({ length: text.length }, (_, i) => i)
-  // Each match of `pattern` replaced by the spans `keep` gives of it.
+  // Each match of `pattern` replaced by the spans `keep` gives of it, but
+  // for one on a line of fenced code, kept whole.
   const keeping = (pattern, keep) => {
+    const lines = text.split('\n')
+    const fenced = fencedLines(lines, { indented: true })
+    const starts = []
+    let offset = 0
+    for (const line of lines) { starts.push(offset); offset += line.length + 1 }
+    const lineAt = index => {
+      let low = 0
+      let high = starts.length - 1
+      while (low < high) {
+        const middle = (low + high + 1) >> 1
+        if (starts[middle] <= index) low = middle
+        else high = middle - 1
+      }
+      return low
+    }
+    const inCode = match => {
+      for (let line = lineAt(match.index), last = lineAt(match.index + match[0].length); line <= last; line++) {
+        if (fenced[line]) return true
+      }
+      return false
+    }
     let out = ''
     const map = []
     let at = 0
     for (const match of text.matchAll(pattern)) {
       for (let i = at; i < match.index; i++) { out += text[i]; map.push(kept[i]) }
-      for (const [from, to] of keep(match)) {
+      const spans = inCode(match) ? [[match.index, match.index + match[0].length]] : keep(match)
+      for (const [from, to] of spans) {
         for (let i = from; i < to; i++) { out += text[i]; map.push(kept[i]) }
       }
       at = match.index + match[0].length
@@ -394,6 +419,7 @@ export function tidyKeeping(serialized) {
   let offset = 0
   for (const line of lines) { starts.push(offset); offset += line.length + 1 }
   const item = /^(\s*)([-*+]|\d+\.)\s/
+  const fenced = fencedLines(lines, { indented: true })
   let out = ''
   const map = []
   let inList = false
@@ -403,7 +429,9 @@ export function tidyKeeping(serialized) {
     const isListItem = item.test(line)
     const isEmpty = line.trim() === ''
     let keepLine = true
-    if (isListItem) {
+    if (fenced[i]) {
+      inList = false
+    } else if (isListItem) {
       inList = true
     } else if (isEmpty && inList) {
       let nextIsListItem = false

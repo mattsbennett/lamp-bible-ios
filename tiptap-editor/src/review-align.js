@@ -8,6 +8,7 @@
 // Pure: texts in, offsets out.
 
 import { MARK_START, MARK_END, MARK_POINT, PLACE_END, placeDigit } from './review-marks.js'
+import { fencedLines } from './code-fence.js'
 
 // The marks in the host's marked Markdown, as offsets in the Markdown with
 // the markers taken out: { text, marks: [{ from, to, place }] }, a point
@@ -201,21 +202,10 @@ export function noteDefinitions(text) {
     lines.push({ at, line })
     at += line.length + 1
   }
-  // Not inside a code fence, where `[^x]: value` is text. A fence closes
-  // on a run of its own character at least as long as the one that opened
-  // it, with nothing after: a shorter run inside it is code.
-  let fence = null
+  // Not inside a code fence, where `[^x]: value` is text (code-fence.js).
+  const fenced = fencedLines(lines.map(({ line }) => line))
   for (let i = 0; i < lines.length; i++) {
-    // Its info string to the line's end, a \r of \r\n included.
-    const marker = lines[i].line.match(/^ {0,3}(`{3,}|~{3,})([^\n]*)$/)
-    if (fence === null && marker && !(marker[1][0] === '`' && marker[2].includes('`'))) {
-      fence = marker[1]
-      continue
-    }
-    if (fence !== null) {
-      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && marker[2].trim() === '') fence = null
-      continue
-    }
+    if (fenced[i]) continue
     const found = lines[i].line.match(/^ {0,3}\[\^([^\]\s]+)\]:[ \t]*/)
     if (!found) continue
     const start = lines[i].at

@@ -247,6 +247,18 @@ func fences() {
         check(once.contains("````\nfirst\n```\nstill code\n````"), "a code block holding ``` is saved between a longer fence (read: \(once.debugDescription))")
         check(parts.count == 4 && parts[1] as? String == once, "and saves the same after it is read back")
         check(parts.count == 4 && parts[2] as? Int == 1 && parts[3] as? String == "first\n```\nstill code", "and is still one block, every line its own (read: \(parts.dropFirst(2)))")
+        codeLikeProse()
+    }
+}
+
+// Code shaped like a quote or a list is saved as written: tidying the
+// writer's quotes and lists leaves fenced code alone.
+func codeLikeProse() {
+    let code = "```\\n> x\\\\\\n- a\\n\\n- b\\n```"
+    js("window.editorAPI.load('\(code)'); [window.editorAPI.getContent(), document.querySelector('.ProseMirror pre')?.textContent ?? '']") { r in
+        let parts = r as? [String] ?? []
+        check(parts.first == "```\n> x\\\n- a\n\n- b\n```", "code shaped like a quote and a list is saved as written (read: \(parts.first.debugDescription))")
+        check(parts.count == 2 && parts[1] == "> x\\\n- a\n\n- b", "and shown as written (read: \(parts.dropFirst()))")
         bareLinks()
     }
 }
