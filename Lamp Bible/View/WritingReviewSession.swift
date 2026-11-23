@@ -451,11 +451,20 @@ final class WritingReviewSession: ObservableObject {
     /// saved. A save that commits records the restore if it holds it
     /// (`WritingRestoreObligations`).
     var saveRestored: (@MainActor () async -> Bool)?
+    /// For one of a writing's files instead (`document`): writes the
+    /// restored text over the file and records the restore with it, as one,
+    /// since a file is written as it's saved, not through the writing's
+    /// save. False where it couldn't be.
+    var saveRestoredDocument: (@MainActor (
+        _ plan: LampWritingReview.RestorePlan, _ base: String, _ restored: String, _ known: [String]
+    ) async -> Bool)?
     /// One restore at a time: two pressed together would go through one
     /// save, and the page refuse the second's text.
     private var restoring = false
 
     private var writingID: String?
+    /// One of the writing's files, followed in place of its prose.
+    private var document: String?
     private var store: LampWritingReviewStore?
     private var review: LampWritingReview?
     private var text = ""
@@ -475,13 +484,16 @@ final class WritingReviewSession: ObservableObject {
     /// Keeps the writing's marks current until the task is cancelled: the
     /// view's `.task(id:)`, keyed on the writing and on whether marks are
     /// shown at all. Shown off, everything is cleared and nothing is read.
-    func follow(writingID: String, text: String, isShown: Bool) async {
+    /// `document`: one of the writing's files, whose own marks are followed,
+    /// rather than the writing's prose.
+    func follow(writingID: String, document: String? = nil, text: String, isShown: Bool) async {
         // Nothing drawn for the writing before may land now.
         settleTask?.cancel()
         drawGeneration += 1
         self.writingID = writingID
+        self.document = document
         self.text = text
-        WritingReviewTexts.shared.remember(text, for: writingID)
+        WritingReviewTexts.shared.remember(text, for: writingID, document: document)
         review = nil
         fileDate = nil
         needsResend = false
@@ -550,8 +562,8 @@ final class WritingReviewSession: ObservableObject {
     /// behind the latest marks, and carried whole into it, a mark with no
     /// words there would be retired by a clear of some other passage.
     private func clear(range: NSRange, in text: String, writingID: String) {
-        WritingReviewTexts.shared.remember(text, for: writingID)
-        let known = WritingReviewTexts.shared.known(for: writingID)
+        WritingReviewTexts.shared.remember(text, for: writingID, document: document)
+        let known = WritingReviewTexts.shared.known(for: writingID, document: document)
         change { $0.clearing(range, in: text, carryingFrom: known) }
     }
 
@@ -579,7 +591,7 @@ final class WritingReviewSession: ObservableObject {
     }
 
     func clearAll() {
-        if let writingID { WritingRestoreObligations.shared.clearedAll(for: writingID) }
+        if let writingID, document == nil { WritingRestoreObligations.shared.clearedAll(for: writingID) }
         change { $0.clearingAll() }
     }
 
@@ -647,8 +659,8 @@ final class WritingReviewSession: ObservableObject {
     ) {
         guard !restoring, let writingID, store != nil, let review, let applyRestore else { return }
         restoring = true
-        WritingReviewTexts.shared.remember(base, for: writingID)
-        let known = WritingReviewTexts.shared.known(for: writingID)
+        WritingReviewTexts.shared.remember(base, for: writingID, document: document)
+        let known = WritingReviewTexts.shared.known(for: writingID, document: document)
         let background = UIApplication.shared.beginBackgroundTask(withName: "Restore wording")
         Task { [weak self] in
             await self?.restore(
@@ -665,10 +677,11 @@ final class WritingReviewSession: ObservableObject {
         applyRestore: @MainActor (String, String) async -> String?,
         planning: @escaping @Sendable (LampWritingReview, String) -> Planned
     ) async {
+        let document = self.document
         let planned = await Task.detached(priority: .userInitiated) {
             planning(review.carryingToText(base, from: known), base)
         }.value
-        guard self.writingID == writingID else { return }
+        guard self.writingID == writingID, self.document == document else { return }
         guard case let .plan(plan) = planned else {
             if case let .refused(why) = planned { refuseRestore(why) }
             return
@@ -682,7 +695,22 @@ final class WritingReviewSession: ObservableObject {
             if self.writingID == writingID { refuseRestore(WritingRestoreRefusal.moved) }
             return
         }
-        WritingReviewTexts.shared.remember(restored, for: writingID)
+        WritingReviewTexts.shared.remember(restored, for: writingID, document: document)
+        if document != nil {
+            // A file: written and recorded as one, not owed to a save, in the
+            // place taken before the edit, so a clear asked for meanwhile is
+            // made after it, and clears what it marks.
+            let save = saveRestoredDocument
+            let saved = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                let filled = place.fill {
+                    let done = await save?(plan, base, restored, known) ?? false
+                    continuation.resume(returning: done)
+                }
+                if !filled { continuation.resume(returning: false) }
+            }
+            if !saved, self.writingID == writingID, self.document == document { restoreUnsaved = true }
+            return
+        }
         // Owed before the save is asked for, so whichever save holds it first
         // records it: recorded in the file it was planned from, though marks
         // are turned off meanwhile, since the edit is made.
@@ -725,12 +753,16 @@ final class WritingReviewSession: ObservableObject {
     /// the same lock.
     private func change(_ edit: @escaping @Sendable (LampWritingReview) -> LampWritingReview) {
         guard let store, let writingID else { return }
+        let document = self.document
         WritingReviewWork.shared.run { [weak self] in
-            guard let written = try? store.updating(writingID: writingID, edit) else { return }
+            guard let written = try? store.updating(writingID: writingID, document: document, edit) else { return }
             await MainActor.run {
                 WritingReviewWork.marksChanged()
+                // A file's counts are shown in the Files list, which reads them
+                // again on this.
+                if document != nil { NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil) }
                 // Not for a writing left since, nor once marks were turned off.
-                guard let self, self.writingID == writingID, self.store != nil else { return }
+                guard let self, self.writingID == writingID, self.document == document, self.store != nil else { return }
                 self.apply(written.review, date: written.modified)
             }
         }
@@ -741,10 +773,12 @@ final class WritingReviewSession: ObservableObject {
     /// write can never be taken for the one before it.
     private func reloadIfMoved() async {
         guard let store, let writingID else { return }
+        let document = self.document
         let read = await Task.detached(priority: .utility) {
-            try? store.snapshot(writingID: writingID)
+            try? store.snapshot(writingID: writingID, document: document)
         }.value
-        guard let read, read.modified != fileDate, self.writingID == writingID, !Task.isCancelled else { return }
+        guard let read, read.modified != fileDate, self.writingID == writingID, self.document == document,
+              !Task.isCancelled else { return }
         apply(read.modified == nil ? nil : read.review, date: read.modified)
     }
 
@@ -760,7 +794,9 @@ final class WritingReviewSession: ObservableObject {
         settleTask = Task { [weak self] in
             try? await Task.sleep(for: Self.settleDelay)
             guard !Task.isCancelled, let self else { return }
-            if let writingID = self.writingID { WritingReviewTexts.shared.remember(self.text, for: writingID) }
+            if let writingID = self.writingID {
+                WritingReviewTexts.shared.remember(self.text, for: writingID, document: self.document)
+            }
             // Sent too while none are shown and some stand: marks that placed
             // nowhere in the text before (a newer body arrived) may place in
             // this one. All cleared, nothing goes to the page each settle.
@@ -782,7 +818,7 @@ final class WritingReviewSession: ObservableObject {
         // the text it's anchored in: typed into since they were saved, a
         // marked passage would otherwise be found nowhere until the next save
         // carries it.
-        let known = writingID.map { WritingReviewTexts.shared.known(for: $0) } ?? []
+        let known = writingID.map { WritingReviewTexts.shared.known(for: $0, document: document) } ?? []
         Task { [weak self] in
             let drawn = await Task.detached(priority: .userInitiated) {
                 let live = review.carryingToText(text, from: known)

@@ -56,6 +56,48 @@ enum WritingDocuments {
         return saved
     }
 
+    /// A restore the page made, written over the file as it was stored
+    /// (`opened`) and recorded with it, under the lock a pass takes a
+    /// download in under, the file's other marks carried onto it as a save
+    /// carries them. False where the file changed meanwhile, or the record
+    /// couldn't be written, in which case the file is put back.
+    @MainActor
+    static func saveRestored(
+        _ restored: String, writingID: String, name: String, opened: Data,
+        plan: LampWritingReview.RestorePlan, base: String, known: [String]
+    ) async -> Bool {
+        let saved = await Task.detached(priority: .userInitiated) { () -> Bool in
+            let reviews = LibrarySyncPass.reviewStore
+            return (try? LibrarySyncPass.documentChanges.withLock { () -> Bool in
+                guard try LibrarySyncPass.documentStore.write(
+                    Data(restored.utf8), writingID: writingID, name: name, replacing: opened
+                ) else { return false }
+                do {
+                    _ = try reviews.update(writingID: writingID, document: name) {
+                        $0.restoringWording(plan, from: base, to: restored, carryingFrom: known)
+                    }
+                } catch {
+                    // Not recorded: the file put back as it was, so what's
+                    // kept and what's recorded agree.
+                    _ = try? LibrarySyncPass.documentStore.write(
+                        opened, writingID: writingID, name: name, replacing: Data(restored.utf8)
+                    )
+                    return false
+                }
+                _ = try? LampWritingDocumentReview.carry(
+                    restored, ofDocument: name, writingID: writingID, from: known + [base], in: reviews
+                )
+                return true
+            }) ?? false
+        }.value
+        if saved {
+            WritingReviewTexts.shared.remember(restored, for: writingID, document: name)
+            NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil)
+            await ModuleSyncManager.shared.scheduleLibraryPass()
+        }
+        return saved
+    }
+
     /// The writer's text kept beside a file that changed while they edited
     /// it, under a copy's name, as sync keeps one. Returns the name.
     @MainActor
@@ -192,6 +234,16 @@ struct WritingFilesSheet: View {
                 }
             }
             .navigationDestination(for: String.self) { name in
+                if WritingDocumentText.isMarkdown(name) {
+                    WritingDocumentPage(
+                        writingID: writingID,
+                        name: name,
+                        document: documents.first { $0.name == name },
+                        canEdit: canEdit,
+                        showsMarks: showsMarks,
+                        fontSize: fontSize
+                    )
+                } else {
                 WritingFileView(
                     writingID: writingID,
                     name: name,
@@ -201,6 +253,7 @@ struct WritingFilesSheet: View {
                     fontSize: fontSize,
                     onEdit: { editing = WritingDocumentEditing(writingID: writingID, document: $0) }
                 )
+                }
             }
         }
         .task { await reload() }
@@ -344,11 +397,544 @@ struct WritingDocumentMarks: Equatable, Sendable {
     }
 }
 
-/// One of a writing's files, read: Markdown set as it reads, plain text as
-/// it is, and what the assistant changed in it marked, as the writing's own
-/// prose is. A tap on a marked passage shows what it changed, to mark as
-/// reviewed or put back. Gone back from once the file is deleted, here or
-/// elsewhere.
+/// One of a writing's Markdown files in the writing's own editor: read and
+/// written there as the writing is, so it reads exactly as the editor reads
+/// it, and its review marks are the editor's own, cleared a paragraph at a
+/// time with its ✓, put back with its preview, counted and stepped through
+/// from the bar. Opened to read, where links open, and edited from Edit.
+///
+/// Only what the writer changed is saved. The editor writes Markdown back in
+/// its own spelling, so what it makes of the file untouched (`baseline`) is
+/// taken as the file, and a text that's neither that nor what's stored is an
+/// edit. A file opened and left is never rewritten, and what it holds that
+/// the editor can't show (an HTML comment) stays until it's edited visually;
+/// Edit Markdown Source edits it as written. Each save is over the copy it
+/// was built on: one that changed elsewhere meanwhile is the writer's to
+/// keep beside it or let go. Plain text keeps its own reader
+/// (`WritingFileView`).
+struct WritingDocumentPage: View {
+    let writingID: String
+    let name: String
+    /// The file as it's stored now, nil once it's deleted.
+    let document: WritingDocument?
+    let canEdit: Bool
+    /// Whether marks are drawn (`AIFeatures.marksReviews` and the writing
+    /// the writer's to change).
+    let showsMarks: Bool
+    let fontSize: CGFloat
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var review = WritingReviewSession()
+    @State private var text = ""
+    /// The stored copy the page's text is built on, which a save replaces.
+    @State private var opened: Data?
+    /// The editor's own Markdown for the copy it holds, untouched.
+    @State private var baseline: String?
+    @State private var editing = false
+    @State private var coordinator: TipTapEditorCoordinator?
+    @State private var saveTask: Task<Void, Never>?
+    @State private var saving = false
+    /// A restore under way: the copy it's made from, which its write
+    /// replaces, and nothing else taken in until it's written.
+    @State private var restoreBase: Data?
+    @State private var changedMeanwhile = false
+    @State private var deletedWhileEdited = false
+    @State private var problem: String?
+    @State private var confirmingDelete = false
+    /// The file's Markdown opened as written, for what the visual editor
+    /// doesn't keep (an HTML comment, say), which a visual edit would drop.
+    @State private var editingSource: WritingDocumentEditing?
+    @State private var leaving = false
+    /// The copy shown when Delete was asked for: the one the writer chose to
+    /// delete, a newer one from elsewhere being kept.
+    @State private var deleteSeen: Data?
+    /// A copy from elsewhere being taken in, and the newest to follow it:
+    /// one at a time, so each is checked against the page as the last left it.
+    @State private var takingIncoming = false
+    @State private var nextIncoming: Data?
+    /// A restore written but not recorded (its record couldn't be saved):
+    /// recorded with the first save that writes its text.
+    @State private var unrecordedRestore: (plan: LampWritingReview.RestorePlan, base: String, restored: String, known: [String])?
+
+    init(writingID: String, name: String, document: WritingDocument?, canEdit: Bool, showsMarks: Bool, fontSize: CGFloat) {
+        self.writingID = writingID
+        self.name = name
+        self.document = document
+        self.canEdit = canEdit
+        self.showsMarks = showsMarks
+        self.fontSize = fontSize
+        // Taken from the file as it's opened: set here, not on appearing,
+        // since the page isn't there to appear until they are.
+        _text = State(initialValue: document?.text ?? "")
+        _opened = State(initialValue: document?.data)
+    }
+
+    /// The text as it was last stored.
+    private var storedText: String? { opened.map { String(decoding: $0, as: UTF8.self) } }
+
+    /// Marks are for editing: reviewing one clears it or puts wording back,
+    /// so reading shows the file as it reads.
+    private var marksShown: Bool { showsMarks && canEdit && editing }
+
+    /// Whether `candidate` is the writer's edit: neither the file as stored
+    /// nor the editor's spelling of it.
+    private func isEdit(_ candidate: String) -> Bool {
+        candidate != storedText && candidate != baseline
+    }
+
+    var body: some View {
+        ZStack {
+            Color(uiColor: .systemBackground).ignoresSafeArea()
+            if opened != nil {
+                TipTapEditorView<EmptyView>(
+                    markdownContent: $text,
+                    fontSize: fontSize,
+                    editMode: .visual,
+                    viewMode: canEdit && editing ? .edit : .read,
+                    header: nil,
+                    showsHeader: false,
+                    onCoordinatorReady: connect
+                )
+            }
+        }
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.inline)
+        // Left only once what was typed is saved: the page reports typing a
+        // moment late, and a save refused once it had gone would have
+        // nowhere to ask what to keep.
+        .navigationBarBackButtonHidden(true)
+        .interactiveDismissDisabled(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { Task { await leave() } } label: {
+                    Image(systemName: "chevron.backward")
+                }
+                .accessibilityLabel("Files")
+                .disabled(leaving)
+            }
+            if canEdit, document != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(editing ? "Done" : "Edit") {
+                        if editing { Task { await finishEditing() } } else { editing = true }
+                    }
+                    // Not before the page is there to take the mode.
+                    .disabled(coordinator == nil || leaving)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Edit Markdown Source", systemImage: "chevron.left.forwardslash.chevron.right") {
+                            Task { await editSource() }
+                        }
+                        Button("Delete File", systemImage: "trash", role: .destructive) {
+                            deleteSeen = opened
+                            confirmingDelete = true
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .accessibilityLabel("More")
+                }
+            }
+            if marksShown, review.count > 0 {
+                ToolbarItem(placement: .bottomBar) { reviewMenu }
+            }
+        }
+        .sheet(item: $editingSource) { editing in
+            WritingDocumentEditor(editing: editing) {
+                NotificationCenter.default.post(name: .writingDocumentsDidChange, object: nil)
+            }
+        }
+        .onChange(of: text) { _, now in
+            review.textChanged(now)
+            scheduleSave()
+        }
+        // Changed elsewhere and brought in by sync: taken in where nothing
+        // typed here, reported or not, waits to be saved; otherwise the
+        // writer chooses.
+        .onChange(of: document?.data) { _, stored in
+            guard let stored, stored != opened else { return }
+            Task { await incoming(stored) }
+        }
+        .onChange(of: document == nil) { _, gone in
+            guard gone else { return }
+            Task {
+                if canEdit, await hasEdits() { deletedWhileEdited = true } else { dismiss() }
+            }
+        }
+        // Lamp left with typing not yet saved: saved now, with time asked
+        // for to finish.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active, canEdit else { return }
+            let background = UIApplication.shared.beginBackgroundTask(withName: "Save file")
+            Task {
+                await saveEverything()
+                if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
+            }
+        }
+        .task(id: marksShown) {
+            await review.follow(writingID: writingID, document: name, text: text, isShown: marksShown)
+        }
+        .onAppear { SwipeBack.holds += 1 }
+        .onDisappear { SwipeBack.holds = max(0, SwipeBack.holds - 1) }
+        .confirmationDialog("Delete \(name)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete File", role: .destructive) { Task { await delete() } }
+        } message: {
+            Text("It's deleted on your other devices too.")
+        }
+        .alert("Changed on Another Device", isPresented: $changedMeanwhile) {
+            Button("Keep Mine as a Copy") { Task { await keepAsCopy() } }
+            Button("Use the Other Version", role: .destructive) { Task { await takeStored() } }
+        } message: {
+            Text("This file changed elsewhere while you were editing it. Your text can be kept beside it as a copy.")
+        }
+        .alert("Deleted on Another Device", isPresented: $deletedWhileEdited) {
+            Button("Keep Mine as a Copy") { Task { await keepAsCopy() } }
+            Button("Discard Mine", role: .destructive) { dismiss() }
+        } message: {
+            Text("This file was deleted elsewhere while you were editing it. Your text can be kept as a copy.")
+        }
+        .alert(
+            "Can’t Save",
+            isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(problem ?? "")
+        }
+        .alert(
+            "Can’t Restore Original Wording",
+            isPresented: Binding(get: { review.restoreRefusal != nil }, set: { if !$0 { review.restoreRefusal = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(review.restoreRefusal ?? "")
+        }
+        .alert("Restore Not Saved", isPresented: $review.restoreUnsaved) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The original wording is back on the page, but the file couldn’t be saved with it. Undo it, or edit and it will be saved.")
+        }
+    }
+
+    /// How many changes are still to read, and stepping through or clearing
+    /// them; a paragraph's own ✓ clears that paragraph.
+    private var reviewMenu: some View {
+        Menu {
+            Button { coordinator?.goToReviewMark(forward: true) } label: {
+                Label("Next Change", systemImage: "chevron.down")
+            }
+            Button { coordinator?.goToReviewMark(forward: false) } label: {
+                Label("Previous Change", systemImage: "chevron.up")
+            }
+            if canEdit {
+                Button { review.clearAll() } label: {
+                    Label("Mark All as Reviewed", systemImage: "checkmark.circle")
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle")
+                Text(review.count, format: .number)
+                    .monospacedDigit()
+            }
+            .font(.body.weight(.semibold))
+        }
+        .accessibilityLabel(review.count == 1 ? "1 to Review" : "\(review.count) to Review")
+    }
+
+    /// The page shows the file's marks and sends its clears and restores
+    /// back, as the writing's does.
+    private func connect(_ coordinator: TipTapEditorCoordinator) {
+        self.coordinator = coordinator
+        // The copy held now, as opened, so undo can't go back past it to the
+        // empty page; one taken in while the page was loading replaces what
+        // it was made with.
+        coordinator.load(text)
+        Task { baseline = await pageText() }
+        // No header over it: the page under the bar, not the space kept for
+        // the writing's.
+        coordinator.setReadPadding(top: 12)
+        coordinator.setReviewMarks(review.markedMarkdown, changes: review.markedChanges)
+        review.onMarksChanged = { [weak coordinator] marked, changes in
+            coordinator?.setReviewMarks(marked, changes: changes)
+        }
+        coordinator.onReviewClear = { [weak review] marked, pageText in
+            review?.clear(markedMarkdown: marked, pageText: pageText)
+        }
+        coordinator.onReviewRestore = { [weak review] changeID, pageText in
+            review?.restore(changeID: changeID, pageText: pageText)
+        }
+        coordinator.onLinkTapped = { address in
+            guard let url = URL(string: address) else { return }
+            UIApplication.shared.open(url)
+        }
+        coordinator.onFootnoteTapped = { [weak coordinator] id in coordinator?.scrollToFootnote(id) }
+        coordinator.onReviewMarksRejected = { [weak review] in review?.marksRejected() }
+        coordinator.onReviewMarksStale = { [weak review] in review?.refreshMarks() }
+        review.applyRestore = { [weak coordinator] restored, expected in
+            guard let coordinator else { return nil }
+            // Made from the copy held once a save under way has landed,
+            // which its write replaces.
+            while saving { try? await Task.sleep(for: .milliseconds(50)) }
+            restoreBase = opened
+            let made = await withCheckedContinuation { continuation in
+                coordinator.restoreWording(restored, expecting: expected) { continuation.resume(returning: $0) }
+            }
+            guard let made else {
+                restoreBase = nil
+                return nil
+            }
+            // Taken now, so what's written is this text.
+            text = made
+            return made
+        }
+        review.saveRestoredDocument = { plan, base, restored, known in
+            defer { restoreBase = nil }
+            guard let from = restoreBase ?? opened else { return false }
+            // Its own write, not the typing's: that one waits.
+            saveTask?.cancel()
+            while saving { try? await Task.sleep(for: .milliseconds(50)) }
+            saving = true
+            defer { saving = false }
+            let saved = await WritingDocuments.saveRestored(
+                restored, writingID: writingID, name: name, opened: from,
+                plan: plan, base: base, known: known
+            )
+            if saved {
+                opened = Data(restored.utf8)
+                baseline = restored
+                NotificationCenter.default.post(name: .writingDocumentsDidChange, object: nil)
+                // Typed meanwhile: saved after.
+                if isEdit(text) { scheduleSave() }
+            } else {
+                // On the page, not recorded: recorded by the save that writes it.
+                unrecordedRestore = (plan, base, restored, known)
+            }
+            return saved
+        }
+    }
+
+    /// The page's text as it is this moment, typing not yet reported in it.
+    private func pageText() async -> String? {
+        guard let coordinator else { return nil }
+        return await withCheckedContinuation { continuation in
+            coordinator.getContent { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Whether the page holds an edit not yet saved, reported or not.
+    private func hasEdits() async -> Bool {
+        if let live = await pageText(), live != text { text = live }
+        return isEdit(text)
+    }
+
+    /// Saves a moment after typing stops, over the copy the text is built on.
+    private func scheduleSave() {
+        guard canEdit, opened != nil, isEdit(text) else { return }
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            await save()
+        }
+    }
+
+    private func save() async {
+        guard canEdit, let opened, !changedMeanwhile, restoreBase == nil else { return }
+        // One at a time: the next waits, and saves what's there then.
+        guard !saving else { return scheduleSave() }
+        let writing = text
+        guard isEdit(writing) else { return }
+        saving = true
+        defer { saving = false }
+        do {
+            if try await WritingDocuments.save(writing, writingID: writingID, name: name, opened: opened) {
+                self.opened = Data(writing.utf8)
+                baseline = writing
+                // Saved here while Delete was being asked: still what was seen.
+                if deleteSeen != nil { deleteSeen = self.opened }
+                await recordRestore(ifSaved: writing)
+                // The list's copy too, so the file opened again is this.
+                NotificationCenter.default.post(name: .writingDocumentsDidChange, object: nil)
+                if isEdit(text) { scheduleSave() }
+            } else {
+                changedMeanwhile = true
+            }
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+
+    /// Everything typed, reported or not, saved now. True where nothing's
+    /// left unsaved.
+    @discardableResult
+    private func saveEverything() async -> Bool {
+        saveTask?.cancel()
+        guard canEdit else { return true }
+        let edited = await hasEdits()
+        while saving || restoreBase != nil { try? await Task.sleep(for: .milliseconds(50)) }
+        guard edited || isEdit(text) else { return true }
+        await save()
+        return !isEdit(text)
+    }
+
+    /// Saves everything typed, then goes back to the files; a save refused
+    /// stays here, to say so and ask what to keep.
+    private func leave() async {
+        leaving = true
+        defer { leaving = false }
+        guard await stopEditingAndSave() else { return }
+        dismiss()
+    }
+
+    private func finishEditing() async {
+        _ = await stopEditingAndSave()
+    }
+
+    /// Typing stopped (the page read-only), then everything typed saved,
+    /// the page read once more for what landed before it stopped. False
+    /// where a save was refused, the page left to edit.
+    private func stopEditingAndSave() async -> Bool {
+        guard await saveEverything() else { return false }
+        guard editing else { return true }
+        editing = false
+        try? await Task.sleep(for: .milliseconds(50))
+        guard await saveEverything() else {
+            editing = true
+            return false
+        }
+        return true
+    }
+
+    /// Records a restore whose record didn't save with it, once a save has
+    /// written its text: a text since edited away from it isn't it.
+    private func recordRestore(ifSaved written: String) async {
+        guard let pending = unrecordedRestore else { return }
+        // Still standing in what was written, whatever else was typed; gone
+        // (undone or written over), there's nothing to record.
+        unrecordedRestore = nil
+        guard pending.plan.stands(from: pending.base, in: written) else { return }
+        let writingID = writingID
+        let name = name
+        _ = await Task.detached(priority: .userInitiated) {
+            try? LibrarySyncPass.reviewStore.update(writingID: writingID, document: name) {
+                $0.restoringWording(pending.plan, from: pending.base, to: pending.restored, carryingFrom: pending.known)
+            }
+        }.value
+        NotificationCenter.default.post(name: .writingReviewsDidChange, object: nil)
+    }
+
+    /// The file's Markdown opened as it's written, everything typed saved
+    /// first so the source editor opens on it.
+    private func editSource() async {
+        guard await saveEverything() else { return }
+        // As stored now, which is what was just saved, or untouched.
+        guard let stored = await WritingDocuments.load(writingID: writingID).first(where: { $0.name == name }) else { return }
+        editingSource = WritingDocumentEditing(writingID: writingID, document: stored)
+    }
+
+    /// A copy stored elsewhere: taken in, or, with typing here unsaved, the
+    /// writer asked.
+    private func incoming(_ stored: Data) async {
+        // One at a time; the newest waiting goes next.
+        guard !takingIncoming else {
+            nextIncoming = stored
+            return
+        }
+        takingIncoming = true
+        defer { takingIncoming = false }
+        var next: Data? = stored
+        while let stored = next {
+            nextIncoming = nil
+            await takeIncoming(stored)
+            next = nextIncoming
+        }
+    }
+
+    private func takeIncoming(_ stored: Data) async {
+        while restoreBase != nil || saving { try? await Task.sleep(for: .milliseconds(50)) }
+        guard stored != opened else { return }
+        let incoming = String(decoding: stored, as: UTF8.self)
+        // The page not there yet: it loads this when it is (`connect`).
+        guard let coordinator else {
+            opened = stored
+            text = incoming
+            return
+        }
+        // Taken in only where the page holds nothing typed, checked in the
+        // page in the same step as the load, and its Markdown after read in
+        // that step too, so a key pressed meanwhile is a change to keep or
+        // let go, never taken for the file.
+        let untouched = [baseline, storedText].compactMap { $0 }
+        let loaded = await withCheckedContinuation { continuation in
+            coordinator.load(incoming, ifHolding: untouched) { continuation.resume(returning: $0) }
+        }
+        if let loaded {
+            opened = stored
+            text = incoming
+            baseline = loaded
+        } else if canEdit {
+            if let live = await pageText() { text = live }
+            changedMeanwhile = true
+        }
+    }
+
+    /// Takes in a stored copy, in place of the page's.
+    private func take(_ stored: Data) async {
+        let incoming = String(decoding: stored, as: UTF8.self)
+        opened = stored
+        text = incoming
+        coordinator?.load(incoming)
+        baseline = await pageText()
+    }
+
+    private func takeStored() async {
+        guard let stored = await WritingDocuments.load(writingID: writingID).first(where: { $0.name == name }) else {
+            return dismiss()
+        }
+        changedMeanwhile = false
+        await take(stored.data)
+    }
+
+    private func keepAsCopy() async {
+        do {
+            _ = try await WritingDocuments.saveAsCopy(text, writingID: writingID, of: name)
+            await ModuleSyncManager.shared.scheduleLibraryPass()
+            NotificationCenter.default.post(name: .writingDocumentsDidChange, object: nil)
+            if document == nil { return dismiss() }
+            await takeStored()
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+
+    private func delete() async {
+        saveTask?.cancel()
+        // As last written here: a save under way lands first, so it isn't
+        // taken for a copy from elsewhere.
+        while saving || restoreBase != nil { try? await Task.sleep(for: .milliseconds(50)) }
+        // The copy the writer saw when they asked, or one saved here since:
+        // one taken in from elsewhere meanwhile is kept as a copy.
+        guard let opened = deleteSeen ?? opened else { return }
+        do {
+            // A copy sync brought in while this one was open is kept.
+            if let kept = try await WritingDocuments.delete(writingID: writingID, name: name, seen: opened) {
+                problem = "It changed on another device while open, so that version is kept as \(kept)."
+            }
+            NotificationCenter.default.post(name: .writingDocumentsDidChange, object: nil)
+            dismiss()
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+}
+
+/// One of a writing's plain-text files, read as it is, what the assistant
+/// changed in it marked, as the writing's own prose is, and the addresses
+/// written out in it tappable. A tap on a marked passage shows what it
+/// changed, to mark as reviewed or put back. Gone back from once the file is
+/// deleted, here or elsewhere. Markdown files open in the writing's editor
+/// instead (`WritingDocumentPage`).
 struct WritingFileView: View {
     let writingID: String
     let name: String
@@ -396,16 +982,12 @@ struct WritingFileView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(20)
-                } else if WritingDocumentText.isMarkdown(document.name) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(Array(drawnPieces(of: document).enumerated()), id: \.offset) { _, drawn in
-                            block(drawn.piece, first: drawn.first, open: drawn.open)
-                        }
-                    }
-                    .padding(.vertical, 16)
                 } else {
                     let plain = WritingDocumentText.plain(shownText(of: document), fontSize: fontSize)
-                    WritingFileText(text: WritingDocumentText.drawingMarks(plain, first: 0, open: nil).text, onMark: choose)
+                    WritingFileText(
+                        text: WritingDocumentText.linkingAddresses(WritingDocumentText.drawingMarks(plain, first: 0, open: nil).text),
+                        onMark: choose
+                    )
                         .padding(.horizontal, 20)
                         .padding(.vertical, 16)
                 }
@@ -486,93 +1068,8 @@ struct WritingFileView: View {
     /// text shown.
     private func shownText(of document: WritingDocument) -> String {
         guard let marks, marks.text == document.text else { return document.text }
-        // Placed for Markdown where it's read as Markdown (core leaves code
-        // alone); plain text keeps each marker where it stands, since what
-        // it draws is what's written.
-        guard WritingDocumentText.isMarkdown(document.name) else { return LampWritingReviewMarkdown.numbered(marks.marked) }
-        return LampWritingReviewMarkdown.drawable(marks.marked)
-    }
-
-    /// Each block to draw, with the place of the first passage it opens and
-    /// a passage still open from the block before.
-    private func drawnPieces(of document: WritingDocument) -> [(piece: WritingDocumentText.Piece, first: Int, open: Int?)] {
-        var first = 0
-        var open: Int?
-        return WritingDocumentText.pieces(shownText(of: document), fontSize: fontSize).map { piece in
-            let drawn = (piece, first, open)
-            (first, open) = LampWritingReviewMarkdown.passing(piece.marked, first: first, open: open)
-            return drawn
-        }
-    }
-
-    /// Prose wraps; a code block and a table keep their lines and columns,
-    /// scrolled sideways where they're wider than the sheet.
-    @ViewBuilder
-    private func block(_ piece: WritingDocumentText.Piece, first: Int, open: Int?) -> some View {
-        switch piece {
-        case .prose(let prose):
-            WritingFileText(
-                text: WritingDocumentText.linkingAddresses(WritingDocumentText.drawingMarks(prose, first: first, open: open).text),
-                onMark: choose
-            )
-                .padding(.horizontal, 20)
-        case .code(let text, let indent):
-            ScrollView(.horizontal) {
-                Text(WritingDocumentText.drawingMarks(AttributedString(text), first: first, open: open).text)
-                    .font(.system(size: fontSize * 0.8, design: .monospaced))
-                    .fixedSize()
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 20)
-                    .padding(.leading, indent)
-            }
-            .environment(\.openURL, markAction)
-            // A mark is drawn as its text is, not in the link colour.
-            .tint(.primary)
-        case .table(let rows, let indent):
-            let size = fontSize * 0.9
-            let widths = WritingDocumentText.columnWidths(
-                rows.map { $0.map { String($0.characters) } }, size: size, widest: fontSize * 14
-            )
-            let cells = drawnCells(rows, first: first, open: open)
-            ScrollView(.horizontal) {
-                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
-                    ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                        GridRow(alignment: .firstTextBaseline) {
-                            ForEach(widths.indices, id: \.self) { column in
-                                Text(column < cells[index].count ? cells[index][column] : AttributedString())
-                                    .font(Font(LampTheme.serif(size: size, weight: index == 0 ? .semibold : .regular)))
-                                    // A width of its own, so a long cell's
-                                    // wrapped lines are measured as drawn.
-                                    .frame(width: widths[column], alignment: .leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        if index == 0 {
-                            Divider().gridCellUnsizedAxes(.horizontal)
-                        }
-                    }
-                }
-                .textSelection(.enabled)
-                .padding(.horizontal, 20)
-                .padding(.leading, indent)
-            }
-            .environment(\.openURL, markAction)
-            .tint(.primary)
-        }
-    }
-
-    /// A table's cells, their marks drawn, in reading order.
-    private func drawnCells(_ rows: [[AttributedString]], first: Int, open: Int?) -> [[AttributedString]] {
-        var first = first
-        var open = open
-        return rows.map { row in
-            row.map { cell in
-                let drawn = WritingDocumentText.drawingMarks(cell, first: first, open: open)
-                first = drawn.next
-                open = drawn.open
-                return WritingDocumentText.linkingAddresses(WritingDocumentText.trimmed(drawn.text))
-            }
-        }
+        // Each marker where it stands, since what's drawn is what's written.
+        return LampWritingReviewMarkdown.numbered(marks.marked)
     }
 
     /// A change named by its words now, or what's there where it took words
@@ -585,14 +1082,6 @@ struct WritingFileView: View {
         let words = String(WritingDocumentText.cell(source).characters).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !words.isEmpty else { return "Words taken out" }
         return words.count > 48 ? String(words.prefix(47)) + "…" : words
-    }
-
-    private var markAction: OpenURLAction {
-        OpenURLAction { url in
-            guard let index = WritingDocumentText.markIndex(url) else { return .systemAction }
-            choose(index)
-            return .handled
-        }
     }
 
     private func choose(_ index: Int) {
@@ -817,9 +1306,8 @@ struct WritingMarkSheet: View {
     }
 }
 
-/// A file's text as it reads. Markdown is drawn as a note's is, line by line
-/// in the writing's serif, cut where a fenced code block or a table is,
-/// which that doesn't draw: the reader sets those itself.
+/// A plain-text file's text as it reads, and its review marks drawn in it.
+/// Markdown files are the editor's (`WritingDocumentPage`).
 enum WritingDocumentText {
     static func isMarkdown(_ name: String) -> Bool {
         ["md", "markdown"].contains((name as NSString).pathExtension.lowercased())
@@ -832,654 +1320,6 @@ enum WritingDocumentText {
         style.lineSpacing = fontSize * 0.35
         attributes[.paragraphStyle] = style
         return NSAttributedString(string: text, attributes: attributes)
-    }
-
-    // MARK: Blocks
-
-    /// One piece of a Markdown file as the reader lays it out: prose drawn
-    /// as one text, and a code block or a table set apart, wider than the
-    /// sheet where it must be. Review markers stay in each, for
-    /// `drawingMarks`.
-    enum Piece {
-        case prose(NSAttributedString)
-        /// `indent`: how far in the quotations and list items holding it set
-        /// it.
-        case code(String, indent: CGFloat = 0)
-        /// Its rows' cells, the header's first.
-        case table([[AttributedString]], indent: CGFloat = 0)
-
-        /// This piece where it reads as `plain` (the same piece read without
-        /// its markers) does, and `plain` where it doesn't: for prose, a
-        /// paragraph at a time, so one marker that changed its paragraph's
-        /// reading costs only that paragraph its marks.
-        func merged(onto plain: Piece) -> Piece {
-            switch (self, plain) {
-            case (.prose(let text), .prose(let bare)):
-                let marked = Self.paragraphs(of: text)
-                let read = Self.paragraphs(of: bare)
-                guard marked.count == read.count else { return plain }
-                let out = NSMutableAttributedString()
-                for (mine, theirs) in zip(marked, read) { out.append(mine.shape == theirs.shape ? mine.text : theirs.text) }
-                return .prose(out)
-            case (.code(let code, _), .code(let bare, _)):
-                return unmarked(code) == bare ? self : plain
-            case (.table(let rows, _), .table(let bare, _)):
-                // A space the parser kept beside a marker draws as nothing;
-                // where a cell's link goes does.
-                let cell: (AttributedString) -> String = { cell in
-                    unmarked(String(cell.characters)).trimmingCharacters(in: .whitespaces) + "|"
-                        + cell.runs.compactMap { $0.link.map { (cleanedLink($0) ?? $0).absoluteString } }.joined(separator: " ")
-                }
-                return rows.map { $0.map(cell) } == bare.map { $0.map(cell) } ? self : plain
-            default:
-                return plain
-            }
-        }
-
-        /// Each paragraph with its break, and its shape: its words without
-        /// their markers, how it's indented and set where its words begin,
-        /// and where its links go. What a marker that changed the reading
-        /// would change.
-        private static func paragraphs(of text: NSAttributedString) -> [(text: NSAttributedString, shape: String)] {
-            var out: [(text: NSAttributedString, shape: String)] = []
-            let string = text.string as NSString
-            string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byParagraphs) { words, range, enclosing, _ in
-                var at = range.location
-                while at < NSMaxRange(range), (0xE000...0xE01A).contains(string.character(at: at)) { at += 1 }
-                var shape = unmarked(words ?? "").trimmingCharacters(in: .whitespaces)
-                if at < string.length {
-                    let style = text.attribute(.paragraphStyle, at: at, effectiveRange: nil) as? NSParagraphStyle
-                    let font = text.attribute(.font, at: at, effectiveRange: nil) as? UIFont
-                    shape += "|\(style?.headIndent ?? 0)|\(style?.firstLineHeadIndent ?? 0)|\(font?.fontName ?? "")|\(font?.pointSize ?? 0)"
-                }
-                text.enumerateAttribute(.link, in: range) { link, _, _ in
-                    guard let url = link as? URL else { return }
-                    shape += "|" + (cleanedLink(url) ?? url).absoluteString
-                }
-                out.append((text.attributedSubstring(from: enclosing), shape))
-            }
-            return out
-        }
-
-        /// Its words with their markers, for counting passages across it.
-        var marked: String {
-            switch self {
-            case .prose(let text): return text.string
-            case .code(let code, _): return code
-            case .table(let rows, _): return rows.flatMap { $0 }.map { String($0.characters) }.joined()
-            }
-        }
-    }
-
-    /// A file's Markdown as the writer's editor reads it, by core
-    /// (`LampProse`, a writing's options: a soft wrap joins), laid out in
-    /// the writing's serif, its review markers drawn where they're safe to.
-    ///
-    /// A marker is a character to the parser, and wherever one stands it
-    /// can change what a line reads as. So the file is read twice, with its
-    /// markers and without, and a piece keeps its markers only where it
-    /// reads exactly as it does without them; elsewhere it's drawn as
-    /// written, its changes still listed under the count. The common cases
-    /// (a fence's or a table's own lines, a blank line, a footnote's label)
-    /// are moved first, so they keep theirs.
-    static func pieces(_ markdown: String, fontSize: CGFloat) -> [Piece] {
-        let text = markdown.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-        let plain = layout(unmarked(text), fontSize: fontSize)
-        guard text.contains(where: isMarker) else { return plain }
-        guard !plain.isEmpty else {
-            // Nothing left to read: what was taken out still to tap.
-            let points = LampWritingReviewMarkdown.asPoints(markers(in: text))
-            return [.prose(NSAttributedString(string: points, attributes: NoteMarkdown.baseAttributes(fontSize: fontSize, serif: true)))]
-        }
-        let marked = layout(settlingSyntaxLines(placingEnds(text)), fontSize: fontSize)
-        guard marked.count == plain.count else { return plain }
-        return pointingUnpaired(zip(marked, plain).map { $0.merged(onto: $1) })
-    }
-
-    private static func layout(_ text: String, fontSize: CGFloat) -> [Piece] {
-        let blocks = LampProse.blocks(text, options: .writing)
-        var layout = ProseLayout(fontSize: fontSize, footnoteNumbers: footnoteNumbers(blocks))
-        layout.add(blocks, depth: 0, quote: 0)
-        layout.flush()
-        return layout.pieces
-    }
-
-    /// What each footnote is shown as, as the editor numbers them
-    /// (footnote-numbering.js): those defined, 1, 2, 3 in the order they're
-    /// first referred to, then any nothing refers to in the order written.
-    /// A reference nothing defines keeps its label.
-    static func footnoteNumbers(_ blocks: [LampProseBlock]) -> [String: String] {
-        var defined: [String] = []
-        var referred: [String] = []
-        func texts(_ blocks: [LampProseBlock]) {
-            for block in blocks {
-                switch block {
-                case .heading(_, let text), .paragraph(let text): refer(text)
-                case .quote(let inner): texts(inner)
-                case .list(_, _, let items): items.forEach { texts($0.blocks) }
-                case .table(let headers, let rows): (headers + rows.flatMap { $0 }).forEach(refer)
-                case .footnote(let label, _):
-                    // Numbered by the text's own references, as the editor
-                    // numbers them; one inside a note doesn't count.
-                    defined.append(unmarked(label))
-                case .code, .html, .audio, .picture, .rule: break
-                }
-            }
-        }
-        func refer(_ text: LampProseText) {
-            for run in text.text.runs {
-                guard let label = run[LampFootnoteReferenceAttribute.self] else { continue }
-                // References alike in a row are one run; one is enough here.
-                referred.append(unmarked(label))
-            }
-        }
-        texts(blocks)
-        var numbers: [String: String] = [:]
-        for label in referred + defined where defined.contains(label) && numbers[label] == nil {
-            numbers[label] = String(numbers.count + 1)
-        }
-        return numbers
-    }
-
-    /// Each end marker given the place of the start it closes, so a passage
-    /// is known by both its edges: should the parse lose one edge of each
-    /// of two passages, the two left aren't taken for one.
-    static func placingEnds(_ text: String) -> String {
-        let characters = Array(text)
-        var out = ""
-        var open: String?
-        var at = 0
-        while at < characters.count {
-            let character = characters[at]
-            out.append(character)
-            if character == LampWritingReview.markStart || character == LampWritingReview.markPoint {
-                var place = ""
-                var next = at + 1
-                while next < characters.count, LampWritingReviewMarkdown.placeDigit(characters[next]) != nil {
-                    place.append(characters[next])
-                    next += 1
-                }
-                if !place.isEmpty, next < characters.count, characters[next] == LampWritingReviewMarkdown.placeEnd {
-                    out += place + String(LampWritingReviewMarkdown.placeEnd)
-                    if character == LampWritingReview.markStart { open = place }
-                    at = next
-                }
-            } else if character == LampWritingReview.markEnd {
-                if let place = open { out += place + String(LampWritingReviewMarkdown.placeEnd) }
-                open = nil
-            }
-            at += 1
-        }
-        return out
-    }
-
-    /// The marked text with markers taken off what's only syntax, where
-    /// they'd stop it reading as it does: a fence's lines (the first's into
-    /// its code, the last's onto the code's end), a table's alignment row
-    /// (onto the row after), a row's outer pipes (moved inside them), a
-    /// change of only the pipe between two cells (a point), a footnote's
-    /// label, and a blank line (onto the next line with words). Core's
-    /// placement leaves code as written (`LampWritingReviewMarkdown.drawable`),
-    /// fences included, since a surface that checks its parse refuses them;
-    /// this one draws them. Whatever this misses, `pieces` catches.
-    static func settlingSyntaxLines(_ marked: String) -> String {
-        var lines = marked.components(separatedBy: "\n")
-        let bareLines = lines.map(unmarked)
-        guard lines.count > 1 || marked.contains(where: isMarker) else { return marked }
-        let model = LampMarkdownModel(parsing: bareLines.joined(separator: "\n"))
-        var starts: [Int] = []
-        var offset = 0
-        for line in bareLines {
-            starts.append(offset)
-            offset += (line as NSString).length + 1
-        }
-        func line(of location: Int) -> Int {
-            var low = 0, high = starts.count - 1
-            while low < high {
-                let middle = (low + high + 1) / 2
-                if starts[middle] <= location { low = middle } else { high = middle - 1 }
-            }
-            return low
-        }
-        func taking(_ index: Int) -> String {
-            let found = markers(in: lines[index])
-            if !found.isEmpty { lines[index] = unmarked(lines[index]) }
-            return found
-        }
-        /// Markers put on a line where its words begin: after its quote
-        /// marks and indent, then past any block syntax there.
-        func putting(_ moved: String, onto index: Int, code: Bool) {
-            guard !moved.isEmpty else { return }
-            let prefix = containerPrefix(lines[index])
-            let placed = String(prefix) + moved + lines[index].dropFirst(prefix.count)
-            lines[index] = code ? placed : LampWritingReviewMarkdown.clearingBlockSyntax(placed)
-        }
-        // Lines a code block or a table holds, which a blank line's markers
-        // aren't moved onto, and a blank line in code keeps its own.
-        var held = Set<Int>()
-        var tables = Set<Int>()
-        var tableRows: [Int: Int] = [:]
-        // For each line of a code block, the last line of its code.
-        var codeEnds: [Int: Int] = [:]
-        for block in model.blocks.sorted(by: { $0.range.location < $1.range.location }) {
-            let first = line(of: block.range.location)
-            let last = line(of: max(block.range.location, NSMaxRange(block.range) - 1))
-            if block.kind == .codeBlock || block.kind == .table { held.formUnion(first...last) }
-            if block.kind == .table {
-                tables.formUnion(first...last)
-                // A row that isn't the alignment row, to take markers in.
-                for index in first...last { tableRows[index] = index == first + 1 ? first : index }
-            }
-            switch block.kind {
-            case .codeBlock:
-                // A fence opens within three spaces of its container, or
-                // is closed by its own mark; four in, it's indented code.
-                let opener = fence(opening: bareLines[first])
-                let indent = bareLines[first].prefix { $0 == " " || $0 == ">" }.filter { $0 == " " }.count
-                let fenced = opener.map { indent < 4 || (last > first && closes(bareLines[last], $0)) } ?? false
-                guard fenced, let fence = opener else {
-                    // Indented code: a marker before the indent moved past
-                    // it, or the line isn't code.
-                    for index in first...last {
-                        let head = lines[index].prefix { isMarker($0) || $0 == " " || $0 == "\t" || $0 == ">" }
-                        guard head.contains(where: isMarker) else { continue }
-                        lines[index] = String(head.filter { !isMarker($0) }) + markers(in: String(head)) + lines[index].dropFirst(head.count)
-                    }
-                    for index in first...last { codeEnds[index] = last }
-                    continue
-                }
-                let opening = taking(first)
-                // A fence never closed runs to the end of its container.
-                let closes = last > first && closes(bareLines[last], fence)
-                let closing = closes ? taking(last) : ""
-                let inner = (first + 1)..<(closes ? last : last + 1)
-                for index in first...last { codeEnds[index] = inner.isEmpty ? first : inner.upperBound - 1 }
-                if inner.isEmpty {
-                    // Nothing in the block: onto the line after it, the line
-                    // before, or, alone in the file, left where it was.
-                    let moved = LampWritingReviewMarkdown.asPoints(opening + closing)
-                    if last + 1 < lines.count {
-                        putting(moved, onto: last + 1, code: false)
-                    } else if first > 0 {
-                        lines[first - 1] += moved
-                    } else {
-                        lines[first] += moved
-                    }
-                } else {
-                    putting(LampWritingReviewMarkdown.asPoints(opening), onto: inner.lowerBound, code: true)
-                    lines[inner.upperBound - 1] += LampWritingReviewMarkdown.asPoints(closing)
-                }
-            case .table where last > first:
-                let alignment = taking(first + 1)
-                if !alignment.isEmpty {
-                    let moved = LampWritingReviewMarkdown.asPoints(alignment)
-                    if first + 2 <= last { lines[first + 2] = insideRow(moved, lines[first + 2]) } else { lines[first] += moved }
-                }
-                for index in first...last where index != first + 1 {
-                    lines[index] = keepingMarkersInsidePipes(lines[index])
-                }
-            default:
-                break
-            }
-        }
-        for index in lines.indices where !held.contains(index) {
-            // A footnote's label read as its label.
-            let bare = unmarked(lines[index])
-            if lines[index] != bare, let label = bare.prefixMatch(of: #/ {0,3}\[\^[^\]\s]+\]:[ \t]?/#) {
-                var moved = ""
-                var kept = ""
-                var rest = Substring(lines[index])
-                while kept.count < bare[label.range].count, let character = rest.first {
-                    rest = rest.dropFirst()
-                    if isMarker(character) { moved.append(character) } else { kept.append(character) }
-                }
-                lines[index] = kept + moved + rest
-            }
-        }
-        // A blank line kept blank: its markers onto the next line with words
-        // that's prose, else the one before, else left where they were.
-        let isBlank: (Int) -> Bool = { unmarked(lines[$0]).allSatisfy { $0 == " " || $0 == "\t" } }
-        for index in lines.indices where !held.contains(index) && isBlank(index) && lines[index].contains(where: isMarker) {
-            let moved = LampWritingReviewMarkdown.asPoints(markers(in: lines[index]))
-            if let next = lines.indices[(index + 1)...].first(where: { !isBlank($0) }), !held.contains(next) {
-                lines[index] = unmarked(lines[index])
-                putting(moved, onto: next, code: false)
-            } else if let before = lines.indices[..<index].last(where: { !isBlank($0) }), !held.contains(before) {
-                lines[index] = unmarked(lines[index])
-                lines[before] += moved
-            } else if let before = lines.indices[..<index].last(where: { !isBlank($0) }) {
-                // Only a table or code to go to: into its last cell, or onto
-                // the end of its code.
-                lines[index] = unmarked(lines[index])
-                if let row = tableRows[before] {
-                    lines[row] = keepingMarkersInsidePipes(lines[row] + moved)
-                } else {
-                    lines[codeEnds[before] ?? before] += moved
-                }
-            }
-        }
-        for index in lines.indices where !held.contains(index) && lines[index].contains(where: isMarker) {
-            lines[index] = markersIntoCaption(lines[index])
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    /// A picture or recording on a line of its own with the markers around
-    /// it moved into its caption, where they leave it on a line of its own.
-    private static func markersIntoCaption(_ line: String) -> String {
-        let bare = unmarked(line)
-        guard bare.wholeMatch(of: #/\s*!?\[[^\]]*\]\((?:media/|lamp-media://)[^)\s]+\)\s*/#) != nil,
-              let open = line.firstIndex(of: "["), let close = line.range(of: "](") else { return line }
-        let head = line[..<open]
-        guard let end = line[close.upperBound...].firstIndex(of: ")") else { return line }
-        let tail = line[line.index(after: end)...]
-        let before = markers(in: String(head.filter { $0 != "!" }))
-        let after = markers(in: String(tail))
-        guard !before.isEmpty || !after.isEmpty else { return line }
-        let bang = head.contains("!") ? "!" : ""
-        let indent = head.filter { $0 == " " || $0 == "\t" }
-        return indent + bang + "[" + before + line[line.index(after: open)..<close.lowerBound] + after
-            + line[close.lowerBound...end]
-    }
-
-    /// A line's quote marks and indent, which hold it in its container.
-    private static func containerPrefix(_ line: String) -> Substring {
-        line.prefix { $0 == " " || $0 == "\t" || $0 == ">" }
-    }
-
-    /// The fence a line opens, its quote marks and indent aside: its
-    /// character and length.
-    private static func fence(opening line: String) -> (character: Character, length: Int)? {
-        let rest = line.drop { $0 == " " || $0 == "\t" || $0 == ">" }
-        guard let character = rest.first, character == "`" || character == "~" else { return nil }
-        let length = rest.prefix { $0 == character }.count
-        return length >= 3 ? (character, length) : nil
-    }
-
-    /// Whether a line closes a fence: the same character, at least as long,
-    /// and nothing after but spaces.
-    private static func closes(_ line: String, _ fence: (character: Character, length: Int)) -> Bool {
-        let rest = line.drop { $0 == " " || $0 == "\t" || $0 == ">" }
-        let run = rest.prefix { $0 == fence.character }
-        return run.count >= fence.length && rest.dropFirst(run.count).allSatisfy { $0 == " " || $0 == "\t" }
-    }
-
-    /// `markers` put at the start of a table row's first cell's words.
-    private static func insideRow(_ markers: String, _ row: String) -> String {
-        let prefix = containerPrefix(row)
-        let rest = row.dropFirst(prefix.count)
-        guard rest.first == "|" else { return prefix + markers + rest }
-        let cell = rest.dropFirst()
-        let space = cell.prefix { $0 == " " || $0 == "\t" }
-        return prefix + "|" + space + markers + cell.dropFirst(space.count)
-    }
-
-    /// A table row with markers standing outside its outer pipes moved in
-    /// past them, where they'd be cells of their own, and a change of only
-    /// the pipe between two cells made a point, which neither cell draws.
-    private static func keepingMarkersInsidePipes(_ row: String) -> String {
-        var row = row
-        let isMarkerOrSpace: (Character) -> Bool = { isMarker($0) || $0 == " " || $0 == "\t" || $0 == ">" }
-        // Before the first pipe, the quote marks holding the row kept.
-        let head = row.prefix(while: isMarkerOrSpace)
-        if head.contains(where: isMarker), row.dropFirst(head.count).first == "|" {
-            let prefix = String(head.filter { !isMarker($0) })
-            row = insideRow(markers(in: String(head)), prefix + row.dropFirst(head.count))
-        }
-        // After the last.
-        let tail = String(row.reversed().prefix { isMarker($0) || $0 == " " || $0 == "\t" }.reversed())
-        let body = row.dropLast(tail.count)
-        if tail.contains(where: isMarker), body.last == "|", !body.dropLast().hasSuffix("\\") {
-            // At the end of the last cell's words, before its spaces.
-            let cell = body.dropLast()
-            let space = String(cell.reversed().prefix { $0 == " " || $0 == "\t" }.reversed())
-            row = cell.dropLast(space.count) + markers(in: tail) + space + "|"
-        }
-        return row.replacing(#/\x{E000}([\x{E010}-\x{E01A}]*)([ \t]*)\|([ \t]*)\x{E001}[\x{E010}-\x{E01A}]*/#) { match in
-            "\u{E002}\(match.output.1)\(match.output.2)|\(match.output.3)"
-        }
-    }
-
-    /// The pieces with each passage the parse kept only one edge of drawn
-    /// safely: a start without its end a point, rather than highlighted on
-    /// to the end of the file, and an end without its start left out.
-    private static func pointingUnpaired(_ pieces: [Piece]) -> [Piece] {
-        var starts = Set<Int>()
-        var ends = Set<Int>()
-        for piece in pieces {
-            for found in placedMarkers(in: piece.marked as NSString) {
-                if found.marker == 0xE000 { starts.insert(found.place) }
-                if found.marker == 0xE001 { ends.insert(found.place) }
-            }
-        }
-        let lostEnd = starts.subtracting(ends)
-        let lostStart = ends.subtracting(starts)
-        guard !lostEnd.isEmpty || !lostStart.isEmpty else { return pieces }
-        // Each edge to change, as the range it stands in (the marker and its
-        // place) and what it becomes; latest first, so earlier ranges hold.
-        func edits(_ text: NSString) -> [(range: NSRange, with: String)] {
-            placedMarkers(in: text).compactMap { found -> (NSRange, String)? in
-                if found.marker == 0xE000, lostEnd.contains(found.place) {
-                    return (NSRange(location: found.at, length: 1), String(LampWritingReview.markPoint))
-                }
-                if found.marker == 0xE001, lostStart.contains(found.place) {
-                    return (NSRange(location: found.at, length: found.length), "")
-                }
-                return nil
-            }.reversed()
-        }
-        return pieces.map { piece in
-            switch piece {
-            case .prose(let text):
-                let out = NSMutableAttributedString(attributedString: text)
-                for edit in edits(text.string as NSString) { out.mutableString.replaceCharacters(in: edit.range, with: edit.with) }
-                return .prose(out)
-            case .code(let code, let indent):
-                let out = NSMutableString(string: code)
-                for edit in edits(code as NSString) { out.replaceCharacters(in: edit.range, with: edit.with) }
-                return .code(out as String, indent: indent)
-            case .table(let rows, let indent):
-                return .table(rows.map { row in
-                    row.map { cell in
-                        // Only a cell with an edge to change is rebuilt, so
-                        // every other keeps the attributes it was drawn with.
-                        let changes = edits(String(cell.characters) as NSString)
-                        guard !changes.isEmpty else { return cell }
-                        var out = cell
-                        for edit in changes {
-                            let source = String(out.characters) as NSString
-                            let start = out.characters.index(out.startIndex, offsetBy: source.substring(to: edit.range.location).count)
-                            let end = out.characters.index(start, offsetBy: source.substring(with: edit.range).count)
-                            var replacement = AttributedString(edit.with)
-                            replacement.mergeAttributes(out[start..<end].runs.first?.attributes ?? AttributeContainer())
-                            out.replaceSubrange(start..<end, with: replacement)
-                        }
-                        return out
-                    }
-                }, indent: indent)
-            }
-        }
-    }
-
-    /// Each start, end and point marker in `text` with the place written
-    /// after it, where it stands and how long it is with its place (UTF-16;
-    /// every marker and digit is one unit). One with no place is left out.
-    private static func placedMarkers(in text: NSString) -> [(at: Int, length: Int, marker: unichar, place: Int)] {
-        var out: [(at: Int, length: Int, marker: unichar, place: Int)] = []
-        var at = 0
-        while at < text.length {
-            let unit = text.character(at: at)
-            guard (0xE000...0xE002).contains(unit) else {
-                at += 1
-                continue
-            }
-            var next = at + 1
-            var place = 0
-            while next < text.length, (0xE010...0xE019).contains(text.character(at: next)) {
-                place = place * 10 + Int(text.character(at: next) - 0xE010)
-                next += 1
-            }
-            if next > at + 1, next < text.length, text.character(at: next) == 0xE01A {
-                out.append((at, next + 1 - at, unit, place))
-                at = next + 1
-            } else {
-                at += 1
-            }
-        }
-        return out
-    }
-
-    /// The blocks walked in reading order, nested blocks indented, each code
-    /// block and table cutting the prose around it.
-    private struct ProseLayout {
-        let fontSize: CGFloat
-        var footnoteNumbers: [String: String] = [:]
-        var pieces: [Piece] = []
-        var flow = NSMutableAttributedString()
-        var step: CGFloat { fontSize * 1.4 }
-
-        mutating func flush() {
-            guard flow.length > 0 else { return }
-            pieces.append(.prose(flow))
-            flow = NSMutableAttributedString()
-        }
-
-        /// `depth` is how many list items hold these blocks, `quote` how
-        /// many quotations. `marker` opens the first of them, for an item.
-        /// What's in a list sits close; top-level blocks, a list among them,
-        /// sit a paragraph apart (`wide`, for the first).
-        mutating func add(_ blocks: [LampProseBlock], depth: Int, quote: Int, marker: String? = nil, wide: Bool = true) {
-            // An item or footnote with nothing in it keeps its label.
-            if blocks.isEmpty, let marker {
-                paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: !wide)
-                return
-            }
-            var marker = marker
-            for (index, block) in blocks.enumerated() {
-                let close = index == 0 ? !wide : depth > 0
-                switch block {
-                case .heading(let level, let text):
-                    let size = fontSize * (level == 1 ? 1.3 : level == 2 ? 1.2 : 1.1)
-                    paragraph(inline(text.text, size: size, bold: true), depth: depth, quote: quote, marker: marker, close: close)
-                case .paragraph(let text):
-                    paragraph(inline(text.text, size: fontSize), depth: depth, quote: quote, marker: marker, close: close)
-                case .quote(let inner):
-                    if let marker { paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: close) }
-                    add(inner, depth: depth, quote: quote + 1, wide: marker == nil && !close)
-                case .list(let ordered, let start, let items):
-                    if let marker { paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: close) }
-                    for (number, item) in items.enumerated() {
-                        let shown: String
-                        switch item.checked {
-                        case .some(true): shown = "☑\u{FE0E}"
-                        case .some(false): shown = "☐"
-                        case .none: shown = ordered ? "\(start + number)." : "•"
-                        }
-                        add(item.blocks, depth: depth + 1, quote: quote, marker: shown, wide: number == 0 && !close && marker == nil)
-                    }
-                case .code(let language, let code):
-                    // An item opening with code keeps its number.
-                    if let marker { paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: close) }
-                    flush()
-                    // A marker the fence's info took is kept with its code.
-                    pieces.append(.code(
-                        LampWritingReviewMarkdown.asPoints(markers(in: language ?? "")) + code, indent: indent(depth: depth, quote: quote)
-                    ))
-                case .table(let headers, let rows):
-                    if let marker { paragraph(NSAttributedString(), depth: depth, quote: quote, marker: marker, close: close) }
-                    flush()
-                    let cells = ([headers] + rows).map { $0.map { WritingDocumentText.numberingFootnotes($0.text, footnoteNumbers, size: fontSize * 0.9) } }
-                    pieces.append(.table(cells, indent: indent(depth: depth, quote: quote)))
-                case .html(let html):
-                    paragraph(plain(html, size: fontSize), depth: depth, quote: quote, marker: marker, close: close)
-                case .footnote(let label, let inner):
-                    add(inner, depth: depth + 1, quote: quote, marker: markers(in: label) + (footnoteNumbers[unmarked(label)] ?? unmarked(label)))
-                case .audio(let caption, let path):
-                    let line = NSMutableAttributedString()
-                    let symbol = NSTextAttachment()
-                    symbol.image = UIImage(systemName: "waveform", withConfiguration: UIImage.SymbolConfiguration(pointSize: fontSize * 0.85))?
-                        .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
-                    line.append(NSAttributedString(attachment: symbol))
-                    line.append(plain(" " + markers(in: path) + (caption.isEmpty ? "Recording" : caption), size: fontSize))
-                    paragraph(line, depth: depth, quote: quote, marker: marker, close: close)
-                case .picture(let caption, let path):
-                    let picture = NSMutableAttributedString(attributedString: NoteMarkdown.picture(
-                        nil, caption: markers(in: path) + caption, fontSize: fontSize, serif: true
-                    ))
-                    paragraph(picture, depth: depth, quote: quote, marker: marker, close: close)
-                case .rule:
-                    var attributes = NoteMarkdown.baseAttributes(fontSize: fontSize, serif: true)
-                    attributes[.foregroundColor] = UIColor.separator
-                    paragraph(NSAttributedString(string: "———", attributes: attributes), depth: depth, quote: quote, marker: marker, close: close)
-                }
-                marker = nil
-            }
-        }
-
-        /// How far in the quotations and items holding a block set it.
-        private func indent(depth: Int, quote: Int) -> CGFloat {
-            CGFloat(quote) * fontSize + CGFloat(depth) * step
-        }
-
-        private func plain(_ text: String, size: CGFloat) -> NSAttributedString {
-            NSAttributedString(string: text, attributes: NoteMarkdown.baseAttributes(fontSize: size, serif: true))
-        }
-
-        /// Inline text in the writing's serif, a link kept on its words to be
-        /// opened, a picture in it named after its line.
-        private func inline(_ text: AttributedString, size: CGFloat, bold: Bool = false) -> NSAttributedString {
-            let read = NoteMarkdown.inline(
-                parsed: text, attributes: NoteMarkdown.baseAttributes(fontSize: size, bold: bold, serif: true),
-                fontSize: size, bold: bold, serif: true, linksTapped: true, footnoteNumbers: footnoteNumbers
-            )
-            let out = NSMutableAttributedString(attributedString: read.text)
-            // A break the writer made is a line within the paragraph.
-            out.mutableString.replaceOccurrences(of: "\n", with: "\u{2028}", range: NSRange(location: 0, length: out.length))
-            for picture in read.pictures {
-                out.append(NSAttributedString(string: "\u{2028}", attributes: NoteMarkdown.baseAttributes(fontSize: size, serif: true)))
-                out.append(NoteMarkdown.picture(nil, caption: picture.caption, fontSize: fontSize, serif: true))
-            }
-            return out
-        }
-
-        /// One paragraph of the prose, indented for the items and quotations
-        /// holding it, a quotation's in the secondary colour.
-        private mutating func paragraph(_ text: NSAttributedString, depth: Int, quote: Int, marker: String?, close: Bool) {
-            let style = NSMutableParagraphStyle()
-            style.lineSpacing = fontSize * 0.35
-            let indent = CGFloat(quote) * fontSize + CGFloat(depth) * step
-            style.headIndent = indent
-            style.firstLineHeadIndent = indent
-            if flow.length > 0 { style.paragraphSpacingBefore = close ? fontSize * 0.25 : fontSize * 0.7 }
-            let line = NSMutableAttributedString()
-            if let marker {
-                // The item's marker hangs in the step before its words.
-                style.firstLineHeadIndent = indent - step
-                style.tabStops = [NSTextTab(textAlignment: .left, location: indent)]
-                style.defaultTabInterval = step
-                line.append(NSAttributedString(string: marker + "\t", attributes: NoteMarkdown.baseAttributes(fontSize: fontSize, serif: true)))
-            }
-            line.append(text)
-            let whole = NSRange(location: 0, length: line.length)
-            line.addAttribute(.paragraphStyle, value: style, range: whole)
-            if quote > 0 {
-                // Its words in the secondary colour; a link keeps its own.
-                line.enumerateAttribute(.foregroundColor, in: whole) { color, range, _ in
-                    if (color as? UIColor) == UIColor.label {
-                        line.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: range)
-                    }
-                }
-            }
-            if flow.length > 0 {
-                // The break ends the paragraph before, and is styled as it.
-                let before = flow.attributes(at: flow.length - 1, effectiveRange: nil)
-                flow.append(NSAttributedString(string: "\n", attributes: [
-                    .paragraphStyle: before[.paragraphStyle] ?? style,
-                    .font: before[.font] ?? UIFont.systemFont(ofSize: fontSize),
-                ]))
-            }
-            flow.append(line)
-        }
     }
 
     // MARK: Review marks
@@ -1623,93 +1463,6 @@ enum WritingDocumentText {
         return (out, index, start == nil ? nil : current)
     }
 
-    /// The same for text SwiftUI draws: a table's cell, a code block.
-    static func drawingMarks(
-        _ text: AttributedString, first: Int, open: Int?
-    ) -> (text: AttributedString, next: Int, open: Int?) {
-        var out = AttributedString()
-        var index = first
-        var current = open
-        // Whether anything was drawn of the passage open, so one Markdown
-        // left nothing of is drawn as a point.
-        var drawnOfCurrent = open != nil
-        func caret(_ place: Int, _ attributes: AttributeContainer) -> AttributedString {
-            var caret = AttributedString(pointGlyph)
-            caret.mergeAttributes(attributes)
-            caret.backgroundColor = nil
-            caret.foregroundColor = Color(uiColor: markEdge)
-            caret.link = markLink(place)
-            return caret
-        }
-        for run in text.runs {
-            var piece = ""
-            func flush() {
-                guard !piece.isEmpty else { return }
-                var part = AttributedString(piece)
-                part.mergeAttributes(run.attributes)
-                if let link = part.link, let cleaned = cleanedLink(link) { part.link = cleaned }
-                if let current {
-                    part.backgroundColor = Color(uiColor: markTint)
-                    part.link = markLink(current)
-                    drawnOfCurrent = true
-                }
-                out += part
-                piece = ""
-            }
-            let characters = Array(text[run.range].characters)
-            var at = 0
-            while at < characters.count {
-                let character = characters[at]
-                switch character {
-                case LampWritingReview.markStart, LampWritingReview.markPoint:
-                    flush()
-                    let written = place(after: at, in: characters)
-                    let found = written?.place ?? index
-                    at = written?.end ?? at
-                    index = found + 1
-                    if character == LampWritingReview.markStart {
-                        current = found
-                        drawnOfCurrent = false
-                    } else {
-                        out += caret(found, run.attributes)
-                    }
-                case LampWritingReview.markEnd:
-                    flush()
-                    if let current, !drawnOfCurrent { out += caret(current, run.attributes) }
-                    current = nil
-                default:
-                    if !isMarker(character) { piece.append(character) }
-                }
-                at += 1
-            }
-            flush()
-        }
-        return (out, index, current)
-    }
-
-    /// A cell's footnote references as the prose shows them: each its
-    /// number, raised and small.
-    static func numberingFootnotes(_ cell: AttributedString, _ numbers: [String: String], size: CGFloat) -> AttributedString {
-        var out = AttributedString()
-        for run in cell.runs {
-            var piece = AttributedString(cell[run.range])
-            if let label = run[LampFootnoteReferenceAttribute.self] {
-                let written = String(piece.characters)
-                let shown = written.replacing(#/\[\^([^\]]*)\]/#) { match in
-                    let label = String(match.output.1)
-                    return numbers[unmarked(label)].map { markers(in: label) + $0 } ?? label
-                }
-                var raised = AttributedString(shown == written ? (numbers[label] ?? label) : shown)
-                raised.mergeAttributes(run.attributes)
-                raised.baselineOffset = size * 0.35
-                raised.font = Font(LampTheme.serif(size: size * 0.7, weight: .regular))
-                piece = raised
-            }
-            out += piece
-        }
-        return out
-    }
-
     /// Drawn prose with each web or email address written out in it made
     /// a link, as a reader expects (core's `LampBareLinks`). Only for
     /// drawing: the editor reads a bare address as words, and so does
@@ -1734,58 +1487,6 @@ enum WritingDocumentText {
             out.addAttributes([.link: part.url, .foregroundColor: UIColor.lampLink], range: part.range)
         }
         return out
-    }
-
-    /// The same for a table's cell.
-    static func linkingAddresses(_ cell: AttributedString) -> AttributedString {
-        var taken: [NSRange] = []
-        var at = 0
-        for run in cell.runs {
-            let length = (String(cell[run.range].characters) as NSString).length
-            if run.link != nil || run.imageURL != nil || run.inlinePresentationIntent?.contains(.code) == true
-                || (run.baselineOffset ?? 0) != 0 {
-                taken.append(NSRange(location: at, length: length))
-            }
-            at += length
-        }
-        let parts = LampBareLinks.links(in: String(cell.characters), excluding: taken)
-        guard !parts.isEmpty else { return cell }
-        var out = cell
-        for part in parts {
-            guard let range = Range(part.range, in: out) else { continue }
-            out[range].link = part.url
-            out[range].foregroundColor = Color(uiColor: .lampLink)
-        }
-        return out
-    }
-
-    /// A drawn cell without the spaces at its edges, which the parser keeps
-    /// beside a review marker and trims where there's none.
-    static func trimmed(_ cell: AttributedString) -> AttributedString {
-        var cell = cell
-        while let first = cell.characters.first, first == " " || first == "\t" {
-            cell.removeSubrange(cell.startIndex..<cell.characters.index(after: cell.startIndex))
-        }
-        while let last = cell.characters.last, last == " " || last == "\t" {
-            cell.removeSubrange(cell.characters.index(before: cell.endIndex)..<cell.endIndex)
-        }
-        return cell
-    }
-
-    /// Each column as wide as its widest cell, up to `widest`, past which
-    /// its cells wrap: measured from the words as drawn, the review markers
-    /// out of them.
-    static func columnWidths(_ rows: [[String]], size: CGFloat, widest: CGFloat) -> [CGFloat] {
-        let columns = rows.map(\.count).max() ?? 0
-        return (0..<columns).map { column in
-            let measured = rows.enumerated().map { index, row -> CGFloat in
-                guard column < row.count else { return 0 }
-                let font = LampTheme.serif(size: size, weight: index == 0 ? .semibold : .regular)
-                let text = unmarked(row[column]).trimmingCharacters(in: .whitespaces) as NSString
-                return ceil(text.size(withAttributes: [.font: font]).width) + 2
-            }
-            return min(widest, max(size, measured.max() ?? 0))
-        }
     }
 
     /// A table cell's inline Markdown, or the cell as written where it won't read.

@@ -224,6 +224,38 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
         if reviewMarks != nil { sendReviewMarks() }
     }
 
+    /// Loads a document as the page's own, as opened: no undo goes back
+    /// past it, as `setContent`'s replacement would let one.
+    func load(_ markdown: String) {
+        guard isReady else {
+            pendingContent = markdown
+            return
+        }
+        evaluateJS("window.editorAPI.load(\"\(markdown.jsEscaped())\")")
+        if reviewMarks != nil { sendReviewMarks() }
+    }
+
+    /// Loads `markdown` only if the page still holds one of `expected`,
+    /// checked and loaded as one step in the page, so nothing typed between
+    /// the check and the load is lost. Answers with the page's Markdown just
+    /// after the load, read in the same step, or nil where it didn't load.
+    func load(_ markdown: String, ifHolding expected: [String], completion: @escaping (String?) -> Void) {
+        guard isReady else { return completion(nil) }
+        let wanted = expected.map { "\"\($0.jsEscaped())\"" }.joined(separator: ",")
+        evaluateJS("""
+        (function () {
+          const now = window.editorAPI.getContent();
+          if (![\(wanted)].includes(now)) return null;
+          window.editorAPI.load("\(markdown.jsEscaped())");
+          return window.editorAPI.getContent();
+        })()
+        """) { [weak self] result in
+            let loaded = result as? String
+            if loaded != nil, let self, self.reviewMarks != nil { self.sendReviewMarks() }
+            completion(loaded)
+        }
+    }
+
     // MARK: - Review marks
 
     /// Shows the writing assistant's changes still to read: the document's

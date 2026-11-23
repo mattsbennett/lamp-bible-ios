@@ -32,6 +32,13 @@ extension View {
     }
 }
 
+/// Swiping back held off while a screen must finish something before it's
+/// left (a file page saving what was typed): counted, one per screen holding.
+@MainActor
+enum SwipeBack {
+    static var holds = 0
+}
+
 // https://stackoverflow.com/a/71935810/3362399
 // Resolves issue where NavigationLink elements inside a toolbar don't allow swipe-back navigation
 extension UINavigationController: UIGestureRecognizerDelegate {
@@ -41,7 +48,7 @@ extension UINavigationController: UIGestureRecognizerDelegate {
     }
 
     public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        return viewControllers.count > 1
+        return viewControllers.count > 1 && SwipeBack.holds == 0
     }
 
     // To make it work also with ScrollView
