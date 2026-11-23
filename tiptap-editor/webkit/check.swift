@@ -275,7 +275,14 @@ func codeLikeProse() {
                 let parts = r as? [String] ?? []
                 check(parts.first?.hasSuffix("\n> after\n> last") == true, "a quote's indented line of tildes is not code (read: \(parts.first.debugDescription))")
                 check(parts.count == 2 && parts[1].hasSuffix("> first\n> second"), "and a fence left open in a quote ends with it (read: \(parts.last.debugDescription))")
-                bareLinks()
+                // Codex's case: quoted lines in a footnote are drawn as lines
+                // by the footnote, not given breaks of their own as well.
+                let note = "Body[^n]\\n\\n[^n]: note\\n    ```\\n    > one\\n    > two\\n    ```"
+                js("(() => { window.editorAPI.load('\(note)'); return window.editorAPI.getContent() })()") { r in
+                    let text = r as? String ?? ""
+                    check(!text.contains("<br>") && text.contains("    > one\n    > two\n"), "a footnote's quoted lines gain no break of their own (read: \(text.debugDescription))")
+                    bareLinks()
+                }
             }
         }
     }

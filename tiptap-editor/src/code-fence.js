@@ -44,18 +44,25 @@ export function fencedLines(lines) {
 
 // For each line of `text` (as split at \n), whether it is fenced code, its
 // fences included, anywhere: in a list item or a quote too, ending where
-// its item or quote ends if it is not closed. Read by markdown-it, as the
-// page reads the writing, so what is code here is what is drawn as code.
-// Text without a fence is not parsed.
-const reader = markdownit()
+// its item or quote ends if it is not closed. Read by markdown-it with the
+// page's options (HTML read as HTML, as tiptap-markdown is told), so what is
+// code here is what is drawn as code. Text without a fence is not parsed.
+const reader = markdownit({ html: true })
 export function codeLines(text) {
   const count = text.split('\n').length
   const code = new Array(count).fill(false)
   if (!text.includes('```') && !text.includes('~~~')) return code
-  // markdown-it ends a line at a lone \r too; here it does not.
-  for (const token of reader.parse(text.replace(/\r(?!\n)/g, ' '), {})) {
+  // markdown-it ends a line at a lone \r too, and here only \n does: each
+  // of its lines, as the line here it is part of.
+  const lineHere = [0]
+  let here = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n') lineHere.push(++here)
+    else if (text[i] === '\r' && text[i + 1] !== '\n') lineHere.push(here)
+  }
+  for (const token of reader.parse(text, {})) {
     if (token.type !== 'fence' || !token.map) continue
-    for (let line = token.map[0]; line < Math.min(token.map[1], count); line++) code[line] = true
+    for (let line = token.map[0]; line < Math.min(token.map[1], lineHere.length); line++) code[lineHere[line]] = true
   }
   return code
 }

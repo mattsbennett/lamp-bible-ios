@@ -27,8 +27,13 @@ assert.deepEqual(codeLines('> > ~~~\n> > x\n> > ~~~'), [true, true, true])
 assert.deepEqual(codeLines('> ```\n> code\n\nOutside\n\n> first\n> second'), [true, true, false, false, false, false, false])
 // Codex's case: a line indented in a quote's paragraph is the paragraph's.
 assert.deepEqual(codeLines('> before\n>     ~~~\n> after\n> last'), [false, false, false, false])
-// A lone \r ends no line here, and moves none.
+// A lone \r ends a line for markdown-it, and moves none here: a fence
+// after one is found, on the line it is part of (Codex's case).
 assert.deepEqual(codeLines('a\rb\n```\nx\n```'), [false, true, true, true])
+assert.deepEqual(codeLines('> before\r> ```\n> one\n> two\n> ```'), [true, true, true, true])
+// HTML is read as HTML, as the page reads it: a fence in a comment is the
+// comment's (Codex's case).
+assert.deepEqual(codeLines('<!--\n```\n-->\n\n> first\n> second'), [false, false, false, false, false, false])
 assert.deepEqual(codeLines('```\r\nx\r\n```\r\nb'), [true, true, true, false])
 assert.deepEqual(codeLines('no fence here'), [false])
 

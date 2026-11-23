@@ -363,5 +363,10 @@ test('text that cannot be encoded is left out, not thrown on', () => {
   assert.equal(sources.get('2'), 'fine')
 })
 
+test('the lines a definition is written on are marked as its', () => {
+  const { noteLines } = readFootnotes('Body[^n]\n\n[^n]: note\n    > one\n\n    > two\n\n> after')
+  assert.deepEqual(noteLines, [false, false, true, true, true, true, false, false])
+})
+
 console.log(failures === 0 ? '\nall passed' : `\n${failures} failed`)
 process.exit(failures === 0 ? 0 : 1)

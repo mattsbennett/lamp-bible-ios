@@ -59,10 +59,12 @@ function resolveAudioBlocks(md) {
 }
 
 // Preserve line breaks within blockquotes by converting to hard breaks, but
-// not in or next to fenced code, whose lines are code (code-fence.js).
+// not in or next to fenced code, whose lines are code (code-fence.js), nor
+// in a footnote, whose lines are drawn as lines already (readFootnotes).
 function resolveBlockquoteLineBreaks(md) {
   const lines = md.split('\n')
   const fenced = codeLines(md)
+  const { noteLines } = readFootnotes(md)
   const result = []
 
   for (let i = 0; i < lines.length; i++) {
@@ -71,7 +73,7 @@ function resolveBlockquoteLineBreaks(md) {
     const nextLine = lines[i + 1]
     const nextIsQuoteLine = nextLine && nextLine.trimStart().startsWith('>')
 
-    if (isQuoteLine && nextIsQuoteLine && !fenced[i] && !fenced[i + 1]) {
+    if (isQuoteLine && nextIsQuoteLine && !fenced[i] && !fenced[i + 1] && !noteLines[i] && !noteLines[i + 1]) {
       // Check if current line content (after >) is non-empty and next line content is also non-empty
       const currentContent = line.replace(/^\s*>\s?/, '')
       const nextContent = nextLine.replace(/^\s*>\s?/, '')

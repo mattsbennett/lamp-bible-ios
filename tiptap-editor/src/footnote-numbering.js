@@ -72,6 +72,9 @@ export function readFootnotes(markdown) {
   const body = []
   const definitions = []
   const lines = markdown.split('\n')
+  // For each line, whether it is a definition's: its first line, a line it
+  // carries on with, or a blank line between those.
+  const noteLines = new Array(lines.length).fill(false)
   const runs = []
   let run = null
   // The definition indented lines carry on, until something else comes.
@@ -91,12 +94,14 @@ export function readFootnotes(markdown) {
         run.gaps.push(since)
       }
       open = { id: match[1], content: match[2] }
+      noteLines[index] = true
       definitions.push(open)
       run.definitions.push(open)
       since = 0
     } else if (open && CONTINUATION.test(line)) {
       // Kept as written, indent and all, so it can be written back so.
       open.content += '\n' + line
+      noteLines[index] = true
     } else if (BLANK.test(line)) {
       // Blank lines are the footnote's own when it carries on below them,
       // as a second paragraph does; otherwise they are the body's.
@@ -105,6 +110,7 @@ export function readFootnotes(markdown) {
       const blanks = lines.slice(index, end)
       if (open && end < lines.length && CONTINUATION.test(lines[end])) {
         open.content += '\n' + blanks.join('\n')
+        noteLines.fill(true, index, end)
       } else {
         body.push(...blanks)
         if (since !== null) since += blanks.length
@@ -137,7 +143,7 @@ export function readFootnotes(markdown) {
     spaced: !(gaps.length > 0 && gaps.every(gap => gap === 0)),
   }))
 
-  return { content, definitions, numbers, runs: placed }
+  return { content, definitions, numbers, runs: placed, noteLines }
 }
 
 /** What a footnote is shown as: its number, or its label when it has none. */
