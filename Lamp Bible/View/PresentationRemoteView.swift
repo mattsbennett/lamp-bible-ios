@@ -530,6 +530,9 @@ struct PresentationRemoteView: View {
         return VStack(alignment: .leading, spacing: PresenterLayout.columnSpacing) {
             if let slide = state.currentSlide {
                 LampPresentationSlideCanvas(slide: slide, style: style, compact: compact)
+                    // As far into its reveal as the room has seen; the next
+                    // slide, below, is drawn whole.
+                    .revealed(atStep: state.currentRevealStep)
                     .aspectRatio(state.aspectRatio.ratio, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .shadow(color: .black.opacity(0.18), radius: 12, y: 5)

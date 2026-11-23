@@ -47,13 +47,22 @@ private enum DeckViewerOrientation {
 /// room would see is what this shows. The slide keeps its authored aspect ratio
 /// and letterboxes rather than reflowing — a deck read on a phone should look
 /// like the deck, not like a web page.
+///
+/// It moves as the Mac presenter does: a swipe is a click, bringing a
+/// slide's next part or the next slide, and slides dissolve into each other
+/// rather than sliding past, with nothing moving under Reduce Motion.
 struct DeckViewerView: View {
     let deck: LampPresentationDeck
     var store: LampPresentationDeckStore = PresentationDeckStorage.shared.syncedStore
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var index = 0
+    /// The slide on screen and how far into its reveal; see
+    /// `LampPresentationPosition` for what a click does.
+    @State private var position = LampPresentationPosition()
+    /// Counts changes of slide, so the slide arriving is always drawn above
+    /// the one leaving.
+    @State private var slideLayer = 0
     /// Where the deck opens; the library's outline can open it partway.
     var initialIndex = 0
     @State private var didApplyInitialIndex = false
@@ -64,6 +73,8 @@ struct DeckViewerView: View {
     private var slides: [LampPresentationSlide] {
         deck.slides.filter { !$0.isHidden }
     }
+
+    private var index: Int { position.slide }
 
     private var currentSlide: LampPresentationSlide? {
         slides.indices.contains(index) ? slides[index] : nil
@@ -99,7 +110,7 @@ struct DeckViewerView: View {
                     // of black either side. The controls live there, so the
                     // slide keeps the full height of the screen and nothing is
                     // laid over it.
-                    slidePager
+                    slideStage
                     if showsChrome {
                         sideBandChrome(layout)
                             .transition(.opacity)
@@ -108,7 +119,7 @@ struct DeckViewerView: View {
                     // No room beside the slide: the bar insets it rather than
                     // floating over it, since an overlay would hide the one
                     // line most worth reading, the slide's title.
-                    slidePager
+                    slideStage
                         .safeAreaInset(edge: .top, spacing: 0) {
                             if showsChrome {
                                 chromeBar.transition(.opacity)
@@ -130,7 +141,7 @@ struct DeckViewerView: View {
             DeckViewerOrientation.requestLandscape()
             if !didApplyInitialIndex {
                 didApplyInitialIndex = true
-                index = min(max(initialIndex, 0), max(slides.count - 1, 0))
+                position = LampPresentationPosition(slide: min(max(initialIndex, 0), max(slides.count - 1, 0)))
             }
         }
         .onDisappear { DeckViewerOrientation.release() }
@@ -153,24 +164,75 @@ struct DeckViewerView: View {
 
     // MARK: - Slides
 
-    private var slidePager: some View {
-        TabView(selection: $index) {
-            ForEach(Array(slides.enumerated()), id: \.element.id) { position, slide in
-                LampPresentationSlideCanvas(slide: slide, deck: deck, store: store)
+    private var slideStage: some View {
+        ZStack {
+            if let currentSlide {
+                LampPresentationSlideCanvas(slide: currentSlide, deck: deck, store: store)
+                    .revealed(atStep: position.step)
                     .aspectRatio(deck.aspectRatio.ratio, contentMode: .fit)
                     // The slide's own ground stays inside the slide, rather
                     // than spilling into the home indicator's margin.
                     .clipped()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea()
-                    .tag(position)
+                    // One view per slide, so a change of slide is the old one
+                    // giving way to the new, while a step within it fades its
+                    // parts in. The arriving slide fades in over the one
+                    // leaving, which stays whole beneath it until it has gone:
+                    // both fading at once dimmed the screen midway.
+                    .id(currentSlide.id)
+                    .transition(.asymmetric(insertion: .opacity, removal: .heldUntilCovered))
+                    .zIndex(Double(slideLayer) + 1)
             }
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
         .contentShape(Rectangle())
+        // Across the slide, forward or back; a mostly upright drag is no
+        // click at all.
+        .gesture(
+            DragGesture(minimumDistance: 24)
+                .onEnded { drag in
+                    let across = drag.predictedEndTranslation.width
+                    guard abs(across) >= 60, abs(drag.translation.width) > abs(drag.translation.height) else { return }
+                    if across < 0 { advance() } else { retreat() }
+                }
+        )
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) { showsChrome.toggle() }
+        }
+        // VoiceOver's three-finger swipe, which the pager this replaced had.
+        .accessibilityScrollAction { edge in
+            switch edge {
+            case .trailing, .bottom: advance()
+            case .leading, .top: retreat()
+            }
+        }
+    }
+
+    private func advance() {
+        if let next = position.advanced(in: slides) { move(to: next) }
+    }
+
+    private func retreat() {
+        if let previous = position.retreated(in: slides) { move(to: previous) }
+    }
+
+    /// Moves to `next` the way the deck asks: a part fades in, a slide
+    /// dissolves into the next unless the deck cuts, and nothing moves at all
+    /// with Reduce Motion on, read at the moment of the move. The Mac
+    /// presenter's timing, so a deck moves alike wherever it is shown.
+    private func move(to next: LampPresentationPosition) {
+        let changesSlide = next.slide != position.slide
+        let animation: Animation? = if UIAccessibility.isReduceMotionEnabled {
+            nil
+        } else if changesSlide {
+            (deck.transition ?? .dissolve) == .cut ? nil : .easeInOut(duration: 0.45)
+        } else {
+            .easeInOut(duration: 0.35)
+        }
+        withAnimation(animation) {
+            if changesSlide { slideLayer += 1 }
+            position = next
         }
     }
 
@@ -330,9 +392,10 @@ struct DeckViewerView: View {
                     columns: [GridItem(.adaptive(minimum: 148), spacing: 14)],
                     spacing: 14
                 ) {
-                    ForEach(Array(slides.enumerated()), id: \.element.id) { position, slide in
+                    ForEach(Array(slides.enumerated()), id: \.element.id) { slideIndex, slide in
                         Button {
-                            index = position
+                            // A jump lands on the slide's start.
+                            move(to: LampPresentationPosition(slide: slideIndex))
                             showsSlideList = false
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
@@ -347,11 +410,11 @@ struct DeckViewerView: View {
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 7)
                                         .strokeBorder(
-                                            position == index ? Color.accentColor : Color.clear,
+                                            slideIndex == index ? Color.accentColor : Color.clear,
                                             lineWidth: 3
                                         )
                                 }
-                                Text("\(position + 1). \(slide.displayTitle)")
+                                Text("\(slideIndex + 1). \(slide.displayTitle)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
@@ -378,6 +441,22 @@ extension DeckViewerView {
     /// Opens a stored deck, its images resolved wherever it was kept.
     init(entry: PresentationDeckEntry, startingAt initialIndex: Int = 0) {
         self.init(deck: entry.deck, store: PresentationDeckStorage.shared.store(for: entry), initialIndex: initialIndex)
+    }
+}
+
+/// A slide leaving during a dissolve: drawn as it is, untouched, for as long
+/// as the slide arriving over it takes to fade in. Its modifier differs only
+/// in a value nothing reads, which is enough for SwiftUI to keep the view
+/// until the animation ends instead of removing it at once.
+private struct HeldUntilCovered: ViewModifier, Animatable {
+    var animatableData: Double
+
+    func body(content: Content) -> some View { content }
+}
+
+private extension AnyTransition {
+    static var heldUntilCovered: AnyTransition {
+        .modifier(active: HeldUntilCovered(animatableData: 0), identity: HeldUntilCovered(animatableData: 1))
     }
 }
 
