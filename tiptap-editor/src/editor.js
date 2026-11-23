@@ -8,6 +8,7 @@ import { MarkdownSerializerState } from '@tiptap/pm/markdown'
 import { closeHistory } from '@tiptap/pm/history'
 import { StarterKit } from '@tiptap/starter-kit'
 import { HardBreak } from '@tiptap/extension-hard-break'
+import { CodeBlock } from '@tiptap/extension-code-block'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Table } from '@tiptap/extension-table'
 import { TableRow } from '@tiptap/extension-table-row'
@@ -27,6 +28,7 @@ import {
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
 import { findBareAddresses } from './bare-links.js'
+import { codeFence } from './code-fence.js'
 import { searchPattern, findMatches } from './search.js'
 import { traceDocument, placeByTrace, markdownRange, aroundLink, wholeLines, tidyKeeping } from './review-trace.js'
 import { MARK_START, MARK_END, MARK_POINT, PLACE_END, placeDigit, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
@@ -737,6 +739,27 @@ const LineHardBreak = HardBreak.extend({
           }
         },
         parse: {},
+      },
+    }
+  },
+})
+
+// A code block between fences longer than any run of backticks in it
+// (code-fence.js). tiptap-markdown always writes ```, so a block holding ```
+// was cut off at that line when saved, the rest becoming prose. Reading is
+// tiptap-markdown's, which takes a longer fence as it should.
+const FencedCodeBlock = CodeBlock.extend({
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state, node) {
+          const fence = codeFence(node.textContent)
+          state.write(fence + (node.attrs.language || '') + '\n')
+          state.text(node.textContent, false)
+          state.ensureNewLine()
+          state.write(fence)
+          state.closeBlock(node)
+        },
       },
     }
   },
@@ -1631,6 +1654,7 @@ function initEditor() {
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
         hardBreak: false,
+        codeBlock: false,
         link: {
           openOnClick: false,
           HTMLAttributes: { rel: null, target: null },
@@ -1662,6 +1686,7 @@ function initEditor() {
         },
       }),
       LineHardBreak,
+      FencedCodeBlock,
       VerseReferences,
       BareLinks,
       Search,

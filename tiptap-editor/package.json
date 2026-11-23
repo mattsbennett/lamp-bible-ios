@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node src/footnote-numbering.test.mjs && node src/verse-references.test.mjs && node src/search.test.mjs && node src/review-marks.test.mjs && node src/review-align.test.mjs && node src/bare-links.test.mjs && node src/tidy-keeping.test.mjs",
+    "test": "node src/footnote-numbering.test.mjs && node src/verse-references.test.mjs && node src/search.test.mjs && node src/review-marks.test.mjs && node src/review-align.test.mjs && node src/bare-links.test.mjs && node src/tidy-keeping.test.mjs && node src/code-fence.test.mjs",
     "test:webkit": "vite build --outDir ../.webkit-check --emptyOutDir && swiftc -O -framework AppKit -framework WebKit webkit/check.swift -o .webkit-check/check && .webkit-check/check .webkit-check/index.html"
   },
   "dependencies": {
     "@tiptap/core": "^3.0.0",
+    "@tiptap/extension-code-block": "^3.18.0",
     "@tiptap/extension-hard-break": "^3.18.0",
     "@tiptap/extension-image": "^3.0.0",
     "@tiptap/extension-link": "^3.0.0",

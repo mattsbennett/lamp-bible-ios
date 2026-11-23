@@ -227,6 +227,26 @@ func survives() {
         let text = back as? String ?? ""
         check(text.contains("[verse 16](lampbible://verse/43003016)") && text.contains("[H157](lampbible://strongs/0/H157)"), "lampbible links are kept")
         check(text.contains("[An audio clip](media/aud-1)"), "an audio block keeps its caption and media (read: \(text.debugDescription))")
+        fences()
+    }
+}
+
+// A code block holding ``` is saved between a longer fence, so it reads back
+// whole, through a save and a load and a save again.
+func fences() {
+    let fenced = "Before.\\n\\n````\\nfirst\\n```\\nstill code\\n````\\n\\nAfter."
+    js("""
+    window.editorAPI.load('\(fenced)');
+    const once = window.editorAPI.getContent();
+    window.editorAPI.load(once);
+    [once, window.editorAPI.getContent(), document.querySelectorAll('.ProseMirror pre').length,
+     document.querySelector('.ProseMirror pre')?.textContent ?? '']
+    """) { r in
+        let parts = r as? [Any] ?? []
+        let once = parts.first as? String ?? ""
+        check(once.contains("````\nfirst\n```\nstill code\n````"), "a code block holding ``` is saved between a longer fence (read: \(once.debugDescription))")
+        check(parts.count == 4 && parts[1] as? String == once, "and saves the same after it is read back")
+        check(parts.count == 4 && parts[2] as? Int == 1 && parts[3] as? String == "first\n```\nstill code", "and is still one block, every line its own (read: \(parts.dropFirst(2)))")
         bareLinks()
     }
 }
