@@ -1841,9 +1841,11 @@ function initEditor() {
 }
 
 // Markdown as the editor parses it: media, audio, quoted line breaks and
-// footnotes turned into the HTML the extensions read.
+// footnotes turned into the HTML the extensions read. A lone \r, which
+// markdown-it ends a line at, is made a \n first, so each step here, which
+// splits lines at \n, has the lines markdown-it will.
 function resolveForEditor(md) {
-  let resolved = resolveMediaPaths(md)
+  let resolved = resolveMediaPaths(md.replace(/\r(?!\n)/g, '\n'))
   resolved = resolveAudioBlocks(resolved)
   resolved = resolveBlockquoteLineBreaks(resolved)
   return resolveFootnotes(resolved)

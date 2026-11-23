@@ -281,7 +281,14 @@ func codeLikeProse() {
                 js("(() => { window.editorAPI.load('\(note)'); return window.editorAPI.getContent() })()") { r in
                     let text = r as? String ?? ""
                     check(!text.contains("<br>") && text.contains("    > one\n    > two\n"), "a footnote's quoted lines gain no break of their own (read: \(text.debugDescription))")
-                    bareLinks()
+                    // Codex's case: lines ended by a lone \r are lines to every
+                    // step of reading, so a quote after code keeps its break.
+                    let cr = "> ```\\r> code\\r> ```\\r> first\\n> second"
+                    js("(() => { window.editorAPI.load('\(cr)'); return window.editorAPI.getContent() })()") { r in
+                        let text = r as? String ?? ""
+                        check(text.hasSuffix("> first\n> second"), "a quote after code, its lines ended by a lone \\r, keeps its break (read: \(text.debugDescription))")
+                        bareLinks()
+                    }
                 }
             }
         }
