@@ -9,6 +9,8 @@ this directory and accompany the app distribution.
 - ProseMirror and related packages — principally MIT; exact package notices are included here
 - tiptap-markdown 0.9.0 — MIT — Copyright (c) 2021, Antoine Guingand
 - markdown-it and related runtime packages — permissive licences; exact notices are included here
+- swift-markdown 0.9.0 — Apache License 2.0, with its NOTICE — swift-markdown-Apache-2.0.txt
+- swift-cmark 0.9.0 — BSD-2-Clause AND MIT — swift-cmark-BSD-2-Clause+MIT.txt
 
 Reference data (in lamp-bible-core):
 - SIL libpalaso standard versifications, commit b4f7a6d — MIT — Copyright (c) 2007-2026 SIL Global
