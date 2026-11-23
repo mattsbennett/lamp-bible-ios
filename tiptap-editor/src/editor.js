@@ -2010,8 +2010,13 @@ window.editorAPI = {
       `${d.from}-${d.to}-${d.spec.key || ''}-${(d.type.attrs && d.type.attrs.class) || ''}`).sort()
     const drawn = describe(decorations)
     const whole = describe(reviewDecorations(doc, ranges, current))
-    const extra = drawn.filter(d => !whole.includes(d))
-    const missing = whole.filter(d => !drawn.includes(d))
+    // Counted, not looked up: two of a button where a whole redraw draws
+    // one is a difference.
+    const count = list => list.reduce((m, d) => m.set(d, (m.get(d) || 0) + 1), new Map())
+    const drawnCount = count(drawn)
+    const wholeCount = count(whole)
+    const extra = [...drawnCount].filter(([d, n]) => n > (wholeCount.get(d) || 0)).map(([d, n]) => `${d} x${n - (wholeCount.get(d) || 0)}`)
+    const missing = [...wholeCount].filter(([d, n]) => n > (drawnCount.get(d) || 0)).map(([d, n]) => `${d} x${n - (drawnCount.get(d) || 0)}`)
     return extra.length === 0 && missing.length === 0 ? null : { extra, missing }
   },
 

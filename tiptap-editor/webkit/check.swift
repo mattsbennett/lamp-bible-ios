@@ -1849,8 +1849,15 @@ func reviewRedrawFuzz() {
             const rv = window.editorAPI;
             const ed = document.querySelector('.ProseMirror').editor;
             rv.setMode('edit');
+            // mulberry32: exact in 32-bit integer arithmetic.
             let seed = 7;
-            const random = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+            const random = n => {
+                seed = (seed + 0x6D2B79F5) | 0;
+                let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+                t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+                return (((t ^ (t >>> 14)) >>> 0) % n);
+            };
+            const seen = { paragraphs: 0, rules: 0, items: 0, restores: 0 };
             const S = '\\uE000', E = '\\uE001', P = '\\uE002';
             const words = ['one', 'two', 'three', 'four', 'five'];
             const failures = [];
@@ -1860,8 +1867,9 @@ func reviewRedrawFuzz() {
                 const blocks = [];
                 for (let i = 0, n = 2 + random(5); i < n; i++) {
                     const kind = random(4);
-                    if (kind === 0) blocks.push(['---']);
+                    if (kind === 0) { blocks.push(['---']); seen.rules++; }
                     else {
+                        if (kind === 1) seen.items++; else seen.paragraphs++;
                         const text = Array.from({ length: 1 + random(4) }, () => words[random(5)]);
                         blocks.push(kind === 1 ? ['- ', text] : ['', text]);
                     }
@@ -1901,11 +1909,12 @@ func reviewRedrawFuzz() {
                     } catch (e) { continue; }
                     edits++;
                     if (document.querySelector('.review-clear')) withMarks++;
+                    seen.restores += document.querySelectorAll('.review-restore').length;
                     const differs = rv.reviewRedrawDiffers();
                     if (differs) { failures.push({ marked: marked.join('\\n\\n'), step, now: rv.getContent(), differs }); break; }
                 }
             }
-            return JSON.stringify({ edits, withMarks, failures });
+            return JSON.stringify({ edits, withMarks, seen, failures });
         })()
         """) { r in
         let text = r as? String ?? ""
@@ -1913,6 +1922,9 @@ func reviewRedrawFuzz() {
         let edits = read?["edits"] as? Int ?? 0
         let marked = read?["withMarks"] as? Int ?? 0
         let failures = read?["failures"] as? [Any] ?? [1]
+        let seen = read?["seen"] as? [String: Int] ?? [:]
+        check(["paragraphs", "rules", "items"].allSatisfy { (seen[$0] ?? 0) > 100 } && (seen["restores"] ?? 0) > 100,
+              "and those writings hold paragraphs, rules and list items, with restores drawn (read: \(seen))")
         check(marked > 150 && failures.isEmpty, "typing redraws what a whole redraw would, over \(marked) random edits with marks drawn of \(edits) (read: \(failures.isEmpty ? "agreed" : text.prefix(900).description))")
         reviewMarksCost()
     }
