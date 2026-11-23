@@ -2004,6 +2004,12 @@ struct DevotionalView: View {
         coordinator.onReviewMarksRejected = { [weak reviewSession] in
             reviewSession?.marksRejected()
         }
+        coordinator.onReviewMarksPartlyDrawn = { [weak reviewSession] unshown in
+            reviewSession?.marksPartlyDrawn(unshown: unshown)
+        }
+        coordinator.onReviewMarksDrawn = { [weak reviewSession] in
+            reviewSession?.marksDrawn()
+        }
         coordinator.onReviewMarksStale = { [weak reviewSession] in
             reviewSession?.refreshMarks()
         }
@@ -2021,6 +2027,11 @@ struct DevotionalView: View {
                     }
                 }
             } else {
+                if reviewSession.unshownMarks > 0 {
+                    Section {
+                        Text("Some changes can’t be shown here. They’re still counted, and Mark All as Reviewed clears them too.")
+                    }
+                }
                 // Each selects the change it lands on, for the two below it.
                 Section {
                     Button(action: { tiptapCoordinator?.goToReviewMark(forward: true) }) {
@@ -2045,14 +2056,18 @@ struct DevotionalView: View {
             }
         } label: {
             // The count beside the mark: a bar's label shows its icon alone.
+            // A warning in its place where some couldn't be marked.
             HStack(spacing: 4) {
-                Image(systemName: "checkmark.circle")
+                Image(systemName: reviewSession.unshownMarks > 0 ? "exclamationmark.triangle" : "checkmark.circle")
                 Text(reviewSession.count, format: .number)
                     .monospacedDigit()
             }
             .font(.body.weight(.semibold))
         }
-        .accessibilityLabel(reviewSession.count == 1 ? "1 to Review" : "\(reviewSession.count) to Review")
+        .accessibilityLabel(
+            (reviewSession.count == 1 ? "1 to Review" : "\(reviewSession.count) to Review")
+                + (reviewSession.unshownMarks > 0 ? ", some can’t be shown here" : "")
+        )
         .accessibilityHint("Passages the assistant changed that you haven’t read yet")
     }
 

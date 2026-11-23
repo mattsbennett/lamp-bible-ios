@@ -620,6 +620,11 @@ struct WritingDocumentPage: View {
     /// them; a paragraph's own ✓ clears that paragraph.
     private var reviewMenu: some View {
         Menu {
+            if review.unshownMarks > 0 {
+                Section {
+                    Text("Some changes can’t be shown here. They’re still counted, and Mark All as Reviewed clears them too.")
+                }
+            }
             Button { coordinator?.goToReviewMark(forward: true) } label: {
                 Label("Next Change", systemImage: "chevron.down")
             }
@@ -633,13 +638,16 @@ struct WritingDocumentPage: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: "checkmark.circle")
+                Image(systemName: review.unshownMarks > 0 ? "exclamationmark.triangle" : "checkmark.circle")
                 Text(review.count, format: .number)
                     .monospacedDigit()
             }
             .font(.body.weight(.semibold))
         }
-        .accessibilityLabel(review.count == 1 ? "1 to Review" : "\(review.count) to Review")
+        .accessibilityLabel(
+            (review.count == 1 ? "1 to Review" : "\(review.count) to Review")
+                + (review.unshownMarks > 0 ? ", some can’t be shown here" : "")
+        )
     }
 
     /// The page shows the file's marks and sends its clears and restores
@@ -670,6 +678,8 @@ struct WritingDocumentPage: View {
         }
         coordinator.onFootnoteTapped = { [weak coordinator] id in coordinator?.scrollToFootnote(id) }
         coordinator.onReviewMarksRejected = { [weak review] in review?.marksRejected() }
+        coordinator.onReviewMarksPartlyDrawn = { [weak review] unshown in review?.marksPartlyDrawn(unshown: unshown) }
+        coordinator.onReviewMarksDrawn = { [weak review] in review?.marksDrawn() }
         coordinator.onReviewMarksStale = { [weak review] in review?.refreshMarks() }
         review.applyRestore = { [weak coordinator] restored, expected in
             guard let coordinator else { return nil }

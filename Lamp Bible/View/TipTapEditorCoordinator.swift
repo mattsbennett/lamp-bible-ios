@@ -60,6 +60,11 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     /// The page couldn't place the review marks it was sent: its text was a
     /// moment ahead of the host's. The host sends them again once it settles.
     var onReviewMarksRejected: (() -> Void)?
+    /// The page drew every mark it could place, and couldn't place this
+    /// many: drawing the same set again would split it the same way.
+    var onReviewMarksPartlyDrawn: ((_ unshown: Int) -> Void)?
+    /// The page drew every mark it was sent.
+    var onReviewMarksDrawn: (() -> Void)?
 
     /// An undo or redo moved the page's text, perhaps back to words a
     /// change can be put back from: the host sends the marks again.
@@ -274,7 +279,15 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
         let argument = reviewMarks.map { "\"\($0.jsEscaped())\"" } ?? "null"
         let changes = (try? JSONEncoder().encode(reviewChanges)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         evaluateJS("window.editorAPI.setReviewMarks(\(argument), \(changes))") { [weak self] result in
-            if (result as? Bool) == false { self?.onReviewMarksRejected?() }
+            // A page that placed some of the set answers how many it
+            // couldn't; true is all of it, false none.
+            if let partial = result as? [String: Any], let unshown = (partial["unshown"] as? NSNumber)?.intValue {
+                self?.onReviewMarksPartlyDrawn?(unshown)
+            } else if (result as? Bool) == false {
+                self?.onReviewMarksRejected?()
+            } else if (result as? Bool) == true {
+                self?.onReviewMarksDrawn?()
+            }
         }
     }
 

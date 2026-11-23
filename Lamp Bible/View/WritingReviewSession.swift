@@ -434,6 +434,11 @@ final class WritingReviewSession: ObservableObject {
     /// A restore was made and couldn't be saved yet, so it isn't recorded:
     /// it will be once a save of the writing holds it.
     @Published var restoreUnsaved = false
+    /// How many of the marked ranges sent the page couldn't place (it drew
+    /// the rest): a warning beside the count, not a number, since ranges
+    /// aren't the count's changes; not sent again, since the same marks
+    /// would split the same way. Zero once a set is drawn whole.
+    @Published private(set) var unshownMarks = 0
 
     /// The marks as the page takes them, each time they change: the
     /// writing's Markdown with markers, or nil for none, and what each
@@ -533,7 +538,19 @@ final class WritingReviewSession: ObservableObject {
 
     /// The page couldn't place the marks it was sent: its text wasn't this
     /// one. They go again once the text settles.
+    /// The page drew some of the marks and couldn't place `unshown`.
+    func marksPartlyDrawn(unshown: Int) {
+        if unshownMarks != unshown { unshownMarks = unshown }
+    }
+
+    func marksDrawn() {
+        if unshownMarks != 0 { unshownMarks = 0 }
+    }
+
     func marksRejected() {
+        // Refused whole: the page's text wasn't this one's, so what it
+        // couldn't place before says nothing about the marks resent.
+        if unshownMarks != 0 { unshownMarks = 0 }
         needsResend = true
         guard resentFor != text else { return }
         resentFor = text
@@ -844,6 +861,7 @@ final class WritingReviewSession: ObservableObject {
         if sendsMarks {
             markedMarkdown = marked
             markedChanges = changes
+            if marked == nil, unshownMarks != 0 { unshownMarks = 0 }
             let restorable = changes.contains { $0 != nil }
             if canRestore != restorable { canRestore = restorable }
             onMarksChanged?(marked, changes)
