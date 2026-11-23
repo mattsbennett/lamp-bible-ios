@@ -941,8 +941,6 @@ func reviewMarksInFootnotes() {
             rv.load(apart);
             const spaced = rv.setReviewMarks('Body[^1] and more[^2].\\n\\n[^1]: A first \\uE000note.\\n\\n\\uE001[^2]: A second note.');
             drawn.overABlankLine = [spaced, Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|')];
-            // A point among the empty paragraphs at the end stands past the
-            // page's document, and is not placed there.
             // A mark from an italic line into the notes ends inside its
             // stars, which still close; and one ends after a note's label.
             const italic = 'Body[^1].\\n\\n*An italic line.*\\n\\n[^1]: A note.\\n[^2]: Another.';
@@ -952,7 +950,9 @@ func reviewMarksInFootnotes() {
             const afterLabel = rv.setReviewMarks('Body[^1].\\n\\n*An italic line.*\\n\\n[^1]: A \\uE000note.\\n[^2]:\\uE001 Another.');
             drawn.afterALabel = [afterLabel, Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|')];
             rv.load('Text.\\n\\n');
-            drawn.pastTheEnd = [rv.setReviewMarks('Text.\\n\\n\\uE002'), ''];
+            // A point among the empty paragraphs at the end is placed at the
+            // end of the last words, not past the page's document.
+            drawn.pastTheEnd = [rv.setReviewMarks('Text.\\n\\n\\uE002'), String(document.querySelectorAll('.review-point').length)];
             rv.load(text);
             const kept = rv.getContent();
             return [drawn, kept]
@@ -970,7 +970,7 @@ func reviewMarksInFootnotes() {
         check(placed("overABlankLine") && shown("overABlankLine") == "note.", "an end before a note's label, past a blank line, keeps the notes together (read: \(String(describing: drawn["overABlankLine"])))")
         check(placed("fromItalics") && shown("fromItalics") == "italic line.|A", "a mark from an italic line into the notes keeps the italics (read: \(String(describing: drawn["fromItalics"])))")
         check(placed("afterALabel") && shown("afterALabel") == "note.", "an end just after a note's label ends with the note before (read: \(String(describing: drawn["afterALabel"])))")
-        check(drawn["pastTheEnd"]?.first as? Bool == false, "a point past the page's end is not placed there (read: \(String(describing: drawn["pastTheEnd"])))")
+        check(drawn["pastTheEnd"]?.first as? Bool == true && shown("pastTheEnd") == "1", "a point past the last words is placed at their end (read: \(String(describing: drawn["pastTheEnd"])))")
         check(parts.last as? String == "Body[^1] and more[^2].\n\n[^1]: A first note.\n[^2]: A second note.", "and the writing is unchanged (read: \(String(describing: parts.last)))")
         reviewMarksLeavingNotes()
     }
@@ -1506,7 +1506,69 @@ func reviewMarksLeavingNotes() {
             let plain = sent.replacingOccurrences(of: "\u{E000}", with: "").replacingOccurrences(of: "\u{E001}", with: "")
             check(plain == "Body[^1] and more[^2].\n\n[^1]: A first note.\n[^2]: A second note." && sent.contains("[^1]: \u{E000}"),
                   "the clear beside a footnote block sends every note, the mark from the first note's words (read: \(sent.debugDescription))")
-            reviewMarks()
+            reviewMarksRareSyntax()
+        }
+    }
+}
+
+// Codex's third round: a mark out of the notes into syntax it cannot stand
+// before, markers alone on a blank line among notes, italics over two lines,
+// and a selection of nothing but a note's number.
+func reviewMarksRareSyntax() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const marks = () => Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|');
+            const drawn = {};
+            const ending = (name, body, markedBody) => {
+                const text = 'One[^a].\\n\\n[^a]: Note a.\\n\\n' + body;
+                rv.load(text);
+                drawn[name] = [rv.setReviewMarks('One[^a].\\n\\n[^a]: Note \\uE000a.\\n\\n' + markedBody), marks()];
+            };
+            ending('nestedQuote', '>  > Nested quote.', '>  > Nested\\uE001 quote.');
+            ending('fence', '```\\ncode line\\n```\\n\\nAfter.', '```\\ncode\\uE001 line\\n```\\n\\nAfter.');
+            ending('table', '| A | B |\\n|---|---|\\n| 1 | 2 |', '| A\\uE001 | B |\\n|---|---|\\n| 1 | 2 |');
+            const notes = 'Body[^1] and more[^2].\\n\\n[^1]: A first note.\\n\\n[^2]: Another.';
+            rv.load(notes);
+            drawn.pointAlone = [rv.setReviewMarks('Body[^1] and more[^2].\\n\\n[^1]: A first note.\\n\\uE002\\n[^2]: Another.'), document.querySelectorAll('.review-point').length];
+            const continued = 'Body[^1].\\n\\n[^1]: A first note\\n\\n    carried on.';
+            rv.load(continued);
+            drawn.beforeIndent = [rv.setReviewMarks('Body[^1].\\n\\n[^1]: A first note\\n\\uE002    \\n    carried on.'.replace('\\uE002    \\n', '\\uE002\\n')), document.querySelectorAll('.review-point').length];
+            const italics = 'Body[^1].\\n\\n*First\\nlast.*\\n\\n[^1]: A note.';
+            rv.load(italics);
+            drawn.italicsOverLines = [rv.setReviewMarks('Body[^1].\\n\\n*First\\n\\uE000last.*\\n\\n[^1]: A\\uE001 note.'), marks()];
+            // A selection of nothing but a note's number.
+            rv.setMode('edit');
+            rv.load(notes);
+            rv.setReviewMarks('Body[^1] and more[^2].\\n\\n[^1]: A \\uE000first\\uE001 note.\\n[^2]: Another.');
+            const block = document.querySelector('.footnote-definition');
+            const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+            let node = walker.nextNode();
+            while (node && !node.textContent.includes('[1]')) node = walker.nextNode();
+            const range = document.createRange();
+            const at = node ? node.textContent.indexOf('[1]') : 0;
+            if (node) { range.setStart(node, at); range.setEnd(node, at + 3); }
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return [drawn, !!node]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        let drawn = parts.first as? [String: [Any]] ?? [:]
+        func shown(_ name: String) -> String? { drawn[name]?.last as? String }
+        func placed(_ name: String) -> Bool { drawn[name]?.first as? Bool == true }
+        check(placed("nestedQuote") && shown("nestedQuote") == "a.|Nested", "a mark out of the notes into a nested quote (read: \(String(describing: drawn["nestedQuote"])))")
+        check(placed("fence") && (shown("fence") ?? "").hasPrefix("a.|code"), "a mark out of the notes into a code fence (read: \(String(describing: drawn["fence"])))")
+        check(placed("table") && shown("table") == "a.|A", "a mark out of the notes into a table (read: \(String(describing: drawn["table"])))")
+        check(placed("pointAlone"), "a point alone on the blank line between notes leaves them one run (read: \(String(describing: drawn["pointAlone"])))")
+        check(placed("beforeIndent"), "a point on a blank line inside a note leaves it a note (read: \(String(describing: drawn["beforeIndent"])))")
+        check(placed("italicsOverLines") && shown("italicsOverLines") == "last.|A", "a mark from italics over two lines into a note keeps the italics (read: \(String(describing: drawn["italicsOverLines"])))")
+        after(150) {
+            js("window.editorAPI.reviewMarkdownForSelection()") { r in
+                check(r == nil || r is NSNull, "a selection of nothing but a note's number clears nothing (read: \(String(describing: r)))")
+                reviewMarks()
+            }
         }
     }
 }
