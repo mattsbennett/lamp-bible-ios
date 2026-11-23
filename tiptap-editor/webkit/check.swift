@@ -1654,6 +1654,83 @@ func reviewMarksBesideEmphasis() {
     }
 }
 
+// What review marks cost, pinned so a change cannot add lag unseen. Counts
+// first, which a busy machine cannot throw off: typing in a marked writing
+// builds no trace, and drawing the same marks again uses the one it has.
+// Then the trace against the page's own writing of the same document, a
+// ratio that holds when the whole machine is slow.
+func reviewMarksCost() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            const paragraphs = [];
+            const marked = [];
+            for (let i = 0; i < 1300; i++) {
+                const place = String(i).split('').map(d => String.fromCharCode(0xE010 + Number(d))).join('');
+                paragraphs.push('Paragraph ' + i + ' has *some* words in it, and [a link](https://example.com/' + i + ').');
+                marked.push('Paragraph ' + i + ' has *\\uE000' + place + '\\uE01Asome\\uE001* words in it, and [a link](https://example.com/' + i + ').');
+            }
+            rv.load(paragraphs.join('\\n\\n'));
+            const before = rv.reviewTraceBuilds();
+            rv.setReviewMarks(marked.join('\\n\\n'), []);
+            const afterDraw = rv.reviewTraceBuilds();
+            rv.setReviewMarks(null, []);
+            rv.setReviewMarks(marked.join('\\n\\n'), []);
+            const afterRedraw = rv.reviewTraceBuilds();
+            // Editing with the marks shown, as transactions the page takes:
+            // line breaks through its own keymap, and words put in by
+            // find and replace.
+            rv.focus();
+            const view = document.querySelector('.ProseMirror');
+            const lengthBefore = rv.getContent().length;
+            const buildsBeforeTyping = rv.reviewTraceBuilds();
+            for (let i = 0; i < 20; i++) {
+                view.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+            }
+            for (let i = 0; i < 20; i++) {
+                rv.setSearch('Paragraph ' + (100 + i) + ' has', {});
+                rv.replaceCurrent('Paragraph ' + (100 + i) + ' now has');
+            }
+            rv.clearSearch();
+            const afterTyping = rv.reviewTraceBuilds() - buildsBeforeTyping + afterRedraw;
+            const typed = rv.getContent().length - lengthBefore;
+            // The trace against the stock writer, each the median of five.
+            const median = f => {
+                const times = [];
+                for (let i = 0; i < 5; i++) { const t = performance.now(); f(); times.push(performance.now() - t); }
+                return times.sort((a, b) => a - b)[2];
+            };
+            rv.load(paragraphs.join('\\n\\n'));
+            const writing = median(() => rv.getContent());
+            // Each draw on a document just loaded, so each traces afresh;
+            // the loading is not timed.
+            const beforeTimed = rv.reviewTraceBuilds();
+            const draws = [];
+            for (let i = 0; i < 5; i++) {
+                rv.load(paragraphs.join('\\n\\n'));
+                const t = performance.now();
+                rv.setReviewMarks(marked.join('\\n\\n'), []);
+                draws.push(performance.now() - t);
+            }
+            const tracing = draws.sort((a, b) => a - b)[2];
+            const timedBuilds = rv.reviewTraceBuilds() - beforeTimed;
+            return [afterDraw - before, afterRedraw - afterDraw, afterTyping - afterRedraw, writing, tracing, typed, timedBuilds]
+        })()
+        """) { r in
+        let parts = (r as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.doubleValue }
+        guard parts.count == 7 else { check(false, "the cost checks ran (read: \(String(describing: r)))"); savesAfterATrailingBreak(); return }
+        check(parts[0] == 1, "drawing marks builds the trace once (read: \(Int(parts[0])))")
+        check(parts[1] == 0, "drawing the same marks again uses the trace it has (read: \(Int(parts[1])))")
+        check(parts[5] >= 20 * 4, "the edits reached the document (read: \(Int(parts[5])) characters added)")
+        check(parts[2] == 0, "editing a marked writing builds no trace (read: \(Int(parts[2])))")
+        check(parts[6] == 5, "and each timed draw traced the document afresh (read: \(Int(parts[6])) builds)")
+        print("  writing 1,300 paragraphs took \(Int(parts[3])) ms; a draw that traces them, \(Int(parts[4])) ms")
+        check(parts[4] <= max(3 * parts[3], 30), "and a draw that traces costs at most three writings of the same document (read: \(Int(parts[4])) ms against \(Int(parts[3])) ms)")
+        savesAfterATrailingBreak()
+    }
+}
+
 // prosemirror-markdown 1.13.3 threw writing a paragraph of bold, a line
 // break, a line and a line break at its end, and no edit was saved while it
 // stayed so. Typed as a writer types it: Shift-Return at the end.
@@ -1754,9 +1831,9 @@ func reviewMarksInGroups() {
         print("  1,300 marks took \(took) ms")
         check(parts[3] as? Bool == true && parts[4] as? Int == 1299,
               "in a long writing, every mark is drawn, the address change as a point (read: \(String(describing: parts[3])), \(String(describing: parts[4])) drawn)")
-        check(took >= 0 && took < 1000, "and drawing 1,300 marks takes well under a second (read: \(took) ms)")
+        check(took >= 0 && took < 300, "and drawing 1,300 marks takes under 300 ms (read: \(took) ms; about 80 when written)")
         _ = long
-        savesAfterATrailingBreak()
+        reviewMarksCost()
     }
 }
 

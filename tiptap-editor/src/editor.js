@@ -1349,9 +1349,13 @@ function wordsInPage(page, before, after, span) {
 // drawn or cleared, never on typing. Null where the writing could not be
 // traced, which the marker paths answer for instead.
 let traceKept = null
+// How many times the trace has been built, for the checks that hold typing
+// to building none (webkit/check.swift, reviewMarksCost).
+let traceBuilds = 0
 function currentTrace() {
   const doc = editor.state.doc
   if (traceKept && traceKept.doc === doc) return traceKept.trace
+  traceBuilds++
   let trace = null
   try {
     trace = traceDocument(editor, doc, tidyMarkdown)
@@ -1825,6 +1829,12 @@ window.editorAPI = {
   // could be drawn — `drawn` may be 0, which is not the same as false: then
   // the host must still say that marks are missing, since a writer reading
   // what is drawn would otherwise take the rest for unchanged.
+  // How many times the review marks' trace has been built: none while
+  // typing, one a draw or clear of a changed document. For the checks.
+  reviewTraceBuilds() {
+    return traceBuilds
+  },
+
   setReviewMarks(markedMarkdown, changes) {
     if (!editor) return false
     reviewMarksShown = Boolean(markedMarkdown)
