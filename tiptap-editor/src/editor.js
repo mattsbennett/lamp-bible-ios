@@ -1471,7 +1471,7 @@ function keepingMarks(marked, tokens, keys) {
 // then no group can place, and the host is behind the page. Bounded: each
 // try parses the whole writing, so past the budget what has not placed is
 // left out too, and said to be.
-function placeReviewMarksInGroups(marked, budget = 64) {
+function placeReviewMarksInGroups(marked, budget = 40) {
   const tokens = marksIn(marked)
   if (placeReviewMarks(keepingMarks(marked, tokens, new Set())) === null) return null
   const keys = [...new Set(tokens.map(token => token.key))]
@@ -2159,8 +2159,9 @@ window.editorAPI = {
   // after it is paired with the change at that place, since the host may
   // have moved it out of syntax the parser drops, out of order.
   //
-  // Answers true when every mark is drawn, false when none can be (the page
-  // holds another text), and `{ drawn, unshown }` when only some are: then
+  // Answers true when every mark is drawn, false when the page holds another
+  // text, and `{ drawn, unshown }` when it holds this one and not every mark
+  // could be drawn — `drawn` may be 0, which is not the same as false: then
   // the host must still say that marks are missing, since a writer reading
   // what is drawn would otherwise take the rest for unchanged.
   setReviewMarks(markedMarkdown, changes) {
@@ -2168,20 +2169,25 @@ window.editorAPI = {
     reviewMarksShown = Boolean(markedMarkdown)
     let placed = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
     let unshown = 0
+    let grouped = false
     if (markedMarkdown) {
       if (placed === null) {
-        const grouped = placeReviewMarksInGroups(markedMarkdown)
-        if (grouped === null) return false
-        placed = grouped.ranges
+        const groups = placeReviewMarksInGroups(markedMarkdown)
+        if (groups === null) return false
+        placed = groups.ranges
+        grouped = true
       }
       // Counted in the text as fitted, which drops a mark that marks
       // nothing, begun and ended on blank lines.
       unshown = unplacedMarks(markersFitForFootnotes(markedMarkdown), placed)
-      if (placed.length === 0 && unshown > 0) return false
     }
     closeReviewPopover()
     const ranges = placed.map(({ place, ...range }, index) => {
-      const change = Array.isArray(changes) ? changes[place ?? index] : null
+      // A mark sent with no place is paired by its order, which a mark
+      // left out of the groups has moved: then it is offered no restore,
+      // rather than another mark's.
+      const at = place ?? (grouped ? undefined : index)
+      const change = Array.isArray(changes) && at !== undefined ? changes[at] : null
       if (!change || typeof change.id !== 'string' || typeof change.now !== 'string') return range
       if (change.reason === 'edited') return { ...range, change: { id: change.id, now: change.now, reason: 'edited' } }
       if (typeof change.before !== 'string') return range

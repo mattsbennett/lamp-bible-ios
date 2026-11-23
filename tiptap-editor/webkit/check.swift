@@ -952,7 +952,8 @@ func reviewMarksInFootnotes() {
             rv.load('Text.\\n\\n');
             // A point among the empty paragraphs at the end is not placed
             // past the page's document, nor moved where a clear would take
-            // it for the last words.
+            // it for the last words; the page holds this text, so it says
+            // the mark is missing rather than refusing.
             drawn.pastTheEnd = [rv.setReviewMarks('Text.\\n\\n\\uE002'), String(document.querySelectorAll('.review-point').length)];
             rv.load(text);
             const kept = rv.getContent();
@@ -971,7 +972,7 @@ func reviewMarksInFootnotes() {
         check(placed("overABlankLine") && shown("overABlankLine") == "note.", "an end before a note's label, past a blank line, keeps the notes together (read: \(String(describing: drawn["overABlankLine"])))")
         check(placed("fromItalics") && shown("fromItalics") == "italic line.|A", "a mark from an italic line into the notes keeps the italics (read: \(String(describing: drawn["fromItalics"])))")
         check(placed("afterALabel") && shown("afterALabel") == "note.", "an end just after a note's label ends with the note before (read: \(String(describing: drawn["afterALabel"])))")
-        check(drawn["pastTheEnd"]?.first as? Bool == false, "a point past the last words is not placed, nor moved onto them (read: \(String(describing: drawn["pastTheEnd"])))")
+        check((drawn["pastTheEnd"]?.first as? [String: Any])?["unshown"] as? Int == 1 && shown("pastTheEnd") == "0", "a point past the last words is not placed, nor moved onto them, and is said to be missing (read: \(String(describing: drawn["pastTheEnd"])))")
         check(parts.last as? String == "Body[^1] and more[^2].\n\n[^1]: A first note.\n[^2]: A second note.", "and the writing is unchanged (read: \(String(describing: parts.last)))")
         reviewMarksLeavingNotes()
     }
@@ -1639,6 +1640,15 @@ func reviewMarksInGroups() {
             // The second mark's markers fall in the link's address.
             const partly = rv.setReviewMarks('One \\uE000\\uE010\\uE01Atwo\\uE001 three [link](https://ex\\uE000\\uE011\\uE01Aample.com\\uE001) four.', []);
             const partlyShown = marks();
+            // Unnumbered, the first left out: the second is not offered the
+            // first's restore.
+            rv.setMode('edit');
+            rv.load(text);
+            const unnumbered = rv.setReviewMarks('One two three [link](https://ex\\uE000ample.com\\uE001) \\uE000four\\uE001.',
+                [{ id: 'first', now: 'example.com', before: 'old.com' }, { id: 'second', now: 'four', before: 'five' }]);
+            const offered = document.querySelectorAll('.review-restore').length;
+            rv.setMode('read');
+            rv.load(text);
             // Another document entirely: still refused, as a whole.
             const other = rv.setReviewMarks('Another \\uE000\\uE010\\uE01Adocument\\uE001.', []);
             // A long writing: 1,300 marked paragraphs, one of them unplaceable.
@@ -1656,14 +1666,16 @@ func reviewMarksInGroups() {
             const started = performance.now();
             const long = rv.setReviewMarks(marked.join('\\n\\n'), []);
             const took = Math.round(performance.now() - started);
-            return [partly, partlyShown, other, long, document.querySelectorAll('.review-mark').length, took]
+            return [partly, partlyShown, other, long, document.querySelectorAll('.review-mark').length, took, unnumbered, offered]
         })()
         """) { r in
         let parts = r as? [Any] ?? []
-        guard parts.count == 6 else { check(false, "the safety net ran (read: \(String(describing: r)))"); reviewMarks(); return }
+        guard parts.count == 8 else { check(false, "the safety net ran (read: \(String(describing: r)))"); reviewMarks(); return }
         let partly = parts[0] as? [String: Any]
         check(partly?["drawn"] as? Int == 1 && partly?["unshown"] as? Int == 1 && parts[1] as? String == "two",
               "one mark the page cannot hold leaves the others drawn, and is counted (read: \(String(describing: parts[0])), \(String(describing: parts[1])))")
+        check((parts[6] as? [String: Any])?["unshown"] as? Int == 1 && parts[7] as? Int == 0,
+              "an unnumbered mark left over is offered no other mark's restore (read: \(String(describing: parts[6])), \(String(describing: parts[7])) offered)")
         check(parts[2] as? Bool == false, "another document is still refused whole (read: \(String(describing: parts[2])))")
         let long = parts[3] as? [String: Any]
         let took = parts[5] as? Int ?? -1
