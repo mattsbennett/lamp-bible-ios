@@ -1100,8 +1100,32 @@ func keyboardClear() {
               "Return on a focused clear button leaves the text alone and is not taken from it (read: \(String(describing: r)))")
         after(200) {
             check(probe.reviewClears.last == "\u{E000}Keys deux here.\u{E001}", "and the press clears (read: \(probe.reviewClears))")
-            autolinkClear()
+            clearShownAtOnce()
         }
+    }
+}
+
+// A ✓ takes its block's marks off the page as it is pressed, not when the
+// host's marks come back, which on a long writing is a second later: what a
+// mark keeps outside the block stays, cut to its words, as the host keeps it.
+func clearShownAtOnce() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('One two.\\n\\nThree four.\\n\\nFive.');
+            rv.setReviewMarks('One \\uE000two.\\n\\nThree\\uE001 four.\\n\\n\\uE000Five.\\uE001');
+            const before = document.querySelectorAll('.review-clear').length;
+            document.querySelectorAll('.review-clear')[1].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            return [before, document.querySelectorAll('.review-clear').length,
+                [...document.querySelectorAll('.review-mark')].map(e => e.textContent).join('|'),
+                rv.reviewRedrawDiffers() === null]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(parts.count == 4 && parts[0] as? Int == 3 && parts[1] as? Int == 2 && parts[2] as? String == "two.|Five." && parts[3] as? Bool == true,
+              "a ✓ takes its block's marks off at once, and what a mark keeps outside it stays, cut to its words (read: \(String(describing: r)))")
+        autolinkClear()
     }
 }
 
@@ -2292,18 +2316,24 @@ func reviewMarks() {
                                 rv.setMode('read');
                                 rv.load('Read deux here.');
                                 rv.setReviewMarks('Read \\uE000deux\\uE001 here.');
-                                document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
                                 const reading = document.querySelectorAll('.review-mark').length;
+                                document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                                const cleared = document.querySelectorAll('.review-mark, .review-clear').length;
+                                // The host's marks again, as if it had not cleared
+                                // yet, so there is a button to press.
+                                rv.setReviewMarks('Read \\uE000deux\\uE001 here.');
                                 document.querySelector('.review-clear').click();
+                                rv.setReviewMarks('Read \\uE000deux\\uE001 here.');
                                 rv.setMode('present');
                                 const shown = getComputedStyle(document.querySelector('.review-clear')).display;
                                 rv.setMode('edit');
-                                return [reading, shown]
+                                return [reading, shown, cleared]
                             })()
                             """) { r in
                                 let parts = r as? [Any] ?? []
                                 check(parts.first as? Int == 1, "marks are drawn in read mode (read: \(String(describing: r)))")
-                                check(parts.last as? String == "none", "and not while presenting")
+                                check(parts.count == 3 && parts[2] as? Int == 0, "and a clear there takes them off at once")
+                                check(parts.count == 3 && parts[1] as? String == "none", "and not while presenting")
                                 after(200) {
                                     check(probe.reviewClears.last == "\u{E000}Read deux here.\u{E001}", "a clear works in read mode (read: \(probe.reviewClears))")
                                     check(probe.reviewClears.suffix(2).count == 2 && probe.reviewClears.suffix(2).allSatisfy { $0 == "\u{E000}Read deux here.\u{E001}" }, "and pressed with no pointer, as VoiceOver presses it")

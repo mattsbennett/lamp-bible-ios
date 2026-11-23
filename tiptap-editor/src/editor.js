@@ -999,9 +999,58 @@ function reviewClearButton() {
     // With the page's own text beside it, written as every edit is reported
     // (getMarkdownContent), for a host whose copy is a moment behind.
     postToSwift('reviewClear', { markdown: markdownMarking(from, to), plain: getMarkdownContent() })
+    showCleared(from, to)
   }
   pressedOnce(button, clear)
   return button
+}
+
+// The marks in `from`…`to` taken off the page as the writer clears them,
+// not when the host's answer comes: the host works every mark out again
+// before it sends them, which on a long writing takes a second, and a ✓
+// that did nothing for that long read as one that had not been pressed.
+// The host's marks, when they come, stand over these, putting back
+// whatever it did not clear. What a mark keeps beyond the block is what
+// the host keeps (LampWritingReview.clearing): the rest of it, cut to the
+// words in it, and nothing where none are left.
+function showCleared(from, to) {
+  const doc = editor.state.doc
+  const { ranges } = reviewKey.getState(editor.state)
+  const kept = ranges.flatMap(range => {
+    if (range.from === range.to) return range.from >= from && range.from <= to ? [] : [range]
+    if (range.to < from || range.from > to) return [range]
+    const parts = []
+    if (range.from < from) parts.push({ ...range, to: from })
+    if (range.to > to) parts.push({ ...range, from: to })
+    return parts.map(part => cutToContent(doc, part)).filter(Boolean)
+  })
+  if (kept.length === ranges.length && kept.every((range, i) => range === ranges[i])) return
+  closeReviewPopover()
+  editor.view.dispatch(editor.state.tr.setMeta(reviewKey, { ranges: kept }).setMeta('addToHistory', false))
+}
+
+// `range` cut to the words and the pictures, rules and other leaves in it,
+// without the spaces and block ends at either side; null if it holds none.
+function cutToContent(doc, range) {
+  let first = null
+  let last = null
+  doc.nodesBetween(range.from, range.to, (node, pos) => {
+    if (!node.isLeaf) return true
+    const from = Math.max(pos, range.from)
+    const to = Math.min(pos + node.nodeSize, range.to)
+    if (to <= from) return false
+    if (node.isText) {
+      const text = node.text.slice(from - pos, to - pos)
+      if (text.trim() === '') return false
+      if (first === null) first = from + (text.length - text.trimStart().length)
+      last = to - (text.length - text.trimEnd().length)
+    } else {
+      if (first === null) first = from
+      last = to
+    }
+    return false
+  })
+  return first === null ? null : { ...range, from: first, to: last }
 }
 
 // `act` on a press of `button`, once. A pointer acts on its first event,
