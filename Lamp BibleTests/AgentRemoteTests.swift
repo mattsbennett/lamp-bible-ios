@@ -136,6 +136,41 @@ final class AgentRemoteTests: XCTestCase {
         XCTAssertEqual(LampAgentRemoteHandshake.addresses(fromQRPayload: payload), [tailnet])
     }
 
+    /// A reply is read as prose, as the writing's editor reads it: its
+    /// blocks laid out, a soft wrap joined, and no Markdown left showing.
+    func testAReplyIsLaidOutAsItsMarkdownSays() {
+        let reply = "## Summary\nJohn 3 turns on a\nsingle word.\n\n- **born again**\n- born *from above*\n\n> Unless one is born\n\n```\nlet x = 1\n```\n\nSee [verse 3](lampbible://verse/43003003)."
+        let drawn = AgentRemotePanel.reply(reply, toolText: LampToolText(size: 16, typeface: "sans", lineSpacing: 4)).string
+        XCTAssertEqual(drawn, "Summary\n\nJohn 3 turns on a single word.\n\n•\tborn again\n•\tborn from above\n\nUnless one is born\n\nlet x = 1\n\nSee verse 3.")
+    }
+
+    /// A reply grows a piece at a time as it streams: each piece draws only
+    /// its last block again, so a long reply costs no more per piece than a
+    /// short one (the old reader read the whole reply again on every redraw).
+    /// Timings printed, for reading; the count is what's held.
+    func testAGrowingReplyDrawsOnlyItsEnd() {
+        let paragraph = "The **wind** blows where it wishes, and you hear its sound, but you do not know where it comes from or where it goes.\n\n- one point\n- another point\n\n"
+        let full = String(repeating: paragraph, count: 30)
+        let toolText = LampToolText(size: 16, typeface: "serif", lineSpacing: 4.25)
+        let pieces = stride(from: 200, through: full.count, by: 200).map { String(full.prefix($0)) }
+        let longest = AgentRemotePanel.replyBlocks(full).map(\.utf8.count).max() ?? 0
+        let readBefore = AgentRemotePanel.replyBytesDrawn
+        let began = Date()
+        for piece in pieces { for _ in 0..<3 { _ = AgentRemotePanel.reply(piece, toolText: toolText) } }
+        let read = AgentRemotePanel.replyBytesDrawn - readBefore
+        print("REPLYTIME \(full.utf8.count) bytes, \(pieces.count) pieces x 3, \(Int(Date().timeIntervalSince(began) * 1000)) ms, \(read) bytes read")
+        // The reply once, plus at most each piece's unfinished end, never the
+        // whole reply again at each piece.
+        XCTAssertLessThanOrEqual(read, full.utf8.count + pieces.count * longest)
+        // Kept whole where cutting would change what's read.
+        XCTAssertEqual(AgentRemotePanel.replyBlocks("1. one\n\n1. two").count, 1, "a list counts on across a blank line")
+        XCTAssertEqual(AgentRemotePanel.replyBlocks("See [it][ref].\n\nMore.\n\n[ref]: https://example.com").count, 1, "a link finds its target")
+        XCTAssertEqual(AgentRemotePanel.replyBlocks("```\na\n\nb\n```\n\nAfter").count, 2, "a fence isn't cut")
+        XCTAssertEqual(AgentRemotePanel.replyBlocks("```\na\n    ```\n\nstill code\n```").count, 1, "nor closed four spaces in")
+        XCTAssertEqual(AgentRemotePanel.replyBlocks("See [it][src].\n\n> [src]: https://example.com").count, 1)
+        XCTAssertEqual(AgentRemotePanel.replyBlocks("<pre>\na\n\n**b**\n</pre>").count, 1)
+    }
+
     func testPairingIsKeptAndTheNextConnectionAnswersWithIt() throws {
         try pair()
         XCTAssertEqual(memory.hosts.map(\.name), ["Study Mac"])

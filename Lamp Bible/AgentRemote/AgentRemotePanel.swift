@@ -952,20 +952,137 @@ struct AgentRemotePanel: View {
     }
 
     private func assistantText(_ text: String) -> some View {
-        Text(Self.markdown(text))
-            .font(toolText.font())
-            .lineSpacing(toolText.lineSpacing)
-            .textSelection(.enabled)
+        WritingFileText(text: Self.reply(text, toolText: toolText))
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The Mac's reply is Markdown. Emphasis, code and links are drawn, and
-    /// its lines are kept as written.
-    static func markdown(_ text: String) -> AttributedString {
-        (try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(text)
+    /// Each block of a reply as drawn, by its text and the panel's settings.
+    /// A reply being written arrives a piece at a time and only its end
+    /// changes, so each piece draws just its last block again; one already
+    /// read is drawn from here however often the panel redraws.
+    private static let replyBlocks: NSCache<NSString, NSAttributedString> = {
+        let cache = NSCache<NSString, NSAttributedString>()
+        // By size: a long streamed block leaves a prefix at each piece, which
+        // goes before what's drawn again.
+        cache.totalCostLimit = 4_000_000
+        return cache
+    }()
+
+    /// How much has been read from scratch, for tests: a growing reply reads
+    /// only its end again.
+    static var replyBytesDrawn = 0
+
+    /// The Mac's reply, which is Markdown, read by core as the writing's
+    /// editor reads prose (LampProse, a soft wrap joining): its headings,
+    /// lists, quotes, code and tables laid out, its emphasis and links
+    /// drawn, in the panel's typeface, one text to select across.
+    static func reply(_ text: String, toolText: LampToolText) -> NSAttributedString {
+        let settings = "\(toolText.size)|\(toolText.isSerif)|\(toolText.lineSpacing)|"
+        // Redrawn as it was: nothing to split or join again.
+        let whole = (settings + text) as NSString
+        if let drawn = replies.object(forKey: whole) { return drawn }
+        let out = NSMutableAttributedString()
+        for block in replyBlocks(text) {
+            let key = (settings + block) as NSString
+            let drawn: NSAttributedString
+            if let cached = replyBlocks.object(forKey: key) {
+                drawn = cached
+            } else {
+                drawn = NoteMarkdown.render(
+                    block, fontSize: toolText.size, serif: toolText.isSerif, lineSpacing: toolText.lineSpacing,
+                    linksTapped: true, options: .writing
+                ).text
+                replyBlocks.setObject(drawn, forKey: key, cost: key.length * 2)
+                replyBytesDrawn += block.utf8.count
+            }
+            guard drawn.length > 0 else { continue }
+            if out.length > 0 {
+                // The blank line between blocks, as core's layout leaves one.
+                let attributes = NoteMarkdown.baseAttributes(fontSize: toolText.size, serif: toolText.isSerif)
+                out.append(NSAttributedString(string: "\n\n", attributes: attributes))
+            }
+            out.append(drawn)
+        }
+        replies.setObject(out, forKey: whole, cost: whole.length * 2)
+        return out
+    }
+
+    /// Replies as drawn whole, for the panel's redraws of the same text.
+    private static let replies: NSCache<NSString, NSAttributedString> = {
+        let cache = NSCache<NSString, NSAttributedString>()
+        cache.totalCostLimit = 4_000_000
+        return cache
+    }()
+
+    /// A reply cut where a block ends and the next begins at the margin: at a
+    /// blank line, never inside a fence, and not before an indented line or a
+    /// list item, which may carry on a list above. Each piece reads as it
+    /// would in the whole; a reply defining link targets isn't cut.
+    static func replyBlocks(_ text: String) -> [String] {
+        // Read whole where a blank line may not end what it's in: a link's
+        // target written as a definition (anywhere, quoted or wrapped), or a
+        // `<pre>` block or HTML comment.
+        let lowered = text.lowercased()
+        if text.contains("]:") || lowered.contains("<pre") || lowered.contains("<!--") { return [text] }
+        var blocks: [String] = []
+        var current: [Substring] = []
+        var fence: (character: Character, length: Int)?
+        var blank = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let indent = line.prefix { $0 == " " || $0 == "\t" }
+            // A fence opens or closes within three spaces of the margin;
+            // further in, it's indented code.
+            let width = indent.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+            let trimmed = line.dropFirst(indent.count)
+            if let open = fence {
+                let run = trimmed.prefix { $0 == open.character }
+                if width <= 3, run.count >= open.length, trimmed.dropFirst(run.count).allSatisfy({ $0 == " " || $0 == "\t" }) {
+                    fence = nil
+                }
+                current.append(line)
+                continue
+            }
+            if trimmed.isEmpty {
+                blank = true
+                current.append(line)
+                continue
+            }
+            // Not before an indented line, which may carry on a list item,
+            // nor a list item, which may go on the list above (its numbering
+            // counts on from it).
+            if blank, indent.isEmpty, !current.isEmpty, !Self.opensListItem(line) {
+                blocks.append(current.joined(separator: "\n").trimmingCharacters(in: .newlines))
+                current = []
+            }
+            blank = false
+            if width <= 3, let character = trimmed.first, character == "`" || character == "~" {
+                let run = trimmed.prefix { $0 == character }
+                if run.count >= 3 { fence = (character, run.count) }
+            }
+            current.append(line)
+        }
+        if !current.isEmpty { blocks.append(current.joined(separator: "\n").trimmingCharacters(in: .newlines)) }
+        return blocks.filter { !$0.isEmpty }
+    }
+
+    /// Whether a line opens a list item: `-`, `*` or `+`, or a number and `.`
+    /// or `)`, then a space or the line's end. Read by hand: it's asked at
+    /// every block of a reply on every piece it grows by.
+    private static func opensListItem(_ line: Substring) -> Bool {
+        guard let first = line.first else { return false }
+        var rest = line.dropFirst()
+        if first == "-" || first == "*" || first == "+" {
+            return rest.first.map { $0 == " " || $0 == "\t" } ?? true
+        }
+        guard first.isASCII, first.isNumber else { return false }
+        var digits = 1
+        while let next = rest.first, next.isASCII, next.isNumber, digits < 9 {
+            rest = rest.dropFirst()
+            digits += 1
+        }
+        guard let mark = rest.first, mark == "." || mark == ")" else { return false }
+        rest = rest.dropFirst()
+        return rest.first.map { $0 == " " || $0 == "\t" } ?? true
     }
 
     /// A message that didn't go, with what went wrong and the two ways on.

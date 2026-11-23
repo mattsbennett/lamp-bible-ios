@@ -1520,10 +1520,10 @@ enum WritingDocumentText {
     }
 }
 
-/// A file's drawn text, selectable to copy from, as tall as it runs. A tap
-/// on a review mark is `onMark`'s, with the passage's place; any other link
-/// opens as links do.
-private struct WritingFileText: UIViewRepresentable {
+/// Drawn text, selectable to copy from across all of it, as tall as it
+/// runs: a plain-text file's, or an agent's reply. A tap on a review mark is
+/// `onMark`'s, with the passage's place; any other link opens as links do.
+struct WritingFileText: UIViewRepresentable {
     let text: NSAttributedString
     var onMark: ((Int) -> Void)? = nil
 

@@ -37,15 +37,17 @@ enum NoteMarkdown {
     /// a note is set as it always was, in sans, its lines a third of its size
     /// apart. `linksTapped` keeps each link's target on its text, for a text
     /// view that opens it, as a note's doesn't.
+    /// `options`: a note's by default, each typed line its own; prose (an
+    /// agent's reply) reads with a writing's, a soft wrap joining.
     static func render(
         _ markdown: String, fontSize: CGFloat, serif: Bool = false, lineSpacing: CGFloat? = nil,
-        media: [String: URL] = [:], linksTapped: Bool = false
+        media: [String: URL] = [:], linksTapped: Bool = false, options: LampProseOptions = .note
     ) -> Rendered {
         let out = NSMutableAttributedString()
         var links: [VerseLink] = []
-        // Read by core as the note editor reads it (LampProse, a note's
-        // options: each typed line its own), laid out a line at a time.
-        let lines = Self.lines(LampProse.blocks(markdown, options: .note))
+        // Read by core as the note editor reads it (LampProse), laid out a
+        // line at a time.
+        let lines = Self.lines(LampProse.blocks(markdown, options: options))
         for (index, line) in lines.enumerated() {
             let base = baseAttributes(fontSize: fontSize, serif: serif)
             switch line.content {
@@ -101,7 +103,10 @@ enum NoteMarkdown {
                 continue
             case let .plain(words, code):
                 var plain = attributes
-                if code { plain[.font] = font(size: block.fontSize(fontSize), bold: false, italic: false, code: true, serif: serif) }
+                if code {
+                    plain[.font] = font(size: block.fontSize(fontSize), bold: false, italic: false, code: true, serif: serif)
+                    plain[.backgroundColor] = UIColor.secondarySystemFill
+                }
                 out.append(NSAttributedString(string: words, attributes: plain))
                 continue
             case let .text(text):
