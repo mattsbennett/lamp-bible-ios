@@ -1805,26 +1805,116 @@ func reviewMarksAroundBlocks() {
             const afterRuleBefore = document.querySelectorAll('.review-clear').length;
             ed().commands.insertContentAt(2, 'y');
             const afterRuleAfter = document.querySelectorAll('.review-clear').length;
+            // A change from a rule into a paragraph keeps one restore, on
+            // its first block, when the rule after the first is deleted
+            // and the paragraph typed in: what a full redraw draws.
+            rv.load('---\\n\\n---\\n\\nABC');
+            rv.setReviewMarks('---\\n\\n\\uE000---\\n\\nAB\\uE001C', [{ id: 'r', now: '---\\n\\nAB', before: 'Old' }]);
+            ed().commands.deleteRange({ from: 1, to: 2 });
+            ed().commands.insertContentAt(4, 'x');
+            const restoresTyped = document.querySelectorAll('.review-restore').length;
+            rv.goToReviewMark(true);
+            const restoresWhole = document.querySelectorAll('.review-restore').length;
             // Two rules the assistant put in at once.
             rv.load('Above.\\n\\n---\\n\\n---\\n\\nBelow.');
             rv.setReviewMarks('Above.\\n\\n\\uE000---\\n\\n---\\uE001\\n\\nBelow.', []);
             const rules = document.querySelectorAll('.review-mark-block').length;
-            return [pointPlaced, buttonsBefore, buttonsAfter, rules, afterRuleBefore, afterRuleAfter]
+            return [pointPlaced, buttonsBefore, buttonsAfter, rules, afterRuleBefore, afterRuleAfter, restoresTyped, restoresWhole]
         })()
         """) { r in
         let parts = r as? [Any] ?? []
-        guard parts.count == 6 else { check(false, "blocks around edits read (read: \(String(describing: r)))"); exit(1) }
+        guard parts.count == 8 else { check(false, "blocks around edits read (read: \(String(describing: r)))"); exit(1) }
         check(parts[0] as? Bool == true && (parts[1] as? Int ?? 0) >= 1 && parts[2] as? Int == parts[1] as? Int,
               "a place taken out just before a rule keeps its buttons when the block above is typed in (read: \(parts[0]), \(parts[1]) then \(parts[2]))")
         check(parts[3] as? Int == 2, "two rules put in at once are each marked (read: \(parts[3]))")
         check((parts[4] as? Int ?? 0) >= 1 && parts[5] as? Int == parts[4] as? Int,
               "and one just after a rule keeps them too (read: \(parts[4]) then \(parts[5]))")
+        check(parts[6] as? Int == parts[7] as? Int,
+              "a redraw after typing gives a restore to the blocks a full one does (read: \(parts[6]) typed, \(parts[7]) whole)")
         after(150) {
             let sent = probe.reviewClears.count > before ? probe.reviewClears.last ?? "" : ""
             check(sent.contains("\u{E000}---\u{E001}") && sent.hasPrefix("xxxxxA") == true,
                   "a rule's clear, after typing above it, clears the rule where it now is (read: \(sent.debugDescription))")
-            reviewMarksCost()
+            reviewRedrawFuzz()
         }
+    }
+}
+
+// Typing redraws only what it touched; what it draws must be what drawing
+// every mark again would. Random writings of paragraphs, rules and list
+// items, random marks and places taken out, random typing and deleting.
+func reviewRedrawFuzz() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const ed = document.querySelector('.ProseMirror').editor;
+            rv.setMode('edit');
+            let seed = 7;
+            const random = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+            const S = '\\uE000', E = '\\uE001', P = '\\uE002';
+            const words = ['one', 'two', 'three', 'four', 'five'];
+            const failures = [];
+            let edits = 0;
+            let withMarks = 0;
+            for (let trial = 0; trial < 150 && failures.length < 3; trial++) {
+                const blocks = [];
+                for (let i = 0, n = 2 + random(5); i < n; i++) {
+                    const kind = random(4);
+                    if (kind === 0) blocks.push(['---']);
+                    else {
+                        const text = Array.from({ length: 1 + random(4) }, () => words[random(5)]);
+                        blocks.push(kind === 1 ? ['- ', text] : ['', text]);
+                    }
+                }
+                // Marks: a whole block, a word, or a place before a block.
+                let open = false;
+                const marked = blocks.map((block, b) => {
+                    let out = '';
+                    if (random(5) === 0 && !open) out += P;
+                    if (block.length === 1) {
+                        if (!open && random(3) === 0) { open = true; out += S + '---'; if (random(2) === 0) { out += E; open = false; } return out; }
+                        out += '---';
+                        if (open && random(2) === 0) { out += E; open = false; }
+                        return out;
+                    }
+                    out += block[0];
+                    out += block[1].map((w, i) => {
+                        let piece = i > 0 ? ' ' : '';
+                        if (!open && random(4) === 0) { open = true; piece += S; }
+                        piece += w;
+                        if (open && random(3) === 0) { piece += E; open = false; }
+                        return piece;
+                    }).join('');
+                    return out;
+                });
+                if (open) marked[marked.length - 1] += E;
+                const plain = blocks.map(block => block.length === 1 ? '---' : block[0] + block[1].join(' ')).join('\\n\\n');
+                rv.load(plain);
+                const changes = (marked.join('').match(new RegExp(S + '|' + P, 'g')) || []).map((_, i) => random(2) ? { id: 'c' + i, now: 'x', before: 'y' } : null);
+                if (!rv.setReviewMarks(marked.join('\\n\\n'), changes)) continue;
+                for (let step = 0; step < 4; step++) {
+                    const size = ed.state.doc.content.size;
+                    const at = 1 + random(Math.max(1, size - 1));
+                    try {
+                        if (random(3) === 0) ed.commands.deleteRange({ from: at, to: Math.min(size, at + 1 + random(4)) });
+                        else ed.commands.insertContentAt(at, 'z');
+                    } catch (e) { continue; }
+                    edits++;
+                    if (document.querySelector('.review-clear')) withMarks++;
+                    const differs = rv.reviewRedrawDiffers();
+                    if (differs) { failures.push({ marked: marked.join('\\n\\n'), step, now: rv.getContent(), differs }); break; }
+                }
+            }
+            return JSON.stringify({ edits, withMarks, failures });
+        })()
+        """) { r in
+        let text = r as? String ?? ""
+        let read = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
+        let edits = read?["edits"] as? Int ?? 0
+        let marked = read?["withMarks"] as? Int ?? 0
+        let failures = read?["failures"] as? [Any] ?? [1]
+        check(marked > 150 && failures.isEmpty, "typing redraws what a whole redraw would, over \(marked) random edits with marks drawn of \(edits) (read: \(failures.isEmpty ? "agreed" : text.prefix(900).description))")
+        reviewMarksCost()
     }
 }
 

@@ -838,7 +838,7 @@ function reviewDecorationList(doc, ranges, current = null, region = null) {
       point.className = isCurrent ? 'review-point review-current' : 'review-point'
       point.setAttribute('aria-hidden', 'true')
       return point
-    }, { side: 0, ignoreSelection: true, key: `review-point-${range.from}${isCurrent ? '-current' : ''}` }))
+    }, { side: 0, ignoreSelection: true, key: isCurrent ? 'review-point-current' : 'review-point' }))
   }
   // A clear button beside each block with something in it still to read,
   // and beside it a restore button where the block holds wording that can
@@ -848,7 +848,10 @@ function reviewDecorationList(doc, ranges, current = null, region = null) {
   blocks.forEach(({ start, end }, index) => {
     if (!ranges.some(range => range.to >= start && range.from <= end)) return
     decorations.push(Decoration.widget(start, () => reviewClearButton(), {
-      side: -1, ignoreSelection: true, key: `review-clear-${start}-${end}`,
+      // Keyed by what it is, not where: every clear is the same button,
+      // finding its block when pressed, so one carried through an edit
+      // is the one a redraw there would make.
+      side: -1, ignoreSelection: true, key: 'review-clear',
       // Everything the button hears is the button's. Return or Space on it
       // focused would otherwise reach the editor's keymap first, which
       // splits the block and stops the press, so the text changed and the
@@ -857,7 +860,7 @@ function reviewDecorationList(doc, ranges, current = null, region = null) {
     }))
     if (restorable[index].length === 0) return
     decorations.push(Decoration.widget(start, () => reviewRestoreButton(), {
-      side: -1, ignoreSelection: true, key: `review-restore-${start}-${end}`,
+      side: -1, ignoreSelection: true, key: 'review-restore',
       stopEvent: () => true,
     }))
   })
@@ -914,13 +917,13 @@ function editedRegion(tr, ranges) {
       if (range.to < from || range.from > to) continue
       if (range.from < from) { from = range.from; grown = true }
       if (range.to > to) { to = range.to; grown = true }
-      // A place words were taken out, on the region's edge: its decorations
-      // there are taken away with the region's, and the block on the other
-      // side, a rule whose buttons it gives, must be drawn again too.
-      if (range.from === range.to) {
-        if (range.from === to && to < doc.content.size) { to += 1; grown = true }
-        if (range.from === from && from > 0) { from -= 1; grown = true }
-      }
+      // A mark on the region's edge reaches the block on the other side:
+      // a rule ending where the region starts, whose buttons it may give,
+      // and whose restore is its own when it is the first block the mark
+      // touches. Drawn again too, so the buttons fall as a full redraw
+      // would put them.
+      if (range.from === from && from > 0) { from -= 1; grown = true }
+      if (range.from === range.to && range.from === to && to < doc.content.size) { to += 1; grown = true }
     }
     // A block with no text starting where the region ends keeps its
     // buttons at its own start, the region's end, where they are taken
@@ -1996,6 +1999,20 @@ window.editorAPI = {
   // typing, one a draw or clear of a changed document. For the checks.
   reviewTraceBuilds() {
     return traceBuilds
+  },
+
+  // What typing's partial redraw holds that drawing the same marks whole
+  // would not, and the reverse, or null where they agree. For the checks.
+  reviewRedrawDiffers() {
+    const { ranges, decorations, current } = reviewKey.getState(editor.state)
+    const doc = editor.state.doc
+    const describe = set => set.find().map(d =>
+      `${d.from}-${d.to}-${d.spec.key || ''}-${(d.type.attrs && d.type.attrs.class) || ''}`).sort()
+    const drawn = describe(decorations)
+    const whole = describe(reviewDecorations(doc, ranges, current))
+    const extra = drawn.filter(d => !whole.includes(d))
+    const missing = whole.filter(d => !drawn.includes(d))
+    return extra.length === 0 && missing.length === 0 ? null : { extra, missing }
   },
 
   setReviewMarks(markedMarkdown, changes) {
