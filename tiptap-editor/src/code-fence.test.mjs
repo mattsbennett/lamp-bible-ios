@@ -18,7 +18,11 @@ assert.deepEqual(fencedLines(lines('``` a`b\nc')), [false, false])
 assert.deepEqual(fencedLines(lines('```\n``` x\nc')), [true, true, true])
 // Four spaces in: a fence only where indentation is allowed, as in a list.
 assert.deepEqual(fencedLines(lines('    ```\ncode')), [false, false])
-assert.deepEqual(fencedLines(lines('    ```\ncode\n    ```\nb'), { indented: true }), [true, true, true, false])
+assert.deepEqual(fencedLines(lines('    ```\ncode\n    ```\nb'), { nested: true }), [true, true, true, false])
+// In a quote, at any depth, when nested.
+assert.deepEqual(fencedLines(lines('> ```\n> x\n> ```\nb')), [false, false, false, false])
+assert.deepEqual(fencedLines(lines('> ```\n> x\n> ```\nb'), { nested: true }), [true, true, true, false])
+assert.deepEqual(fencedLines(lines('> > ~~~\n> > x\n> > ~~~'), { nested: true }), [true, true, true])
 // A line ending of \r\n is not text after the fence.
 assert.deepEqual(fencedLines(lines('```\r\ncode\r\n```\r\nb')), [true, true, true, false])
 

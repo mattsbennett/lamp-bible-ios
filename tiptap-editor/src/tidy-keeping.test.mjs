@@ -10,7 +10,7 @@ const cases = [
   '', '\n\n', '- \n\n- x', '>\n>\n>', '> x\n>   \n\n> y',
 ]
 // And random documents of those pieces.
-const pieces = ['> q', '>', '> q\\', '> q  ', '- i', '  - j', '1. n', '', '   ', 'p', 'p  ', 'p\\', '```', '~~~']
+const pieces = ['> q', '>', '> q\\', '> q  ', '- i', '  - j', '1. n', '', '   ', 'p', 'p  ', 'p\\', '```', '~~~', '> ```']
 let seed = 7
 const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
 for (let n = 0; n < 4000; n++) {
@@ -23,7 +23,7 @@ for (const input of cases) {
   // Where nothing is fenced, what the old tidying wrote, byte for byte; in
   // fenced code, every character kept, its line ending too.
   const lines = input.split('\n')
-  const fenced = fencedLines(lines, { indented: true })
+  const fenced = fencedLines(lines, { nested: true })
   if (!fenced.includes(true)) {
     assert.equal(text, oldTidy(input), JSON.stringify(input))
   } else {
@@ -52,8 +52,10 @@ for (const input of cases) {
   assert.equal(kept[at], input.indexOf('  - b'))
 }
 // Code that looks like a quote or a list is the writer's, inside a fence of
-// any length (Codex's cases, which lost a backslash and a blank line).
-for (const input of ['```\n> x\\\n```', '````\n> x\\\n```\n````', '````\n- a\n\n- b\n```\n````', '- item\n\n    ```\n    - a\n\n    - b\n    ```']) {
+// any length, in a list item or a quote (Codex's cases, which lost a
+// backslash, a blank line, or a quote's empty line and trailing spaces).
+for (const input of ['```\n> x\\\n```', '````\n> x\\\n```\n````', '````\n- a\n\n- b\n```\n````', '- item\n\n    ```\n    - a\n\n    - b\n    ```',
+  '> ```\n> x\\\n> ```', '> ```\n> a  \n>\n> b\n> ```']) {
   assert.equal(tidyKeeping(input).text, input, JSON.stringify(input))
 }
 assert.ok(withCode > 1000, `inputs with code: ${withCode}`)

@@ -28,7 +28,7 @@ import {
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
 import { findBareAddresses } from './bare-links.js'
-import { codeFence } from './code-fence.js'
+import { codeFence, fencedLines } from './code-fence.js'
 import { searchPattern, findMatches } from './search.js'
 import { traceDocument, placeByTrace, markdownRange, aroundLink, wholeLines, tidyKeeping } from './review-trace.js'
 import { MARK_START, MARK_END, MARK_POINT, PLACE_END, placeDigit, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
@@ -58,9 +58,11 @@ function resolveAudioBlocks(md) {
     .replace(/^(?<!!)\[([^\]]+)\]\((lamp-media:\/\/[^)]+)\)$/gm, (match, caption, id) => block(caption, id))
 }
 
-// Preserve line breaks within blockquotes by converting to hard breaks
+// Preserve line breaks within blockquotes by converting to hard breaks, but
+// not in or next to fenced code, whose lines are code (code-fence.js).
 function resolveBlockquoteLineBreaks(md) {
   const lines = md.split('\n')
+  const fenced = fencedLines(lines, { nested: true })
   const result = []
 
   for (let i = 0; i < lines.length; i++) {
@@ -69,7 +71,7 @@ function resolveBlockquoteLineBreaks(md) {
     const nextLine = lines[i + 1]
     const nextIsQuoteLine = nextLine && nextLine.trimStart().startsWith('>')
 
-    if (isQuoteLine && nextIsQuoteLine) {
+    if (isQuoteLine && nextIsQuoteLine && !fenced[i] && !fenced[i + 1]) {
       // Check if current line content (after >) is non-empty and next line content is also non-empty
       const currentContent = line.replace(/^\s*>\s?/, '')
       const nextContent = nextLine.replace(/^\s*>\s?/, '')

@@ -373,7 +373,7 @@ export function tidyKeeping(serialized) {
   // for one on a line of fenced code, kept whole.
   const keeping = (pattern, keep) => {
     const lines = text.split('\n')
-    const fenced = fencedLines(lines, { indented: true })
+    const fenced = fencedLines(lines, { nested: true })
     const starts = []
     let offset = 0
     for (const line of lines) { starts.push(offset); offset += line.length + 1 }
@@ -419,7 +419,7 @@ export function tidyKeeping(serialized) {
   let offset = 0
   for (const line of lines) { starts.push(offset); offset += line.length + 1 }
   const item = /^(\s*)([-*+]|\d+\.)\s/
-  const fenced = fencedLines(lines, { indented: true })
+  const fenced = fencedLines(lines, { nested: true })
   let out = ''
   const map = []
   let inList = false

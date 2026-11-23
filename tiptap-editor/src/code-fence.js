@@ -19,11 +19,12 @@ export function codeFence(text) {
 // character at least as long, with nothing after it but spaces: a shorter
 // run inside it is code. An unclosed fence runs to the end.
 //
-// `indented` takes a fence at any indentation, as in a list item, where the
-// page writes it four spaces in; without it, at three spaces at most, as
-// CommonMark has it at the top level.
-export function fencedLines(lines, { indented = false } = {}) {
-  const pattern = indented ? /^[ \t]*(`{3,}|~{3,})([^\n]*)$/ : /^ {0,3}(`{3,}|~{3,})([^\n]*)$/
+// `nested` takes a fence inside a list item or a quote too: at any
+// indentation, where the page writes a list item's four spaces in, and after
+// any `>`. Without it, at three spaces in at most, as CommonMark has it at
+// the top level.
+export function fencedLines(lines, { nested = false } = {}) {
+  const pattern = nested ? /^(?:[ \t]*>)*[ \t]*(`{3,}|~{3,})([^\n]*)$/ : /^ {0,3}(`{3,}|~{3,})([^\n]*)$/
   const fenced = new Array(lines.length).fill(false)
   let fence = null
   for (let i = 0; i < lines.length; i++) {

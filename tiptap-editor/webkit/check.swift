@@ -259,7 +259,13 @@ func codeLikeProse() {
         let parts = r as? [String] ?? []
         check(parts.first == "```\n> x\\\n- a\n\n- b\n```", "code shaped like a quote and a list is saved as written (read: \(parts.first.debugDescription))")
         check(parts.count == 2 && parts[1] == "> x\\\n- a\n\n- b", "and shown as written (read: \(parts.dropFirst()))")
-        bareLinks()
+        let quoted = "> ```\\n> x\\\\\\n>\\n> y  \\n> ```"
+        js("window.editorAPI.load('\(quoted)'); [window.editorAPI.getContent(), document.querySelector('.ProseMirror blockquote pre')?.textContent ?? '']") { r in
+            let parts = r as? [String] ?? []
+            check(parts.first == "> ```\n> x\\\n> \n> y  \n> ```", "and so is code in a quote, its empty line written as the serializer writes one in any quote (read: \(parts.first.debugDescription))")
+            check(parts.count == 2 && parts[1] == "x\\\n\ny  ", "and shown as written (read: \(parts.dropFirst()))")
+            bareLinks()
+        }
     }
 }
 
