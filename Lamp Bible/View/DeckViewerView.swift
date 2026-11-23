@@ -180,7 +180,7 @@ struct DeckViewerView: View {
                     // leaving, which stays whole beneath it until it has gone:
                     // both fading at once dimmed the screen midway.
                     .id(currentSlide.id)
-                    .transition(.asymmetric(insertion: .opacity, removal: .heldUntilCovered))
+                    .transition(.lampSlide)
                     .zIndex(Double(slideLayer) + 1)
             }
         }
@@ -217,19 +217,16 @@ struct DeckViewerView: View {
         if let previous = position.retreated(in: slides) { move(to: previous) }
     }
 
-    /// Moves to `next` the way the deck asks: a part fades in, a slide
-    /// dissolves into the next unless the deck cuts, and nothing moves at all
-    /// with Reduce Motion on, read at the moment of the move. The Mac
-    /// presenter's timing, so a deck moves alike wherever it is shown.
+    /// Moves to `next` the way the deck asks, as every presenter does: a part
+    /// fades in, a slide dissolves into the next unless the deck cuts, and
+    /// nothing moves at all with Reduce Motion on, read at the moment of the
+    /// move.
     private func move(to next: LampPresentationPosition) {
         let changesSlide = next.slide != position.slide
-        let animation: Animation? = if UIAccessibility.isReduceMotionEnabled {
-            nil
-        } else if changesSlide {
-            (deck.transition ?? .dissolve) == .cut ? nil : .easeInOut(duration: 0.45)
-        } else {
-            .easeInOut(duration: 0.35)
-        }
+        let animation = (deck.transition ?? .dissolve).animation(
+            changesSlide: changesSlide,
+            reduceMotion: UIAccessibility.isReduceMotionEnabled
+        )
         withAnimation(animation) {
             if changesSlide { slideLayer += 1 }
             position = next
@@ -441,22 +438,6 @@ extension DeckViewerView {
     /// Opens a stored deck, its images resolved wherever it was kept.
     init(entry: PresentationDeckEntry, startingAt initialIndex: Int = 0) {
         self.init(deck: entry.deck, store: PresentationDeckStorage.shared.store(for: entry), initialIndex: initialIndex)
-    }
-}
-
-/// A slide leaving during a dissolve: drawn as it is, untouched, for as long
-/// as the slide arriving over it takes to fade in. Its modifier differs only
-/// in a value nothing reads, which is enough for SwiftUI to keep the view
-/// until the animation ends instead of removing it at once.
-private struct HeldUntilCovered: ViewModifier, Animatable {
-    var animatableData: Double
-
-    func body(content: Content) -> some View { content }
-}
-
-private extension AnyTransition {
-    static var heldUntilCovered: AnyTransition {
-        .modifier(active: HeldUntilCovered(animatableData: 0), identity: HeldUntilCovered(animatableData: 1))
     }
 }
 
