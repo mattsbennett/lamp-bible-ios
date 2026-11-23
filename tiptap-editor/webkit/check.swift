@@ -1620,9 +1620,58 @@ func reviewMarksBesideEmphasis() {
         after(150) {
             js("window.editorAPI.reviewMarkdownForSelection()") { r in
                 check(r == nil || r is NSNull, "a caret inside a note's number clears nothing (read: \(String(describing: r)))")
-                reviewMarks()
+                reviewMarksInGroups()
             }
         }
+    }
+}
+
+// The safety net: where one mark's markers make the document another, the
+// rest are still drawn, and the page says how many were not.
+func reviewMarksInGroups() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('read');
+            const marks = () => Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|');
+            const text = 'One two three [link](https://example.com) four.';
+            rv.load(text);
+            // The second mark's markers fall in the link's address.
+            const partly = rv.setReviewMarks('One \\uE000\\uE010\\uE01Atwo\\uE001 three [link](https://ex\\uE000\\uE011\\uE01Aample.com\\uE001) four.', []);
+            const partlyShown = marks();
+            // Another document entirely: still refused, as a whole.
+            const other = rv.setReviewMarks('Another \\uE000\\uE010\\uE01Adocument\\uE001.', []);
+            // A long writing: 1,300 marked paragraphs, one of them unplaceable.
+            const paragraphs = [];
+            const marked = [];
+            for (let i = 0; i < 1300; i++) {
+                paragraphs.push('Paragraph ' + i + ' has some words in it.');
+                const place = String(i).split('').map(d => String.fromCharCode(0xE010 + Number(d))).join('');
+                marked.push(i === 700
+                    ? 'Paragraph ' + i + ' has [some](https://ex\\uE000' + place + '\\uE01Aample.com\\uE001) words in it.'
+                    : 'Paragraph ' + i + ' has \\uE000' + place + '\\uE01Asome\\uE001 words in it.');
+            }
+            paragraphs[700] = 'Paragraph 700 has [some](https://example.com) words in it.';
+            rv.load(paragraphs.join('\\n\\n'));
+            const started = performance.now();
+            const long = rv.setReviewMarks(marked.join('\\n\\n'), []);
+            const took = Math.round(performance.now() - started);
+            return [partly, partlyShown, other, long, document.querySelectorAll('.review-mark').length, took]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        guard parts.count == 6 else { check(false, "the safety net ran (read: \(String(describing: r)))"); reviewMarks(); return }
+        let partly = parts[0] as? [String: Any]
+        check(partly?["drawn"] as? Int == 1 && partly?["unshown"] as? Int == 1 && parts[1] as? String == "two",
+              "one mark the page cannot hold leaves the others drawn, and is counted (read: \(String(describing: parts[0])), \(String(describing: parts[1])))")
+        check(parts[2] as? Bool == false, "another document is still refused whole (read: \(String(describing: parts[2])))")
+        let long = parts[3] as? [String: Any]
+        let took = parts[5] as? Int ?? -1
+        print("  1,300 marks with one unplaceable took \(took) ms")
+        check(long?["unshown"] as? Int == 1 && parts[4] as? Int == 1299,
+              "in a long writing, one bad mark loses only itself (read: \(String(describing: parts[3])), \(String(describing: parts[4])) drawn)")
+        check(took >= 0 && took < 8000, "and the groups take seconds at most (read: \(took) ms)")
+        reviewMarks()
     }
 }
 

@@ -26,7 +26,7 @@ import {
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
 import { searchPattern, findMatches } from './search.js'
-import { MARK_START, MARK_END, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
+import { MARK_START, MARK_END, MARK_POINT, PLACE_END, placeDigit, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
 import { ImageBlock } from './extensions/image-caption.js'
 
 // Media map for resolving media/id to file URLs
@@ -1421,6 +1421,102 @@ function placeReviewMarks(markedMarkdown) {
   return read.ranges.every(range => range.to <= size) ? read.ranges : null
 }
 
+// The marks in the host's Markdown, each its markers and the place written
+// after its start: a mark the footnotes part into pieces keeps one place, so
+// its pieces go together. A mark with no place is known by where it starts.
+function marksIn(marked) {
+  const tokens = []
+  let open = null
+  for (let i = 0; i < marked.length; i++) {
+    const character = marked[i]
+    if (character !== MARK_START && character !== MARK_END && character !== MARK_POINT) continue
+    let end = i + 1
+    while (end < marked.length && placeDigit(marked[end]) !== null) end++
+    const placed = end > i + 1 && marked[end] === PLACE_END
+    const place = placed ? Number([...marked.slice(i + 1, end)].map(placeDigit).join('')) : null
+    const length = (placed ? end + 1 : i + 1) - i
+    if (character === MARK_END) {
+      tokens.push({ at: i, length: 1, key: open })
+      open = null
+    } else {
+      const key = place !== null ? place : `at ${i}`
+      tokens.push({ at: i, length, key })
+      if (character === MARK_START) open = key
+    }
+    i += length - 1
+  }
+  return tokens
+}
+
+// `marked` with only the markers of the marks in `keys`.
+function keepingMarks(marked, tokens, keys) {
+  let result = ''
+  let at = 0
+  for (const token of tokens) {
+    if (keys.has(token.key)) continue
+    result += marked.slice(at, token.at)
+    at = token.at + token.length
+  }
+  return result + marked.slice(at)
+}
+
+// The marks placed a group at a time, when the whole set will not place.
+// The markers go through the Markdown's syntax, and somewhere among the
+// writings people make is syntax nobody foresaw, where one marker turns
+// the document into another: placed all or nothing, that one mark would
+// hide every mark in the writing. Halved, and halved again, each group that
+// places is drawn and only what cannot is left out.
+//
+// Null where the document itself, with no marks at all, is not the page's:
+// then no group can place, and the host is behind the page. Bounded: each
+// try parses the whole writing, so past the budget what has not placed is
+// left out too, and said to be.
+function placeReviewMarksInGroups(marked, budget = 64) {
+  const tokens = marksIn(marked)
+  if (placeReviewMarks(keepingMarks(marked, tokens, new Set())) === null) return null
+  const keys = [...new Set(tokens.map(token => token.key))]
+  const ranges = []
+  let tries = 0
+  const place = group => {
+    if (group.length === 0 || tries >= budget) return
+    tries++
+    const found = placeReviewMarks(keepingMarks(marked, tokens, new Set(group)))
+    if (found !== null) {
+      ranges.push(...found)
+      return
+    }
+    if (group.length === 1) return
+    const half = group.length >> 1
+    place(group.slice(0, half))
+    place(group.slice(half))
+  }
+  const half = keys.length >> 1
+  place(keys.slice(0, half))
+  place(keys.slice(half))
+  ranges.sort((a, b) => a.from - b.from || a.to - b.to)
+  return { ranges }
+}
+
+// How many of the marks sent were not drawn: those no group placed, and
+// those the Markdown swallowed without refusing (a marker inside something
+// the page does not show). Known by place; marks sent with none can only be
+// counted, not told apart.
+function unplacedMarks(marked, placed) {
+  const sent = new Set(marksIn(marked).map(token => token.key))
+  const drawn = new Set(placed.map(range => range.place).filter(place => place !== undefined))
+  let missing = 0
+  let unnumbered = 0
+  for (const key of sent) {
+    if (typeof key === 'number') {
+      if (!drawn.has(key)) missing++
+    } else {
+      unnumbered++
+    }
+  }
+  const drawnUnnumbered = placed.filter(range => range.place === undefined).length
+  return missing + Math.max(0, unnumbered - drawnUnnumbered)
+}
+
 // The review markers as `encodeURIComponent` writes them: the start, end and
 // point markers and the digits and close of a place, U+E000 to U+E01A.
 const ENCODED_MARKERS = /%EE%80%(?:8[0-2]|9[0-9A])/g
@@ -2062,11 +2158,27 @@ window.editorAPI = {
   // words cross over, never a position. A marker with its place written
   // after it is paired with the change at that place, since the host may
   // have moved it out of syntax the parser drops, out of order.
+  //
+  // Answers true when every mark is drawn, false when none can be (the page
+  // holds another text), and `{ drawn, unshown }` when only some are: then
+  // the host must still say that marks are missing, since a writer reading
+  // what is drawn would otherwise take the rest for unchanged.
   setReviewMarks(markedMarkdown, changes) {
     if (!editor) return false
     reviewMarksShown = Boolean(markedMarkdown)
-    const placed = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
-    if (placed === null) return false
+    let placed = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
+    let unshown = 0
+    if (markedMarkdown) {
+      if (placed === null) {
+        const grouped = placeReviewMarksInGroups(markedMarkdown)
+        if (grouped === null) return false
+        placed = grouped.ranges
+      }
+      // Counted in the text as fitted, which drops a mark that marks
+      // nothing, begun and ended on blank lines.
+      unshown = unplacedMarks(markersFitForFootnotes(markedMarkdown), placed)
+      if (placed.length === 0 && unshown > 0) return false
+    }
     closeReviewPopover()
     const ranges = placed.map(({ place, ...range }, index) => {
       const change = Array.isArray(changes) ? changes[place ?? index] : null
@@ -2076,7 +2188,7 @@ window.editorAPI = {
       return { ...range, change: { id: change.id, now: change.now, before: change.before } }
     })
     editor.view.dispatch(editor.state.tr.setMeta(reviewKey, { ranges }).setMeta('addToHistory', false))
-    return true
+    return unshown > 0 ? { drawn: placed.length, unshown } : true
   },
 
   // Puts the assistant's change back, as the host worked it out from a
