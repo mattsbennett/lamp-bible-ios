@@ -10644,7 +10644,7 @@ final class WritingReviewSessionTests: XCTestCase {
         XCTAssertEqual(Set(result.wordings.map(\.markID)), Set(other.map(\.id)))
         XCTAssertEqual(result.retired.map(\.id), plan.marks)
         XCTAssertEqual(result.restorations.map(\.restored), ["one"])
-        XCTAssertEqual(WritingReviewSession.changes(in: result, text: restored).map { $0?.before }, ["two"])
+        XCTAssertEqual(WritingReviewSession.changes(of: result, result.drawing(in: restored)).map { $0?.before }, ["two"])
     }
 
     /// A change is offered by the marks it puts back, and one whose words
@@ -10654,7 +10654,7 @@ final class WritingReviewSessionTests: XCTestCase {
         let old = "Alpha one here. Beta two there."
         let text = "Alpha uno here. Beta dos there."
         let review = LampWritingReview(writingID: "w").markingAssistantChange(from: old, to: text)
-        let changes = WritingReviewSession.changes(in: review, text: text)
+        let changes = WritingReviewSession.changes(of: review, review.drawing(in: text))
         XCTAssertEqual(changes.map { $0?.before }, ["one", "two"])
         XCTAssertEqual(Set(changes.compactMap { $0?.id }).count, 2)
         for (change, mark) in zip(changes, review.located(in: text)) {
@@ -10667,14 +10667,14 @@ final class WritingReviewSessionTests: XCTestCase {
         let typed = "Begin. The shepherd calls his very own sheep by name. End."
         let carried = LampWritingReview(writingID: "w").markingAssistantChange(from: before, to: inserted)
             .carryingWriterEdit(from: inserted, to: typed)
-        let after = WritingReviewSession.changes(in: carried, text: typed)
+        let after = WritingReviewSession.changes(of: carried, carried.drawing(in: typed))
         XCTAssertFalse(after.isEmpty)
         XCTAssertTrue(after.allSatisfy { $0?.reason == "edited" && $0?.before == nil }, "\(after)")
 
         // Kept nowhere: nothing said.
         var unkept = review
         unkept.wordings = []
-        XCTAssertEqual(WritingReviewSession.changes(in: unkept, text: text), [nil, nil])
+        XCTAssertEqual(WritingReviewSession.changes(of: unkept, unkept.drawing(in: text)), [nil, nil])
     }
 
     /// A point drawn just after a line's block syntax reaches back over it,

@@ -761,11 +761,10 @@ final class WritingReviewSession: ObservableObject {
 
     /// For each marked range the page is sent, in order, what restoring it
     /// would put back, or that it can't be for something the writer did, or
-    /// nil (`changes(in:ranges:)`).
-    nonisolated static func changes(in review: LampWritingReview, text: String) -> [LampWritingReview.Change?] {
-        let ranges = review.highlightedRanges(in: text)
-        guard !review.wordings.isEmpty else { return ranges.map { _ in nil } }
-        return review.changes(in: text, ranges: ranges)
+    /// nil (`Drawing.changes`), none where no wording was kept.
+    nonisolated static func changes(of review: LampWritingReview, _ drawing: LampWritingReview.Drawing) -> [LampWritingReview.Change?] {
+        guard !review.wordings.isEmpty else { return drawing.ranges.map { _ in nil } }
+        return drawing.changes
     }
 
     // MARK: - Internals
@@ -844,12 +843,20 @@ final class WritingReviewSession: ObservableObject {
         Task { [weak self] in
             let drawn = await Task.detached(priority: .userInitiated) {
                 let live = review.carryingToText(text, from: known)
-                // Placed where the Markdown still reads as it did, each
-                // passage's place written after its marker, which the page
-                // pairs `changes` by: placing can put two in another order.
-                let marked = sendsMarks ? live.markedMarkdown(in: text).map { LampWritingReviewMarkdown.drawable($0) } : nil
-                let changes = marked == nil ? [] : Self.changes(in: live, text: text)
-                return (live.located(in: text).count, marked, changes)
+                // Only the count while typing: nothing to place, nor what
+                // could be put back.
+                guard sendsMarks else { return (live.passageCount(in: text), String?.none, [LampWritingReview.Change?]()) }
+                // Everything drawn from one finding of the marks (core's
+                // `drawing(in:)`), not each from its own. Placed where the
+                // Markdown still reads as it did, each passage's place
+                // written after its marker, which the page pairs `changes`
+                // by: placing can put two in another order.
+                let drawing = live.drawing(in: text)
+                let marked = drawing.markedMarkdown.map { LampWritingReviewMarkdown.drawable($0) }
+                let changes = marked == nil ? [] : Self.changes(of: live, drawing)
+                // Passages as drawn, not marks, as the Mac counts them: see
+                // `passageCount`.
+                return (drawing.passageCount, marked, changes)
             }.value
             guard let self, self.drawGeneration == generation else { return }
             self.publish(count: drawn.0, marked: drawn.1, changes: drawn.2, sendsMarks: sendsMarks)

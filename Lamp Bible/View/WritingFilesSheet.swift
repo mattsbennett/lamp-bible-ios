@@ -381,7 +381,8 @@ struct WritingDocumentMarks: Equatable, Sendable {
     let ranges: [NSRange]
     let changes: [LampWritingReview.Change?]
     /// How many passages are still to read, places words were taken out
-    /// among them.
+    /// among them: one for each range, as the reader lists and clears each
+    /// on its own.
     let count: Int
 
     /// Nil where the document has none to draw. Off the main actor: the
@@ -390,10 +391,10 @@ struct WritingDocumentMarks: Equatable, Sendable {
         guard let review = try? LibrarySyncPass.reviewStore.review(writingID: writingID, document: document),
               !review.isEmpty else { return nil }
         let live = review.carryingToText(text, from: known)
-        guard let marked = live.markedMarkdown(in: text) else { return nil }
-        let ranges = live.highlightedRanges(in: text)
-        let changes = live.wordings.isEmpty ? ranges.map { _ in nil } : live.changes(in: text, ranges: ranges)
-        return Self(text: text, marked: marked, ranges: ranges, changes: changes, count: live.located(in: text).count)
+        let drawing = live.drawing(in: text)
+        guard let marked = drawing.markedMarkdown else { return nil }
+        let changes = WritingReviewSession.changes(of: live, drawing)
+        return Self(text: text, marked: marked, ranges: drawing.ranges, changes: changes, count: drawing.ranges.count)
     }
 }
 
