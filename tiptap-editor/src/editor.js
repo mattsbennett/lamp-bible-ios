@@ -26,6 +26,7 @@ import {
 } from './footnote-numbering.js'
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
+import { findBareAddresses } from './bare-links.js'
 import { searchPattern, findMatches } from './search.js'
 import { traceDocument, placeByTrace, markdownRange, aroundLink } from './review-trace.js'
 import { MARK_START, MARK_END, MARK_POINT, PLACE_END, placeDigit, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
@@ -558,6 +559,70 @@ const VerseReferences = Extension.create({
       },
       props: {
         decorations: state => verseReferenceKey.getState(state),
+      },
+    })]
+  },
+})
+
+// ---- Bare addresses ----
+
+// The web and email addresses written out in the text, drawn as links to tap
+// while reading: a mark on the screen only, so what's saved is the Markdown
+// as typed, which reads them as words (linkify off). What isn't the writer's
+// plain words (a link they made, code, a footnote's reference) is hidden from
+// the finder, so an address that runs into it is left alone (bare-links.js).
+const bareLinksKey = new PluginKey('bareLinks')
+
+function bareLinkDecorations(doc) {
+  const decorations = []
+  doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true
+    if (node.type.spec.code) return false
+    let text = ''
+    node.forEach(child => {
+      // A line break ends a word, as a space does; anything else not plain
+      // words is hidden, and holds its place.
+      const plain = child.isText && !child.marks.some(mark => mark.type.name === 'link' || mark.type.name === 'code')
+      if (child.type.name === 'hardBreak') text += '\n'
+      else text += plain ? child.text : '\uFFFC'.repeat(child.isText ? child.text.length : child.nodeSize)
+    })
+    for (const address of findBareAddresses(text)) {
+      // A link as the page's own are, to the eye, VoiceOver and the
+      // keyboard, its tap taken by the page's click handler.
+      decorations.push(Decoration.inline(pos + 1 + address.start, pos + 1 + address.end, {
+        nodeName: 'a',
+        href: address.href,
+        class: 'bare-link',
+      }))
+    }
+    return false
+  })
+  return DecorationSet.create(doc, decorations)
+}
+
+// Found once per document read, and not while it's written in: every
+// keystroke makes a new document, and none of them is drawn with links.
+const bareLinksFound = new WeakMap()
+
+const BareLinks = Extension.create({
+  name: 'bareLinks',
+  addProseMirrorPlugins() {
+    const editor = this.editor
+    return [new Plugin({
+      key: bareLinksKey,
+      props: {
+        // Only on a page that isn't being written in: while editing (the
+        // writing's Edit, or a note) a tap puts the caret, and an address is
+        // its words.
+        decorations: state => {
+          if (editor.isEditable) return DecorationSet.empty
+          let found = bareLinksFound.get(state.doc)
+          if (!found) {
+            found = bareLinkDecorations(state.doc)
+            bareLinksFound.set(state.doc, found)
+          }
+          return found
+        },
       },
     })]
   },
@@ -1424,6 +1489,7 @@ function initEditor() {
       }),
       LineHardBreak,
       VerseReferences,
+      BareLinks,
       Search,
       ReviewMarks,
       PlainTextCopy,

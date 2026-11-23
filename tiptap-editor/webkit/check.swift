@@ -227,6 +227,33 @@ func survives() {
         let text = back as? String ?? ""
         check(text.contains("[verse 16](lampbible://verse/43003016)") && text.contains("[H157](lampbible://strongs/0/H157)"), "lampbible links are kept")
         check(text.contains("[An audio clip](media/aud-1)"), "an audio block keeps its caption and media (read: \(text.debugDescription))")
+        bareLinks()
+    }
+}
+
+// Addresses written out are drawn as links to tap, and saved as written:
+// a link the writer made and code are left as they are.
+func bareLinks() {
+    print("-- bare links")
+    let written = "Read https://example.com/noah and [made](https://made.example), `https://code.example`, then study@example.com."
+    let literal = String(data: try! JSONSerialization.data(withJSONObject: [written]), encoding: .utf8)!.dropFirst().dropLast()
+    js("""
+        (() => {
+          window.editorAPI.load(\(literal));
+          const drawn = () => [...document.querySelectorAll('.bare-link')].map(link => link.getAttribute('href'));
+          const editing = drawn();
+          window.editorAPI.setMode('read');
+          const reading = drawn();
+          const content = window.editorAPI.getContent();
+          window.editorAPI.setMode('edit');
+          return [reading, content, editing, drawn()];
+        })()
+        """) { result in
+        let parts = result as? [Any] ?? []
+        let links = parts.first as? [String] ?? []
+        check(links == ["https://example.com/noah", "mailto:study@example.com"], "addresses written out are links while reading, and only those (\(links))")
+        check(parts.count == 4 && (parts[1] as? String) == written, "and the Markdown is saved as written (read: \(String(describing: parts.count > 1 ? parts[1] : nil)))")
+        check(parts.count == 4 && (parts[2] as? [String]) == [] && (parts[3] as? [String]) == [], "and words while editing (\(parts.dropFirst(2)))")
         notes()
     }
 }
