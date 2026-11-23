@@ -999,7 +999,7 @@ function reviewClearButton() {
     // With the page's own text beside it, written as every edit is reported
     // (getMarkdownContent), for a host whose copy is a moment behind.
     postToSwift('reviewClear', { markdown: markdownMarking(from, to), plain: getMarkdownContent() })
-    showCleared(from, to, !$pos.parent.isTextblock)
+    showCleared(from, to, $pos.parent.isTextblock ? $pos.parent : null)
   }
   pressedOnce(button, clear)
   return button
@@ -1009,22 +1009,27 @@ function reviewClearButton() {
 // not when the host's answer comes: the host works every mark out again
 // before it sends them, which on a long writing takes a second, and a ✓
 // that did nothing for that long read as one that had not been pressed.
-// The host's marks, when they come, stand over these, putting back
-// whatever it did not clear. What a mark keeps beyond the block is what
-// the host keeps (LampWritingReview.clearing): the rest of it, cut to the
-// words in it, and nothing where none are left.
 //
-// Never more than the host takes off: when its marks come, a record it did
-// not change is not drawn again, and what the page took off alone would
-// stay off. So a point at either edge of a block with no text (`leaf`) is
-// left for the host: the edge is also the next block's, or the one
-// before's, and which the host's point is cannot be told here.
-function showCleared(from, to, leaf) {
+// What a mark keeps beyond the block is what the host's clear keeps
+// (LampWritingReview.clearing): the rest of it, cut to the words in it,
+// and nothing where none are left. The host clears the block's Markdown,
+// though, and where a point or a mark's end falls against the syntax there
+// (a heading's `#`, a list's bullet, a fence, the blank line between
+// blocks) cannot always be told from here, so what shows in the moment can
+// differ at an edge. The host always answers a clear with its marks, even
+// when its record did not change, and they stand over these.
+//
+// Left for that answer, where a guess would most likely be wrong: a point
+// at either edge of a block with no text (`block` null), an edge shared
+// with the block beside it; and a footnote, whose label the page writes
+// apart from its words.
+function showCleared(from, to, block) {
+  if (block && block.type.name === 'footnoteDefinition') return
   const doc = editor.state.doc
   const { ranges } = reviewKey.getState(editor.state)
   const kept = ranges.flatMap(range => {
     if (range.from === range.to) {
-      const inside = leaf ? range.from > from && range.from < to : range.from >= from && range.from <= to
+      const inside = block ? range.from >= from && range.from <= to : range.from > from && range.from < to
       return inside ? [] : [range]
     }
     if (range.to <= from || range.from >= to) return [range]

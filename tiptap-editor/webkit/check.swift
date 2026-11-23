@@ -1117,14 +1117,25 @@ func clearShownAtOnce() {
             rv.setReviewMarks('One \\uE000two.\\n\\nThree\\uE001 four.\\n\\n\\uE000Five.\\uE001');
             const before = document.querySelectorAll('.review-clear').length;
             document.querySelectorAll('.review-clear')[1].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            // And one wholly inside its block, with a point inside its text,
+            // taken off at once, the ✓ with them.
+            rv.load('One two three.\\n\\nOther.');
+            rv.setReviewMarks('One \\uE000two\\uE001 th\\uE002ree.\\n\\n\\uE000Other.\\uE001');
+            const inside = document.querySelectorAll('.review-clear').length;
+            document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            window.__insideAfter = [inside, document.querySelectorAll('.review-clear').length, document.querySelectorAll('.review-mark, .review-point').length];
+            rv.load('One two.\\n\\nThree four.\\n\\nFive.');
+            rv.setReviewMarks('One \\uE000two.\\n\\nThree\\uE001 four.\\n\\n\\uE000Five.\\uE001');
+            document.querySelectorAll('.review-clear')[1].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
             return [before, document.querySelectorAll('.review-clear').length,
                 [...document.querySelectorAll('.review-mark')].map(e => e.textContent).join('|'),
-                rv.reviewRedrawDiffers() === null]
+                rv.reviewRedrawDiffers() === null, window.__insideAfter]
         })()
         """) { r in
         let parts = r as? [Any] ?? []
-        check(parts.count == 4 && parts[0] as? Int == 3 && parts[1] as? Int == 2 && parts[2] as? String == "two.|Five." && parts[3] as? Bool == true,
+        check(parts.count == 5 && parts[0] as? Int == 3 && parts[1] as? Int == 2 && parts[2] as? String == "two.|Five." && parts[3] as? Bool == true,
               "a ✓ takes its block's marks off at once, and what a mark keeps outside it stays, cut to its words (read: \(String(describing: r)))")
+        check((parts.last as? [Int]) == [2, 1, 1], "and takes a mark and a point inside its block off at once, the ✓ with them (read: \(String(describing: parts.last)))")
         // Codex's case: a point between two rules is at the first one's end
         // and the second's start, and which the host's is cannot be told, so
         // the first rule's ✓ leaves it for the host's answer.
