@@ -287,7 +287,13 @@ func codeLikeProse() {
                     js("(() => { window.editorAPI.load('\(cr)'); return window.editorAPI.getContent() })()") { r in
                         let text = r as? String ?? ""
                         check(text.hasSuffix("> first\n> second"), "a quote after code, its lines ended by a lone \\r, keeps its break (read: \(text.debugDescription))")
-                        bareLinks()
+                        // Codex's case: the host's text is read with the same
+                        // line ends, so a mark in a footnote after them is drawn.
+                        js("(() => { const md = 'Body[^n].\\r\\r[^n]: note'; window.editorAPI.load(md); return [window.editorAPI.setReviewMarks(md.replace('note', '\\uE000note\\uE001')) === true, document.querySelectorAll('.review-mark').length] })()") { r in
+                            let parts = r as? [Any] ?? []
+                            check(parts.first as? Bool == true && parts.last as? Int == 1, "a mark in a footnote whose lines end with a lone \\r is drawn (read: \(parts))")
+                            bareLinks()
+                        }
                     }
                 }
             }

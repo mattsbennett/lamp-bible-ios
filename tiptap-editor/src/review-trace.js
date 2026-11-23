@@ -573,7 +573,9 @@ export function bridge(source, text, pmAt, atomAt) {
 // the page's writing could not be traced.
 export function placeByTrace(marked, trace) {
   if (!trace) return null
-  const read = marksInMarkdown(marked)
+  // A lone \r as the page read it, a line's end (editor.js, resolveForEditor):
+  // one character for one, so every offset in the host's text stands.
+  const read = marksInMarkdown(marked.replace(/\r(?!\n)/g, '\n'))
   if (!read) return null
   const map = bridge(read.text, trace.text, trace.pmAt, trace.atomAt)
   if (map === false) return false
