@@ -278,15 +278,20 @@ class TipTapEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDel
     private func sendReviewMarks() {
         let argument = reviewMarks.map { "\"\($0.jsEscaped())\"" } ?? "null"
         let changes = (try? JSONEncoder().encode(reviewChanges)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let sent = reviewMarks
         evaluateJS("window.editorAPI.setReviewMarks(\(argument), \(changes))") { [weak self] result in
+            // About marks since replaced (another writing opened, or a
+            // newer set sent): nothing to say about the ones held now.
+            guard let self, self.reviewMarks == sent else { return }
             // A page that placed some of the set answers how many it
-            // couldn't; true is all of it, false none.
+            // couldn't (none placed, though its text is this one: drawn 0);
+            // true is all of it; false, a page holding another text.
             if let partial = result as? [String: Any], let unshown = (partial["unshown"] as? NSNumber)?.intValue {
-                self?.onReviewMarksPartlyDrawn?(unshown)
+                self.onReviewMarksPartlyDrawn?(unshown)
             } else if (result as? Bool) == false {
-                self?.onReviewMarksRejected?()
+                self.onReviewMarksRejected?()
             } else if (result as? Bool) == true {
-                self?.onReviewMarksDrawn?()
+                self.onReviewMarksDrawn?()
             }
         }
     }
