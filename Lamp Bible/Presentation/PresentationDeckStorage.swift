@@ -211,15 +211,20 @@ struct PresentationDeckStorage: Sendable {
         }
     }
 
-    /// Mirrors the images published alongside the decks.
-    ///
-    /// Written newest-wins like the decks themselves, then anything no synced
-    /// deck references is removed. Images carry no deletion ledger, so
-    /// reachability is what keeps this directory from growing forever — and
-    /// because decks and their images arrive in the same pull, an image is only
-    /// unreferenced once no deck wants it.
-    func applySyncedAssets(_ assets: [LampPresentationAssetRevision]) throws {
-        try LampPresentationAssetFiles.merge(assets, into: syncedStore.assetsDirectoryURL)
+    /// Mirrors an image or video published alongside the decks, written
+    /// newest-wins like the decks themselves.
+    func mergeSyncedAsset(_ asset: LampPresentationAssetRevision) throws {
+        try LampPresentationAssetFiles.merge([asset], into: syncedStore.assetsDirectoryURL)
+    }
+
+    /// Removes the mirrored images and videos no synced deck references.
+    /// They carry no deletion ledger, so reachability is what keeps this
+    /// directory from growing forever — and because decks and their images
+    /// arrive in the same pull, an image is only unreferenced once no deck
+    /// wants it.
+    func pruneSyncedAssets() throws {
+        // Nothing to prune, and no reason to read every deck to learn so.
+        guard FileManager.default.fileExists(atPath: syncedStore.assetsDirectoryURL.path) else { return }
         try syncedStore.pruneUnreferencedAssets()
     }
 }

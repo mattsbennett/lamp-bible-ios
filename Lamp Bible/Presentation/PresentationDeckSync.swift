@@ -52,7 +52,10 @@ enum PresentationDeckSync {
             deletions = LampPresentationDeckDeletionLedger.decoded(from: data)
         }
 
-        var assets: [LampPresentationAssetRevision] = []
+        var changed = false
+        // A picture that can't be written here, a video too big for the disk
+        // say, is reported once the decks it has nothing to do with are in.
+        var assetFailure: Error?
         let assetsDirectory = LampPresentationDeckPortableLayout.assetsDirectoryPath
         for listing in (try? await storage.listFiles(path: assetsDirectory)) ?? [] {
             let path = "\(assetsDirectory)/\(listing.name)"
@@ -69,44 +72,48 @@ enum PresentationDeckSync {
                 continue
             }
             guard let data = try? await storage.readFile(path: path) else { continue }
-            assets.append(
-                LampPresentationAssetRevision(
-                    name: listing.name,
-                    data: data,
-                    modifiedAt: listing.modificationDate ?? .distantPast
+            // Written as each arrives: a video can be 100 MB, and holding
+            // every changed one until the last is read could cost the app
+            // its memory.
+            do {
+                try decks.mergeSyncedAsset(
+                    LampPresentationAssetRevision(
+                        name: listing.name,
+                        data: data,
+                        modifiedAt: listing.modificationDate ?? .distantPast
+                    )
                 )
-            )
+                changed = true
+            } catch {
+                assetFailure = assetFailure ?? error
+            }
         }
 
-        return try apply(
-            incoming: incoming,
-            deletions: deletions,
-            assets: assets,
-            into: decks
-        )
-    }
-
-    // MARK: - Applying
-
-    @discardableResult
-    private static func apply(
-        incoming: [LampPresentationDeckRevision],
-        deletions: LampPresentationDeckDeletionLedger,
-        assets: [LampPresentationAssetRevision],
-        into decks: PresentationDeckStorage
-    ) throws -> Bool {
+        // Decks after their images, so a deck isn't shown before what it
+        // draws has arrived.
         let plan = LampPresentationDeckPortablePull.plan(
             incoming: incoming,
             deletions: deletions,
             local: decks.revisions(in: decks.syncedStore)
         )
-        guard !plan.isEmpty || !assets.isEmpty else { return false }
+        if !plan.isEmpty {
+            try decks.applySyncPlan(plan)
+            changed = true
+        }
+        // Images are kept only for as long as a stored deck references them.
+        // Pruned on every pull, so one left behind by a pull cut short goes on
+        // the next; a deck that can't be read keeps them all. Only a pull that
+        // changed something reports a failed prune, as it always has.
+        if changed {
+            try decks.pruneSyncedAssets()
+        } else {
+            try? decks.pruneSyncedAssets()
+        }
 
-        // Decks first: the images are kept only for as long as a stored deck
-        // references them, so they must be written against the new decks.
-        try decks.applySyncPlan(plan)
-        try decks.applySyncedAssets(assets)
-        NotificationCenter.default.post(name: .presentationDecksDidChange, object: nil)
-        return true
+        if changed {
+            NotificationCenter.default.post(name: .presentationDecksDidChange, object: nil)
+        }
+        if let assetFailure { throw assetFailure }
+        return changed
     }
 }
