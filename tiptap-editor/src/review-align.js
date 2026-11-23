@@ -165,6 +165,31 @@ export function characterMap(source, shown) {
   return map
 }
 
+// For each character of `a`, the character of `b` it is, or -1: the longest
+// common subsequence of their characters, for two short texts, such as a
+// note's Markdown and the note shown, where emphasis can stand inside a
+// word (`un*happy*`) and tokens would not match. Longer ones go by tokens.
+export function characterAlignment(a, b) {
+  if (a.length * b.length > 4000000) return characterMap(a, b)
+  const n = a.length
+  const m = b.length
+  const rows = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1))
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      rows[i][j] = a[i] === b[j] ? rows[i + 1][j + 1] + 1 : Math.max(rows[i + 1][j], rows[i][j + 1])
+    }
+  }
+  const map = new Int32Array(n + 1).fill(-1)
+  let i = 0
+  let j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) map[i++] = j++
+    else if (rows[i + 1][j] >= rows[i][j + 1]) i++
+    else j++
+  }
+  return map
+}
+
 // The footnote definitions in Markdown: each one's label, and where its
 // words begin and end, its later lines (indented, perhaps after blank lines)
 // included. A label written twice is the first one's.
@@ -176,7 +201,15 @@ export function noteDefinitions(text) {
     lines.push({ at, line })
     at += line.length + 1
   }
+  // Not inside a code fence, where `[^x]: value` is text.
+  let fence = null
   for (let i = 0; i < lines.length; i++) {
+    const marker = lines[i].line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (marker && (fence === null || marker[1][0] === fence)) {
+      fence = fence === null ? marker[1][0] : null
+      continue
+    }
+    if (fence !== null) continue
     const found = lines[i].line.match(/^ {0,3}\[\^([^\]\s]+)\]:[ \t]*/)
     if (!found) continue
     const start = lines[i].at

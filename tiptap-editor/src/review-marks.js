@@ -127,18 +127,22 @@ export function withoutTypedChanges(ranges, typed) {
 // over several is offered once. `blocks` are `{ start, end }` in document order; returns, for each,
 // the indexes of its ranges.
 export function restorableByBlock(ranges, blocks) {
-  const offered = new Set()
-  return blocks.map(({ start, end }) => {
-    const own = []
-    ranges.forEach((range, index) => {
-      if (!range.change || offered.has(index)) return
-      if (range.to >= start && range.from <= end) {
-        offered.add(index)
-        own.push(index)
-      }
-    })
-    return own
-  })
+  // Both in document order, walked together: a range is offered in the
+  // first block it touches, so once a block has passed a range's start the
+  // range is either offered or never will be. Linear in blocks and ranges,
+  // where comparing each with each was not, on a long writing with many.
+  const order = ranges.map((range, index) => index)
+    .filter(index => ranges[index].change)
+    .sort((a, b) => ranges[a].from - ranges[b].from || ranges[a].to - ranges[b].to)
+  const own = blocks.map(() => [])
+  let first = 0
+  for (const index of order) {
+    const range = ranges[index]
+    while (first < blocks.length && blocks[first].end < range.from) first++
+    if (first < blocks.length && range.to >= blocks[first].start && range.from <= blocks[first].end) own[first].push(index)
+  }
+  for (const list of own) list.sort((a, b) => a - b)
+  return own
 }
 
 // The range a step through the marks lands on from a caret at `at`: the

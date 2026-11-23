@@ -1654,6 +1654,128 @@ func reviewMarksBesideEmphasis() {
     }
 }
 
+// Marks drawn as the writer reads them: a paragraph the assistant went over
+// word by word, many marks with a space between each, is one wash; three
+// turns that each took words out at one place are one bar, and none where a
+// wash reaches it; a place apart from any wash keeps its bar.
+func reviewMarksDrawnAsRead() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('read');
+            rv.load('One two three four five.\\n\\nSix seven eight.\\n\\nNine ten.');
+            const placed = rv.setReviewMarks('\\uE000One\\uE001 \\uE000two\\uE001 \\uE000three\\uE001 \\uE000four five\\uE001.\\n\\n\\uE002\\uE002\\uE002\\uE000Six\\uE001 seven \\uE000eight\\uE001.\\n\\nNine\\uE002\\uE002 ten.', []);
+            const washes = Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent);
+            return [placed, washes.join('|'), document.querySelectorAll('.review-point').length]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(parts.count == 3 && parts[1] as? String == "One two three four five|Six|eight",
+              "a paragraph marked word by word is drawn as one wash, broken only by unmarked words (read: \(String(describing: r)))")
+        check(parts.count == 3 && parts[2] as? Int == 1, "places words were taken out are drawn once, and not where a wash reaches them (read: \(String(describing: r)))")
+        reviewMarksTraced()
+    }
+}
+
+// Codex's review of the traced placement (1a85e77): each case it found.
+func reviewMarksTraced() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const marks = () => Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|');
+            const found = {};
+            // Emphasis inside a word, in a note.
+            rv.setMode('read');
+            rv.load('Body[^a].\\n\\n[^a]: An un*happy* note.\\n[^b]: Next.');
+            found.inWordEmphasis = [rv.setReviewMarks('Body[^a].\\n\\n[^a]: An un*\\uE000happy\\uE001* note.\\n[^b]: Next.', []), marks()];
+            // The writer's own escape of a `!` before a link, which the page
+            // now asks of the last characters rather than the whole output.
+            rv.load('Wow\\\\![a link](https://example.com) here.');
+            found.bangBeforeLink = [true, rv.getContent()];
+            // A page behind the host: the host has words the page lacks.
+            rv.load('one');
+            found.pageBehind = [rv.setReviewMarks('one \\uE000two\\uE001', []), marks()];
+            // Clears, while editing.
+            rv.setMode('edit');
+            rv.load('first\\n\\nsecond');
+            rv.setReviewMarks('\\uE000first\\uE001\\n\\nsecond', []);
+            return found
+        })()
+        """) { r in
+        let found = r as? [String: [Any]] ?? [:]
+        func shown(_ name: String) -> String? { found[name]?.last as? String }
+        check(found["inWordEmphasis"]?.first as? Bool == true && shown("inWordEmphasis") == "happy", "a mark on part of a word, emphasised in a note, is drawn on that part (read: \(String(describing: found["inWordEmphasis"])))")
+        check(shown("bangBeforeLink") == "Wow\\![a link](https://example.com) here.", "a `!` before a link is still written escaped (read: \(String(describing: found["bangBeforeLink"])))")
+        check(found["pageBehind"]?.first as? Bool == false, "a page holding less than the host's text is refused (read: \(String(describing: found["pageBehind"])))")
+        // A caret at the start of the second paragraph.
+        js("""
+            (() => {
+                const paragraphs = document.querySelectorAll('.ProseMirror > p');
+                const text = paragraphs[1].firstChild;
+                const range = document.createRange();
+                range.setStart(text, 0);
+                range.collapse(true);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.dispatchEvent(new Event('selectionchange'));
+                return true
+            })()
+            """) { _ in
+            after(150) {
+                js("window.editorAPI.reviewMarkdownForSelection()") { r in
+                    let marked = (r as? [String: Any])?["markdown"] as? String ?? ""
+                    check(marked == "first\n\n\u{E000}\u{E001}second", "a caret at a paragraph's start is not the end of the one before (read: \(marked.debugDescription))")
+                    // A link whose address alone was changed, cleared from its ✓.
+                    js("""
+                        (() => {
+                            const rv = window.editorAPI;
+                            rv.load('See [link](https://new.example) now.');
+                            rv.setReviewMarks('See [link](https://\\uE000new\\uE001.example) now.', []);
+                            document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                            return true
+                        })()
+                        """) { _ in
+                        after(150) {
+                            let sent = probe.reviewClears.last ?? ""
+                            check(sent == "\u{E000}See [link](https://new.example) now.\u{E001}", "a block's clear takes in a link's address at its end (read: \(sent.debugDescription))")
+                            reviewMarksOnBlocksAndPresses()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A rule the assistant put in, which has no words: washed whole, with a clear
+// beside it that clears the `---`. And a clear pressed with no pointer, as an
+// accessibility press sends it, a click with a count of 1 and no pointerdown.
+func reviewMarksOnBlocksAndPresses() {
+    let before = probe.reviewClears.count
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('Above.\\n\\n---\\n\\nBelow.');
+            const placed = rv.setReviewMarks('Above.\\n\\n\\uE000---\\uE001\\n\\nBelow.', []);
+            const block = document.querySelectorAll('.review-mark-block').length;
+            const clears = document.querySelectorAll('.review-clear');
+            if (clears[0]) clears[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+            return [placed, block, clears.length]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        check(parts.count == 3 && parts[0] as? Bool == true && parts[1] as? Int == 1 && parts[2] as? Int == 1,
+              "a rule the assistant put in is washed whole, with a clear beside it (read: \(String(describing: r)))")
+        after(150) {
+            let sent = probe.reviewClears.count > before ? probe.reviewClears.last ?? "" : ""
+            check(sent == "Above.\n\n\u{E000}---\u{E001}\n\nBelow.", "and a press with no pointer before it clears the rule (read: \(sent.debugDescription))")
+            reviewMarksCost()
+        }
+    }
+}
+
 // What review marks cost, pinned so a change cannot add lag unseen. Counts
 // first, which a busy machine cannot throw off: typing in a marked writing
 // builds no trace, and drawing the same marks again uses the one it has.
@@ -1672,12 +1794,23 @@ func reviewMarksCost() {
                 marked.push('Paragraph ' + i + ' has *\\uE000' + place + '\\uE01Asome\\uE001* words in it, and [a link](https://example.com/' + i + ').');
             }
             rv.load(paragraphs.join('\\n\\n'));
+            // Editing with no marks, timed, for the same edits with them.
+            const edit = n => { rv.setSearch('Paragraph ' + n + ' has', {}); rv.replaceCurrent('Paragraph ' + n + ' now has'); };
+            let t = performance.now();
+            for (let i = 0; i < 20; i++) edit(200 + i);
+            const editingBare = performance.now() - t;
+            rv.load(paragraphs.join('\\n\\n'));
             const before = rv.reviewTraceBuilds();
-            rv.setReviewMarks(marked.join('\\n\\n'), []);
+            const firstDraw = rv.setReviewMarks(marked.join('\\n\\n'), []);
+            const drawn = document.querySelectorAll('.review-mark').length;
             const afterDraw = rv.reviewTraceBuilds();
             rv.setReviewMarks(null, []);
             rv.setReviewMarks(marked.join('\\n\\n'), []);
             const afterRedraw = rv.reviewTraceBuilds();
+            t = performance.now();
+            for (let i = 0; i < 20; i++) edit(300 + i);
+            const editingMarked = performance.now() - t;
+            rv.clearSearch();
             // Editing with the marks shown, as transactions the page takes:
             // line breaks through its own keymap, and words put in by
             // find and replace.
@@ -1701,8 +1834,16 @@ func reviewMarksCost() {
                 for (let i = 0; i < 5; i++) { const t = performance.now(); f(); times.push(performance.now() - t); }
                 return times.sort((a, b) => a - b)[2];
             };
-            rv.load(paragraphs.join('\\n\\n'));
-            const writing = median(() => rv.getContent());
+            // Each write of a document just loaded, so none is the page's
+            // kept writing; the loading is not timed.
+            const writes = [];
+            for (let i = 0; i < 5; i++) {
+                rv.load(paragraphs.join('\\n\\n'));
+                const w = performance.now();
+                rv.getContent();
+                writes.push(performance.now() - w);
+            }
+            const writing = writes.sort((a, b) => a - b)[2];
             // Each draw on a document just loaded, so each traces afresh;
             // the loading is not timed.
             const beforeTimed = rv.reviewTraceBuilds();
@@ -1715,18 +1856,32 @@ func reviewMarksCost() {
             }
             const tracing = draws.sort((a, b) => a - b)[2];
             const timedBuilds = rv.reviewTraceBuilds() - beforeTimed;
-            return [afterDraw - before, afterRedraw - afterDraw, afterTyping - afterRedraw, writing, tracing, typed, timedBuilds]
+            // The same draw with the trace already built: what is left is
+            // drawing the marks, so the difference is what tracing costs.
+            const redraws = [];
+            for (let i = 0; i < 5; i++) {
+                rv.setReviewMarks(null, []);
+                const r = performance.now();
+                rv.setReviewMarks(marked.join('\\n\\n'), []);
+                redraws.push(performance.now() - r);
+            }
+            const drawing = redraws.sort((a, b) => a - b)[2];
+            const lastDrawn = document.querySelectorAll('.review-mark').length;
+            return [afterDraw - before, afterRedraw - afterDraw, afterTyping - afterRedraw, writing, tracing, typed, timedBuilds, firstDraw === true ? drawn : -1, lastDrawn, editingBare, editingMarked, drawing]
         })()
         """) { r in
         let parts = (r as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.doubleValue }
-        guard parts.count == 7 else { check(false, "the cost checks ran (read: \(String(describing: r)))"); savesAfterATrailingBreak(); return }
+        guard parts.count == 12 else { check(false, "the cost checks ran (read: \(String(describing: r)))"); savesAfterATrailingBreak(); return }
+        check(parts[7] == 1300 && parts[8] == 1300, "the draws being timed drew every mark (read: \(Int(parts[7])), then \(Int(parts[8])))")
+        print("  20 edits took \(Int(parts[9])) ms with no marks, \(Int(parts[10])) ms with 1,300 shown")
+        check(parts[10] <= 3 * parts[9] + 60, "and editing with 1,300 marks shown costs at most three times editing with none and 3 ms an edit (read: \(Int(parts[10])) ms against \(Int(parts[9])) ms; it was 913 before only the edited blocks were redrawn)")
         check(parts[0] == 1, "drawing marks builds the trace once (read: \(Int(parts[0])))")
         check(parts[1] == 0, "drawing the same marks again uses the trace it has (read: \(Int(parts[1])))")
         check(parts[5] >= 20 * 4, "the edits reached the document (read: \(Int(parts[5])) characters added)")
         check(parts[2] == 0, "editing a marked writing builds no trace (read: \(Int(parts[2])))")
         check(parts[6] == 5, "and each timed draw traced the document afresh (read: \(Int(parts[6])) builds)")
-        print("  writing 1,300 paragraphs took \(Int(parts[3])) ms; a draw that traces them, \(Int(parts[4])) ms")
-        check(parts[4] <= max(3 * parts[3], 30), "and a draw that traces costs at most three writings of the same document (read: \(Int(parts[4])) ms against \(Int(parts[3])) ms)")
+        print("  writing 1,300 paragraphs took \(Int(parts[3])) ms; a draw that traces them \(Int(parts[4])) ms, one with the trace built \(Int(parts[11])) ms")
+        check(parts[4] - parts[11] <= 3 * parts[3] + 5, "and tracing costs at most three writings of the same document (read: \(Int(parts[4] - parts[11])) ms against \(Int(parts[3])) ms)")
         savesAfterATrailingBreak()
     }
 }
@@ -1823,8 +1978,8 @@ func reviewMarksInGroups() {
         check(parts[0] as? Bool == true && parts[1] as? String == "two+1",
               "a change to a link's address alone is drawn as a point beside it, and the other mark too (read: \(String(describing: parts[0])), \(String(describing: parts[1])))")
         _ = partly
-        check((parts[6] as? [String: Any])?["unshown"] as? Int == 1 && parts[7] as? Int == 0,
-              "an unnumbered mark left over is offered no other mark's restore (read: \(String(describing: parts[6])), \(String(describing: parts[7])) offered)")
+        check((parts[6] as? [String: Any])?["unshown"] as? Int == 1 && parts[7] as? Int == 1,
+              "an unnumbered mark keeps its own restore when one before it is left out (read: \(String(describing: parts[6])), \(String(describing: parts[7])) offered)")
         check(parts[2] as? Bool == false, "another document is still refused whole (read: \(String(describing: parts[2])))")
         let long = parts[3] as? [String: Any]
         let took = parts[5] as? Int ?? -1
@@ -1833,7 +1988,7 @@ func reviewMarksInGroups() {
               "in a long writing, every mark is drawn, the address change as a point (read: \(String(describing: parts[3])), \(String(describing: parts[4])) drawn)")
         check(took >= 0 && took < 300, "and drawing 1,300 marks takes under 300 ms (read: \(took) ms; about 80 when written)")
         _ = long
-        reviewMarksCost()
+        reviewMarksDrawnAsRead()
     }
 }
 
@@ -2371,5 +2526,7 @@ probe.onReady = {
     }
 }
 view.loadFileURL(bundle, allowingReadAccessTo: bundle.deletingLastPathComponent())
-DispatchQueue.main.asyncAfter(deadline: .now() + 30) { print("timed out"); exit(2) }
+// Long enough for the review-mark cost checks, which draw and edit a
+// 1,300-paragraph writing several times, on a machine shared with builds.
+DispatchQueue.main.asyncAfter(deadline: .now() + 45) { print("timed out"); exit(2) }
 app.run()

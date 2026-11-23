@@ -25,7 +25,7 @@
 import { MarkdownSerializerState } from '@tiptap/pm/markdown'
 import markdownit from 'markdown-it'
 import { decodeLabels } from './footnote-numbering.js'
-import { marksInMarkdown, noteDefinitions, characterMap } from './review-align.js'
+import { marksInMarkdown, noteDefinitions, characterMap, characterAlignment } from './review-align.js'
 
 const md = markdownit()
 function scanDelims(text, pos) {
@@ -56,7 +56,16 @@ class TracingState extends MarkdownSerializerState {
     this.inline = null
     this.markCalls = []
     this.starts = new Map()
+    // Blocks with no text (a rule, an image, an audio block), by where
+    // each stands: written whole, they are known by their whole writing.
+    this.leaves = new Map()
     doc.descendants((node, pos) => {
+      if (node.isBlock && node.isLeaf) {
+        const at = this.leaves.get(node)
+        if (at) at.push(pos)
+        else this.leaves.set(node, [pos])
+        return false
+      }
       if (!node.inlineContent && !node.type.spec.code) return true
       const at = this.starts.get(node)
       if (at) at.push(pos + 1)
@@ -83,6 +92,18 @@ class TracingState extends MarkdownSerializerState {
     const inlineChild = ctx && parent === ctx.parent
     if (node.type.spec.code && node.isBlock) return this.renderCode(node, parent, index)
     const before = this.out.length
+    if (node.isBlock && node.isLeaf) {
+      const pos = this.leaves.get(node)?.shift()
+      super.render(node, parent, index)
+      // Its writing, less the blank lines round it, stands for the block:
+      // a mark on `---` is a mark on the rule.
+      let from = before
+      let to = this.out.length
+      while (from < to && /\s/.test(this.out[from])) from++
+      while (to > from && /\s/.test(this.out[to - 1])) to--
+      if (pos !== undefined && to > from) this.atoms.push({ pm: pos, out: from, len: to - from, leaf: node.nodeSize })
+      return
+    }
     super.render(node, parent, index)
     if (inlineChild && !node.isText) {
       const offset = this.offsetOf(ctx, index)
@@ -212,7 +233,16 @@ class TracingState extends MarkdownSerializerState {
       const escaped = this.esc(escapeHTML(line), this.atBlockStart)
       const base = this.out.length
       let j = 0
-      for (let k = 0; k < line.length && !ctx.failed; k++) {
+      // Most text is written as it is: one run.
+      if (escaped === line) {
+        if (line.length > 0) {
+          const last = this.runs[this.runs.length - 1]
+          if (last && last.pm + last.len === pm && last.out + last.len === base) last.len += line.length
+          else this.runs.push({ pm, out: base, len: line.length })
+        }
+        j = line.length
+      }
+      for (let k = j; k < line.length && !ctx.failed; k++) {
         const c = line[k]
         if (escaped[j] === '\\' && escaped[j + 1] === c) j++
         if (c === '<' && escaped.startsWith('&lt;', j)) { this.record(pm + k, base + j); j += 4 }
@@ -243,7 +273,9 @@ class TracingState extends MarkdownSerializerState {
     const code = ctx && !ctx.failed && !escape && calls.length === 2
       && text.length > calls[0].length + calls[1].length
       && text.startsWith(calls[0]) && text.endsWith(calls[1])
-    const bang = !escape && text[0] === '[' && /(^|[^\\])!$/.test(this.out)
+    const out = this.out
+    const bang = !escape && text[0] === '[' && out.length > 0 && out.charCodeAt(out.length - 1) === 33
+      && (out.length === 1 || out.charCodeAt(out.length - 2) !== 92)
     const before = this.out.length
     super.text(text, escape)
     if (bang) this.shift(before - 1, before, 1)
@@ -291,32 +323,104 @@ class TracingState extends MarkdownSerializerState {
 // character written at i (-1 for syntax), and atomAt[i] the position of an
 // inline atom (a footnote reference, a hard break) whose writing holds i.
 // Null where the traced writing is not the stock writer's.
-export function traceDocument(editor, doc, tidy) {
+export function traceDocument(editor, doc, tidy, written = null) {
   const serializer = editor.storage.markdown.serializer
   const state = new TracingState(serializer.nodes, serializer.marks, { hardBreakNodeName: 'hardBreak' }, doc)
   state.renderContent(doc)
   const raw = state.out
-  if (raw !== serializer.serialize(doc)) return null
+  // The stock writer's own output for this document: the page's latest,
+  // when it wrote this very document, or written now.
+  if (raw !== (written ? written() : serializer.serialize(doc))) return null
   const rawPm = new Int32Array(raw.length).fill(-1)
   const rawAtom = new Int32Array(raw.length).fill(-1)
+  const rawLeaf = new Int32Array(raw.length)
   for (const run of state.runs) for (let k = 0; k < run.len; k++) rawPm[run.out + k] = run.pm + k
-  for (const atom of state.atoms) for (let k = 0; k < atom.len; k++) rawAtom[atom.out + k] = atom.pm
+  for (const atom of state.atoms) {
+    for (let k = 0; k < atom.len; k++) {
+      rawAtom[atom.out + k] = atom.pm
+      if (atom.leaf) rawLeaf[atom.out + k] = atom.leaf
+    }
+  }
   for (const note of state.notes) traceNotes(note, raw, rawPm)
 
-  // What tidying removes is only ever taken out, so its output is a
-  // subsequence of the writer's: followed a character at a time.
-  const text = tidy(raw)
+  // What tidying removes, as it removes it (tidyKeeping), so each
+  // character that stays is known to be the one written there.
+  const { text, kept } = tidyKeeping(raw)
+  if (text !== tidy(raw)) return null
   const pmAt = new Int32Array(text.length).fill(-1)
   const atomAt = new Int32Array(text.length).fill(-1)
-  let r = 0
+  const leafAt = new Int32Array(text.length)
   for (let t = 0; t < text.length; t++) {
-    while (r < raw.length && raw[r] !== text[t]) r++
-    if (r >= raw.length) return null
-    pmAt[t] = rawPm[r]
-    atomAt[t] = rawAtom[r]
-    r++
+    pmAt[t] = rawPm[kept[t]]
+    atomAt[t] = rawAtom[kept[t]]
+    leafAt[t] = rawLeaf[kept[t]]
   }
-  return { text, pmAt, atomAt }
+  return { text, pmAt, atomAt, leafAt }
+}
+
+// The page's tidying of what its writer wrote (editor.js's tidyMarkdown
+// calls this), and for each character it keeps, where that character was
+// in what it was given. It only ever takes characters out:
+// - a quote line's trailing backslash, or two trailing spaces;
+// - an empty quote line between two that have words;
+// - a blank line inside a list, before another item.
+export function tidyKeeping(serialized) {
+  let text = serialized
+  let kept = Int32Array.from({ length: text.length }, (_, i) => i)
+  // Each match of `pattern` replaced by the spans `keep` gives of it.
+  const keeping = (pattern, keep) => {
+    let out = ''
+    const map = []
+    let at = 0
+    for (const match of text.matchAll(pattern)) {
+      for (let i = at; i < match.index; i++) { out += text[i]; map.push(kept[i]) }
+      for (const [from, to] of keep(match)) {
+        for (let i = from; i < to; i++) { out += text[i]; map.push(kept[i]) }
+      }
+      at = match.index + match[0].length
+    }
+    for (let i = at; i < text.length; i++) { out += text[i]; map.push(kept[i]) }
+    text = out
+    kept = Int32Array.from(map)
+  }
+  keeping(/^(>\s?)(.*)\\$/gmd, match => [match.indices[1], match.indices[2]])
+  keeping(/^(>\s?)(.*)  $/gmd, match => [match.indices[1], match.indices[2]])
+  keeping(/^(>.*\S.*)\n>\s*\n(>)/gmd, match => [
+    match.indices[1], [match.indices[1][1], match.indices[1][1] + 1], match.indices[2],
+  ])
+  // Blank lines within a list, so its items stay one list.
+  const lines = text.split('\n')
+  const starts = []
+  let offset = 0
+  for (const line of lines) { starts.push(offset); offset += line.length + 1 }
+  const item = /^(\s*)([-*+]|\d+\.)\s/
+  let out = ''
+  const map = []
+  let inList = false
+  let first = true
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const isListItem = item.test(line)
+    const isEmpty = line.trim() === ''
+    let keepLine = true
+    if (isListItem) {
+      inList = true
+    } else if (isEmpty && inList) {
+      let nextIsListItem = false
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim() !== '') { nextIsListItem = item.test(lines[j]); break }
+      }
+      if (nextIsListItem) keepLine = false
+      else inList = false
+    } else {
+      inList = false
+    }
+    if (!keepLine) continue
+    if (!first) { out += '\n'; map.push(kept[starts[i] - 1]) }
+    for (let k = 0; k < line.length; k++) { out += line[k]; map.push(kept[starts[i] + k]) }
+    first = false
+  }
+  return { text: out, kept: Int32Array.from(map) }
 }
 
 // A footnote block's notes: written from their sources, not traced through
@@ -357,7 +461,7 @@ function traceNotes(note, raw, rawPm) {
     const place = written.get(note.label)
     if (!place) continue
     const words = raw.slice(out + place.words, out + place.end)
-    const map = characterMap(words, note.text)
+    const map = characterAlignment(words, note.text)
     for (let k = 0; k < words.length; k++) {
       if (map[k] >= 0 && note.at[map[k]] >= 0) rawPm[out + place.words + k] = note.at[map[k]]
     }
@@ -372,7 +476,7 @@ function traceNotes(note, raw, rawPm) {
 // same note's: the page writes them in the order they are referred to,
 // which need not be the order they were written in, and lined up as one
 // text a note moved would read as words taken out and put in elsewhere.
-export function bridge(source, text, pmAt) {
+export function bridge(source, text, pmAt, atomAt) {
   const map = new Int32Array(source.length + 1).fill(-1)
   if (source === text) {
     for (let i = 0; i < source.length; i++) map[i] = i
@@ -409,8 +513,22 @@ export function bridge(source, text, pmAt) {
   }
   const reached = new Uint8Array(text.length)
   for (let i = 0; i < source.length; i++) if (map[i] >= 0) reached[map[i]] = 1
+  const word = /[\p{L}\p{N}]/u
   for (let t = 0; t < text.length; t++) {
-    if (!reached[t] && pmAt[t] >= 0 && /[\p{L}\p{N}]/u.test(text[t])) return false
+    if (!reached[t] && (pmAt[t] >= 0 || atomAt[t] >= 0) && word.test(text[t])) return false
+  }
+  // And the other way: words of the host's the page has none of, but for
+  // what the page may drop or write otherwise (an HTML comment or tag, an
+  // entity), mean the page is behind the host.
+  const dropped = new Uint8Array(source.length)
+  // A note's `[^label]:` is syntax on either side, written as the page
+  // writes it.
+  for (const note of sourceNotes.values()) for (let i = note.start; i < note.words; i++) dropped[i] = 1
+  for (const match of source.matchAll(/<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|&#?\w+;/g)) {
+    for (let i = match.index; i < match.index + match[0].length; i++) dropped[i] = 1
+  }
+  for (let i = 0; i < source.length; i++) {
+    if (map[i] < 0 && !dropped[i] && word.test(source[i])) return false
   }
   return map
 }
@@ -422,12 +540,13 @@ export function placeByTrace(marked, trace) {
   if (!trace) return null
   const read = marksInMarkdown(marked)
   if (!read) return null
-  const map = bridge(read.text, trace.text, trace.pmAt)
+  const map = bridge(read.text, trace.text, trace.pmAt, trace.atomAt)
   if (map === false) return false
-  const { text, pmAt, atomAt } = trace
-  // The document position before the character written at t, and after it.
+  const { text, pmAt, atomAt, leafAt } = trace
+  // The document position before the character written at t, and after it:
+  // after a whole block, for a block with no text.
   const start = t => (pmAt[t] >= 0 ? pmAt[t] : atomAt[t])
-  const end = t => (pmAt[t] >= 0 ? pmAt[t] + 1 : atomAt[t] + 1)
+  const end = t => (pmAt[t] >= 0 ? pmAt[t] + 1 : atomAt[t] + (leafAt[t] || 1))
   const traced = t => pmAt[t] >= 0 || atomAt[t] >= 0
   // Where the host's notes' words are: a mark that runs into or out of a
   // note, or across notes, is drawn in each part separately, since the page
@@ -448,9 +567,12 @@ export function placeByTrace(marked, trace) {
   }
   const ranges = []
   let unshown = 0
-  for (const mark of read.marks) {
+  for (const [order, mark] of read.marks.entries()) {
     // Nothing but space between its ends marks nothing.
     if (mark.to > mark.from && read.text.slice(mark.from, mark.to).trim() === '') continue
+    // Paired with its change by its place, or failing one by its own order
+    // among the marks sent: never by the order pieces come out in, which a
+    // mark drawn in several parts, or one left out, would move.
     let placed = null
     if (mark.to > mark.from) {
       for (const [from, to] of parts(mark.from, mark.to)) {
@@ -464,7 +586,7 @@ export function placeByTrace(marked, trace) {
           }
         }
         if (first < 0) continue
-        const piece = { from: start(first), to: Math.max(start(first), end(last)) }
+        const piece = { from: start(first), to: Math.max(start(first), end(last)), order }
         ranges.push(mark.place === undefined ? piece : { ...piece, place: mark.place })
         placed = placed ?? piece
       }
@@ -501,7 +623,7 @@ export function placeByTrace(marked, trace) {
         }
       }
     }
-    if (placed) ranges.push(mark.place === undefined ? placed : { ...placed, place: mark.place })
+    if (placed) ranges.push(mark.place === undefined ? { ...placed, order } : { ...placed, order, place: mark.place })
     else unshown++
   }
   return { ranges, unshown, text }
@@ -512,8 +634,9 @@ export function placeByTrace(marked, trace) {
 // just after the last character before it, so one after a bold word stays
 // inside the word's stars; failing that, before the first after it. Null
 // where nothing in it was written traceably.
-export function markdownRange(trace, from, to) {
+export function markdownRange(trace, from, to, blockOf = null) {
   const { pmAt, atomAt } = trace
+  const sameBlock = pm => !blockOf || blockOf(pm) === blockOf(from)
   let first = -1
   let last = -1
   let before = -1
@@ -521,8 +644,10 @@ export function markdownRange(trace, from, to) {
     const pm = pmAt[t] >= 0 ? pmAt[t] : atomAt[t]
     if (pm < 0) continue
     if (from === to) {
-      if (pm < from) before = t
-      else if (first < 0) first = t
+      // Only within the caret's own block: a caret at the start of a
+      // paragraph is not the end of the one before.
+      if (pm < from) { if (sameBlock(pm)) before = t }
+      else if (first < 0 && sameBlock(pm)) first = t
       continue
     }
     if (pm >= from && pm < to) {
@@ -543,6 +668,9 @@ export function markdownRange(trace, from, to) {
 // `<` and `>`, so a clear takes in a change to where the link points.
 export function aroundLink(text, range) {
   let { from, to } = range
+  // Through any emphasis inside the link's brackets: `[**words**](…)`.
+  while (from > 0 && '*_~'.includes(text[from - 1])) from--
+  while (to < text.length && '*_~'.includes(text[to])) to++
   if (text[from - 1] === '<' && text[to] === '>') return { from: from - 1, to: to + 1 }
   if (text[from - 1] === '[' && text[to] === ']' && text[to + 1] === '(') {
     let depth = 0
@@ -554,4 +682,14 @@ export function aroundLink(text, range) {
     }
   }
   return range
+}
+
+// A range of the page's Markdown widened to whole lines: a block cleared from
+// its ✓ is cleared with all its syntax, a list item's marker, a quote's mark,
+// a link's address at its end, which a change to alone would otherwise keep.
+export function wholeLines(text, range, fromLineStart, toLineEnd) {
+  let { from, to } = range
+  if (fromLineStart) while (from > 0 && text[from - 1] !== '\n') from--
+  if (toLineEnd) while (to < text.length && text[to] !== '\n') to++
+  return { from, to }
 }

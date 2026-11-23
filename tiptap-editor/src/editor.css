@@ -566,6 +566,17 @@ body.mode-present .tiptap p.is-editor-empty:first-child::before {
   background: var(--review-mark-bg, rgba(232, 176, 44, 0.22));
   border-bottom: 1px dotted var(--review-mark-rule, rgba(178, 120, 0, 0.7));
 }
+/* A block with no words the assistant changed: a rule, an image, an audio
+   block, washed whole. */
+.review-mark-block {
+  background: var(--review-mark-bg, rgba(232, 176, 44, 0.22));
+  outline: 1px dotted var(--review-mark-rule, rgba(178, 120, 0, 0.7));
+  outline-offset: 4px;
+}
+body.mode-present .review-mark-block {
+  background: none;
+  outline: none;
+}
 .review-point {
   display: inline-block;
   width: 0;

@@ -28,7 +28,7 @@ import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
 import { findBareAddresses } from './bare-links.js'
 import { searchPattern, findMatches } from './search.js'
-import { traceDocument, placeByTrace, markdownRange, aroundLink } from './review-trace.js'
+import { traceDocument, placeByTrace, markdownRange, aroundLink, wholeLines, tidyKeeping } from './review-trace.js'
 import { MARK_START, MARK_END, MARK_POINT, PLACE_END, placeDigit, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
 import { ImageBlock } from './extensions/image-caption.js'
 
@@ -774,24 +774,68 @@ function writtenSpans(tr) {
 // while the editor is unfocused, and focusing it would raise the keyboard.
 function reviewDecorations(doc, ranges, current = null) {
   if (ranges.length === 0) return DecorationSet.empty
+  return DecorationSet.create(doc, reviewDecorationList(doc, ranges, current))
+}
+
+// The decorations for `ranges`, or, with `region`, for the textblocks
+// within it alone: what an edit redraws (see the plugin's apply), the rest
+// of the page's marks being moved with the edit rather than drawn again.
+function reviewDecorationList(doc, ranges, current = null, region = null) {
   const decorations = []
-  for (const range of ranges) {
-    const isCurrent = current !== null && range.from === current.from && range.to === current.to
-    if (range.from === range.to) {
-      decorations.push(Decoration.widget(range.from, () => {
-        const point = document.createElement('span')
-        point.className = isCurrent ? 'review-point review-current' : 'review-point'
-        point.setAttribute('aria-hidden', 'true')
-        return point
-      }, { side: 0, ignoreSelection: true, key: `review-point-${range.from}${isCurrent ? '-current' : ''}` }))
+  // Drawn as the writer reads them, not as they are kept. A writing the
+  // assistant has worked over many times holds a mark for every word each
+  // turn changed, and drawn one by one they broke a marked paragraph into
+  // dozens of washes with a gap at every space, and put a bar for every
+  // turn that took words out at the same place. So within a block, washes
+  // with only space or punctuation between them are drawn as one, as the
+  // count reads them; a place words were taken out is drawn once, and not
+  // at all where a wash already reaches it. Each mark is kept as it was,
+  // for its clear, its restore and Next Change.
+  const sameBlock = (a, b) => {
+    const $a = doc.resolve(a)
+    return $a.parent.isTextblock && $a.parent === doc.resolve(b).parent
+  }
+  const nothingBetween = (a, b) => a >= b || (sameBlock(a, b) && !/[\p{L}\p{N}]/u.test(doc.textBetween(a, b, '\n', '\uFFFC')))
+  const washes = []
+  for (const range of ranges.filter(r => r.to > r.from).sort((a, b) => a.from - b.from || a.to - b.to)) {
+    const last = washes[washes.length - 1]
+    if (last && (range.from <= last.to || nothingBetween(last.to, range.from))) last.to = Math.max(last.to, range.to)
+    else washes.push({ from: range.from, to: range.to })
+  }
+  for (const wash of washes) {
+    // A block with no text of its own (a rule, an image, an audio block):
+    // the block itself, since there are no words to wash.
+    const node = doc.nodeAt(wash.from)
+    if (node && node.isBlock && node.isLeaf && wash.to === wash.from + node.nodeSize) {
+      decorations.push(Decoration.node(wash.from, wash.to, { class: 'review-mark-block' }))
     } else {
-      decorations.push(Decoration.inline(range.from, range.to, { class: isCurrent ? 'review-mark review-current' : 'review-mark' }))
+      decorations.push(Decoration.inline(wash.from, wash.to, { class: 'review-mark' }))
     }
+  }
+  // The mark a step landed on, more strongly, over its wash.
+  if (current && current.to > current.from) {
+    decorations.push(Decoration.inline(current.from, current.to, { class: 'review-mark review-current' }))
+  }
+  const points = new Set()
+  for (const range of ranges) {
+    if (range.from !== range.to || points.has(range.from)) continue
+    const reached = washes.some(wash => (wash.from <= range.from && range.from <= wash.to)
+      || (range.from < wash.from && nothingBetween(range.from, wash.from))
+      || (wash.to < range.from && nothingBetween(wash.to, range.from)))
+    const isCurrent = current !== null && current.from === range.from && current.to === range.to
+    if (reached && !isCurrent) continue
+    points.add(range.from)
+    decorations.push(Decoration.widget(range.from, () => {
+      const point = document.createElement('span')
+      point.className = isCurrent ? 'review-point review-current' : 'review-point'
+      point.setAttribute('aria-hidden', 'true')
+      return point
+    }, { side: 0, ignoreSelection: true, key: `review-point-${range.from}${isCurrent ? '-current' : ''}` }))
   }
   // A clear button beside each block with something in it still to read,
   // and beside it a restore button where the block holds wording that can
   // be put back.
-  const blocks = textblocks(doc)
+  const blocks = region ? textblocksBetween(doc, region.from, region.to) : textblocks(doc)
   const restorable = restorableByBlock(ranges, blocks)
   blocks.forEach(({ start, end }, index) => {
     if (!ranges.some(range => range.to >= start && range.from <= end)) return
@@ -809,7 +853,63 @@ function reviewDecorations(doc, ranges, current = null) {
       stopEvent: () => true,
     }))
   })
-  return DecorationSet.create(doc, decorations)
+  return decorations
+}
+
+// The textblocks between two positions, as textblocks gives them.
+function textblocksBetween(doc, from, to) {
+  const blocks = []
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (node.isBlock && node.isLeaf) {
+      blocks.push({ start: pos, end: pos + node.nodeSize })
+      return false
+    }
+    if (!node.isTextblock) return true
+    blocks.push({ start: pos + 1, end: pos + node.nodeSize - 1 })
+    return false
+  })
+  return blocks
+}
+
+// The part of the document an edit changed, in the document after it,
+// widened to whole textblocks and to the full extent of any marks reaching
+// into it, so what is drawn again there is drawn whole. Null for no change.
+function editedRegion(tr, ranges) {
+  const maps = tr.mapping.maps
+  let from = Infinity
+  let to = -Infinity
+  maps.forEach((map, index) => {
+    map.forEach((oldStart, oldEnd, newStart, newEnd) => {
+      let a = newStart
+      let b = newEnd
+      for (let later = index + 1; later < maps.length; later++) {
+        a = maps[later].map(a, -1)
+        b = maps[later].map(b, 1)
+      }
+      from = Math.min(from, a)
+      to = Math.max(to, b)
+    })
+  })
+  if (from === Infinity) return null
+  const doc = tr.doc
+  const widen = () => {
+    const $from = doc.resolve(Math.max(0, Math.min(from, doc.content.size)))
+    const $to = doc.resolve(Math.max(0, Math.min(to, doc.content.size)))
+    from = $from.depth > 0 ? $from.before(1) : 0
+    to = $to.depth > 0 ? $to.after(1) : doc.content.size
+  }
+  widen()
+  let grown = true
+  while (grown) {
+    grown = false
+    for (const range of ranges) {
+      if (range.to < from || range.from > to) continue
+      if (range.from < from) { from = range.from; grown = true }
+      if (range.to > to) { to = range.to; grown = true }
+    }
+    if (grown) widen()
+  }
+  return { from, to }
 }
 
 function reviewClearButton(start, end) {
@@ -836,21 +936,43 @@ function reviewClearButton(start, end) {
     // (getMarkdownContent), for a host whose copy is a moment behind.
     postToSwift('reviewClear', { markdown: markdownMarking(from, to), plain: getMarkdownContent() })
   }
-  button.addEventListener('pointerdown', clear)
-  // Pressed with no pointer — VoiceOver, Full Keyboard Access — a button
-  // hears only a click, whose `detail` is 0; a pointer's own click comes
-  // after its pointerdown, which has already cleared.
-  button.addEventListener('click', event => {
-    if (event.detail === 0) clear(event)
-    else event.preventDefault()
-  })
+  pressedOnce(button, clear)
   return button
+}
+
+// `act` on a press of `button`, once. A pointer acts on its first event,
+// pointerdown, so the caret does not move into the block first, and its own
+// click after it, which counts the clicks (1 or more), is passed over. Any
+// other click acts: VoiceOver's and Full Keyboard Access's, which count 0,
+// and an accessibility press, which can count 1 like a mouse's but has no
+// pointerdown before it.
+function pressedOnce(button, act) {
+  let byPointer = false
+  button.addEventListener('pointerdown', event => {
+    byPointer = true
+    act(event)
+  })
+  button.addEventListener('click', event => {
+    const pointersOwn = byPointer && event.detail > 0
+    byPointer = false
+    if (pointersOwn) {
+      event.preventDefault()
+      return
+    }
+    act(event)
+  })
 }
 
 // Where each textblock's text starts and ends.
 function textblocks(doc) {
   const blocks = []
   doc.descendants((node, pos) => {
+    // A block with no text (a rule, an image) is a block a mark can be on,
+    // with a clear beside it too: the whole of it.
+    if (node.isBlock && node.isLeaf) {
+      blocks.push({ start: pos, end: pos + node.nodeSize })
+      return false
+    }
     if (!node.isTextblock) return true
     blocks.push({ start: pos + 1, end: pos + node.nodeSize - 1 })
     return false
@@ -896,11 +1018,7 @@ function reviewRestoreButton() {
       .filter(change => !seen.has(change.id) && seen.add(change.id))
     if (changes.length > 0) openReviewPopover(button, changes)
   }
-  button.addEventListener('pointerdown', open)
-  button.addEventListener('click', event => {
-    if (event.detail === 0) open(event)
-    else event.preventDefault()
-  })
+  pressedOnce(button, open)
   return button
 }
 
@@ -1132,11 +1250,17 @@ function markdownMarking(from, to) {
   // could not be traced is not cleared from the page.
   const trace = currentTrace()
   if (!trace) return null
-  let range = markdownRange(trace, from, to)
+  const blockOf = pos => editor.state.doc.resolve(pos).parent
+  let range = markdownRange(trace, from, to, blockOf)
   if (!range) return null
   // Widened to a link above: its syntax too.
   const $from = editor.state.doc.resolve(from)
+  const $to = editor.state.doc.resolve(to)
   if (link && from < to && getMarkRange($from, link)?.from === from) range = aroundLink(trace.text, range)
+  // A whole block, from its ✓: its whole lines.
+  if (from < to) {
+    range = wholeLines(trace.text, range, $from.parentOffset === 0, $to.parentOffset === $to.parent.content.size)
+  }
   const text = trace.text
   return text.slice(0, range.from) + MARK_START + text.slice(range.from, range.to) + MARK_END + text.slice(range.to)
 }
@@ -1358,7 +1482,7 @@ function currentTrace() {
   traceBuilds++
   let trace = null
   try {
-    trace = traceDocument(editor, doc, tidyMarkdown)
+    trace = traceDocument(editor, doc, tidyMarkdown, writtenDocument)
   } catch (e) {
     trace = null
   }
@@ -1422,7 +1546,16 @@ const ReviewMarks = Extension.create({
           const written = writtenSpans(tr)
           const typed = written.filter(([from, to]) => to > from)
           const ranges = withoutSpans(withoutTypedChanges(mapped, written), typed)
-          return { ranges, decorations: reviewDecorations(tr.doc, ranges), current: null }
+          // Only what the edit touched is drawn again; the rest of the
+          // page's marks move with it. Drawing every mark of a long writing
+          // on every keystroke made typing in it lag.
+          const region = editedRegion(tr, ranges)
+          if (!region) return { ranges, decorations: reviewDecorations(tr.doc, ranges), current: null }
+          let decorations = old.decorations.map(tr.mapping, tr.doc)
+          decorations = decorations.remove(decorations.find(region.from, region.to))
+          const inside = ranges.filter(range => range.to >= region.from && range.from <= region.to)
+          decorations = decorations.add(tr.doc, reviewDecorationList(tr.doc, inside, null, region))
+          return { ranges, decorations, current: null }
         },
       },
       props: {
@@ -1704,6 +1837,35 @@ function scheduleContentUpdate() {
 // throws: a line of bold, a line break, a line, and a line break at the end
 // (Shift-Return there) could not be written, and no edit was saved while
 // the paragraph stayed so. The same search, stepping once.
+// And its atBlank asks a regular expression of the whole output written so
+// far each time it is called, which is often: writing grows with the square
+// of the writing's length, about 75 ms for a 56 KB writing, run 300 ms
+// after the writer stops typing. The same question, of the last character.
+MarkdownSerializerState.prototype.atBlank = function () {
+  const length = this.out.length
+  return length === 0 || this.out.charCodeAt(length - 1) === 10
+}
+
+// And its text, before a link's `[`, asks a regular expression whether the
+// whole output so far ends in an unescaped `!`, so every link cost a pass
+// over everything before it. The same question, of the last two characters.
+const endsInBang = out => {
+  const length = out.length
+  return length > 0 && out.charCodeAt(length - 1) === 33 && (length === 1 || out.charCodeAt(length - 2) !== 92)
+}
+MarkdownSerializerState.prototype.text = function (text, escape = true) {
+  const lines = text.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    this.write()
+    // Escape exclamation marks in front of links
+    if (!escape && lines[i][0] === '[' && endsInBang(this.out)) {
+      this.out = this.out.slice(0, this.out.length - 1) + '\\!'
+    }
+    this.out += escape ? this.esc(lines[i], this.atBlockStart) : lines[i]
+    if (i !== lines.length - 1) this.out += '\n'
+  }
+}
+
 MarkdownSerializerState.prototype.isMarkAhead = function (parent, index, mark) {
   for (; index < parent.childCount; index++) {
     const next = parent.child(index)
@@ -1717,62 +1879,29 @@ function getMarkdownContent() {
     return markdownTextarea.value
   }
   // Extensions handle markdown serialization with media/id format directly
-  return tidyMarkdown(editor.storage.markdown.getMarkdown())
+  return tidyMarkdown(writtenDocument())
+}
+
+// The writer's Markdown for the document as it stands, kept with the
+// document it was written for: review marks' trace checks itself against
+// it (traceDocument), and the page writes it after every pause in typing
+// anyway, so a clear that follows an edit need not write it again.
+let lastWriting = null
+function writtenDocument() {
+  const doc = editor.state.doc
+  if (lastWriting && lastWriting.doc === doc) return lastWriting.raw
+  const raw = editor.storage.markdown.getMarkdown()
+  lastWriting = { doc, raw }
+  return raw
 }
 
 // The serializer's Markdown as the host is given it, by every path that
 // gives it, so a copy with review markers in it differs from the document's
 // own by the markers alone.
 function tidyMarkdown(serialized) {
-  let md = serialized
-
-  // Post-process blockquotes: tiptap-markdown may output hard breaks as backslash
-  // Convert "> Line 1\\\n> Line 2" or "> Line 1  \n> Line 2" patterns
-  // Also handle cases where line breaks within blockquotes aren't properly prefixed
-  md = md.replace(/^(>\s?)(.*)\\$/gm, '$1$2')  // Remove trailing backslash from quote lines
-  md = md.replace(/^(>\s?)(.*)  $/gm, '$1$2')  // Remove trailing double space from quote lines
-
-  // Remove empty blockquote lines between content lines (Enter key creates new paragraphs)
-  // "> Line 1\n>\n> Line 2" -> "> Line 1\n> Line 2"
-  md = md.replace(/^(>.*\S.*)\n>\s*\n(>)/gm, '$1\n$2')
-
-  // Remove blank lines within lists to preserve nesting
-  const lines = md.split('\n')
-  const result = []
-  let inList = false
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    const isListItem = /^(\s*)([-*+]|\d+\.)\s/.test(line)
-    const isEmpty = line.trim() === ''
-
-    if (isListItem) {
-      inList = true
-      result.push(line)
-    } else if (isEmpty && inList) {
-      // Check if next non-empty line is also a list item
-      let nextIsListItem = false
-      for (let j = i + 1; j < lines.length; j++) {
-        if (lines[j].trim() !== '') {
-          nextIsListItem = /^(\s*)([-*+]|\d+\.)\s/.test(lines[j])
-          break
-        }
-      }
-      if (nextIsListItem) {
-        // Skip this blank line - it's within a list
-        continue
-      } else {
-        // End of list
-        inList = false
-        result.push(line)
-      }
-    } else {
-      inList = false
-      result.push(line)
-    }
-  }
-
-  return result.join('\n')
+  // What it takes out, and the map of what stays that review marks are
+  // placed by, are one function's: review-trace.js, tidyKeeping.
+  return tidyKeeping(serialized).text
 }
 
 function reportSelectionState() {
@@ -1850,11 +1979,10 @@ window.editorAPI = {
       unshown = byTrace.unshown
     }
     closeReviewPopover()
-    const ranges = placed.map(({ place, ...range }, index) => {
-      // A mark sent with no place is paired by its order, which a mark
-      // left out has moved: then it is offered no restore, rather than
-      // another mark's.
-      const at = place ?? (unshown > 0 ? undefined : index)
+    const ranges = placed.map(({ place, order, ...range }) => {
+      // Paired with its change by its place, or by its own order among the
+      // marks sent (placeByTrace).
+      const at = place ?? order
       const change = Array.isArray(changes) && at !== undefined ? changes[at] : null
       if (!change || typeof change.id !== 'string' || typeof change.now !== 'string') return range
       if (change.reason === 'edited') return { ...range, change: { id: change.id, now: change.now, reason: 'edited' } }

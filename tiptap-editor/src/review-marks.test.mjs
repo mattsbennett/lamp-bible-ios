@@ -87,3 +87,38 @@ console.log('review-marks: ok')
   const read = readMarkers([{ pos: 1, text: `One ${MARK_START}deux${MARK_END} three.` }])
   assert.equal(read.ranges[0].place, undefined)
 }
+
+// restorableByBlock walks blocks and ranges together; it must offer what
+// comparing each with each did.
+{
+  const eachWithEach = (ranges, blocks) => {
+    const offered = new Set()
+    return blocks.map(({ start, end }) => {
+      const own = []
+      ranges.forEach((range, index) => {
+        if (!range.change || offered.has(index)) return
+        if (range.to >= start && range.from <= end) { offered.add(index); own.push(index) }
+      })
+      return own
+    })
+  }
+  let seed = 11
+  const random = n => (seed = (seed * 1103515245 + 12345) % 2147483648) % n
+  for (let round = 0; round < 3000; round++) {
+    const blocks = []
+    let at = 1
+    for (let b = 0; b < 1 + random(8); b++) {
+      const start = at + random(3)
+      const end = start + random(12)
+      blocks.push({ start, end })
+      at = end + 2
+    }
+    const ranges = Array.from({ length: random(10) }, () => {
+      const from = random(at + 4)
+      const to = from + random(15)
+      return random(4) === 0 ? { from, to } : { from, to, change: { id: 'x', now: '', before: '' } }
+    })
+    assert.deepEqual(restorableByBlock(ranges, blocks), eachWithEach(ranges, blocks), JSON.stringify({ ranges, blocks }))
+  }
+}
+console.log('restorableByBlock: ok')
