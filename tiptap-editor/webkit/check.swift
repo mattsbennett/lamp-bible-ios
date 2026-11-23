@@ -1799,18 +1799,26 @@ func reviewMarksAroundBlocks() {
             const buttonsBefore = document.querySelectorAll('.review-clear').length;
             ed().commands.insertContentAt(2, 'y');
             const buttonsAfter = document.querySelectorAll('.review-clear').length;
+            // The same just after the rule.
+            rv.load('A\\n\\n---\\n\\nB');
+            rv.setReviewMarks('A\\n\\n---\\uE002\\n\\nB', []);
+            const afterRuleBefore = document.querySelectorAll('.review-clear').length;
+            ed().commands.insertContentAt(2, 'y');
+            const afterRuleAfter = document.querySelectorAll('.review-clear').length;
             // Two rules the assistant put in at once.
             rv.load('Above.\\n\\n---\\n\\n---\\n\\nBelow.');
             rv.setReviewMarks('Above.\\n\\n\\uE000---\\n\\n---\\uE001\\n\\nBelow.', []);
             const rules = document.querySelectorAll('.review-mark-block').length;
-            return [pointPlaced, buttonsBefore, buttonsAfter, rules]
+            return [pointPlaced, buttonsBefore, buttonsAfter, rules, afterRuleBefore, afterRuleAfter]
         })()
         """) { r in
         let parts = r as? [Any] ?? []
-        guard parts.count == 4 else { check(false, "blocks around edits read (read: \(String(describing: r)))"); exit(1) }
+        guard parts.count == 6 else { check(false, "blocks around edits read (read: \(String(describing: r)))"); exit(1) }
         check(parts[0] as? Bool == true && (parts[1] as? Int ?? 0) >= 1 && parts[2] as? Int == parts[1] as? Int,
               "a place taken out just before a rule keeps its buttons when the block above is typed in (read: \(parts[0]), \(parts[1]) then \(parts[2]))")
         check(parts[3] as? Int == 2, "two rules put in at once are each marked (read: \(parts[3]))")
+        check((parts[4] as? Int ?? 0) >= 1 && parts[5] as? Int == parts[4] as? Int,
+              "and one just after a rule keeps them too (read: \(parts[4]) then \(parts[5]))")
         after(150) {
             let sent = probe.reviewClears.count > before ? probe.reviewClears.last ?? "" : ""
             check(sent.contains("\u{E000}---\u{E001}") && sent.hasPrefix("xxxxxA") == true,

@@ -54,6 +54,8 @@ assert.deepEqual(tokens('**Bold**, and élan 12.').map(t => t.text), ['*', '*', 
   // its info string opens nothing.
   assert.deepEqual([...noteDefinitions('```\n[^x]: code\n~~~\n[^y]: code\n`````\n[^z]: note').keys()], ['z'])
   assert.deepEqual([...noteDefinitions('``` a`b\n[^x]: note').keys()], ['x'])
+  // Fence lines ending \r\n are fences.
+  assert.deepEqual([...noteDefinitions('~~~\r\n[^x]: code\r\n~~~\n\n[^a]: note').keys()], ['a'])
 }
 
 console.log('review-align: ok')

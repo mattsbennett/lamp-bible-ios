@@ -206,7 +206,8 @@ export function noteDefinitions(text) {
   // it, with nothing after: a shorter run inside it is code.
   let fence = null
   for (let i = 0; i < lines.length; i++) {
-    const marker = lines[i].line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
+    // Its info string to the line's end, a \r of \r\n included.
+    const marker = lines[i].line.match(/^ {0,3}(`{3,}|~{3,})([^\n]*)$/)
     if (fence === null && marker && !(marker[1][0] === '`' && marker[2].includes('`'))) {
       fence = marker[1]
       continue

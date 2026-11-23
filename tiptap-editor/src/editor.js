@@ -922,6 +922,12 @@ function editedRegion(tr, ranges) {
         if (range.from === from && from > 0) { from -= 1; grown = true }
       }
     }
+    // A block with no text starting where the region ends keeps its
+    // buttons at its own start, the region's end, where they are taken
+    // away with the region's: so it is drawn again too, whatever of it
+    // is marked.
+    const after = to < doc.content.size ? doc.nodeAt(to) : null
+    if (after && after.isBlock && after.isLeaf) { to += after.nodeSize; grown = true }
     if (grown) widen()
   }
   return { from, to }
