@@ -867,9 +867,44 @@ func addingAndRemoving() {
                 let parts = r as? [Any] ?? []
                 check(parts.first as? Bool == true && (parts.count > 1 && parts[1] as? Bool == true), "the open note's Remove closes it (read: \(String(describing: r)))")
                 check(parts.last as? String == "A[^1].\n\n[^1]: one\n\nB[^2] and C.\n\n[^2]: two\n\nEnd.", "and takes the footnote out, marker and note (read: \(String(describing: parts.last).debugDescription))")
-                reviewMarks()
+                reviewMarksOnALastBlock()
             }
         }
+    }
+}
+
+// A writing that ends in anything but a paragraph: the page keeps an empty
+// paragraph after its last block, which the Markdown does not write, and
+// that alone must not turn the marks away. Agents' drafts end in their
+// footnotes.
+func reviewMarksOnALastBlock() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const endings = {
+                heading: ['Text.\\n\\n## Heading', 'Text.\\n\\n## \\uE000Heading\\uE001'],
+                quote: ['Text.\\n\\n> A quote.', 'Text.\\n\\n> A \\uE000quote\\uE001.'],
+                list: ['Text.\\n\\n- one\\n- two', 'Text.\\n\\n- one\\n- \\uE000two\\uE001'],
+                rule: ['Text.\\n\\n---', '\\uE000Text\\uE001.\\n\\n---'],
+                footnotes: ['Text[^1].\\n\\n[^1]: Note.', '\\uE000Text\\uE001[^1].\\n\\n[^1]: Note.'],
+            };
+            const drawn = {};
+            for (const [name, [text, marked]] of Object.entries(endings)) {
+                rv.load(text);
+                drawn[name] = rv.setReviewMarks(marked) === true && document.querySelectorAll('.review-mark').length === 1;
+            }
+            rv.load('Text.\\n\\n## Heading');
+            const other = rv.setReviewMarks('Text.\\n\\n## \\uE000Other\\uE001');
+            return [drawn, other]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        let drawn = parts.first as? [String: Bool] ?? [:]
+        for name in ["heading", "quote", "list", "rule", "footnotes"] {
+            check(drawn[name] == true, "marks are drawn in a writing that ends in \(name == "rule" ? "a rule" : name == "footnotes" ? "its footnotes" : "a " + name) (read: \(String(describing: r)))")
+        }
+        check(parts.last as? Bool == false, "and a different last block is still not the same document")
+        reviewMarks()
     }
 }
 

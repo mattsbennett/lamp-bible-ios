@@ -1381,7 +1381,23 @@ function placeReviewMarks(markedMarkdown) {
   if (!read) return null
   const tr = new Transform(doc)
   for (const pos of [...read.positions].reverse()) tr.delete(pos, pos + 1)
-  return tr.doc.eq(editor.state.doc) ? read.ranges : null
+  return withoutTrailingEmpty(tr.doc).eq(withoutTrailingEmpty(editor.state.doc)) ? read.ranges : null
+}
+
+// A document without the empty paragraphs at its end. The page keeps one
+// after a last block that is not a paragraph — a heading, a quote, a list,
+// a rule, the footnotes — so there is somewhere to type below it, and
+// Markdown writes nothing for it, so a copy parsed from the Markdown never
+// has one. Compared with them, every mark in a writing that ends that way
+// was refused. Only the end is cut, so no position before it moves.
+function withoutTrailingEmpty(doc) {
+  let content = doc.content
+  while (content.childCount > 1) {
+    const last = content.lastChild
+    if (last.type.name !== 'paragraph' || last.content.size !== 0) break
+    content = content.cut(0, content.size - last.nodeSize)
+  }
+  return content === doc.content ? doc : doc.copy(content)
 }
 
 // What a copy puts on the clipboard as plain text: the words of what is
