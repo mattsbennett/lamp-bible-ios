@@ -1002,6 +1002,19 @@ function requestRestore(change) {
 // whole run of them, even from among them: after one, a break the page
 // leaves off the end of a table cell would no longer be the cell's last,
 // and would be written.
+// `pos`, or the first word of the note whose shown number it is inside.
+function pastNoteNumber(pos) {
+  const $pos = editor.state.doc.resolve(pos)
+  if ($pos.parent.type.name !== 'footnoteDefinition') return pos
+  const start = $pos.start()
+  let lineStart = start
+  $pos.parent.forEach((child, offset) => {
+    if (child.type.name === 'hardBreak' && start + offset < pos) lineStart = start + offset + child.nodeSize
+  })
+  const shown = editor.state.doc.textBetween(lineStart, $pos.end(), '', '\uFFFC').match(/^\[[^\]\s]+\][ \t]*/)
+  return shown && pos < lineStart + shown[0].length ? lineStart + shown[0].length : pos
+}
+
 function markdownMarking(from, to) {
   const link = editor.schema.marks.link
   const outside = (pos, side) => {
@@ -1036,6 +1049,11 @@ function markdownMarking(from, to) {
   }
   from = outside(from, -1)
   to = Math.max(from, outside(to, 1))
+  // In a footnote block, a marker inside a note's shown `[1] ` stops the
+  // line being read as a note, and the note is not written back: both ends
+  // go to the note's first word.
+  from = pastNoteNumber(from)
+  to = Math.max(from, pastNoteNumber(to))
   to = Math.max(from, trailingBreaks(to))
   from = Math.min(from, to)
   const linked = node => Boolean(node && link && link.isInSet(node.marks))
@@ -1416,20 +1434,26 @@ const ENCODED_MARKER = /%EE%80%(?:8[0-2]|9[0-9A])/
 // again, under the same place, where the next note's words begin.
 function markersFitForFootnotes(marked) {
   const lines = marked.split('\n')
+  const bare = text => text.replace(/[\uE000-\uE01A]/g, '')
   const lastWritten = i => {
     let j = i - 1
-    while (j >= 0 && lines[j].replace(/[\uE000-\uE01A]/g, '').trim() === '') j--
+    while (j >= 0 && bare(lines[j]).trim() === '') j--
     return j
   }
+  // A note's label with the markers either side of it, and among the spaces
+  // before it and after its colon.
+  const NOTE = /^((?:[ \t]|[\uE000-\uE01A])*)(\[\^[^\]\s]+\]:)((?:[ \t]|[\uE000-\uE01A])*)/
   let open = null
+  let inNotes = false
   for (let i = 0; i < lines.length; i++) {
-    // The markers round a note's label, either side of it, with the spaces
-    // after the colon.
-    const found = lines[i].match(/^([\uE000-\uE01A]*)(\s{0,3}\[\^[^\]\s]+\]:)((?:[ \t]|[\uE000-\uE01A])*)/)
-    if (found) {
-      const [whole, before, label, after] = found
-      const markers = before + after.replace(/[ \t]/g, '')
-      const spaces = after.replace(/[\uE000-\uE01A]/g, '')
+    const line = lines[i]
+    const note = line.match(NOTE)
+    const isNote = note !== null && bare(note[1]).length <= 3
+    const isBlank = bare(line).trim() === ''
+    const isContinuation = inNotes && !isNote && !isBlank && /^(?: {4}|\t)/.test(bare(line))
+    if (isNote) {
+      const [whole, before, label, after] = note
+      const markers = (before + after).replace(/[ \t]/g, '')
       const back = lastWritten(i)
       const closes = markers.match(/^\uE001*/)[0]
       let lead = markers
@@ -1443,19 +1467,52 @@ function markersFitForFootnotes(marked) {
         lines[back] = endingWith(lines[back], MARK_END)
         reopened = open
       }
-      lines[i] = label + spaces + reopened + lead + lines[i].slice(whole.length)
+      lines[i] = bare(before) + label + bare(after) + reopened + lead + line.slice(whole.length)
+      inNotes = true
+    } else if (isContinuation) {
+      // Markers among a later line's indent would end the note there.
+      const indent = line.match(/^(?:[ \t]|[\uE000-\uE01A])*/)[0]
+      lines[i] = bare(indent) + indent.replace(/[ \t]/g, '') + line.slice(indent.length)
+    } else if (!isBlank) {
+      // Out of the notes and back into the body: a mark still open is
+      // ended with the last note and begun again at the body's words.
+      if (inNotes && open !== null) {
+        const back = lastWritten(i)
+        if (back >= 0) {
+          lines[back] = endingWith(lines[back], MARK_END)
+          lines[i] = beginningWith(lines[i], open)
+        }
+      }
+      inNotes = false
     }
     open = openAtEnd(lines[i], open)
   }
   return lines.join('\n')
 }
 
-// `line` with `markers` at the end of its words: inside any emphasis that
-// closes there, since a closing star after a full stop and before a marker
-// no longer closes anything, and the line would lose its italics.
+// `line` with `markers` at the end of its words: inside emphasis that closes
+// there, since a closing star after a full stop and before a marker no
+// longer closes anything, and the line would lose its italics. Only what
+// does close: not an escaped star, nor one the line never opened.
 function endingWith(line, markers) {
-  const tail = line.match(/[*_~]*\s*$/)[0]
-  return line.slice(0, line.length - tail.length) + markers + tail
+  const escaped = at => {
+    let count = 0
+    for (let j = at - 1; j >= 0 && line[j] === '\\'; j--) count++
+    return count % 2 === 1
+  }
+  let at = line.length - line.match(/[*_~]*\s*$/)[0].length
+  while (at < line.length && '*_~'.includes(line[at]) && (escaped(at) || !line.slice(0, at).includes(line[at]))) at++
+  return line.slice(0, at) + markers + line.slice(at)
+}
+
+// `line` with the start marker `open` where its words begin: after a
+// heading's hashes, a quote's mark or a list item's, which it would hide.
+function beginningWith(line, open) {
+  const syntax = line.match(/^\s{0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+|\d{1,9}[.)][ \t]+)*/)[0]
+  const rest = line.slice(syntax.length)
+  // A mark that ended just where the body begins was the notes' alone.
+  if (rest.startsWith(MARK_END)) return syntax + rest.slice(MARK_END.length)
+  return syntax + open + rest
 }
 
 // The start marker, with its place, of a mark still open at the end of

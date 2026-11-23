@@ -972,7 +972,7 @@ func reviewMarksInFootnotes() {
         check(placed("afterALabel") && shown("afterALabel") == "note.", "an end just after a note's label ends with the note before (read: \(String(describing: drawn["afterALabel"])))")
         check(drawn["pastTheEnd"]?.first as? Bool == false, "a point past the page's end is not placed there (read: \(String(describing: drawn["pastTheEnd"])))")
         check(parts.last as? String == "Body[^1] and more[^2].\n\n[^1]: A first note.\n[^2]: A second note.", "and the writing is unchanged (read: \(String(describing: parts.last)))")
-        reviewMarks()
+        reviewMarksLeavingNotes()
     }
 }
 
@@ -1462,6 +1462,51 @@ func longListClears(_ index: Int = 0) {
                     }
                 }
             }
+        }
+    }
+}
+
+// Codex's second round on footnote marks: a mark out of the notes into the
+// body, markers among a note's indent, an escaped star where a mark is
+// ended, and the clear button beside a footnote block.
+func reviewMarksLeavingNotes() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const marks = () => Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|');
+            const drawn = {};
+            const mid = 'One[^a], two[^c], three[^b].\\n\\n[^a]: Note a.\\n[^b]: Note b.\\n[^c]: Note c.\\n\\nAfter the notes.';
+            rv.load(mid);
+            drawn.intoTheBody = [rv.setReviewMarks('One[^a], two[^c], three[^b].\\n\\n[^a]: Note a.\\n[^b]: Note b.\\n[^c]: Note \\uE000c.\\n\\nAfter\\uE001 the notes.'), marks()];
+            const indented = 'Body[^a].\\n\\n  [^a]: First line\\n    second line.';
+            rv.load(indented);
+            drawn.inTheIndent = [rv.setReviewMarks('Body[^a].\\n\\n \\uE000 [^a]: First\\uE001 line\\n\\uE002    second line.'), marks()];
+            const escaped = 'Body[^1] with literal\\\\*\\n\\n[^1]: A note.';
+            rv.load(escaped);
+            drawn.escapedStar = [rv.setReviewMarks('Body[^1] with \\uE000literal\\\\*\\n\\n[^1]: A\\uE001 note.'), marks()];
+            const notes = 'Body[^1] and more[^2].\\n\\n[^1]: A first note.\\n[^2]: A second note.';
+            rv.setMode('edit');
+            rv.load(notes);
+            rv.setReviewMarks('Body[^1] and more[^2].\\n\\n[^1]: A \\uE000first\\uE001 note.\\n[^2]: A second note.');
+            const buttons = document.querySelectorAll('.review-clear');
+            const button = buttons[buttons.length - 1];
+            if (button) button.click();
+            return [drawn, buttons.length]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        let drawn = parts.first as? [String: [Any]] ?? [:]
+        func shown(_ name: String) -> String? { drawn[name]?.last as? String }
+        func placed(_ name: String) -> Bool { drawn[name]?.first as? Bool == true }
+        check(placed("intoTheBody") && shown("intoTheBody") == "c.|After", "a mark out of the notes into the body covers no note between (read: \(String(describing: drawn["intoTheBody"])))")
+        check(placed("inTheIndent"), "markers among a note's indent leave it a note (read: \(String(describing: drawn["inTheIndent"])))")
+        check(placed("escapedStar") && (shown("escapedStar") ?? "").hasPrefix("literal*"), "a mark ended after an escaped star keeps it escaped (read: \(String(describing: drawn["escapedStar"])))")
+        after(200) {
+            let sent = probe.reviewClears.last ?? ""
+            let plain = sent.replacingOccurrences(of: "\u{E000}", with: "").replacingOccurrences(of: "\u{E001}", with: "")
+            check(plain == "Body[^1] and more[^2].\n\n[^1]: A first note.\n[^2]: A second note." && sent.contains("[^1]: \u{E000}"),
+                  "the clear beside a footnote block sends every note, the mark from the first note's words (read: \(sent.debugDescription))")
+            reviewMarks()
         }
     }
 }
