@@ -105,26 +105,27 @@ struct DeckViewerView: View {
                     .overlay(alignment: .topLeading) {
                         closeButton.padding(.leading, max(proxy.safeAreaInsets.leading, 16)).padding(.top, 12)
                     }
-                } else if layout.usesSideBands {
-                    // A widescreen slide on a phone held sideways leaves a band
-                    // of black either side. The controls live there, so the
-                    // slide keeps the full height of the screen and nothing is
-                    // laid over it.
-                    slideStage
-                    if showsChrome {
-                        sideBandChrome(layout)
-                            .transition(.opacity)
-                    }
                 } else {
+                    // One stage in either layout, so a window resized across
+                    // the two doesn't restart a slide's video or drift.
+                    //
                     // No room beside the slide: the bar insets it rather than
                     // floating over it, since an overlay would hide the one
                     // line most worth reading, the slide's title.
                     slideStage
                         .safeAreaInset(edge: .top, spacing: 0) {
-                            if showsChrome {
+                            if showsChrome && !layout.usesSideBands {
                                 chromeBar.transition(.opacity)
                             }
                         }
+                    // A widescreen slide on a phone held sideways leaves a band
+                    // of black either side. The controls live there, so the
+                    // slide keeps the full height of the screen and nothing is
+                    // laid over it.
+                    if showsChrome && layout.usesSideBands {
+                        sideBandChrome(layout)
+                            .transition(.opacity)
+                    }
                 }
             }
         }
@@ -169,6 +170,9 @@ struct DeckViewerView: View {
             if let currentSlide {
                 LampPresentationSlideCanvas(slide: currentSlide, deck: deck, store: store)
                     .revealed(atStep: position.step)
+                    // Shown to the room: a picture set to drift does, and a
+                    // video plays in its picture's place.
+                    .presenting()
                     .aspectRatio(deck.aspectRatio.ratio, contentMode: .fit)
                     // The slide's own ground stays inside the slide, rather
                     // than spilling into the home indicator's margin.
