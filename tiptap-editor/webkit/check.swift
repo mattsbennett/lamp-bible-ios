@@ -904,6 +904,74 @@ func reviewMarksOnALastBlock() {
             check(drawn[name] == true, "marks are drawn in a writing that ends in \(name == "rule" ? "a rule" : name == "footnotes" ? "its footnotes" : "a " + name) (read: \(String(describing: r)))")
         }
         check(parts.last as? Bool == false, "and a different last block is still not the same document")
+        reviewMarksInFootnotes()
+    }
+}
+
+// What the assistant changed in a writing's footnotes: drawn in the notes'
+// words, though the footnote block keeps each note's source beside them and
+// a marker before a note's label would stop it being read as a note.
+func reviewMarksInFootnotes() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const text = 'Body[^1] and more[^2].\\n\\n[^1]: A first note.\\n[^2]: A second note.';
+            const cases = {
+                inANote: 'Body[^1] and more[^2].\\n\\n[^1]: A \\uE000first\\uE001 note.\\n[^2]: A second note.',
+                atALabel: 'Body[^1] and more[^2].\\n\\n[^1]: A first note.\\n\\uE000[^2]: A second\\uE001 note.',
+                closingAtALabel: 'Body[^1] and more[^2].\\n\\n[^1]: A first \\uE000note.\\n\\uE001[^2]: A second note.',
+                fromTheBody: 'Body[^1] and \\uE000more[^2].\\n\\n[^1]: A first\\uE001 note.\\n[^2]: A second note.',
+            };
+            const drawn = {};
+            for (const [name, marked] of Object.entries(cases)) {
+                rv.load(text);
+                const placed = rv.setReviewMarks(marked);
+                const marks = Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|');
+                drawn[name] = [placed, marks];
+            }
+            // Written A, B, C; referred to A, C, B, so shown A, C, B. A mark
+            // written across A and B covers no word of C.
+            const reordered = 'One[^a], two[^c], three[^b].\\n\\n[^a]: Note a.\\n[^b]: Note b.\\n[^c]: Note c.';
+            rv.load(reordered);
+            const across = rv.setReviewMarks('One[^a], two[^c], three[^b].\\n\\n[^a]: Note \\uE000a.\\n[^b]: Note\\uE001 b.\\n[^c]: Note c.');
+            drawn.acrossNotes = [across, Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|')];
+            // Notes apart: an end before the second's label goes back past
+            // the blank line, not onto it.
+            const apart = 'Body[^1] and more[^2].\\n\\n[^1]: A first note.\\n\\n[^2]: A second note.';
+            rv.load(apart);
+            const spaced = rv.setReviewMarks('Body[^1] and more[^2].\\n\\n[^1]: A first \\uE000note.\\n\\n\\uE001[^2]: A second note.');
+            drawn.overABlankLine = [spaced, Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|')];
+            // A point among the empty paragraphs at the end stands past the
+            // page's document, and is not placed there.
+            // A mark from an italic line into the notes ends inside its
+            // stars, which still close; and one ends after a note's label.
+            const italic = 'Body[^1].\\n\\n*An italic line.*\\n\\n[^1]: A note.\\n[^2]: Another.';
+            rv.load(italic);
+            const intoNotes = rv.setReviewMarks('Body[^1].\\n\\n*An \\uE000italic line.*\\n\\n[^1]: A\\uE001 note.\\n[^2]: Another.');
+            drawn.fromItalics = [intoNotes, Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|')];
+            const afterLabel = rv.setReviewMarks('Body[^1].\\n\\n*An italic line.*\\n\\n[^1]: A \\uE000note.\\n[^2]:\\uE001 Another.');
+            drawn.afterALabel = [afterLabel, Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|')];
+            rv.load('Text.\\n\\n');
+            drawn.pastTheEnd = [rv.setReviewMarks('Text.\\n\\n\\uE002'), ''];
+            rv.load(text);
+            const kept = rv.getContent();
+            return [drawn, kept]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        let drawn = parts.first as? [String: [Any]] ?? [:]
+        func shown(_ name: String) -> String? { drawn[name]?.last as? String }
+        func placed(_ name: String) -> Bool { drawn[name]?.first as? Bool == true }
+        check(placed("inANote") && shown("inANote") == "first", "a mark in a note's words is drawn there (read: \(String(describing: drawn["inANote"])))")
+        check(placed("atALabel") && shown("atALabel") == "A second", "a mark that begins at a note's label is drawn from its first word (read: \(String(describing: drawn["atALabel"])))")
+        check(placed("closingAtALabel") && shown("closingAtALabel") == "note.", "a mark that ends at the next note's label ends with the line before (read: \(String(describing: drawn["closingAtALabel"])))")
+        check(placed("fromTheBody") && (shown("fromTheBody") ?? "").hasPrefix("more"), "a mark from the body into a note is drawn (read: \(String(describing: drawn["fromTheBody"])))")
+        check(placed("acrossNotes") && shown("acrossNotes") == "a.|Note", "a mark across two notes covers no note shown between them (read: \(String(describing: drawn["acrossNotes"])))")
+        check(placed("overABlankLine") && shown("overABlankLine") == "note.", "an end before a note's label, past a blank line, keeps the notes together (read: \(String(describing: drawn["overABlankLine"])))")
+        check(placed("fromItalics") && shown("fromItalics") == "italic line.|A", "a mark from an italic line into the notes keeps the italics (read: \(String(describing: drawn["fromItalics"])))")
+        check(placed("afterALabel") && shown("afterALabel") == "note.", "an end just after a note's label ends with the note before (read: \(String(describing: drawn["afterALabel"])))")
+        check(drawn["pastTheEnd"]?.first as? Bool == false, "a point past the page's end is not placed there (read: \(String(describing: drawn["pastTheEnd"])))")
+        check(parts.last as? String == "Body[^1] and more[^2].\n\n[^1]: A first note.\n[^2]: A second note.", "and the writing is unchanged (read: \(String(describing: parts.last)))")
         reviewMarks()
     }
 }

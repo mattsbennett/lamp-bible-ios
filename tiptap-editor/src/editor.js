@@ -1366,7 +1366,7 @@ function wordsInPage(page, before, after, span) {
 // document. Anything else, a different document or markers that do not
 // pair, draws nothing.
 function placeReviewMarks(markedMarkdown) {
-  const html = editor.storage.markdown.parser.parse(resolveForEditor(markedMarkdown))
+  const html = editor.storage.markdown.parser.parse(resolveForEditor(markersFitForFootnotes(markedMarkdown)))
   const doc = createDocument(html, editor.schema, editor.options.parseOptions)
   const pieces = []
   doc.descendants((node, pos) => {
@@ -1381,7 +1381,96 @@ function placeReviewMarks(markedMarkdown) {
   if (!read) return null
   const tr = new Transform(doc)
   for (const pos of [...read.positions].reverse()) tr.delete(pos, pos + 1)
-  return withoutTrailingEmpty(tr.doc).eq(withoutTrailingEmpty(editor.state.doc)) ? read.ranges : null
+  // A footnote block keeps what each note was read from, to write it back
+  // as it was; read from the marked copy, that holds the markers its words
+  // had, which the page's own block never does.
+  const kept = []
+  tr.doc.descendants((node, pos) => {
+    if (node.type.name === 'footnoteDefinition' && ENCODED_MARKER.test(node.attrs.sources)) kept.push({ node, pos })
+    return node.type.name !== 'footnoteDefinition'
+  })
+  for (const { node, pos } of kept) {
+    tr.setNodeMarkup(pos, undefined, { ...node.attrs, sources: node.attrs.sources.replace(ENCODED_MARKERS, '') })
+  }
+  if (!withoutTrailingEmpty(tr.doc).eq(withoutTrailingEmpty(editor.state.doc))) return null
+  // Equal but for empty paragraphs at the end, a marker among those may
+  // stand past the end of the page's own document.
+  const size = editor.state.doc.content.size
+  return read.ranges.every(range => range.to <= size) ? read.ranges : null
+}
+
+// The review markers as `encodeURIComponent` writes them: the start, end and
+// point markers and the digits and close of a place, U+E000 to U+E01A.
+const ENCODED_MARKERS = /%EE%80%(?:8[0-2]|9[0-9A])/g
+const ENCODED_MARKER = /%EE%80%(?:8[0-2]|9[0-9A])/
+
+// The marked Markdown made fit for the footnotes. The page shows a run of
+// notes as one block, in the order they are referred to, and reads a line as
+// a note only if it begins with its `[^label]:`. So no marker may stand
+// before a label: what begins there is moved past it, to the note's first
+// word, and what ends there is moved back to the end of the last line with
+// words on it, never onto a blank line, which would part the run. And no
+// mark may run from one note into the next, or from the body into a note:
+// shown in another order, it would cover notes between that nobody
+// changed. Such a mark is ended where its note or paragraph ends and begun
+// again, under the same place, where the next note's words begin.
+function markersFitForFootnotes(marked) {
+  const lines = marked.split('\n')
+  const lastWritten = i => {
+    let j = i - 1
+    while (j >= 0 && lines[j].replace(/[\uE000-\uE01A]/g, '').trim() === '') j--
+    return j
+  }
+  let open = null
+  for (let i = 0; i < lines.length; i++) {
+    // The markers round a note's label, either side of it, with the spaces
+    // after the colon.
+    const found = lines[i].match(/^([\uE000-\uE01A]*)(\s{0,3}\[\^[^\]\s]+\]:)((?:[ \t]|[\uE000-\uE01A])*)/)
+    if (found) {
+      const [whole, before, label, after] = found
+      const markers = before + after.replace(/[ \t]/g, '')
+      const spaces = after.replace(/[\uE000-\uE01A]/g, '')
+      const back = lastWritten(i)
+      const closes = markers.match(/^\uE001*/)[0]
+      let lead = markers
+      if (closes && back >= 0) {
+        lines[back] = endingWith(lines[back], closes)
+        lead = markers.slice(closes.length)
+        open = null
+      }
+      let reopened = ''
+      if (open !== null && back >= 0) {
+        lines[back] = endingWith(lines[back], MARK_END)
+        reopened = open
+      }
+      lines[i] = label + spaces + reopened + lead + lines[i].slice(whole.length)
+    }
+    open = openAtEnd(lines[i], open)
+  }
+  return lines.join('\n')
+}
+
+// `line` with `markers` at the end of its words: inside any emphasis that
+// closes there, since a closing star after a full stop and before a marker
+// no longer closes anything, and the line would lose its italics.
+function endingWith(line, markers) {
+  const tail = line.match(/[*_~]*\s*$/)[0]
+  return line.slice(0, line.length - tail.length) + markers + tail
+}
+
+// The start marker, with its place, of a mark still open at the end of
+// `line`, given what was open at its start; null if none is.
+function openAtEnd(line, open) {
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === MARK_END) open = null
+    else if (line[i] === MARK_START) {
+      let j = i + 1
+      while (j < line.length && line[j] >= '\uE010' && line[j] <= '\uE019') j++
+      if (j < line.length && line[j] === '\uE01A') j++
+      open = line.slice(i, j)
+    }
+  }
+  return open
 }
 
 // A document without the empty paragraphs at its end. The page keeps one
