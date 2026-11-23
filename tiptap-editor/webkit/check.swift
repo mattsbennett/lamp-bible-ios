@@ -1125,7 +1125,23 @@ func clearShownAtOnce() {
         let parts = r as? [Any] ?? []
         check(parts.count == 4 && parts[0] as? Int == 3 && parts[1] as? Int == 2 && parts[2] as? String == "two.|Five." && parts[3] as? Bool == true,
               "a ✓ takes its block's marks off at once, and what a mark keeps outside it stays, cut to its words (read: \(String(describing: r)))")
-        autolinkClear()
+        // Codex's case: a point between two rules is at the first one's end
+        // and the second's start, and which the host's is cannot be told, so
+        // the first rule's ✓ leaves it for the host's answer.
+        js("""
+            (() => {
+                const rv = window.editorAPI;
+                rv.load('---\\n\\n---');
+                rv.setReviewMarks('---\\n\\n\\uE002---');
+                const points = document.querySelectorAll('.review-point').length;
+                document.querySelector('.review-clear').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+                return [points, document.querySelectorAll('.review-point').length]
+            })()
+            """) { r in
+            let parts = r as? [Int] ?? []
+            check(parts == [1, 1], "a ✓ on a rule leaves a point at its edge to the host (read: \(String(describing: r)))")
+            autolinkClear()
+        }
     }
 }
 

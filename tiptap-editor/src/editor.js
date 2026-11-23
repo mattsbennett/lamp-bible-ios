@@ -999,7 +999,7 @@ function reviewClearButton() {
     // With the page's own text beside it, written as every edit is reported
     // (getMarkdownContent), for a host whose copy is a moment behind.
     postToSwift('reviewClear', { markdown: markdownMarking(from, to), plain: getMarkdownContent() })
-    showCleared(from, to)
+    showCleared(from, to, !$pos.parent.isTextblock)
   }
   pressedOnce(button, clear)
   return button
@@ -1013,12 +1013,21 @@ function reviewClearButton() {
 // whatever it did not clear. What a mark keeps beyond the block is what
 // the host keeps (LampWritingReview.clearing): the rest of it, cut to the
 // words in it, and nothing where none are left.
-function showCleared(from, to) {
+//
+// Never more than the host takes off: when its marks come, a record it did
+// not change is not drawn again, and what the page took off alone would
+// stay off. So a point at either edge of a block with no text (`leaf`) is
+// left for the host: the edge is also the next block's, or the one
+// before's, and which the host's point is cannot be told here.
+function showCleared(from, to, leaf) {
   const doc = editor.state.doc
   const { ranges } = reviewKey.getState(editor.state)
   const kept = ranges.flatMap(range => {
-    if (range.from === range.to) return range.from >= from && range.from <= to ? [] : [range]
-    if (range.to < from || range.from > to) return [range]
+    if (range.from === range.to) {
+      const inside = leaf ? range.from > from && range.from < to : range.from >= from && range.from <= to
+      return inside ? [] : [range]
+    }
+    if (range.to <= from || range.from >= to) return [range]
     const parts = []
     if (range.from < from) parts.push({ ...range, to: from })
     if (range.to > to) parts.push({ ...range, from: to })
