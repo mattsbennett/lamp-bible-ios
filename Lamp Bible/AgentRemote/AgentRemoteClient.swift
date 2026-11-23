@@ -693,12 +693,14 @@ final class AgentRemoteClient: ObservableObject {
         guard case .connecting = phase, let target = host?.name, let watched = connection else { return }
         let attempt = UUID()
         recoveryAttempt = attempt
+        connectDeadlineArmed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.rediscoveryWait) { [weak self] in
             MainActor.assumeIsolated {
                 // Only over the connection it was set for: a newer one, from a
                 // panel opened meanwhile, has its own course.
                 guard let self, self.recoveryAttempt == attempt, self.connection === watched,
                       case .connecting = self.phase else { return }
+                self.connectDeadlineArmed = false
                 if self.tryNextAddress() { return }
                 self.teardown()
                 self.lostRecoverably = true
@@ -706,6 +708,12 @@ final class AgentRemoteClient: ObservableObject {
             }
         }
     }
+
+    /// Whether the connection being made has `armConnectDeadline`'s limit:
+    /// carried to the connection that replaces it to pair afresh, which is
+    /// still the same attempt (`.pairAgain`). Every new connection starts
+    /// without it, and answering ends it.
+    private var connectDeadlineArmed = false
 
     /// `promptly` on coming back to Lamp; otherwise, as from the waited
     /// turn's timer, no oftener than `lossRetryInterval`, so a Mac that stays
@@ -847,7 +855,10 @@ final class AgentRemoteClient: ObservableObject {
             return
         }
         if let host, !choosingHost {
-            connect(to: host, chosen: false)
+            // Still the lost Mac's to answer as, whatever ended the last
+            // try: a same-named Mac that failed recovery isn't taken for it
+            // on a plain retry.
+            connect(to: host, chosen: false, expecting: isPinned(host) ? pinnedSecret : nil)
         } else {
             browse()
         }
@@ -1060,7 +1071,7 @@ final class AgentRemoteClient: ObservableObject {
                           let entry = self.addresses.first(where: { $0.text == lost && self.secret(forPairing: $0.pairing) == secret })
                             ?? self.addresses.first(where: { self.secret(forPairing: $0.pairing) == secret }),
                           let host = Self.host(for: entry) else { return }
-                    self.connect(to: host, automatic: true)
+                    self.connect(to: host, automatic: true, expecting: secret)
                     return
                 }
                 let lastPairing = UserDefaults.standard.string(forKey: Self.lastPairingKey)
@@ -1145,6 +1156,8 @@ final class AgentRemoteClient: ObservableObject {
         }
         closingReason = nil
         hostNamesRequests = false
+        // This connection's own limit, if it has one, is armed below.
+        connectDeadlineArmed = false
         browser?.cancel()
         browser = nil
         teardown()
@@ -1343,6 +1356,7 @@ final class AgentRemoteClient: ObservableObject {
                     }
                 }
             case .connected:
+                connectDeadlineArmed = false
                 guard let host else { break }
                 // Found again by name, but proven to be another Mac: not
                 // taken for the one that was lost, nor its chats dropped.
@@ -1412,7 +1426,17 @@ final class AgentRemoteClient: ObservableObject {
             case .pairAgain:
                 pendingNotice = AgentRemoteProblemText.refused
                 // Recovery's own retry stays recovery's: no one chose anew.
-                if let host { connect(to: host, automatic: rediscoveringLast, chosen: false) } else { teardown(); phase = .unavailable(AgentRemoteProblemText.refused) }
+                // An attempt with a time limit keeps one: recovery's search
+                // has its own, and a direct retry's is armed again for the
+                // connection that pairs.
+                let keepsDeadline = connectDeadlineArmed && !rediscoveringLast
+                if let host {
+                    connect(to: host, automatic: rediscoveringLast, chosen: false)
+                    if keepsDeadline { armConnectDeadline() }
+                } else {
+                    teardown()
+                    phase = .unavailable(AgentRemoteProblemText.refused)
+                }
             case let .failed(problem):
                 if case .unreachable = problem, tryNextAddress() { return }
                 // Not reached is the network's doing; turned away is the Mac's.
