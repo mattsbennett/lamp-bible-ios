@@ -958,8 +958,10 @@ struct AgentRemotePanel: View {
 
     /// Each block of a reply as drawn, by its text and the panel's settings.
     /// A reply being written arrives a piece at a time and only its end
-    /// changes, so each piece draws just its last block again; one already
-    /// read is drawn from here however often the panel redraws.
+    /// changes, so it's cut where a piece reads as it would whole
+    /// (`LampProse.pieces(of:)`) and each piece draws just its last block
+    /// again; one already read is drawn from here however often the panel
+    /// redraws.
     private static let replyBlocks: NSCache<NSString, NSAttributedString> = {
         let cache = NSCache<NSString, NSAttributedString>()
         // By size: a long streamed block leaves a prefix at each piece, which
@@ -982,7 +984,7 @@ struct AgentRemotePanel: View {
         let whole = (settings + text) as NSString
         if let drawn = replies.object(forKey: whole) { return drawn }
         let out = NSMutableAttributedString()
-        for block in replyBlocks(text) {
+        for block in LampProse.pieces(of: text) {
             let key = (settings + block) as NSString
             let drawn: NSAttributedString
             if let cached = replyBlocks.object(forKey: key) {
@@ -1013,77 +1015,6 @@ struct AgentRemotePanel: View {
         cache.totalCostLimit = 4_000_000
         return cache
     }()
-
-    /// A reply cut where a block ends and the next begins at the margin: at a
-    /// blank line, never inside a fence, and not before an indented line or a
-    /// list item, which may carry on a list above. Each piece reads as it
-    /// would in the whole; a reply defining link targets isn't cut.
-    static func replyBlocks(_ text: String) -> [String] {
-        // Read whole where a blank line may not end what it's in: a link's
-        // target written as a definition (anywhere, quoted or wrapped), or a
-        // `<pre>` block or HTML comment.
-        let lowered = text.lowercased()
-        if text.contains("]:") || lowered.contains("<pre") || lowered.contains("<!--") { return [text] }
-        var blocks: [String] = []
-        var current: [Substring] = []
-        var fence: (character: Character, length: Int)?
-        var blank = false
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let indent = line.prefix { $0 == " " || $0 == "\t" }
-            // A fence opens or closes within three spaces of the margin;
-            // further in, it's indented code.
-            let width = indent.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
-            let trimmed = line.dropFirst(indent.count)
-            if let open = fence {
-                let run = trimmed.prefix { $0 == open.character }
-                if width <= 3, run.count >= open.length, trimmed.dropFirst(run.count).allSatisfy({ $0 == " " || $0 == "\t" }) {
-                    fence = nil
-                }
-                current.append(line)
-                continue
-            }
-            if trimmed.isEmpty {
-                blank = true
-                current.append(line)
-                continue
-            }
-            // Not before an indented line, which may carry on a list item,
-            // nor a list item, which may go on the list above (its numbering
-            // counts on from it).
-            if blank, indent.isEmpty, !current.isEmpty, !Self.opensListItem(line) {
-                blocks.append(current.joined(separator: "\n").trimmingCharacters(in: .newlines))
-                current = []
-            }
-            blank = false
-            if width <= 3, let character = trimmed.first, character == "`" || character == "~" {
-                let run = trimmed.prefix { $0 == character }
-                if run.count >= 3 { fence = (character, run.count) }
-            }
-            current.append(line)
-        }
-        if !current.isEmpty { blocks.append(current.joined(separator: "\n").trimmingCharacters(in: .newlines)) }
-        return blocks.filter { !$0.isEmpty }
-    }
-
-    /// Whether a line opens a list item: `-`, `*` or `+`, or a number and `.`
-    /// or `)`, then a space or the line's end. Read by hand: it's asked at
-    /// every block of a reply on every piece it grows by.
-    private static func opensListItem(_ line: Substring) -> Bool {
-        guard let first = line.first else { return false }
-        var rest = line.dropFirst()
-        if first == "-" || first == "*" || first == "+" {
-            return rest.first.map { $0 == " " || $0 == "\t" } ?? true
-        }
-        guard first.isASCII, first.isNumber else { return false }
-        var digits = 1
-        while let next = rest.first, next.isASCII, next.isNumber, digits < 9 {
-            rest = rest.dropFirst()
-            digits += 1
-        }
-        guard let mark = rest.first, mark == "." || mark == ")" else { return false }
-        rest = rest.dropFirst()
-        return rest.first.map { $0 == " " || $0 == "\t" } ?? true
-    }
 
     /// A message that didn't go, with what went wrong and the two ways on.
     private func unsentView(_ unsent: AgentRemoteClient.Unsent, key: String) -> some View {

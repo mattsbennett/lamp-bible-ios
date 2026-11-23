@@ -153,7 +153,7 @@ final class AgentRemoteTests: XCTestCase {
         let full = String(repeating: paragraph, count: 30)
         let toolText = LampToolText(size: 16, typeface: "serif", lineSpacing: 4.25)
         let pieces = stride(from: 200, through: full.count, by: 200).map { String(full.prefix($0)) }
-        let longest = AgentRemotePanel.replyBlocks(full).map(\.utf8.count).max() ?? 0
+        let longest = LampProse.pieces(of: full).map(\.utf8.count).max() ?? 0
         let readBefore = AgentRemotePanel.replyBytesDrawn
         let began = Date()
         for piece in pieces { for _ in 0..<3 { _ = AgentRemotePanel.reply(piece, toolText: toolText) } }
@@ -163,12 +163,12 @@ final class AgentRemoteTests: XCTestCase {
         // whole reply again at each piece.
         XCTAssertLessThanOrEqual(read, full.utf8.count + pieces.count * longest)
         // Kept whole where cutting would change what's read.
-        XCTAssertEqual(AgentRemotePanel.replyBlocks("1. one\n\n1. two").count, 1, "a list counts on across a blank line")
-        XCTAssertEqual(AgentRemotePanel.replyBlocks("See [it][ref].\n\nMore.\n\n[ref]: https://example.com").count, 1, "a link finds its target")
-        XCTAssertEqual(AgentRemotePanel.replyBlocks("```\na\n\nb\n```\n\nAfter").count, 2, "a fence isn't cut")
-        XCTAssertEqual(AgentRemotePanel.replyBlocks("```\na\n    ```\n\nstill code\n```").count, 1, "nor closed four spaces in")
-        XCTAssertEqual(AgentRemotePanel.replyBlocks("See [it][src].\n\n> [src]: https://example.com").count, 1)
-        XCTAssertEqual(AgentRemotePanel.replyBlocks("<pre>\na\n\n**b**\n</pre>").count, 1)
+        XCTAssertEqual(LampProse.pieces(of: "1. one\n\n1. two").count, 1, "a list counts on across a blank line")
+        XCTAssertEqual(LampProse.pieces(of: "See [it][ref].\n\nMore.\n\n[ref]: https://example.com").count, 1, "a link finds its target")
+        XCTAssertEqual(LampProse.pieces(of: "```\na\n\nb\n```\n\nAfter").count, 2, "a fence isn't cut")
+        XCTAssertEqual(LampProse.pieces(of: "```\na\n    ```\n\nstill code\n```").count, 1, "nor closed four spaces in")
+        XCTAssertEqual(LampProse.pieces(of: "See [it][src].\n\n> [src]: https://example.com").count, 1)
+        XCTAssertEqual(LampProse.pieces(of: "<pre>\na\n\n**b**\n</pre>").count, 1)
     }
 
     func testPairingIsKeptAndTheNextConnectionAnswersWithIt() throws {
