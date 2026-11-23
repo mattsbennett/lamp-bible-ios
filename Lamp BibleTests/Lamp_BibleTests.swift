@@ -5590,6 +5590,52 @@ final class NoteMarkdownTests: XCTestCase {
     func testAFootnoteMarkerIsLeftForItsOwnStyling() {
         XCTAssertEqual(render("Born again[^1] from above").string, "Born again[^1] from above")
     }
+
+    /// Read by core as the note editor reads a note (LampProse, a line a
+    /// line): what reading line by line by hand got wrong.
+    func testANoteReadsAsItsEditorReadsIt() {
+        // Bold across a typed line break is bold on both lines.
+        let bold = render("**strong\nstill strong** not")
+        XCTAssertEqual(bold.string, "strong\nstill strong not")
+        XCTAssertTrue(traits(bold, at: "still").contains(.traitBold))
+        XCTAssertFalse(traits(bold, at: "not").contains(.traitBold))
+        // A list numbered from where the writer began.
+        XCTAssertEqual(render("3. three\n4. four").string, "3.\tthree\n4.\tfour")
+        // Nesting from the list, whatever the indent typed.
+        let nested = render("- outer\n    - inner")
+        let styles = nested.string.components(separatedBy: "\n").indices.map { index -> NSParagraphStyle? in
+            let at = (nested.string as NSString).range(of: index == 0 ? "outer" : "inner").location
+            return nested.attribute(.paragraphStyle, at: at, effectiveRange: nil) as? NSParagraphStyle
+        }
+        XCTAssertGreaterThan(styles[1]?.headIndent ?? 0, styles[0]?.headIndent ?? 0)
+        // The apostrophe the writer typed.
+        XCTAssertEqual(render("It's \"so\" -- yes").string, "It's \"so\" -- yes")
+        // An item's second line under its words, not a paragraph of its own.
+        let item = render("- first line\nsecond line")
+        XCTAssertEqual(item.string, "•\tfirst line\nsecond line")
+        let second = item.attribute(.paragraphStyle, at: (item.string as NSString).range(of: "second").location, effectiveRange: nil) as? NSParagraphStyle
+        let first = item.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+        XCTAssertEqual(second?.firstLineHeadIndent, first?.headIndent)
+        // Paragraphs in a quotation keep their break.
+        XCTAssertEqual(render("> first\n>\n> second").string, "first\n\nsecond")
+        // A table's cells keep a verse link to tap.
+        let table = NoteMarkdown.render("| Where |\n|--|\n| [here](lampbible://verse/43003016) |", fontSize: 16)
+        XCTAssertEqual(table.verseLinks.count, 1)
+        // A cell's break stays in its cell, and cells don't run together.
+        XCTAssertEqual(render("| A | B |\n|--|--|\n| Jesus<br>and them | Galilee |").string, "A | B\nJesus and them | Galilee")
+        // A quotation within one is set further in.
+        let quotes = NoteMarkdown.render("> Outer\n>\n> > Inner", fontSize: 16).text
+        func indent(_ words: String) -> CGFloat {
+            (quotes.attribute(.paragraphStyle, at: (quotes.string as NSString).range(of: words).location, effectiveRange: nil) as? NSParagraphStyle)?.headIndent ?? 0
+        }
+        XCTAssertGreaterThan(indent("Inner"), indent("Outer"))
+        // A link across a cell's break is one link.
+        XCTAssertEqual(NoteMarkdown.render("| A |\n|--|\n| [Acts<br>4:12](lampbible://verse/44004012) |", fontSize: 16).verseLinks.count, 1)
+        // A heading opening an item keeps the item's marker.
+        XCTAssertEqual(render("- # First").string, "•\tFirst")
+        // A footnote opening with a picture keeps its label.
+        XCTAssertTrue(render("[^1]: ![The well](media/pic)").string.hasPrefix("[^1]:"))
+    }
 }
 
 /// The note editor's page, borrowed and handed back as a person moves from

@@ -43,49 +43,245 @@ enum NoteMarkdown {
     ) -> Rendered {
         let out = NSMutableAttributedString()
         var links: [VerseLink] = []
-        let lines = markdown.components(separatedBy: "\n")
-        for (index, raw) in lines.enumerated() {
-            if let picture = raw.wholeMatch(of: #/\s*!\[([^\]]*)\]\(media/([^)\s]+)\)\s*/#) {
-                let attributes = baseAttributes(fontSize: fontSize, serif: serif)
-                if index > 0 { out.append(NSAttributedString(string: "\n", attributes: attributes)) }
-                out.append(self.picture(
-                    media[String(picture.2)], caption: String(picture.1), fontSize: fontSize, serif: serif
-                ))
+        // Read by core as the note editor reads it (LampProse, a note's
+        // options: each typed line its own), laid out a line at a time.
+        let lines = Self.lines(LampProse.blocks(markdown, options: .note))
+        for (index, line) in lines.enumerated() {
+            let base = baseAttributes(fontSize: fontSize, serif: serif)
+            switch line.content {
+            case .gap:
+                // A blank line between blocks, where the writer left one.
+                if index > 0 { out.append(NSAttributedString(string: "\n", attributes: base)) }
                 continue
+            case let .picture(path, caption):
+                if index > 0 { out.append(NSAttributedString(string: "\n", attributes: base)) }
+                let drawn = NSMutableAttributedString(
+                    attributedString: self.picture(mediaURL(path, in: media), caption: caption, fontSize: fontSize, serif: serif)
+                )
+                // In a quotation, set in with it.
+                if line.quoted {
+                    let shift = fontSize * CGFloat(line.quoteDepth)
+                    drawn.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: drawn.length)) { value, range, _ in
+                        guard let inset = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle else { return }
+                        inset.firstLineHeadIndent += shift
+                        inset.headIndent += shift
+                        drawn.addAttribute(.paragraphStyle, value: inset, range: range)
+                    }
+                }
+                out.append(drawn)
+                continue
+            default:
+                break
             }
-            let block = Block(raw)
-            let style = paragraphStyle(fontSize: fontSize, block: block, lineSpacing: lineSpacing)
+            let block = line.block
+            var style = paragraphStyle(fontSize: fontSize, block: block, lineSpacing: lineSpacing)
+            // Set in a step for each quotation holding it (a quote line's
+            // style takes the first), so a quotation within one shows.
+            let steps = line.quoteDepth - (block.kind == .quote ? 1 : 0)
+            if steps > 0, let inset = style.mutableCopy() as? NSMutableParagraphStyle {
+                let shift = fontSize * CGFloat(steps)
+                inset.firstLineHeadIndent += shift
+                inset.headIndent += shift
+                inset.tabStops = inset.tabStops.map { NSTextTab(textAlignment: $0.alignment, location: $0.location + shift) }
+                style = inset
+            }
             var attributes = baseAttributes(fontSize: block.fontSize(fontSize), bold: block.isHeading, serif: serif)
             attributes[.paragraphStyle] = style
-            if block.isQuote { attributes[.foregroundColor] = UIColor.secondaryLabel }
+            if line.quoted { attributes[.foregroundColor] = UIColor.secondaryLabel }
 
             if index > 0 { out.append(NSAttributedString(string: "\n", attributes: attributes)) }
             if let prefix = block.prefix {
                 out.append(NSAttributedString(string: prefix, attributes: attributes))
             }
-            if block.isRule {
+            switch line.content {
+            case .rule:
                 var rule = attributes
                 rule[.foregroundColor] = UIColor.separator
                 out.append(NSAttributedString(string: "———", attributes: rule))
                 continue
-            }
-            let line = inline(
-                block.text, attributes: attributes, fontSize: block.fontSize(fontSize), bold: block.isHeading, serif: serif,
-                linksTapped: linksTapped
-            )
-            for link in line.links {
-                links.append(VerseLink(
-                    range: NSRange(location: link.range.location + out.length, length: link.range.length),
-                    verseId: link.verseId, endVerseId: link.endVerseId
-                ))
-            }
-            out.append(line.text)
-            for picture in line.pictures {
-                out.append(NSAttributedString(string: "\n", attributes: baseAttributes(fontSize: fontSize, serif: serif)))
-                out.append(self.picture(media[picture.id], caption: picture.caption, fontSize: fontSize, serif: serif))
+            case let .plain(words, code):
+                var plain = attributes
+                if code { plain[.font] = font(size: block.fontSize(fontSize), bold: false, italic: false, code: true, serif: serif) }
+                out.append(NSAttributedString(string: words, attributes: plain))
+                continue
+            case let .text(text):
+                let drawn = inline(
+                    parsed: text.text, attributes: attributes, fontSize: block.fontSize(fontSize), bold: block.isHeading,
+                    serif: serif, linksTapped: linksTapped
+                )
+                for link in drawn.links {
+                    links.append(VerseLink(
+                        range: NSRange(location: link.range.location + out.length, length: link.range.length),
+                        verseId: link.verseId, endVerseId: link.endVerseId
+                    ))
+                }
+                out.append(drawn.text)
+                for picture in drawn.pictures {
+                    out.append(NSAttributedString(string: "\n", attributes: base))
+                    out.append(self.picture(media[picture.id], caption: picture.caption, fontSize: fontSize, serif: serif))
+                }
+            default:
+                break
             }
         }
         return Rendered(text: out, verseLinks: links)
+    }
+
+    /// Where a picture's `media/<id>` is on this device.
+    private static func mediaURL(_ path: String, in media: [String: URL]) -> URL? {
+        guard path.hasPrefix("media/") else { return nil }
+        return media[String(path.dropFirst("media/".count))]
+    }
+
+    // MARK: Lines
+
+    /// One line as it's drawn: how it's set (`block`), whether a quotation
+    /// holds it, and what's on it.
+    struct Line {
+        enum Content {
+            case text(LampProseText)
+            /// Words drawn as they are: code, a recording's caption, HTML.
+            case plain(String, code: Bool)
+            case picture(path: String, caption: String)
+            case rule
+            /// A blank line between blocks.
+            case gap
+        }
+        let block: Block
+        /// How many quotations hold it.
+        let quoteDepth: Int
+        var quoted: Bool { quoteDepth > 0 }
+        let content: Content
+    }
+
+    /// The blocks laid out a line at a time, as the note editor shows them:
+    /// a paragraph a line for each typed line, a list's items with their
+    /// markers (numbered from where the writer began) and their nesting, a
+    /// quotation's lines in it, and a blank line between blocks.
+    static func lines(_ blocks: [LampProseBlock]) -> [Line] {
+        var out: [Line] = []
+        func add(_ blocks: [LampProseBlock], depth: Int, quoted: Int, top: Bool) {
+            for (index, block) in blocks.enumerated() {
+                // A blank line between blocks, in a quotation or an item as
+                // at the top; a list nested under an item's words follows
+                // them straight on.
+                if index > 0, top || !isList(block) {
+                    out.append(Line(block: Block(kind: .text), quoteDepth: top ? 0 : quoted, content: .gap))
+                }
+                // A list item's second line on is set under its words.
+                let follow = Block(kind: depth > 0 ? .continued : (quoted > 0 ? .quote : .text), level: depth)
+                switch block {
+                case let .heading(level, text):
+                    out.append(Line(block: Block(kind: .heading(level)), quoteDepth: quoted, content: .text(text)))
+                case let .paragraph(text):
+                    for line in text.lines {
+                        // A picture on a line of its own is the picture,
+                        // its caption under it, as one alone in its block.
+                        if let picture = pictureAlone(line) {
+                            out.append(Line(block: follow, quoteDepth: quoted, content: .picture(path: picture.path, caption: picture.caption)))
+                        } else {
+                            out.append(Line(block: follow, quoteDepth: quoted, content: .text(line)))
+                        }
+                    }
+                case let .quote(inner):
+                    add(inner, depth: depth, quoted: quoted + 1, top: false)
+                case let .list(ordered, start, items):
+                    for (number, item) in items.enumerated() {
+                        let marker: Block.Kind = switch item.checked {
+                        case .some(true): .ordered("☑\u{FE0E}")
+                        case .some(false): .ordered("☐")
+                        case .none: ordered ? .ordered("\(start + number).") : .bullet
+                        }
+                        // The item's first line carries its marker; the rest of
+                        // it, and anything nested, follows under its words.
+                        let opening = out.count
+                        add(item.blocks, depth: depth + 1, quoted: quoted, top: false)
+                        if opening < out.count, case .text = out[opening].content,
+                           [.continued, .heading(1), .heading(2), .heading(3), .heading(4), .heading(5), .heading(6)].contains(out[opening].block.kind) {
+                            let first = out[opening]
+                            out[opening] = Line(block: Block(kind: marker, level: depth), quoteDepth: first.quoteDepth, content: first.content)
+                        } else {
+                            out.insert(Line(block: Block(kind: marker, level: depth), quoteDepth: quoted, content: .plain("", code: false)), at: opening)
+                        }
+                    }
+                case let .code(_, code):
+                    for line in code.components(separatedBy: "\n") {
+                        out.append(Line(block: follow, quoteDepth: quoted, content: .plain(line, code: true)))
+                    }
+                case let .table(headers, rows):
+                    // A row a line, its cells apart by a bar (which no
+                    // verse reference reads across), each as written in it:
+                    // emphasis kept, and a verse link to tap. A break within
+                    // a cell is a space, so the row stays a line.
+                    for row in [headers] + rows {
+                        var joined = AttributedString()
+                        for (column, cell) in row.enumerated() {
+                            if column > 0 { joined.append(AttributedString(" | ")) }
+                            var text = cell.text
+                            while let newline = text.characters.firstIndex(of: "\n") {
+                                let range = newline..<text.characters.index(after: newline)
+                                // The space takes the break's attributes, so a
+                                // link across it stays one link.
+                                var space = AttributedString(" ")
+                                space.mergeAttributes(text[range].runs.first?.attributes ?? AttributeContainer())
+                                text.replaceSubrange(range, with: space)
+                            }
+                            joined.append(text)
+                        }
+                        out.append(Line(block: follow, quoteDepth: quoted, content: .text(LampProseText(joined))))
+                    }
+                case let .html(html):
+                    for line in html.components(separatedBy: "\n") {
+                        out.append(Line(block: follow, quoteDepth: quoted, content: .plain(line, code: false)))
+                    }
+                case let .footnote(label, inner):
+                    // A note's own footnotes are kept outside its text; one
+                    // written in is shown as written.
+                    let opening = out.count
+                    add(inner, depth: depth, quoted: quoted, top: false)
+                    if opening < out.count, case let .text(first) = out[opening].content {
+                        var labelled = AttributedString("[^\(label)]: ")
+                        labelled.append(first.text)
+                        out[opening] = Line(block: out[opening].block, quoteDepth: out[opening].quoteDepth, content: .text(LampProseText(labelled)))
+                    } else {
+                        // Opening with a picture, or empty: the label on its own.
+                        out.insert(Line(block: follow, quoteDepth: quoted, content: .plain("[^\(label)]:", code: false)), at: opening)
+                    }
+                case let .audio(caption, _):
+                    // A recording, which a note here can't play: its words.
+                    out.append(Line(block: follow, quoteDepth: quoted, content: .plain(caption, code: false)))
+                case let .picture(caption, path):
+                    out.append(Line(block: follow, quoteDepth: quoted, content: .picture(path: path, caption: caption)))
+                case .rule:
+                    out.append(Line(block: Block(kind: .rule), quoteDepth: quoted, content: .rule))
+                }
+            }
+        }
+        add(blocks, depth: 0, quoted: 0, top: true)
+        return out
+    }
+
+    private static func isList(_ block: LampProseBlock) -> Bool {
+        if case .list = block { return true }
+        return false
+    }
+
+    /// The picture a line holds and nothing else (but space): one run
+    /// carrying its address, as core gives a picture.
+    private static func pictureAlone(_ line: LampProseText) -> (path: String, caption: String)? {
+        var picture: (path: String, caption: String)?
+        for run in line.text.runs {
+            let words = String(line.text[run.range].characters)
+            if let url = run.imageURL {
+                // A note's own picture, not one that's a link, which the
+                // inline path keeps to tap.
+                guard picture == nil, run.link == nil, url.relativeString.hasPrefix("media/") else { return nil }
+                picture = (url.relativeString, words == "\u{FFFC}" ? "" : words)
+            } else if !words.allSatisfy(\.isWhitespace) {
+                return nil
+            }
+        }
+        return picture
     }
 
     // MARK: Pictures
@@ -127,31 +323,16 @@ enum NoteMarkdown {
 
     /// What one line opens, and the text after its marker.
     struct Block {
-        enum Kind: Equatable { case text, heading(Int), bullet, ordered(String), quote, rule }
+        /// `continued`: a line under a list item's words, its marker on the
+        /// item's first.
+        enum Kind: Equatable { case text, heading(Int), bullet, ordered(String), quote, rule, continued }
         let kind: Kind
+        /// How deep in lists: the tree's own, not counted from indentation.
         let level: Int
-        let text: String
 
-        init(_ line: String) {
-            if let m = line.wholeMatch(of: #/(#{1,6})\s+(.*)/#) {
-                kind = .heading(m.1.count); level = 0; text = String(m.2)
-            } else if line.wholeMatch(of: #/\s*(?:-{3,}|\*{3,}|_{3,})\s*/#) != nil {
-                kind = .rule; level = 0; text = ""
-            } else if let m = line.wholeMatch(of: #/(\s*)[-*+]\s+(.*)/#) {
-                kind = .bullet; level = Block.level(m.1); text = String(m.2)
-            } else if let m = line.wholeMatch(of: #/(\s*)(\d{1,9}[.)])\s+(.*)/#) {
-                kind = .ordered(String(m.2)); level = Block.level(m.1); text = String(m.3)
-            } else if let m = line.wholeMatch(of: #/>\s?(.*)/#) {
-                kind = .quote; level = 0; text = String(m.1)
-            } else {
-                kind = .text; level = 0; text = line
-            }
-        }
-
-        /// Nesting from indentation: the editor indents a nested item by
-        /// at least two spaces.
-        private static func level(_ indent: Substring) -> Int {
-            min(indent.replacingOccurrences(of: "\t", with: "    ").count / 2, 6)
+        init(kind: Kind, level: Int = 0) {
+            self.kind = kind
+            self.level = min(level, 6)
         }
 
         var isHeading: Bool { if case .heading = kind { return true } else { return false } }
@@ -190,6 +371,10 @@ enum NoteMarkdown {
         case .quote:
             style.firstLineHeadIndent = fontSize
             style.headIndent = fontSize
+        case .continued:
+            let indent = CGFloat(block.level) * step
+            style.firstLineHeadIndent = indent
+            style.headIndent = indent
         default:
             break
         }
@@ -229,11 +414,12 @@ enum NoteMarkdown {
     /// Inline text already read, its runs carrying Foundation's attributes
     /// (`inlinePresentationIntent`, `link`, `imageURL`), as
     /// `AttributedString(markdown:)` and core's `LampProseText` both give it.
-    /// `footnoteNumbers` is what each footnote's label is shown as, where
-    /// the reader numbers them as the editor does.
+    /// `raisesFootnotes`: a footnote's marker drawn as its number, raised,
+    /// with `footnoteNumbers` saying what each label is shown as; otherwise
+    /// it's left as written, for the host to style (a note's are).
     static func inline(
         parsed: AttributedString, attributes: [NSAttributedString.Key: Any], fontSize: CGFloat, bold: Bool, serif: Bool,
-        linksTapped: Bool = false, footnoteNumbers: [String: String] = [:]
+        linksTapped: Bool = false, raisesFootnotes: Bool = false, footnoteNumbers: [String: String] = [:]
     ) -> (text: NSAttributedString, links: [InlineLink], pictures: [(id: String, caption: String)]) {
         let out = NSMutableAttributedString()
         var links: [InlineLink] = []
@@ -252,7 +438,7 @@ enum NoteMarkdown {
             if intent.contains(.strikethrough) {
                 runAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             }
-            if let label = run[LampFootnoteReferenceAttribute.self] {
+            if raisesFootnotes, let label = run[LampFootnoteReferenceAttribute.self] {
                 // A footnote's marker, `[^1]`, as the editor draws it: its
                 // number raised and small. Any review marker in it is kept.
                 runAttributes[.font] = font(size: fontSize * 0.7, bold: bold, italic: false, code: false, serif: serif)
@@ -293,10 +479,21 @@ enum NoteMarkdown {
                 runAttributes[.foregroundColor] = UIColor.lampLink
                 if linksTapped { runAttributes[.link] = url }
                 if let verse = verseLink(url) {
-                    links.append(InlineLink(
-                        range: NSRange(location: out.length, length: (piece as NSString).length),
-                        verseId: verse.start, endVerseId: verse.end
-                    ))
+                    let length = (piece as NSString).length
+                    // One link split into runs (by a break or its formatting)
+                    // is one link.
+                    if let last = links.last, NSMaxRange(last.range) == out.length,
+                       last.verseId == verse.start, last.endVerseId == verse.end {
+                        links[links.count - 1] = InlineLink(
+                            range: NSRange(location: last.range.location, length: last.range.length + length),
+                            verseId: verse.start, endVerseId: verse.end
+                        )
+                    } else {
+                        links.append(InlineLink(
+                            range: NSRange(location: out.length, length: length),
+                            verseId: verse.start, endVerseId: verse.end
+                        ))
+                    }
                 }
             }
             out.append(NSAttributedString(string: piece, attributes: runAttributes))
