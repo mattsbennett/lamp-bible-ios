@@ -27,6 +27,7 @@ import {
 import { AudioBlock } from './extensions/audio-block.js'
 import { findVerseReferences } from './verse-references.js'
 import { searchPattern, findMatches } from './search.js'
+import { traceDocument, placeByTrace, markdownRange, aroundLink } from './review-trace.js'
 import { MARK_START, MARK_END, MARK_POINT, PLACE_END, placeDigit, readMarkers, withoutSpans, withoutTypedChanges, restorableByBlock, nextMark } from './review-marks.js'
 import { ImageBlock } from './extensions/image-caption.js'
 
@@ -1061,123 +1062,18 @@ function markdownMarking(from, to) {
   if ((selected && from === to) || (!selected && inNumber)) return null
   to = Math.max(from, trailingBreaks(to))
   from = Math.min(from, to)
-  const linked = node => Boolean(node && link && link.isInSet(node.marks))
-  const formatting = node => (node && !isBreak(node) ? node.marks : [])
-  const unlinked = marks => marks.filter(mark => mark.type !== link)
-  // The formatting a marker could take, likeliest first: at a link's edge,
-  // what encloses the link (its own formatting its neighbours share); else
-  // what typing there would take; then either side's, both sides', or none.
-  // Which one the serializer writes back as the page's own text depends on
-  // the formatting round it, so each is tried, not reasoned out.
-  const choices = (doc, pos) => {
-    const $pos = doc.resolve(pos)
-    const before = $pos.nodeBefore ? $pos.nodeBefore.marks : []
-    const after = $pos.nodeAfter ? $pos.nodeAfter.marks : []
-    const found = []
-    if (linked($pos.nodeBefore) !== linked($pos.nodeAfter)) {
-      const range = getMarkRange($pos, link)
-      if (range) {
-        const $start = doc.resolve(range.from)
-        const $end = doc.resolve(range.to)
-        const around = [...formatting($start.nodeBefore), ...formatting($end.nodeAfter)]
-        const own = $start.nodeAfter ? $start.nodeAfter.marks : []
-        found.push(own.filter(mark => mark.isInSet(around)))
-      }
-    }
-    found.push($pos.marks(), before, after, before.filter(mark => mark.isInSet(after)), [])
-    const seen = []
-    return found.map(unlinked).filter(marks => {
-      if (seen.some(other => other.length === marks.length && marks.every(mark => mark.isInSet(other)))) return false
-      seen.push(marks)
-      return true
-    })
-  }
-  const serialize = doc => tidyMarkdown(editor.storage.markdown.serializer.serialize(doc))
-  const marking = (doc, offset, endMarks, startMarks) => {
-    const tr = new Transform(doc)
-    tr.insert(to - offset, editor.schema.text(MARK_END, endMarks))
-    tr.insert(from - offset, editor.schema.text(MARK_START, startMarks))
-    return serialize(tr.doc)
-  }
-  const unmarked = marked => marked.replace(/[\uE000-\uE002\uE010-\uE01A]/g, '')
-  const doc = editor.state.doc
-  const endChoices = choices(doc, to)
-  const startChoices = choices(doc, from)
-  // The first pair of choices whose Markdown in `part`, less its markers,
-  // is `part` written without them.
-  const choose = (part, offset, plainPart) => {
-    for (const endMarks of endChoices) {
-      for (const startMarks of startChoices) {
-        let marked
-        try {
-          marked = marking(part, offset, endMarks, startMarks)
-        } catch (e) {
-          continue
-        }
-        if (unmarked(marked) === plainPart) return { endMarks, startMarks, marked }
-      }
-    }
-    return null
-  }
-  // Tried on the blocks the markers fall in, which are all a marker can
-  // change the writing of: a long manuscript is written whole once more,
-  // not once for each try. Then the whole is checked. The top-level blocks,
-  // narrowed inside a list or a quotation to the item or paragraph holding
-  // both markers, in a copy of what holds it (a numbered list's copy starts
-  // at that item's number). Only the choice is made there, and the tries are
-  // judged against the part itself; the whole decides. A part that's still
-  // most of the document isn't worth it: the whole is tried straight away.
-  const plain = getMarkdownContent()
-  const first = doc.resolve(from).index(0)
-  const last = Math.min(doc.resolve(to).index(0), doc.childCount - 1)
-  let offset = 0
-  for (let index = 0; index < first; index++) offset += doc.child(index).nodeSize
-  let part
-  if (first === last) {
-    let block = doc.child(first)
-    let start = offset
-    const wrappers = []
-    while (['bulletList', 'orderedList', 'blockquote'].includes(block.type.name) && block.childCount > 1) {
-      let childStart = start + 1
-      let holding = -1
-      for (let index = 0; index < block.childCount; index++) {
-        const child = block.child(index)
-        const childEnd = childStart + child.nodeSize
-        if (from > childStart && to < childEnd) holding = index
-        if (holding >= 0) break
-        childStart = childEnd
-      }
-      if (holding < 0) break
-      wrappers.push(block.type.name === 'orderedList' && typeof block.attrs.start === 'number'
-        ? block.type.create({ ...block.attrs, start: block.attrs.start + holding }, block.content)
-        : block)
-      block = block.child(holding)
-      start = childStart
-    }
-    let built = block
-    for (const wrapper of [...wrappers].reverse()) built = wrapper.copy(Fragment.from(built))
-    part = doc.type.create(doc.attrs, Fragment.from(built))
-    offset = start - wrappers.length
-  } else {
-    const blocks = []
-    for (let index = first; index <= last; index++) blocks.push(doc.child(index))
-    part = doc.type.create(doc.attrs, Fragment.fromArray(blocks))
-  }
-  const chosen = part.content.size * 2 > doc.content.size ? null : choose(part, offset, serialize(part))
-  if (chosen) {
-    try {
-      const whole = marking(doc, 0, chosen.endMarks, chosen.startMarks)
-      if (unmarked(whole) === plain) return whole
-    } catch (e) {}
-  }
-  // Otherwise every pair, on the whole.
-  const found = choose(doc, 0, plain)
-  if (found) return found.marked
-  try {
-    return marking(doc, 0, endChoices[0] ?? [], startChoices[0] ?? [])
-  } catch (e) {
-    return marking(doc, 0, [], [])
-  }
+  // The page's Markdown with the range marked in it, from the trace: where
+  // each character of the document was written. A document whose writing
+  // could not be traced is not cleared from the page.
+  const trace = currentTrace()
+  if (!trace) return null
+  let range = markdownRange(trace, from, to)
+  if (!range) return null
+  // Widened to a link above: its syntax too.
+  const $from = editor.state.doc.resolve(from)
+  if (link && from < to && getMarkRange($from, link)?.from === from) range = aroundLink(trace.text, range)
+  const text = trace.text
+  return text.slice(0, range.from) + MARK_START + text.slice(range.from, range.to) + MARK_END + text.slice(range.to)
 }
 
 // Where two documents differ: from `start`, to `endA` in the first and
@@ -1383,346 +1279,22 @@ function wordsInPage(page, before, after, span) {
   return null
 }
 
-// Where the host's marks fall in the document shown, or null if they cannot
-// be placed exactly: the Markdown with markers, parsed as any document is,
-// the markers read and taken out, and what is left compared with the
-// document. Anything else, a different document or markers that do not
-// pair, draws nothing.
-function placeReviewMarks(markedMarkdown) {
-  const html = editor.storage.markdown.parser.parse(resolveForEditor(markersFitForFootnotes(markedMarkdown)))
-  const doc = createDocument(html, editor.schema, editor.options.parseOptions)
-  const pieces = []
-  doc.descendants((node, pos) => {
-    if (node.isText) pieces.push({ pos, text: node.text })
-  })
-  let read
+// Where each character of the document is written in the page's Markdown
+// (review-trace.js), kept until the document changes: built when marks are
+// drawn or cleared, never on typing. Null where the writing could not be
+// traced, which the marker paths answer for instead.
+let traceKept = null
+function currentTrace() {
+  const doc = editor.state.doc
+  if (traceKept && traceKept.doc === doc) return traceKept.trace
+  let trace = null
   try {
-    read = readMarkers(pieces)
+    trace = traceDocument(editor, doc, tidyMarkdown)
   } catch (e) {
-    return null
+    trace = null
   }
-  if (!read) return null
-  const tr = new Transform(doc)
-  for (const pos of [...read.positions].reverse()) tr.delete(pos, pos + 1)
-  // A footnote block keeps what each note was read from, to write it back
-  // as it was; read from the marked copy, that holds the markers its words
-  // had, which the page's own block never does.
-  const kept = []
-  tr.doc.descendants((node, pos) => {
-    if (node.type.name === 'footnoteDefinition' && ENCODED_MARKER.test(node.attrs.sources)) kept.push({ node, pos })
-    return node.type.name !== 'footnoteDefinition'
-  })
-  for (const { node, pos } of kept) {
-    tr.setNodeMarkup(pos, undefined, { ...node.attrs, sources: node.attrs.sources.replace(ENCODED_MARKERS, '') })
-  }
-  if (!withoutTrailingEmpty(tr.doc).eq(withoutTrailingEmpty(editor.state.doc))) return null
-  // Equal but for empty paragraphs at the end, a marker among those may
-  // stand past the end of the page's own document.
-  const size = editor.state.doc.content.size
-  return read.ranges.every(range => range.to <= size) ? read.ranges : null
-}
-
-// The marks in the host's Markdown, each its markers and the place written
-// after its start: a mark the footnotes part into pieces keeps one place, so
-// its pieces go together. A mark with no place is known by where it starts.
-function marksIn(marked) {
-  const tokens = []
-  let open = null
-  for (let i = 0; i < marked.length; i++) {
-    const character = marked[i]
-    if (character !== MARK_START && character !== MARK_END && character !== MARK_POINT) continue
-    let end = i + 1
-    while (end < marked.length && placeDigit(marked[end]) !== null) end++
-    const placed = end > i + 1 && marked[end] === PLACE_END
-    const place = placed ? Number([...marked.slice(i + 1, end)].map(placeDigit).join('')) : null
-    const length = (placed ? end + 1 : i + 1) - i
-    if (character === MARK_END) {
-      tokens.push({ at: i, length: 1, key: open })
-      open = null
-    } else {
-      const key = place !== null ? place : `at ${i}`
-      tokens.push({ at: i, length, key })
-      if (character === MARK_START) open = key
-    }
-    i += length - 1
-  }
-  return tokens
-}
-
-// `marked` with only the markers of the marks in `keys`.
-function keepingMarks(marked, tokens, keys) {
-  let result = ''
-  let at = 0
-  for (const token of tokens) {
-    if (keys.has(token.key)) continue
-    result += marked.slice(at, token.at)
-    at = token.at + token.length
-  }
-  return result + marked.slice(at)
-}
-
-// The marks placed a group at a time, when the whole set will not place.
-// The markers go through the Markdown's syntax, and somewhere among the
-// writings people make is syntax nobody foresaw, where one marker turns
-// the document into another: placed all or nothing, that one mark would
-// hide every mark in the writing. Halved, and halved again, each group that
-// places is drawn and only what cannot is left out.
-//
-// Null where the document itself, with no marks at all, is not the page's:
-// then no group can place, and the host is behind the page. Bounded: each
-// try parses the whole writing, so past the budget what has not placed is
-// left out too, and said to be.
-function placeReviewMarksInGroups(marked, budget = 40) {
-  const tokens = marksIn(marked)
-  if (placeReviewMarks(keepingMarks(marked, tokens, new Set())) === null) return null
-  const keys = [...new Set(tokens.map(token => token.key))]
-  const ranges = []
-  let tries = 0
-  const place = group => {
-    if (group.length === 0 || tries >= budget) return
-    tries++
-    const found = placeReviewMarks(keepingMarks(marked, tokens, new Set(group)))
-    if (found !== null) {
-      ranges.push(...found)
-      return
-    }
-    if (group.length === 1) return
-    const half = group.length >> 1
-    place(group.slice(0, half))
-    place(group.slice(half))
-  }
-  const half = keys.length >> 1
-  place(keys.slice(0, half))
-  place(keys.slice(half))
-  ranges.sort((a, b) => a.from - b.from || a.to - b.to)
-  return { ranges }
-}
-
-// How many of the marks sent were not drawn: those no group placed, and
-// those the Markdown swallowed without refusing (a marker inside something
-// the page does not show). Known by place; marks sent with none can only be
-// counted, not told apart.
-function unplacedMarks(marked, placed) {
-  const sent = new Set(marksIn(marked).map(token => token.key))
-  const drawn = new Set(placed.map(range => range.place).filter(place => place !== undefined))
-  let missing = 0
-  let unnumbered = 0
-  for (const key of sent) {
-    if (typeof key === 'number') {
-      if (!drawn.has(key)) missing++
-    } else {
-      unnumbered++
-    }
-  }
-  const drawnUnnumbered = placed.filter(range => range.place === undefined).length
-  return missing + Math.max(0, unnumbered - drawnUnnumbered)
-}
-
-// The review markers as `encodeURIComponent` writes them: the start, end and
-// point markers and the digits and close of a place, U+E000 to U+E01A.
-const ENCODED_MARKERS = /%EE%80%(?:8[0-2]|9[0-9A])/g
-const ENCODED_MARKER = /%EE%80%(?:8[0-2]|9[0-9A])/
-
-// The marked Markdown made fit for the footnotes. The page shows a run of
-// notes as one block, in the order they are referred to, and reads a line as
-// a note only if it begins with its `[^label]:`. So no marker may stand
-// before a label: what begins there is moved past it, to the note's first
-// word, and what ends there is moved back to the end of the last line with
-// words on it, never onto a blank line, which would part the run. And no
-// mark may run from one note into the next, or from the body into a note:
-// shown in another order, it would cover notes between that nobody
-// changed. Such a mark is ended where its note or paragraph ends and begun
-// again, under the same place, where the next note's words begin.
-function markersFitForFootnotes(marked) {
-  const lines = marked.split('\n')
-  const bare = text => text.replace(/[\uE000-\uE01A]/g, '')
-  const lastWritten = i => {
-    let j = i - 1
-    while (j >= 0 && bare(lines[j]).trim() === '') j--
-    return j
-  }
-  // A note's label with the markers either side of it, and among the spaces
-  // before it and after its colon.
-  const NOTE = /^((?:[ \t]|[\uE000-\uE01A])*)(\[\^[^\]\s]+\]:)((?:[ \t]|[\uE000-\uE01A])*)/
-  let open = null
-  let inNotes = false
-  // What began on a line with no words: carried to the next one's words.
-  let carried = ''
-  // Inside a code fence, whose text holds markers as they are.
-  let fence = null
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    const fenceMark = bare(line).match(/^\s{0,3}(`{3,}|~{3,})/)
-    if (fence === null && fenceMark) {
-      // An opening fence: what was carried waits for its first line of code,
-      // and a mark out of the notes is ended with the last note, as before
-      // any other body.
-      if (inNotes && open !== null && !carried.startsWith(MARK_START)) {
-        const back = lastWritten(i)
-        if (back >= 0) lines[back] = endingWith(lines[back], MARK_END)
-        carried = open + carried
-      }
-      inNotes = false
-      fence = fenceMark[1][0]
-      open = openAtEnd(line, open)
-      continue
-    }
-    if (fence !== null) {
-      if (fenceMark && fenceMark[1][0] === fence) {
-        // The closing fence: what is still carried goes on past it.
-        fence = null
-      } else if (carried) {
-        lines[i] = carried + line
-        carried = ''
-      }
-      open = openAtEnd(lines[i], open)
-      continue
-    }
-    if (bare(line).trim() === '') {
-      // A marker alone on a blank line, or before an otherwise blank
-      // line's spaces, would make it a paragraph and part a run of notes:
-      // what ends there ends with the last line with words, what begins
-      // there begins with the next.
-      const markers = line.replace(/[^\uE000-\uE01A]/g, '')
-      if (markers) {
-        let closes = markers.match(/^\uE001*/)[0]
-        let rest = markers.slice(closes.length)
-        // A start carried from a blank line and ended on one marks nothing.
-        if (closes && carried.includes(MARK_START)) {
-          carried = carried.replace(/\uE000[\uE010-\uE01A]*$/, '')
-          closes = closes.slice(MARK_END.length)
-        }
-        const back = lastWritten(i)
-        if (closes && back >= 0) lines[back] = endingWith(lines[back], closes)
-        carried += closes && back < 0 ? closes + rest : rest
-        lines[i] = bare(line)
-      }
-      open = openAtEnd(markers, open)
-      continue
-    }
-    const note = line.match(NOTE)
-    const isNote = note !== null && bare(note[1]).length <= 3
-    const isContinuation = inNotes && !isNote && /^(?: {4}|\t)/.test(bare(line))
-    if (isNote) {
-      const [whole, before, label, after] = note
-      const markers = carried + (before + after).replace(/[ \t]/g, '')
-      carried = ''
-      const back = lastWritten(i)
-      const closes = markers.match(/^\uE001*/)[0]
-      let lead = markers
-      if (closes && back >= 0) {
-        lines[back] = endingWith(lines[back], closes)
-        lead = markers.slice(closes.length)
-        open = null
-      }
-      let reopened = ''
-      if (open !== null && back >= 0 && !lead.startsWith(MARK_START)) {
-        lines[back] = endingWith(lines[back], MARK_END)
-        reopened = open
-      }
-      lines[i] = bare(before) + label + bare(after) + reopened + lead + line.slice(whole.length)
-      inNotes = true
-    } else if (isContinuation) {
-      // Markers among a later line's indent would end the note there.
-      const indent = line.match(/^(?:[ \t]|[\uE000-\uE01A])*/)[0]
-      lines[i] = bare(indent) + carried + indent.replace(/[ \t]/g, '') + line.slice(indent.length)
-      carried = ''
-    } else {
-      // Out of the notes and back into the body: a mark still open is
-      // ended with the last note and begun again at the body's words.
-      let markers = carried
-      if (inNotes && open !== null && !carried.startsWith(MARK_START)) {
-        const back = lastWritten(i)
-        if (back >= 0) lines[back] = endingWith(lines[back], MARK_END)
-        markers = open + carried
-      }
-      carried = ''
-      if (markers) {
-        const placed = beginningWith(lines[i], markers)
-        if (placed === null) carried = markers
-        else lines[i] = placed
-      }
-      inNotes = false
-    }
-    open = openAtEnd(lines[i], open)
-  }
-  // Begun on blank lines at the very end, with no words after: put back as
-  // it was. Moved to the last words, a clear there would be read as of
-  // them; left, the page shows what it can say it shows, or nothing.
-  if (carried) lines.push(carried)
-  return lines.join('\n')
-}
-
-// `line` with `markers` at the end of its words: inside a run of `*`, `_` or
-// `~` that can close emphasis there, since a closing star after a full stop
-// and before a marker no longer closes anything, and the line would lose its
-// italics. A run closes only right after a word, unescaped; one that is
-// written out as text stays outside the highlight, which is the lesser harm.
-function endingWith(line, markers) {
-  const escaped = at => {
-    let count = 0
-    for (let j = at - 1; j >= 0 && line[j] === '\\'; j--) count++
-    return count % 2 === 1
-  }
-  let at = line.length - line.match(/[*_~]*\s*$/)[0].length
-  while (at < line.length && '*_~'.includes(line[at]) && (escaped(at) || at === 0 || /\s/.test(line[at - 1]))) at++
-  return line.slice(0, at) + markers + line.slice(at)
-}
-
-// `line` with `markers` where its words begin: after a heading's hashes and
-// any nesting of quotes and list items, which they would hide; inside a
-// table's first cell. Null for a code fence, which cannot have one before
-// it: they go to the first line of code instead, whose text holds them.
-function beginningWith(line, markers) {
-  const syntax = line.match(/^(?:[ \t]{0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+|\d{1,9}[.)][ \t]+))*[ \t]*/)[0]
-  const rest = line.slice(syntax.length)
-  if (/^(?:```|~~~)/.test(rest)) return null
-  const cell = rest.match(/^\|[ \t]*/)
-  if (cell) return syntax + cell[0] + pastOpeners(rest.slice(cell[0].length), markers)
-  // A mark that ended just where the body begins was the notes' alone.
-  if (markers.startsWith(MARK_START) && rest.startsWith(MARK_END)) {
-    return syntax + markers.replace(/^\uE000[\uE010-\uE01A]*/, '') + rest.slice(MARK_END.length)
-  }
-  return syntax + pastOpeners(rest, markers)
-}
-
-// `text` with `markers` after any run of `*`, `_` or `~` it opens with:
-// before it, a marker would stop the run opening anything.
-function pastOpeners(text, markers) {
-  const opener = text.match(/^[*_~]+(?=\S)/)
-  const at = opener ? opener[0].length : 0
-  return text.slice(0, at) + markers + text.slice(at)
-}
-
-// The start marker, with its place, of a mark still open at the end of
-// `line`, given what was open at its start; null if none is.
-function openAtEnd(line, open) {
-  for (let i = 0; i < line.length; i++) {
-    if (line[i] === MARK_END) open = null
-    else if (line[i] === MARK_START) {
-      let j = i + 1
-      while (j < line.length && line[j] >= '\uE010' && line[j] <= '\uE019') j++
-      if (j < line.length && line[j] === '\uE01A') j++
-      open = line.slice(i, j)
-    }
-  }
-  return open
-}
-
-// A document without the empty paragraphs at its end. The page keeps one
-// after a last block that is not a paragraph — a heading, a quote, a list,
-// a rule, the footnotes — so there is somewhere to type below it, and
-// Markdown writes nothing for it, so a copy parsed from the Markdown never
-// has one. Compared with them, every mark in a writing that ends that way
-// was refused. Only the end is cut, so no position before it moves.
-function withoutTrailingEmpty(doc) {
-  let content = doc.content
-  while (content.childCount > 1) {
-    const last = content.lastChild
-    if (last.type.name !== 'paragraph' || last.content.size !== 0) break
-    content = content.cut(0, content.size - last.nodeSize)
-  }
-  return content === doc.content ? doc : doc.copy(content)
+  traceKept = { doc, trace }
+  return trace
 }
 
 // What a copy puts on the clipboard as plain text: the words of what is
@@ -2190,26 +1762,23 @@ window.editorAPI = {
   setReviewMarks(markedMarkdown, changes) {
     if (!editor) return false
     reviewMarksShown = Boolean(markedMarkdown)
-    let placed = markedMarkdown ? placeReviewMarks(markedMarkdown) : []
+    let placed = []
     let unshown = 0
-    let grouped = false
+    // Placed by where the page writes each character of its document; see
+    // review-trace.js. False where the page holds another text, or its
+    // writing could not be traced.
     if (markedMarkdown) {
-      if (placed === null) {
-        const groups = placeReviewMarksInGroups(markedMarkdown)
-        if (groups === null) return false
-        placed = groups.ranges
-        grouped = true
-      }
-      // Counted in the text as fitted, which drops a mark that marks
-      // nothing, begun and ended on blank lines.
-      unshown = unplacedMarks(markersFitForFootnotes(markedMarkdown), placed)
+      const byTrace = placeByTrace(markedMarkdown, currentTrace())
+      if (!byTrace) return false
+      placed = byTrace.ranges
+      unshown = byTrace.unshown
     }
     closeReviewPopover()
     const ranges = placed.map(({ place, ...range }, index) => {
       // A mark sent with no place is paired by its order, which a mark
-      // left out of the groups has moved: then it is offered no restore,
-      // rather than another mark's.
-      const at = place ?? (grouped ? undefined : index)
+      // left out has moved: then it is offered no restore, rather than
+      // another mark's.
+      const at = place ?? (unshown > 0 ? undefined : index)
       const change = Array.isArray(changes) && at !== undefined ? changes[at] : null
       if (!change || typeof change.id !== 'string' || typeof change.now !== 'string') return range
       if (change.reason === 'edited') return { ...range, change: { id: change.id, now: change.now, reason: 'edited' } }

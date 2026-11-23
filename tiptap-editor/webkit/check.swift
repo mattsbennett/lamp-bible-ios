@@ -1679,15 +1679,17 @@ func reviewMarksInGroups() {
             const marks = () => Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|');
             const text = 'One two three [link](https://example.com) four.';
             rv.load(text);
-            // The second mark's markers fall in the link's address.
+            // The second mark is a change to the link's address alone,
+            // which the page shows no text for: drawn as a point beside it.
             const partly = rv.setReviewMarks('One \\uE000\\uE010\\uE01Atwo\\uE001 three [link](https://ex\\uE000\\uE011\\uE01Aample.com\\uE001) four.', []);
-            const partlyShown = marks();
-            // Unnumbered, the first left out: the second is not offered the
-            // first's restore.
+            const partlyShown = marks() + '+' + document.querySelectorAll('.review-point').length;
+            // Unnumbered, the first left out (a point before the first
+            // words, across a blank line from them, which has nowhere to
+            // stand): the second is not offered the first's restore.
             rv.setMode('edit');
             rv.load(text);
-            const unnumbered = rv.setReviewMarks('One two three [link](https://ex\\uE000ample.com\\uE001) \\uE000four\\uE001.',
-                [{ id: 'first', now: 'example.com', before: 'old.com' }, { id: 'second', now: 'four', before: 'five' }]);
+            const unnumbered = rv.setReviewMarks('\\uE002\\n\\nOne two three [link](https://example.com) \\uE000four\\uE001.',
+                [{ id: 'first', now: '', before: 'old' }, { id: 'second', now: 'four', before: 'five' }]);
             const offered = document.querySelectorAll('.review-restore').length;
             rv.setMode('read');
             rv.load(text);
@@ -1714,17 +1716,19 @@ func reviewMarksInGroups() {
         let parts = r as? [Any] ?? []
         guard parts.count == 8 else { check(false, "the safety net ran (read: \(String(describing: r)))"); reviewMarks(); return }
         let partly = parts[0] as? [String: Any]
-        check(partly?["drawn"] as? Int == 1 && partly?["unshown"] as? Int == 1 && parts[1] as? String == "two",
-              "one mark the page cannot hold leaves the others drawn, and is counted (read: \(String(describing: parts[0])), \(String(describing: parts[1])))")
+        check(parts[0] as? Bool == true && parts[1] as? String == "two+1",
+              "a change to a link's address alone is drawn as a point beside it, and the other mark too (read: \(String(describing: parts[0])), \(String(describing: parts[1])))")
+        _ = partly
         check((parts[6] as? [String: Any])?["unshown"] as? Int == 1 && parts[7] as? Int == 0,
               "an unnumbered mark left over is offered no other mark's restore (read: \(String(describing: parts[6])), \(String(describing: parts[7])) offered)")
         check(parts[2] as? Bool == false, "another document is still refused whole (read: \(String(describing: parts[2])))")
         let long = parts[3] as? [String: Any]
         let took = parts[5] as? Int ?? -1
-        print("  1,300 marks with one unplaceable took \(took) ms")
-        check(long?["unshown"] as? Int == 1 && parts[4] as? Int == 1299,
-              "in a long writing, one bad mark loses only itself (read: \(String(describing: parts[3])), \(String(describing: parts[4])) drawn)")
-        check(took >= 0 && took < 8000, "and the groups take seconds at most (read: \(took) ms)")
+        print("  1,300 marks took \(took) ms")
+        check(parts[3] as? Bool == true && parts[4] as? Int == 1299,
+              "in a long writing, every mark is drawn, the address change as a point (read: \(String(describing: parts[3])), \(String(describing: parts[4])) drawn)")
+        check(took >= 0 && took < 1000, "and drawing 1,300 marks takes well under a second (read: \(took) ms)")
+        _ = long
         savesAfterATrailingBreak()
     }
 }
