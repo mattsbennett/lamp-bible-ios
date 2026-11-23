@@ -1054,9 +1054,10 @@ function markdownMarking(from, to) {
   // go to the note's first word. A selection of nothing but the number
   // selects no word, and is no clear of the word after it.
   const selected = from < to
+  const inNumber = pastNoteNumber(from) !== from
   from = pastNoteNumber(from)
   to = Math.max(from, pastNoteNumber(to))
-  if (selected && from === to) return null
+  if ((selected && from === to) || (!selected && inNumber)) return null
   to = Math.max(from, trailingBreaks(to))
   from = Math.min(from, to)
   const linked = node => Boolean(node && link && link.isInSet(node.marks))
@@ -1450,8 +1451,36 @@ function markersFitForFootnotes(marked) {
   let inNotes = false
   // What began on a line with no words: carried to the next one's words.
   let carried = ''
+  // Inside a code fence, whose text holds markers as they are.
+  let fence = null
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
+    const fenceMark = bare(line).match(/^\s{0,3}(`{3,}|~{3,})/)
+    if (fence === null && fenceMark) {
+      // An opening fence: what was carried waits for its first line of code,
+      // and a mark out of the notes is ended with the last note, as before
+      // any other body.
+      if (inNotes && open !== null && !carried.startsWith(MARK_START)) {
+        const back = lastWritten(i)
+        if (back >= 0) lines[back] = endingWith(lines[back], MARK_END)
+        carried = open + carried
+      }
+      inNotes = false
+      fence = fenceMark[1][0]
+      open = openAtEnd(line, open)
+      continue
+    }
+    if (fence !== null) {
+      if (fenceMark && fenceMark[1][0] === fence) {
+        // The closing fence: what is still carried goes on past it.
+        fence = null
+      } else if (carried) {
+        lines[i] = carried + line
+        carried = ''
+      }
+      open = openAtEnd(lines[i], open)
+      continue
+    }
     if (bare(line).trim() === '') {
       // A marker alone on a blank line, or before an otherwise blank
       // line's spaces, would make it a paragraph and part a run of notes:
@@ -1459,10 +1488,16 @@ function markersFitForFootnotes(marked) {
       // there begins with the next.
       const markers = line.replace(/[^\uE000-\uE01A]/g, '')
       if (markers) {
-        const closes = markers.match(/^\uE001*/)[0]
+        let closes = markers.match(/^\uE001*/)[0]
+        let rest = markers.slice(closes.length)
+        // A start carried from a blank line and ended on one marks nothing.
+        if (closes && carried.includes(MARK_START)) {
+          carried = carried.replace(/\uE000[\uE010-\uE01A]*$/, '')
+          closes = closes.slice(MARK_END.length)
+        }
         const back = lastWritten(i)
         if (closes && back >= 0) lines[back] = endingWith(lines[back], closes)
-        carried += closes && back >= 0 ? markers.slice(closes.length) : markers
+        carried += closes && back < 0 ? closes + rest : rest
         lines[i] = bare(line)
       }
       open = openAtEnd(markers, open)
@@ -1514,12 +1549,10 @@ function markersFitForFootnotes(marked) {
     }
     open = openAtEnd(lines[i], open)
   }
-  // Begun on blank lines at the very end, with no words after: a place
-  // words were taken out of the end, at the end of the last words.
-  if (carried) {
-    const back = lastWritten(lines.length)
-    if (back >= 0) lines[back] = endingWith(lines[back], carried)
-  }
+  // Begun on blank lines at the very end, with no words after: put back as
+  // it was. Moved to the last words, a clear there would be read as of
+  // them; left, the page shows what it can say it shows, or nothing.
+  if (carried) lines.push(carried)
   return lines.join('\n')
 }
 
@@ -1548,12 +1581,20 @@ function beginningWith(line, markers) {
   const rest = line.slice(syntax.length)
   if (/^(?:```|~~~)/.test(rest)) return null
   const cell = rest.match(/^\|[ \t]*/)
-  if (cell) return syntax + cell[0] + markers + rest.slice(cell[0].length)
+  if (cell) return syntax + cell[0] + pastOpeners(rest.slice(cell[0].length), markers)
   // A mark that ended just where the body begins was the notes' alone.
   if (markers.startsWith(MARK_START) && rest.startsWith(MARK_END)) {
     return syntax + markers.replace(/^\uE000[\uE010-\uE01A]*/, '') + rest.slice(MARK_END.length)
   }
-  return syntax + markers + rest
+  return syntax + pastOpeners(rest, markers)
+}
+
+// `text` with `markers` after any run of `*`, `_` or `~` it opens with:
+// before it, a marker would stop the run opening anything.
+function pastOpeners(text, markers) {
+  const opener = text.match(/^[*_~]+(?=\S)/)
+  const at = opener ? opener[0].length : 0
+  return text.slice(0, at) + markers + text.slice(at)
 }
 
 // The start marker, with its place, of a mark still open at the end of

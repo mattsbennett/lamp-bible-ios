@@ -950,8 +950,9 @@ func reviewMarksInFootnotes() {
             const afterLabel = rv.setReviewMarks('Body[^1].\\n\\n*An italic line.*\\n\\n[^1]: A \\uE000note.\\n[^2]:\\uE001 Another.');
             drawn.afterALabel = [afterLabel, Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|')];
             rv.load('Text.\\n\\n');
-            // A point among the empty paragraphs at the end is placed at the
-            // end of the last words, not past the page's document.
+            // A point among the empty paragraphs at the end is not placed
+            // past the page's document, nor moved where a clear would take
+            // it for the last words.
             drawn.pastTheEnd = [rv.setReviewMarks('Text.\\n\\n\\uE002'), String(document.querySelectorAll('.review-point').length)];
             rv.load(text);
             const kept = rv.getContent();
@@ -970,7 +971,7 @@ func reviewMarksInFootnotes() {
         check(placed("overABlankLine") && shown("overABlankLine") == "note.", "an end before a note's label, past a blank line, keeps the notes together (read: \(String(describing: drawn["overABlankLine"])))")
         check(placed("fromItalics") && shown("fromItalics") == "italic line.|A", "a mark from an italic line into the notes keeps the italics (read: \(String(describing: drawn["fromItalics"])))")
         check(placed("afterALabel") && shown("afterALabel") == "note.", "an end just after a note's label ends with the note before (read: \(String(describing: drawn["afterALabel"])))")
-        check(drawn["pastTheEnd"]?.first as? Bool == true && shown("pastTheEnd") == "1", "a point past the last words is placed at their end (read: \(String(describing: drawn["pastTheEnd"])))")
+        check(drawn["pastTheEnd"]?.first as? Bool == false, "a point past the last words is not placed, nor moved onto them (read: \(String(describing: drawn["pastTheEnd"])))")
         check(parts.last as? String == "Body[^1] and more[^2].\n\n[^1]: A first note.\n[^2]: A second note.", "and the writing is unchanged (read: \(String(describing: parts.last)))")
         reviewMarksLeavingNotes()
     }
@@ -1567,6 +1568,58 @@ func reviewMarksRareSyntax() {
         after(150) {
             js("window.editorAPI.reviewMarkdownForSelection()") { r in
                 check(r == nil || r is NSNull, "a selection of nothing but a note's number clears nothing (read: \(String(describing: r)))")
+                reviewMarksBesideEmphasis()
+            }
+        }
+    }
+}
+
+// Codex's fourth round: a marker carried onto emphasis or into a table cell
+// that opens with it, a point in an empty code block, a mark begun and
+// ended on blank lines, and a caret inside a note's number.
+func reviewMarksBesideEmphasis() {
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const marks = () => Array.from(document.querySelectorAll('.review-mark')).map(e => e.textContent).join('|');
+            const points = () => document.querySelectorAll('.review-point').length;
+            const drawn = {};
+            rv.setMode('read');
+            rv.load('First.\\n\\n_Quoted words._');
+            drawn.beforeItalics = [rv.setReviewMarks('First.\\n\\uE002\\n_Quoted words._'), String(points())];
+            rv.load('One[^a].\\n\\n[^a]: Note a.\\n\\n| _A_ | B |\\n|---|---|\\n| 1 | 2 |');
+            drawn.intoAnItalicCell = [rv.setReviewMarks('One[^a].\\n\\n[^a]: Note \\uE000a.\\n\\n| _A\\uE001_ | B |\\n|---|---|\\n| 1 | 2 |'), marks()];
+            rv.load('Before.\\n\\n~~~\\n\\n~~~\\n\\nAfter.');
+            drawn.emptyFence = [rv.setReviewMarks('Before.\\n\\n~~~\\n\\uE002\\n~~~\\n\\nAfter.'), String(points())];
+            rv.load('First.\\n\\nLast.');
+            drawn.emptyMark = [rv.setReviewMarks('First.\\n\\uE000\\n\\uE001\\nLast.'), marks()];
+            rv.setMode('edit');
+            const notes = 'Body[^1] and more[^2].\\n\\n[^1]: A first note.\\n[^2]: Another.';
+            rv.load(notes);
+            rv.setReviewMarks('Body[^1] and more[^2].\\n\\n[^1]: \\uE000A\\uE001 first note.\\n[^2]: Another.');
+            const block = document.querySelector('.footnote-definition');
+            const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+            let node = walker.nextNode();
+            while (node && !node.textContent.includes('[1]')) node = walker.nextNode();
+            const range = document.createRange();
+            const at = node ? node.textContent.indexOf('[1]') + 1 : 0;
+            if (node) { range.setStart(node, at); range.setEnd(node, at); }
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return drawn
+        })()
+        """) { r in
+        let drawn = r as? [String: [Any]] ?? [:]
+        func shown(_ name: String) -> String? { drawn[name]?.last as? String }
+        func placed(_ name: String) -> Bool { drawn[name]?.first as? Bool == true }
+        check(placed("beforeItalics") && shown("beforeItalics") == "1", "a point before an italic paragraph leaves it italic (read: \(String(describing: drawn["beforeItalics"])))")
+        check(placed("intoAnItalicCell") && shown("intoAnItalicCell") == "a.|A", "a mark out of the notes into a table cell that opens in italics (read: \(String(describing: drawn["intoAnItalicCell"])))")
+        check(placed("emptyFence") && shown("emptyFence") == "1", "a point in an empty code block stays there (read: \(String(describing: drawn["emptyFence"])))")
+        check(placed("emptyMark") && shown("emptyMark") == "", "a mark begun and ended on blank lines marks nothing (read: \(String(describing: drawn["emptyMark"])))")
+        after(150) {
+            js("window.editorAPI.reviewMarkdownForSelection()") { r in
+                check(r == nil || r is NSNull, "a caret inside a note's number clears nothing (read: \(String(describing: r)))")
                 reviewMarks()
             }
         }
