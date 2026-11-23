@@ -201,15 +201,20 @@ export function noteDefinitions(text) {
     lines.push({ at, line })
     at += line.length + 1
   }
-  // Not inside a code fence, where `[^x]: value` is text.
+  // Not inside a code fence, where `[^x]: value` is text. A fence closes
+  // on a run of its own character at least as long as the one that opened
+  // it, with nothing after: a shorter run inside it is code.
   let fence = null
   for (let i = 0; i < lines.length; i++) {
-    const marker = lines[i].line.match(/^ {0,3}(`{3,}|~{3,})/)
-    if (marker && (fence === null || marker[1][0] === fence)) {
-      fence = fence === null ? marker[1][0] : null
+    const marker = lines[i].line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
+    if (fence === null && marker && !(marker[1][0] === '`' && marker[2].includes('`'))) {
+      fence = marker[1]
       continue
     }
-    if (fence !== null) continue
+    if (fence !== null) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && marker[2].trim() === '') fence = null
+      continue
+    }
     const found = lines[i].line.match(/^ {0,3}\[\^([^\]\s]+)\]:[ \t]*/)
     if (!found) continue
     const start = lines[i].at

@@ -804,11 +804,19 @@ function reviewDecorationList(doc, ranges, current = null, region = null) {
   }
   for (const wash of washes) {
     // A block with no text of its own (a rule, an image, an audio block):
-    // the block itself, since there are no words to wash.
-    const node = doc.nodeAt(wash.from)
-    if (node && node.isBlock && node.isLeaf && wash.to === wash.from + node.nodeSize) {
-      decorations.push(Decoration.node(wash.from, wash.to, { class: 'review-mark-block' }))
-    } else {
+    // the block itself, since there are no words to wash. Each one the
+    // wash holds whole: a change that put in two rules is one wash, and
+    // drawn inline it reaches no text and shows nothing.
+    let leaves = 0
+    doc.nodesBetween(wash.from, wash.to, (node, pos) => {
+      if (!(node.isBlock && node.isLeaf)) return true
+      if (pos >= wash.from && pos + node.nodeSize <= wash.to) {
+        decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: 'review-mark-block' }))
+        leaves += node.nodeSize
+      }
+      return false
+    })
+    if (leaves < wash.to - wash.from) {
       decorations.push(Decoration.inline(wash.from, wash.to, { class: 'review-mark' }))
     }
   }
@@ -839,7 +847,7 @@ function reviewDecorationList(doc, ranges, current = null, region = null) {
   const restorable = restorableByBlock(ranges, blocks)
   blocks.forEach(({ start, end }, index) => {
     if (!ranges.some(range => range.to >= start && range.from <= end)) return
-    decorations.push(Decoration.widget(start, () => reviewClearButton(start, end), {
+    decorations.push(Decoration.widget(start, () => reviewClearButton(), {
       side: -1, ignoreSelection: true, key: `review-clear-${start}-${end}`,
       // Everything the button hears is the button's. Return or Space on it
       // focused would otherwise reach the editor's keymap first, which
@@ -906,13 +914,20 @@ function editedRegion(tr, ranges) {
       if (range.to < from || range.from > to) continue
       if (range.from < from) { from = range.from; grown = true }
       if (range.to > to) { to = range.to; grown = true }
+      // A place words were taken out, on the region's edge: its decorations
+      // there are taken away with the region's, and the block on the other
+      // side, a rule whose buttons it gives, must be drawn again too.
+      if (range.from === range.to) {
+        if (range.from === to && to < doc.content.size) { to += 1; grown = true }
+        if (range.from === from && from > 0) { from -= 1; grown = true }
+      }
     }
     if (grown) widen()
   }
   return { from, to }
 }
 
-function reviewClearButton(start, end) {
+function reviewClearButton() {
   const button = document.createElement('button')
   button.type = 'button'
   button.className = 'review-clear'
@@ -927,11 +942,24 @@ function reviewClearButton(start, end) {
   const clear = event => {
     event.preventDefault()
     event.stopPropagation()
+    const doc = editor.state.doc
     const pos = editor.view.posAtDOM(button, 0)
-    const $pos = editor.state.doc.resolve(Math.min(pos, editor.state.doc.content.size))
-    const block = $pos.parent.isTextblock ? $pos : null
-    const from = block ? $pos.start() : start
-    const to = block ? $pos.end() : end
+    const $pos = doc.resolve(Math.min(pos, doc.content.size))
+    let from
+    let to
+    if ($pos.parent.isTextblock) {
+      from = $pos.start()
+      to = $pos.end()
+    } else {
+      // A block with no text (a rule, a picture): the one the button
+      // stands before, as it is now. Not where it was when the button was
+      // drawn: typing above it moves it and keeps the button, and the old
+      // place is someone else's words.
+      const node = doc.nodeAt(pos)
+      if (!node || !node.isBlock || !node.isLeaf) return
+      from = pos
+      to = pos + node.nodeSize
+    }
     // With the page's own text beside it, written as every edit is reported
     // (getMarkdownContent), for a host whose copy is a moment behind.
     postToSwift('reviewClear', { markdown: markdownMarking(from, to), plain: getMarkdownContent() })

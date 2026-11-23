@@ -1771,6 +1771,50 @@ func reviewMarksOnBlocksAndPresses() {
         after(150) {
             let sent = probe.reviewClears.count > before ? probe.reviewClears.last ?? "" : ""
             check(sent == "Above.\n\n\u{E000}---\u{E001}\n\nBelow.", "and a press with no pointer before it clears the rule (read: \(sent.debugDescription))")
+            reviewMarksAroundBlocks()
+        }
+    }
+}
+
+// Blocks with no text, around edits: a rule's clear found where the rule is
+// now, a point at the edge of what typing redraws keeping its buttons, and
+// two rules in one change each marked.
+func reviewMarksAroundBlocks() {
+    let before = probe.reviewClears.count
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            const ed = () => document.querySelector('.ProseMirror').editor;
+            rv.setMode('edit');
+            // Typing above a marked rule moves it; its clear goes with it.
+            rv.load('A\\n\\nB\\n\\n---');
+            rv.setReviewMarks('\\uE000A\\uE001\\n\\nB\\n\\n\\uE000---\\uE001', []);
+            ed().commands.insertContentAt(1, 'xxxxx');
+            const clears = document.querySelectorAll('.review-clear');
+            clears[clears.length - 1]?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            // A place words were taken out, just before a rule, kept with
+            // its buttons when the paragraph above is typed in.
+            rv.load('A\\n\\n---\\n\\nB');
+            const pointPlaced = rv.setReviewMarks('A\\n\\n\\uE002---\\n\\nB', []);
+            const buttonsBefore = document.querySelectorAll('.review-clear').length;
+            ed().commands.insertContentAt(2, 'y');
+            const buttonsAfter = document.querySelectorAll('.review-clear').length;
+            // Two rules the assistant put in at once.
+            rv.load('Above.\\n\\n---\\n\\n---\\n\\nBelow.');
+            rv.setReviewMarks('Above.\\n\\n\\uE000---\\n\\n---\\uE001\\n\\nBelow.', []);
+            const rules = document.querySelectorAll('.review-mark-block').length;
+            return [pointPlaced, buttonsBefore, buttonsAfter, rules]
+        })()
+        """) { r in
+        let parts = r as? [Any] ?? []
+        guard parts.count == 4 else { check(false, "blocks around edits read (read: \(String(describing: r)))"); exit(1) }
+        check(parts[0] as? Bool == true && (parts[1] as? Int ?? 0) >= 1 && parts[2] as? Int == parts[1] as? Int,
+              "a place taken out just before a rule keeps its buttons when the block above is typed in (read: \(parts[0]), \(parts[1]) then \(parts[2]))")
+        check(parts[3] as? Int == 2, "two rules put in at once are each marked (read: \(parts[3]))")
+        after(150) {
+            let sent = probe.reviewClears.count > before ? probe.reviewClears.last ?? "" : ""
+            check(sent.contains("\u{E000}---\u{E001}") && sent.hasPrefix("xxxxxA") == true,
+                  "a rule's clear, after typing above it, clears the rule where it now is (read: \(sent.debugDescription))")
             reviewMarksCost()
         }
     }

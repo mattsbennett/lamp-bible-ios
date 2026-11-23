@@ -44,4 +44,16 @@ assert.deepEqual(tokens('**Bold**, and élan 12.').map(t => t.text), ['*', '*', 
   assert.equal(text.slice(notes.get('b').words, notes.get('b').end), 'Second.')
 }
 
+// Notes after a code block whose fence holds a shorter run of its own
+// character: the shorter run is code, and the notes after it are found.
+{
+  const fenced = 'Body[^b] and[^a].\n\n````\ncode\n```\nstill code\n````\n\n[^a]: First.\n\n[^b]: Second.'
+  assert.deepEqual([...noteDefinitions(fenced).keys()], ['a', 'b'])
+  // Inside a fence a definition is text; a longer run closes it, a run of
+  // the other character does not, and a backtick fence with a backtick in
+  // its info string opens nothing.
+  assert.deepEqual([...noteDefinitions('```\n[^x]: code\n~~~\n[^y]: code\n`````\n[^z]: note').keys()], ['z'])
+  assert.deepEqual([...noteDefinitions('``` a`b\n[^x]: note').keys()], ['x'])
+}
+
 console.log('review-align: ok')
