@@ -36,6 +36,9 @@ final class AgentRemoteClient: ObservableObject {
         let id: String
         let name: String
         let endpoint: NWEndpoint
+        /// Where it was reached by address rather than found by Bonjour, as
+        /// over Tailscale, whose network carries no Bonjour.
+        var address: LampAgentRemoteAddress? = nil
 
         static func == (lhs: Host, rhs: Host) -> Bool { lhs.id == rhs.id }
     }
@@ -172,6 +175,32 @@ final class AgentRemoteClient: ObservableObject {
     }
 
     private let memory: AgentRemoteMemory
+    private let addressBook: AgentRemoteAddressBook
+    /// The addresses Macs are reached at where Bonjour doesn't find them.
+    @Published private(set) var addresses: [AgentRemoteAddressBook.Entry] = []
+    /// The Macs Bonjour finds, which `hosts` lists before those at an address.
+    private var bonjourHosts: [Host] = [] {
+        didSet { listHosts() }
+    }
+    /// The addresses in the pairing code being paired with, kept for its Mac
+    /// once the pairing is.
+    private var pairingAddresses: [LampAgentRemoteAddress] = []
+    /// The wait before a Mac Bonjour hasn't shown is tried at an address.
+    private var addressFallback: UUID?
+    /// The Mac expected at the host connected to on its own, and that host:
+    /// kept through retries of it, let go when the person chooses or pairs.
+    private var expectedSecret: String?
+    private var expectedHostID: String?
+    /// Set while the only Mac Bonjour shows is tried as the last one, which
+    /// was paired at an address: another answering sends it there instead.
+    private var probingBonjour = false
+    /// The name Bonjour finds the Mac being found again by, where it was
+    /// reached at an address.
+    private var recoveryBonjourName: String?
+    static let addressFallbackWait: TimeInterval = 3
+    /// The host last connected to when it was one at an address, whose name
+    /// may be a Bonjour Mac's too.
+    private static let lastHostIDKey = "agentRemote.lastHostID"
     private var browser: NWBrowser?
     private var connection: NWConnection?
     private var session: LampAgentRemoteDeviceConnection?
@@ -263,9 +292,12 @@ final class AgentRemoteClient: ObservableObject {
     /// where it knows the key.
     static let savedKeyWait: TimeInterval = 6
 
-    init(memory: AgentRemoteMemory = .shared) {
+    init(memory: AgentRemoteMemory = .shared, addressBook: AgentRemoteAddressBook = .shared) {
         self.memory = memory
+        self.addressBook = addressBook
         rememberedHosts = memory.hosts
+        addresses = addressBook.entries
+        listHosts()
         aiObserver = AIFeatures.shared.$isEnabled
             .dropFirst()
             .sink { [weak self] enabled in
@@ -618,7 +650,7 @@ final class AgentRemoteClient: ObservableObject {
         // pinned for the whole recovery: an attempt that failed with a
         // same-named Mac doesn't loosen it. A first connection that never got
         // through proves nothing, and pins nothing.
-        if pinnedSecret != nil, pinnedName != target { pinnedSecret = nil }
+        if pinnedSecret != nil, let host, !isPinned(host) { pinnedSecret = nil }
         if pinnedSecret == nil, let id = host?.id, lastConnected?.hostID == id {
             pinnedSecret = lastConnected?.secret
             pinnedName = target
@@ -626,6 +658,12 @@ final class AgentRemoteClient: ObservableObject {
         recoverySecret = pinnedSecret
         let attempt = UUID()
         recoveryAttempt = attempt
+        // Looked for by Bonjour first, under the name it has there, then at
+        // an address it answered at (`armAddressFallback`), whichever way it
+        // was reached last.
+        recoveryBonjourName = host?.address.flatMap { address in
+            addresses.first { $0.text == address.text }?.bonjourName
+        }
         browse()
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.rediscoveryWait) { [weak self] in
             MainActor.assumeIsolated {
@@ -661,6 +699,7 @@ final class AgentRemoteClient: ObservableObject {
                 // panel opened meanwhile, has its own course.
                 guard let self, self.recoveryAttempt == attempt, self.connection === watched,
                       case .connecting = self.phase else { return }
+                if self.tryNextAddress() { return }
                 self.teardown()
                 self.lostRecoverably = true
                 self.phase = .unavailable("\(target) couldn\u{2019}t be reached. Check it\u{2019}s open and on the same network.")
@@ -679,7 +718,7 @@ final class AgentRemoteClient: ObservableObject {
             lastLossRetry = Date()
             // Found again by browsing only when this device proved which Mac
             // it was; one never connected to is tried where it was chosen.
-            if let host, (pinnedSecret != nil && pinnedName == host.name) || lastConnected?.hostID == host.id {
+            if let host, isPinned(host) || lastConnected?.hostID == host.id {
                 rediscover()
             } else if let host {
                 connect(to: host, chosen: false)
@@ -784,22 +823,25 @@ final class AgentRemoteClient: ObservableObject {
         recoveryAttempt = nil
         browser?.cancel()
         browser = nil
+        addressFallback = nil
         teardown()
-        hosts = []
+        bonjourHosts = []
         chat = nil
         choosingHost = mustChooseHost
         phase = .stopped
     }
 
     func retry() {
-        // The person's attempt now: no automatic deadline over it.
+        // The person's attempt now: no automatic deadline over it, and every
+        // address worth trying again.
         recoveryAttempt = nil
+        triedAddresses = []
         // After a loss: looked for again the same way, with its time limit
         // and its check that it's that Mac.
         // Only for a Mac this device proved it was connected to: one that
         // never answered is tried again where it was chosen.
         if lostRecoverably, let host, !choosingHost,
-           (pinnedSecret != nil && pinnedName == host.name) || lastConnected?.hostID == host.id {
+           isPinned(host) || lastConnected?.hostID == host.id {
             lastLossRetry = Date()
             rediscover()
             return
@@ -825,6 +867,8 @@ final class AgentRemoteClient: ObservableObject {
     func forget(_ remembered: LampAgentRemoteRememberedHost) {
         memory.forget(remembered.id)
         rememberedHosts = memory.hosts
+        addressBook.forget(pairing: remembered.id)
+        refreshAddresses()
     }
 
     /// Forgets the Mac connected to, at the person's asking: the next
@@ -836,8 +880,10 @@ final class AgentRemoteClient: ObservableObject {
         teardown()
         for remembered in memory.hosts where remembered.hostSecret == secret {
             memory.forget(remembered.id)
+            addressBook.forget(pairing: remembered.id)
         }
         rememberedHosts = memory.hosts
+        refreshAddresses()
         awaited = [:]
         releaseBackgroundTime()
         chats = []
@@ -857,6 +903,8 @@ final class AgentRemoteClient: ObservableObject {
     }
 
     private func browse() {
+        // A new search: every route worth trying again.
+        triedAddresses = []
         browser?.cancel()
         listProblem = nil
         phase = .searching
@@ -888,7 +936,7 @@ final class AgentRemoteClient: ObservableObject {
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             MainActor.assumeIsolated {
                 guard let self, let browser, self.browser === browser else { return }
-                self.hosts = results.compactMap { result -> Host? in
+                self.bonjourHosts = results.compactMap { result -> Host? in
                     guard case let .service(name, type, domain, interface) = result.endpoint else { return nil }
                     let endpoint = NWEndpoint.service(name: name, type: type, domain: domain, interface: interface)
                     return Host(id: endpoint.debugDescription, name: name, endpoint: endpoint)
@@ -899,19 +947,175 @@ final class AgentRemoteClient: ObservableObject {
         }
         self.browser = browser
         browser.start(queue: .main)
+        armAddressFallback()
+    }
+
+    // MARK: - Addresses
+
+    /// The hosts to choose from: those Bonjour finds, then the addresses kept.
+    private func listHosts() {
+        hosts = bonjourHosts + addresses.compactMap(Self.host(for:))
+    }
+
+    private static func host(for entry: AgentRemoteAddressBook.Entry) -> Host? {
+        guard let address = entry.address, let port = NWEndpoint.Port(rawValue: address.port) else { return nil }
+        return Host(
+            id: "address " + entry.text, name: entry.name ?? entry.text,
+            endpoint: .hostPort(host: NWEndpoint.Host(address.host), port: port), address: address
+        )
+    }
+
+    func refreshAddresses() {
+        addresses = addressBook.entries
+        listHosts()
+    }
+
+    /// Connects to a Mac at a typed address, keeping it to try again.
+    /// False where it isn't one (`LampAgentRemoteAddress.parse`).
+    func connect(toAddress typed: String) -> Bool {
+        guard let address = LampAgentRemoteAddress.parse(typed) else { return false }
+        addressBook.keep(address)
+        refreshAddresses()
+        if let host = hosts.first(where: { $0.address == address }) { connect(to: host) }
+        return true
+    }
+
+    func forgetAddress(_ entry: AgentRemoteAddressBook.Entry) {
+        addressBook.forget(entry.text)
+        refreshAddresses()
+        // Not tried again on its own once forgotten.
+        if host?.address?.text == entry.text, connection == nil {
+            host = nil
+            lostRecoverably = false
+        }
+    }
+
+    /// The pairing a Mac's secret answers to, by its id: what the address
+    /// book knows a Mac by, which holds no secret.
+    private func pairing(forSecret secret: String?) -> String? {
+        guard let secret else { return nil }
+        return memory.hosts.first { $0.hostSecret == secret }?.id
+    }
+
+    private func secret(forPairing pairing: String?) -> String? {
+        guard let pairing else { return nil }
+        return memory.hosts.first { $0.id == pairing }?.hostSecret
+    }
+
+    /// Whether `host` is the Mac a loss is being recovered from: by the name
+    /// it was proven under, or at an address that Mac answered at, so
+    /// recovery that moved from Bonjour to an address keeps its check.
+    private func isPinned(_ host: Host) -> Bool {
+        guard let pinnedSecret else { return false }
+        if pinnedName == host.name { return true }
+        // Reached the other way: at an address it answered at, or under the
+        // Bonjour name it was found by.
+        return addresses.contains { entry in
+            secret(forPairing: entry.pairing) == pinnedSecret
+                && (host.address.map { $0.text == entry.text } ?? (entry.bonjourName == host.name))
+        }
+    }
+
+    /// Set while an address is being typed, so nothing found meanwhile is
+    /// connected to on its own and takes the typing away.
+    var enteringAddress = false
+
+    /// Addresses tried for the Mac being reached, this time round.
+    private var triedAddresses: Set<String> = []
+
+    /// After an address didn't answer: another the same Mac answered at, not
+    /// yet tried, under the same check. False where there's none.
+    private func tryNextAddress() -> Bool {
+        // After an address, or after Bonjour's route to the same Mac.
+        if let failed = host?.address?.text { triedAddresses.insert(failed) }
+        let expected = expectedSecret ?? (rediscoveringLast ? recoverySecret : nil)
+        guard let expected,
+              let next = addresses.first(where: { !triedAddresses.contains($0.text) && secret(forPairing: $0.pairing) == expected }),
+              let host = Self.host(for: next) else { return false }
+        connect(to: host, automatic: rediscoveringLast, chosen: false, expecting: expected)
+        return true
+    }
+
+    /// The pairing last connected to, whichever way it was reached.
+    private static let lastPairingKey = "agentRemote.lastPairing"
+
+    /// A Mac Bonjour hasn't shown in a moment tried where it was last reached
+    /// by address: the one being found again, the one last connected to, or
+    /// the only one kept where Bonjour finds none. Bonjour goes first, so a
+    /// Mac on the same network is reached the way it always was. A Mac known
+    /// at the address is expected there: another answering is turned away.
+    private func armAddressFallback() {
+        let attempt = UUID()
+        addressFallback = attempt
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.addressFallbackWait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.addressFallback == attempt, self.connection == nil, !self.choosingHost,
+                      !self.enteringAddress else { return }
+                // Still looking, or told Bonjour isn't allowed, which an
+                // address over Tailscale may not need.
+                guard self.phase == .searching || self.phase == .unavailable(Self.localNetworkDenied) else { return }
+                if self.rediscoveringLast {
+                    let lost = self.host?.address?.text
+                    guard let secret = self.recoverySecret,
+                          let entry = self.addresses.first(where: { $0.text == lost && self.secret(forPairing: $0.pairing) == secret })
+                            ?? self.addresses.first(where: { self.secret(forPairing: $0.pairing) == secret }),
+                          let host = Self.host(for: entry) else { return }
+                    self.connect(to: host, automatic: true)
+                    return
+                }
+                let lastPairing = UserDefaults.standard.string(forKey: Self.lastPairingKey)
+                let lastID = UserDefaults.standard.string(forKey: Self.lastHostIDKey)
+                let lastName = UserDefaults.standard.string(forKey: Self.lastHostKey)
+                let entry = self.addresses.first { "address " + $0.text == lastID }
+                    ?? self.addresses.first { lastPairing != nil && $0.pairing == lastPairing }
+                    ?? (lastPairing == nil ? self.addresses.first { lastName != nil && $0.name == lastName } : nil)
+                    ?? (self.bonjourHosts.isEmpty && self.addresses.count == 1 ? self.addresses.first : nil)
+                guard let entry, let host = Self.host(for: entry) else { return }
+                self.connect(to: host, chosen: false, expecting: self.secret(forPairing: entry.pairing))
+            }
+        }
     }
 
     /// The Mac chosen last time, or the only one there is: connected to
-    /// without asking, since opening the chat panel is the asking.
+    /// without asking, since opening the chat panel is the asking. The last
+    /// Mac, where it has an address and Bonjour doesn't show it, is left to
+    /// be tried there, not passed over for another that does show.
     private func connectIfOneIsClear() {
-        guard phase == .searching, connection == nil, !choosingHost else { return }
+        guard phase == .searching, connection == nil, !choosingHost, !enteringAddress else { return }
         let last = UserDefaults.standard.string(forKey: Self.lastHostKey)
         if rediscoveringLast {
-            if let match = hosts.first(where: { $0.name == recoveryTarget }) { connect(to: match, automatic: true) }
+            if let match = bonjourHosts.first(where: { $0.name == recoveryTarget || $0.name == recoveryBonjourName }) {
+                connect(to: match, automatic: true, expecting: recoverySecret)
+                // Another answering under its name, or none: its address next.
+                probingBonjour = recoverySecret.map { secret in
+                    addresses.contains { self.secret(forPairing: $0.pairing) == secret }
+                } ?? false
+            } else if host?.address != nil, recoveryBonjourName == nil, let secret = recoverySecret,
+                      bonjourHosts.count == 1, let only = bonjourHosts.first {
+                // Reached at an address it was typed as, never seen here: the
+                // only Mac shown may be it, proven so, its address after.
+                connect(to: only, automatic: true, expecting: secret)
+                probingBonjour = true
+            }
             return
         }
-        if let match = hosts.first(where: { $0.name == last }) ?? (hosts.count == 1 ? hosts.first : nil) {
-            connect(to: match, chosen: false)
+        let lastPairing = UserDefaults.standard.string(forKey: Self.lastPairingKey)
+        let lastAtAddresses = addresses.filter { lastPairing != nil && $0.pairing == lastPairing }
+        let lastSecret = secret(forPairing: lastPairing)
+        let bonjourNames = Set(lastAtAddresses.compactMap(\.bonjourName))
+        if let match = bonjourHosts.first(where: { $0.name == last || bonjourNames.contains($0.name) }) {
+            // Found under the last Mac's name: proven to be it, where its
+            // pairing is known, and where it has an address, tried there if
+            // it isn't, or doesn't answer.
+            connect(to: match, chosen: false, expecting: lastSecret)
+            probingBonjour = lastSecret != nil && !lastAtAddresses.isEmpty
+        } else if lastAtAddresses.isEmpty, bonjourHosts.count == 1, let only = bonjourHosts.first {
+            connect(to: only, chosen: false)
+        } else if bonjourNames.isEmpty, lastSecret != nil, bonjourHosts.count == 1, let only = bonjourHosts.first {
+            // Paired at an address and never seen here: the only Mac shown
+            // may be it, and is tried, its address after if it isn't.
+            connect(to: only, chosen: false, expecting: lastSecret)
+            probingBonjour = true
         }
     }
 
@@ -922,7 +1126,10 @@ final class AgentRemoteClient: ObservableObject {
     /// person picked the Mac: the one last proven under its name may not be
     /// it, so that proof goes; a connection made for them to the last Mac,
     /// as on opening the panel, keeps it.
-    func connect(to host: Host, pendingCode: String? = nil, automatic: Bool = false, chosen: Bool = true) {
+    /// `expecting`: the secret of the Mac known at this address, when it's
+    /// connected to without the person choosing: another that answers there
+    /// is turned away.
+    func connect(to host: Host, pendingCode: String? = nil, automatic: Bool = false, chosen: Bool = true, expecting: String? = nil) {
         if !automatic {
             rediscoveringLast = false
             recoverySecret = nil
@@ -969,11 +1176,24 @@ final class AgentRemoteClient: ObservableObject {
         self.connection = connection
         connection.start(queue: .main)
         receive(on: connection)
+        if let expecting {
+            expectedSecret = expecting
+            expectedHostID = host.id
+        } else if chosen || expectedHostID != host.id {
+            expectedSecret = nil
+            expectedHostID = nil
+        }
+        if expecting == nil || host.address != nil { probingBonjour = false }
+        // Something answering at an address, or a Mac tried as the last one,
+        // that never says hello isn't waited on for ever: the next route is.
+        if host.address != nil || expecting != nil { armConnectDeadline() }
     }
 
     /// The code from the Mac's QR, or typed. If the connection it was meant
     /// for has closed while someone scanned, a new one answers with it.
-    func pair(code: String) {
+    /// `addresses`: where the pairing code says the Mac can be reached, kept
+    /// for it once the pairing is.
+    func pair(code: String, addresses: [LampAgentRemoteAddress] = []) {
         guard LampPresentationRemotePairing.normalizedCode(code) != nil else { return }
         // A code entered is a pairing the person chose: recovery's over.
         recoveryAttempt = nil
@@ -981,11 +1201,19 @@ final class AgentRemoteClient: ObservableObject {
         pinnedName = nil
         rediscoveringLast = false
         recoverySecret = nil
+        // Pairing is the person's choice of this Mac, whatever was expected.
+        expectedSecret = nil
+        expectedHostID = nil
+        probingBonjour = false
         if session?.isWaitingForCode == true, connection != nil {
+            pairingAddresses = addresses
             perform(session?.pair(code: code) ?? [])
             if case .needsCode = phase, let host { phase = .connecting(host.name) }
         } else if let host {
             connect(to: host, pendingCode: code, chosen: false)
+            // This attempt's, after the connection it's made on is begun:
+            // ending that connection lets them go.
+            pairingAddresses = addresses
         }
     }
 
@@ -1043,6 +1271,8 @@ final class AgentRemoteClient: ObservableObject {
         isStartingChat = false
         startRequest = nil
         sendRequests = [:]
+        // A pairing ended unfinished: its code's addresses aren't another's.
+        pairingAddresses = []
         chat?.sending = nil
         // A change of who answers that wasn't heard back about: the chat is
         // opened afresh on coming back, under whatever the Mac kept.
@@ -1054,8 +1284,17 @@ final class AgentRemoteClient: ObservableObject {
         // A Mac found again by name that proves to be another: turned away
         // before anything of this device's goes to it, its opening requests
         // included.
-        if effects.contains(where: { if case .connected = $0 { true } else { false } }),
-           rediscoveringLast, let expected = recoverySecret, let secret = session?.hostSecret, secret != expected {
+        if effects.contains(where: { if case .connected = $0 { true } else { false } }), let secret = session?.hostSecret,
+           (rediscoveringLast && recoverySecret != nil && secret != recoverySecret)
+            || (expectedSecret != nil && secret != expectedSecret) {
+            if probingBonjour, let expected = expectedSecret,
+               let entry = addresses.first(where: { self.secret(forPairing: $0.pairing) == expected }),
+               let atAddress = Self.host(for: entry) {
+                // Not the last Mac after all: it's tried where it was paired.
+                probingBonjour = false
+                connect(to: atAddress, chosen: false, expecting: expected)
+                return
+            }
             rejectRecoveredMac()
             return
         }
@@ -1069,12 +1308,28 @@ final class AgentRemoteClient: ObservableObject {
             case .send:
                 break
             case let .needsCode(problem):
+                if probingBonjour, let expected = expectedSecret,
+                   let entry = addresses.first(where: { self.secret(forPairing: $0.pairing) == expected }),
+                   let atAddress = Self.host(for: entry) {
+                    // A Mac that doesn't know this device isn't the last one:
+                    // that one's tried where it was paired.
+                    probingBonjour = false
+                    connect(to: atAddress, chosen: false, expecting: expected)
+                    return
+                }
                 phase = .needsCode(host: host?.name ?? "your Mac", notice: problem.map(AgentRemoteProblemText.text) ?? pendingNotice)
                 pendingNotice = nil
             case let .remember(remembered):
+                let earlier = memory.hosts.filter { $0.hostSecret == remembered.hostSecret && $0.id != remembered.id }.map(\.id)
                 memory.remember(remembered)
+                addressBook.repoint(from: earlier, to: remembered.id)
                 refusedKeys.remove(remembered.id)
                 rememberedHosts = memory.hosts
+                for address in pairingAddresses {
+                    addressBook.keep(address, name: remembered.name, pairing: remembered.id)
+                }
+                pairingAddresses = []
+                refreshAddresses()
             case let .keyRefused(id):
                 refusedKeys.insert(id)
             case .watchSavedKey:
@@ -1129,6 +1384,18 @@ final class AgentRemoteClient: ObservableObject {
                 lostRecoverably = false
                 rediscoveringLast = false
                 UserDefaults.standard.set(host.name, forKey: Self.lastHostKey)
+                UserDefaults.standard.set(host.address == nil ? nil : host.id, forKey: Self.lastHostIDKey)
+                if let pairing = pairing(forSecret: session?.hostSecret) {
+                    UserDefaults.standard.set(pairing, forKey: Self.lastPairingKey)
+                    if let address = host.address {
+                        // Reached at an address: it's this Mac's now, under its name.
+                        addressBook.keep(address, name: memory.hosts.first { $0.id == pairing }?.name, pairing: pairing)
+                    } else {
+                        // Found by Bonjour: the name to look for it by, off Tailscale.
+                        addressBook.found(pairing: pairing, bonjourName: host.name)
+                    }
+                    refreshAddresses()
+                }
                 rememberedHosts = memory.hosts
                 // Back where this device was before the connection dropped.
                 if let openChatID {
@@ -1147,6 +1414,7 @@ final class AgentRemoteClient: ObservableObject {
                 // Recovery's own retry stays recovery's: no one chose anew.
                 if let host { connect(to: host, automatic: rediscoveringLast, chosen: false) } else { teardown(); phase = .unavailable(AgentRemoteProblemText.refused) }
             case let .failed(problem):
+                if case .unreachable = problem, tryNextAddress() { return }
                 // Not reached is the network's doing; turned away is the Mac's.
                 if case .unreachable = problem { lostRecoverably = true } else { lostRecoverably = false }
                 teardown()

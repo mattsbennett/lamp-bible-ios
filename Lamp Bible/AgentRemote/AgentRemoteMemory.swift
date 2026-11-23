@@ -43,6 +43,92 @@ final class AgentRemoteMemory {
     }
 }
 
+/// The addresses this device reaches Macs at where Bonjour can't find them,
+/// as over Tailscale, whose network carries no Bonjour: from a Mac's
+/// pairing code, or typed. On this device only. An address isn't a secret,
+/// and proves nothing: the handshake over it is what says which Mac
+/// answered, and the pairing it answered to, once it has, ties the address
+/// to it, by the pairing's id. The Mac's secret stays in the Keychain.
+final class AgentRemoteAddressBook {
+    static let shared = AgentRemoteAddressBook(defaults: .standard)
+
+    struct Entry: Codable, Equatable, Identifiable {
+        /// The address as `LampAgentRemoteAddress.text` writes it.
+        var text: String
+        /// The Mac's name, once it's answered there.
+        var name: String?
+        /// The pairing the Mac answered there to (`LampAgentRemoteRememberedHost.id`).
+        var pairing: String?
+        /// The name Bonjour finds the same Mac by, on its own network.
+        var bonjourName: String?
+        var id: String { text }
+
+        var address: LampAgentRemoteAddress? { LampAgentRemoteAddress.parse(text) }
+    }
+
+    private let defaults: UserDefaults
+    private static let key = "agentRemote.addresses"
+
+    init(defaults: UserDefaults) {
+        self.defaults = defaults
+    }
+
+    var entries: [Entry] {
+        guard let data = defaults.data(forKey: Self.key),
+              let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
+        return entries.filter { $0.address != nil }
+    }
+
+    /// Adds an address, or updates what's known of one already kept.
+    func keep(_ address: LampAgentRemoteAddress, name: String? = nil, pairing: String? = nil) {
+        var entries = entries
+        let text = address.text
+        if let index = entries.firstIndex(where: { $0.text == text }) {
+            if let name { entries[index].name = name }
+            if let pairing, entries[index].pairing != pairing {
+                // Another Mac at this address now: the old one's Bonjour name
+                // isn't this one's.
+                entries[index].pairing = pairing
+                entries[index].bonjourName = nil
+            }
+        } else {
+            entries.append(Entry(text: text, name: name, pairing: pairing))
+        }
+        save(entries)
+    }
+
+    /// Notes the name Bonjour found a Mac by, on the addresses it answers at,
+    /// to look for it by on its own network.
+    func found(pairing: String, bonjourName: String) {
+        var entries = entries
+        guard entries.contains(where: { $0.pairing == pairing && $0.bonjourName != bonjourName }) else { return }
+        for index in entries.indices where entries[index].pairing == pairing { entries[index].bonjourName = bonjourName }
+        save(entries)
+    }
+
+    func forget(_ text: String) {
+        save(entries.filter { $0.text != text })
+    }
+
+    /// Moves the addresses kept for a Mac's earlier pairings to its new one,
+    /// when it's paired again.
+    func repoint(from earlier: [String], to pairing: String) {
+        var entries = entries
+        guard entries.contains(where: { $0.pairing.map(earlier.contains) == true }) else { return }
+        for index in entries.indices where entries[index].pairing.map(earlier.contains) == true { entries[index].pairing = pairing }
+        save(entries)
+    }
+
+    /// Forgets every address a Mac answered at, when its pairing is forgotten.
+    func forget(pairing: String) {
+        save(entries.filter { $0.pairing != pairing })
+    }
+
+    private func save(_ entries: [Entry]) {
+        if let data = try? JSONEncoder().encode(entries) { defaults.set(data, forKey: Self.key) }
+    }
+}
+
 /// What the connection's problems mean to the person holding the phone.
 enum AgentRemoteProblemText {
     static let refused = "This Mac no longer recognises this device. Choose Pair a Device… in Lamp Bible’s settings on the Mac, and scan its code to pair again."

@@ -156,6 +156,9 @@ struct AgentRemotePanel: View {
     @State private var openedWritingChat = false
     @State private var code = ""
     @State private var showingScanner = false
+    @State private var typingAddress = false
+    @State private var typedAddress = ""
+    @State private var addressRefused = false
     @State private var scannerError: String?
     @FocusState private var composerFocused: Bool
     @FocusState private var codeFocused: Bool
@@ -245,38 +248,15 @@ struct AgentRemotePanel: View {
                     Text("Looking for your Mac…")
                         .font(.headline)
                     explanation(
-                        "Chats run in Lamp Bible on your Mac. Open it there, turn on Chats on iPhone and iPad in Settings › AI & Agents, and keep both on the same network."
+                        "Chats run in Lamp Bible on your Mac. Open it there, turn on Chats on iPhone and iPad in Settings › AI & Agents, and keep both on the same network, or reach it by its address over Tailscale."
                     )
+                    connectByAddressButton
                 } else {
                     Text("Choose a Mac")
                         .font(.headline)
                         .padding(.top, 16)
-                    VStack(spacing: 0) {
-                        ForEach(client.hosts) { host in
-                            Button {
-                                client.connect(to: host)
-                            } label: {
-                                HStack {
-                                    Image(systemName: "desktopcomputer")
-                                        .foregroundStyle(LampTheme.caption)
-                                    Text(host.name)
-                                        .foregroundStyle(Color(uiColor: .label))
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(LampTheme.caption)
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            if host != client.hosts.last {
-                                Divider().padding(.leading, 48)
-                            }
-                        }
-                    }
-                    .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+                    hostList(client.hosts)
+                    connectByAddressButton
                 }
             }
             .padding(.horizontal, 20)
@@ -344,10 +324,12 @@ struct AgentRemotePanel: View {
         NavigationStack {
             ZStack(alignment: .bottom) {
                 PresentationPairingScanner(
-                    parse: LampAgentRemoteHandshake.code(fromQRPayload:),
-                    onCode: { scanned in
+                    // The whole code read, so the addresses in it go too.
+                    parse: { LampAgentRemoteHandshake.code(fromQRPayload: $0) != nil ? $0 : nil },
+                    onCode: { payload in
                         showingScanner = false
-                        client.pair(code: scanned)
+                        guard let scanned = LampAgentRemoteHandshake.code(fromQRPayload: payload) else { return }
+                        client.pair(code: scanned, addresses: LampAgentRemoteHandshake.addresses(fromQRPayload: payload))
                     },
                     onFailure: { message in
                         scannerError = message
@@ -397,10 +379,96 @@ struct AgentRemotePanel: View {
                     .buttonStyle(.borderedProminent)
                 Button("Choose Another Mac") { client.chooseAnotherHost() }
                     .font(.footnote)
+                // Bonjour blocked or empty, the Macs at an address are still
+                // there to choose, as over Tailscale.
+                let atAddresses = client.hosts.filter { $0.address != nil }
+                if !atAddresses.isEmpty {
+                    hostList(atAddresses)
+                        .padding(.top, 8)
+                }
+                connectByAddressButton
             }
             .padding(.horizontal, 20)
             .padding(.bottom, bottomObstruction + 16)
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Macs to choose from, each a row: one found by Bonjour, or one at an
+    /// address, with the address under its name and a way to forget it.
+    private func hostList(_ hosts: [AgentRemoteClient.Host]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(hosts) { host in
+                Button {
+                    client.connect(to: host)
+                } label: {
+                    HStack {
+                        Image(systemName: host.address == nil ? "desktopcomputer" : "network")
+                            .foregroundStyle(LampTheme.caption)
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(host.name)
+                                .foregroundStyle(Color(uiColor: .label))
+                            // An address shown under the Mac's name, once it's known.
+                            if let address = host.address, host.name != address.text {
+                                Text(address.text)
+                                    .font(.caption)
+                                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                            }
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(LampTheme.caption)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    if let address = host.address,
+                       let entry = client.addresses.first(where: { $0.text == address.text }) {
+                        Button("Forget Address", systemImage: "trash", role: .destructive) {
+                            client.forgetAddress(entry)
+                        }
+                    }
+                }
+                if host != hosts.last {
+                    Divider().padding(.leading, 48)
+                }
+            }
+        }
+        .background(LampTheme.card, in: RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous))
+    }
+
+    /// For a Mac Bonjour can't find, as over Tailscale: its address, from
+    /// Settings › AI & Agents › Over Tailscale on the Mac.
+    private var connectByAddressButton: some View {
+        Button("Connect by Address…") {
+            typedAddress = ""
+            addressRefused = false
+            typingAddress = true
+        }
+        .font(.footnote)
+        .onChange(of: typingAddress || addressRefused) { _, entering in client.enteringAddress = entering }
+        .alert("Connect by Address", isPresented: $typingAddress) {
+            TextField("100.90.115.76", text: $typedAddress)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Connect") {
+                if !client.connect(toAddress: typedAddress) { addressRefused = true }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your Mac’s address is in Lamp Bible on the Mac: Settings › AI & Agents › Chats on iPhone and iPad, beside Over Tailscale.")
+        }
+        .alert("That isn’t an address", isPresented: $addressRefused) {
+            Button("Try Again") { typingAddress = true }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Type it as your Mac shows it, such as 100.90.115.76, or with its port, 100.90.115.76:50192.")
         }
     }
 

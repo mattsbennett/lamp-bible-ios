@@ -95,6 +95,47 @@ final class AgentRemoteTests: XCTestCase {
 
     // MARK: - Memory
 
+    /// Addresses a Mac is reached at, as over Tailscale: kept on this
+    /// device, tied to the Mac once it answers, and gone when it's forgotten.
+    @MainActor
+    func testAddressesAreKeptAndTiedToTheirMac() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "agent-remote-addresses-\(UUID().uuidString)"))
+        let book = AgentRemoteAddressBook(defaults: defaults)
+        let tailnet = try XCTUnwrap(LampAgentRemoteAddress.parse("100.90.115.76"))
+        let fallback = try XCTUnwrap(LampAgentRemoteAddress.parse("[fd7a:115c:a1e0::9c01:734c]:50192"))
+        book.keep(tailnet)
+        book.keep(fallback, name: "Study Mac", pairing: "pairing-a")
+        book.keep(tailnet, name: "Study Mac", pairing: "pairing-a")
+        XCTAssertEqual(book.entries.map(\.text), [tailnet.text, fallback.text])
+        XCTAssertEqual(book.entries.first?.name, "Study Mac", "what's learned of an address is added to it")
+        XCTAssertEqual(book.entries.map(\.address), [tailnet, fallback])
+
+        // The client lists them after the Macs Bonjour finds, by the Mac's name.
+        let client = AgentRemoteClient(memory: AgentRemoteMemory(storage: InMemorySecrets()), addressBook: book)
+        XCTAssertEqual(client.hosts.map(\.name), ["Study Mac", "Study Mac"])
+        XCTAssertEqual(client.hosts.compactMap(\.address), [tailnet, fallback])
+        XCTAssertFalse(client.connect(toAddress: "https://example.com"), "not an address")
+
+        // Bonjour's name for the Mac noted; a new pairing takes the addresses.
+        book.found(pairing: "pairing-a", bonjourName: "Lamp Bible on Study Mac")
+        XCTAssertEqual(book.entries.map(\.bonjourName), ["Lamp Bible on Study Mac", "Lamp Bible on Study Mac"])
+        book.repoint(from: ["pairing-a"], to: "pairing-b")
+        XCTAssertEqual(book.entries.map(\.pairing), ["pairing-b", "pairing-b"])
+        // No secret kept in preferences.
+        let stored = try XCTUnwrap(defaults.data(forKey: "agentRemote.addresses"))
+        XCTAssertFalse(String(decoding: stored, as: UTF8.self).contains("ecret"))
+        book.forget(pairing: "pairing-b")
+        XCTAssertTrue(book.entries.isEmpty)
+    }
+
+    /// A pairing code carries the Mac's addresses, which the phone keeps.
+    func testAPairingCodeCarriesItsMacsAddresses() throws {
+        let tailnet = try XCTUnwrap(LampAgentRemoteAddress.parse("100.90.115.76"))
+        let payload = try XCTUnwrap(LampAgentRemoteHandshake.qrPayload(for: "ABCDEFGHJKLMNPQR", addresses: [tailnet]))
+        XCTAssertNotNil(LampAgentRemoteHandshake.code(fromQRPayload: payload))
+        XCTAssertEqual(LampAgentRemoteHandshake.addresses(fromQRPayload: payload), [tailnet])
+    }
+
     func testPairingIsKeptAndTheNextConnectionAnswersWithIt() throws {
         try pair()
         XCTAssertEqual(memory.hosts.map(\.name), ["Study Mac"])
