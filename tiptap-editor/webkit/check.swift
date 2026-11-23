@@ -1627,6 +1627,48 @@ func reviewMarksBesideEmphasis() {
     }
 }
 
+// prosemirror-markdown 1.13.3 threw writing a paragraph of bold, a line
+// break, a line and a line break at its end, and no edit was saved while it
+// stayed so. Typed as a writer types it: Shift-Return at the end.
+func savesAfterATrailingBreak() {
+    let before = probe.changes.count
+    js("""
+        (() => {
+            const rv = window.editorAPI;
+            rv.setMode('edit');
+            rv.load('**Title**\\\\\\nline');
+            rv.focus();
+            const view = document.querySelector('.ProseMirror');
+            const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
+            let last = null, node;
+            while ((node = walker.nextNode())) last = node;
+            const range = document.createRange();
+            range.setStart(last, last.textContent.length);
+            range.collapse(true);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.dispatchEvent(new Event('selectionchange'));
+            return true
+        })()
+        """) { _ in
+        after(150) {
+            js("""
+                (() => {
+                    document.querySelector('.ProseMirror').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+                    try { return window.editorAPI.getContent() } catch (e) { return 'threw: ' + e.message }
+                })()
+                """) { r in
+                check(r as? String == "**Title**\\\nline", "a line break typed at the end of a line after bold can be written (read: \(String(describing: r)))")
+                after(500) {
+                    check(probe.changes.count > before && probe.changes.last == "**Title**\\\nline", "and the edit is reported (read: \(probe.changes.suffix(2)))")
+                    reviewMarks()
+                }
+            }
+        }
+    }
+}
+
 // The safety net: where one mark's markers make the document another, the
 // rest are still drawn, and the page says how many were not.
 func reviewMarksInGroups() {
@@ -1683,7 +1725,7 @@ func reviewMarksInGroups() {
         check(long?["unshown"] as? Int == 1 && parts[4] as? Int == 1299,
               "in a long writing, one bad mark loses only itself (read: \(String(describing: parts[3])), \(String(describing: parts[4])) drawn)")
         check(took >= 0 && took < 8000, "and the groups take seconds at most (read: \(took) ms)")
-        reviewMarks()
+        savesAfterATrailingBreak()
     }
 }
 

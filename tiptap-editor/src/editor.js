@@ -4,6 +4,7 @@ import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer, Fragment } from '@tiptap/pm/model'
 import { Transform } from '@tiptap/pm/transform'
+import { MarkdownSerializerState } from '@tiptap/pm/markdown'
 import { closeHistory } from '@tiptap/pm/history'
 import { StarterKit } from '@tiptap/starter-kit'
 import { HardBreak } from '@tiptap/extension-hard-break'
@@ -2041,10 +2042,32 @@ function cancelContentUpdate() {
 function scheduleContentUpdate() {
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
-    const md = getMarkdownContent()
+    // Caught, and said: thrown here, the edit was never reported, nor any
+    // after it while the writing kept the shape that threw, and the host
+    // went on holding the text from before.
+    let md
+    try {
+      md = getMarkdownContent()
+    } catch (error) {
+      postToSwift('contentError', { message: String(error && error.message || error).slice(0, 300) })
+      return
+    }
     currentMarkdown = md
     postToSwift('contentChanged', { markdown: md })
   }, 300)
+}
+
+// prosemirror-markdown 1.13.3's isMarkAhead steps twice over a hard break,
+// so after one that ends a paragraph it reads past the paragraph's end and
+// throws: a line of bold, a line break, a line, and a line break at the end
+// (Shift-Return there) could not be written, and no edit was saved while
+// the paragraph stayed so. The same search, stepping once.
+MarkdownSerializerState.prototype.isMarkAhead = function (parent, index, mark) {
+  for (; index < parent.childCount; index++) {
+    const next = parent.child(index)
+    if (next.type.name !== this.options.hardBreakNodeName) return mark.isInSet(next.marks)
+  }
+  return false
 }
 
 function getMarkdownContent() {
