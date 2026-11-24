@@ -632,6 +632,18 @@ struct PresentationRemoteView: View {
             }
             .accessibilityLabel(state.isBlackout ? "Restore audience slide" : "Black out audience screen")
         }
+        // A Mac that plays clips says whether its clip is paused; one that
+        // doesn't says nothing, and would drop the command.
+        if let isClipPaused = state.isClipPaused, Self.clipReached(in: state) {
+            ToolbarItem(placement: .bottomBar) {
+                Button {
+                    client.send(.init(action: .toggleClip))
+                } label: {
+                    Image(systemName: isClipPaused ? "play.fill" : "pause.fill")
+                }
+                .accessibilityLabel(isClipPaused ? "Play clip" : "Pause clip")
+            }
+        }
         ToolbarItemGroup(placement: .bottomBar) {
             Spacer()
             Button {
@@ -650,6 +662,12 @@ struct PresentationRemoteView: View {
             .buttonStyle(.borderedProminent)
             .disabled(!state.canGoNext)
         }
+    }
+
+    /// Whether the room has come to the current slide's clip.
+    private static func clipReached(in state: LampPresentationRemoteState) -> Bool {
+        guard let slide = state.currentSlide, let clip = slide.playedClip else { return false }
+        return slide.revealPlan.isPlaying(clip, atStep: state.currentRevealStep)
     }
 
     private func failureView(_ message: String) -> some View {

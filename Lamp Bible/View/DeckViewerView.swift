@@ -1,3 +1,4 @@
+import AVFAudio
 import LampCore
 import LampPresentationUI
 import SwiftUI
@@ -69,6 +70,16 @@ struct DeckViewerView: View {
     @State private var showsChrome = true
     @State private var showsNotes = false
     @State private var showsSlideList = false
+    /// Whether the slide's clip is paused; see `move(to:)` for when a pause
+    /// holds.
+    @State private var isClipPaused = false
+    /// Whether the slide's clip has been reached and can play here, so a
+    /// pause control is worth showing; read as the position changes rather
+    /// than as the body draws, since it looks for a file.
+    @State private var clipIsPlayable = false
+    /// Whether this viewer set the audio session playing for a clip, so it
+    /// gives it back when the clip is left.
+    @State private var holdsAudioSession = false
 
     private var slides: [LampPresentationSlide] {
         deck.slides.filter { !$0.isHidden }
@@ -144,8 +155,17 @@ struct DeckViewerView: View {
                 didApplyInitialIndex = true
                 position = LampPresentationPosition(slide: min(max(initialIndex, 0), max(slides.count - 1, 0)))
             }
+            clipIsPlayable = clipReached(at: position) && clipCanPlay(at: position)
         }
-        .onDisappear { DeckViewerOrientation.release() }
+        // A streamed clip's page sets its own session as it plays, and holds
+        // none when there's no connection to play it.
+        .onChange(of: clipIsPlayable && currentClipIsFile) { _, fileClip in
+            holdAudioSession(fileClip)
+        }
+        .onDisappear {
+            DeckViewerOrientation.release()
+            holdAudioSession(false)
+        }
     }
 
     /// Where the controls go: beside the slide when the black bands either
@@ -170,9 +190,10 @@ struct DeckViewerView: View {
             if let currentSlide {
                 LampPresentationSlideCanvas(slide: currentSlide, deck: deck, store: store)
                     .revealed(atStep: position.step)
-                    // Shown to the room: a picture set to drift does, and a
-                    // video plays in its picture's place.
-                    .presenting()
+                    // Shown to the room: a picture set to drift does, a
+                    // video plays in its picture's place, and a clip plays at
+                    // its step.
+                    .presenting(clipPaused: isClipPaused)
                     .aspectRatio(deck.aspectRatio.ratio, contentMode: .fit)
                     // The slide's own ground stays inside the slide, rather
                     // than spilling into the home indicator's margin.
@@ -214,11 +235,51 @@ struct DeckViewerView: View {
     }
 
     private func advance() {
-        if let next = position.advanced(in: slides) { move(to: next) }
+        guard var next = position.advanced(in: slides) else { return }
+        // A clip that can't play here has nothing to show at its own step.
+        if isUnplayableClipStep(next) {
+            guard let beyond = next.advanced(in: slides) else { return }
+            next = beyond
+        }
+        move(to: next)
     }
 
     private func retreat() {
-        if let previous = position.retreated(in: slides) { move(to: previous) }
+        guard var previous = position.retreated(in: slides) else { return }
+        if isUnplayableClipStep(previous), let before = previous.retreated(in: slides) {
+            previous = before
+        }
+        move(to: previous)
+    }
+
+    private var currentClipIsFile: Bool {
+        if case .file = currentSlide?.playedClip?.clip?.origin { return true }
+        return false
+    }
+
+    /// Whether `position` is the click that starts its slide's clip, where
+    /// that clip can't play here: a file not downloaded to this device.
+    private func isUnplayableClipStep(_ position: LampPresentationPosition) -> Bool {
+        guard position.step > 0, slides.indices.contains(position.slide) else { return false }
+        let slide = slides[position.slide]
+        guard let block = slide.playedClip, block.clip?.starts != .arrival else { return false }
+        return slide.revealPlan.isPlaying(block, atStep: position.step)
+            && !slide.revealPlan.isPlaying(block, atStep: position.step - 1)
+            && !clipCanPlay(at: position)
+    }
+
+    /// A clip is heard though the phone is set to silent, as a video
+    /// player's is; the session goes back once the clip is left.
+    private func holdAudioSession(_ hold: Bool) {
+        guard hold != holdsAudioSession else { return }
+        holdsAudioSession = hold
+        let session = AVAudioSession.sharedInstance()
+        if hold {
+            try? session.setCategory(.playback, mode: .moviePlayback)
+            try? session.setActive(true)
+        } else {
+            try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+        }
     }
 
     /// Moves to `next` the way the deck asks, as every presenter does: a part
@@ -234,6 +295,36 @@ struct DeckViewerView: View {
         withAnimation(animation) {
             if changesSlide { slideLayer += 1 }
             position = next
+        }
+        // A pause holds while the clip is still the one playing: revealing
+        // more of its slide keeps it, and a new slide, or a step back before
+        // the clip, starts afresh.
+        let clipStillPlaying = !changesSlide && clipReached(at: next)
+        if !clipStillPlaying { isClipPaused = false }
+        clipIsPlayable = clipReached(at: next) && clipCanPlay(at: next)
+    }
+
+    /// Whether the presenter has come to the clip of `position`'s slide.
+    private func clipReached(at position: LampPresentationPosition) -> Bool {
+        guard slides.indices.contains(position.slide) else { return false }
+        let slide = slides[position.slide]
+        guard let block = slide.playedClip else { return false }
+        return slide.revealPlan.isPlaying(block, atStep: position.step)
+    }
+
+    /// Whether `position`'s clip can play here: streamed, or a file this
+    /// device downloaded. Otherwise the slide shows the picture's still.
+    private func clipCanPlay(at position: LampPresentationPosition) -> Bool {
+        guard slides.indices.contains(position.slide),
+              let clip = slides[position.slide].playedClip?.clip else { return false }
+        switch clip.origin {
+        case .file(let path):
+            // Found as the canvas finds it.
+            return store.assetURL(forAssetPath: path).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        case .youtube, .vimeo:
+            return true
+        case .unplayable:
+            return false
         }
     }
 
@@ -255,6 +346,9 @@ struct DeckViewerView: View {
                 slideListButton
                 if currentNotes != nil {
                     notesButton
+                }
+                if clipIsPlayable {
+                    clipButton
                 }
                 Spacer()
                 positionLabel
@@ -283,6 +377,9 @@ struct DeckViewerView: View {
 
             Spacer(minLength: 0)
 
+            if clipIsPlayable {
+                clipButton
+            }
             if currentNotes != nil {
                 notesButton
             }
@@ -330,6 +427,21 @@ struct DeckViewerView: View {
         .foregroundStyle(.white)
         .deckControlSurface()
         .accessibilityLabel("Presenter notes")
+    }
+
+    /// Pauses and plays the slide's clip, once it has been reached.
+    private var clipButton: some View {
+        Button {
+            isClipPaused.toggle()
+        } label: {
+            Image(systemName: isClipPaused ? "play.fill" : "pause.fill")
+                .font(.body.weight(.semibold))
+                .frame(width: Self.controlSize, height: Self.controlSize)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .foregroundStyle(.white)
+        .deckControlSurface()
+        .accessibilityLabel(isClipPaused ? "Play clip" : "Pause clip")
     }
 
     /// The slide's place in the deck as a ring filling round, with the number

@@ -72,8 +72,12 @@ struct PresentationDeckStorage: Sendable {
     let syncedStore: LampPresentationDeckStore
     /// `Documents/Imported/Presentations` — opened on this device.
     let importedStore: LampPresentationDeckStore
+    /// Where the large-file settings are kept, which the Settings screen
+    /// and the deck list write as app storage.
+    let defaults: UserDefaults
 
-    init(documentsURL: URL? = nil) {
+    init(documentsURL: URL? = nil, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         let root = documentsURL
             ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         syncedStore = LampPresentationDeckStore(rootURL: root)
@@ -217,15 +221,95 @@ struct PresentationDeckStorage: Sendable {
         try LampPresentationAssetFiles.merge([asset], into: syncedStore.assetsDirectoryURL)
     }
 
-    /// Removes the mirrored images and videos no synced deck references.
-    /// They carry no deletion ledger, so reachability is what keeps this
-    /// directory from growing forever — and because decks and their images
-    /// arrive in the same pull, an image is only unreferenced once no deck
-    /// wants it.
+    /// Removes the mirrored images and videos no synced deck wants here:
+    /// those none references, and videos and clips this device wasn't asked
+    /// to download. They carry no deletion ledger, so reachability is what
+    /// keeps this directory from growing forever — and because decks and
+    /// their images arrive in the same pull, an image is only unreferenced
+    /// once no deck wants it.
     func pruneSyncedAssets() throws {
+        let fileManager = FileManager.default
         // Nothing to prune, and no reason to read every deck to learn so.
-        guard FileManager.default.fileExists(atPath: syncedStore.assetsDirectoryURL.path) else { return }
-        try syncedStore.pruneUnreferencedAssets()
+        guard fileManager.fileExists(atPath: syncedStore.assetsDirectoryURL.path) else { return }
+        // Every deck read before anything goes: a damaged deck is not
+        // evidence that its files are unused, so a failed read keeps them.
+        var decks: [LampPresentationDeck] = []
+        if fileManager.fileExists(atPath: syncedStore.decksDirectoryURL.path) {
+            let files = try fileManager.contentsOfDirectory(
+                at: syncedStore.decksDirectoryURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            ).filter { $0.pathExtension.lowercased() == LampPresentationDeckPortableLayout.deckExtension }
+            for file in files {
+                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+                decks.append(try LampPresentationDeckStore.decode(Data(contentsOf: file)))
+            }
+        }
+        try LampPresentationAssetFiles.prune(
+            in: syncedStore.assetsDirectoryURL, referencedNames: wantedSyncedAssets(of: decks)
+        )
+    }
+
+    /// How many files the synced decks' asset folder holds.
+    func syncedAssetCount() -> Int {
+        (try? FileManager.default.contentsOfDirectory(atPath: syncedStore.assetsDirectoryURL.path).count) ?? 0
+    }
+
+    // MARK: - Large files
+
+    /// Whether every synced deck's videos and clips come down to this device.
+    /// Off by default: they can run to hundreds of megabytes, and a slide
+    /// without its video shows the picture's still.
+    static let downloadsLargeFilesKey = "presentations.downloadsLargeFiles"
+    /// The decks whose videos and clips come down although the setting above
+    /// is off.
+    static let decksDownloadingLargeKey = "presentations.decksDownloadingLarge"
+
+    var downloadsLargeFiles: Bool {
+        defaults.bool(forKey: Self.downloadsLargeFilesKey)
+    }
+
+    var decksDownloadingLarge: Set<String> {
+        Set(defaults.stringArray(forKey: Self.decksDownloadingLargeKey) ?? [])
+    }
+
+    /// Whether `deckID`'s videos and clips come down, by the setting or the deck.
+    func downloadsLargeFiles(forDeck deckID: String) -> Bool {
+        downloadsLargeFiles || decksDownloadingLarge.contains(deckID)
+    }
+
+    func setDownloadsLargeFiles(_ downloads: Bool, forDeck deckID: String) {
+        var ids = decksDownloadingLarge
+        if downloads { ids.insert(deckID) } else { ids.remove(deckID) }
+        defaults.set(ids.sorted(), forKey: Self.decksDownloadingLargeKey)
+    }
+
+    /// The asset files this device holds for `decks`.
+    func wantedSyncedAssets(of decks: [LampPresentationDeck]) -> Set<String> {
+        LampPresentationLargeAssets.wanted(
+            decks: decks,
+            downloadsLarge: downloadsLargeFiles,
+            decksDownloadingLarge: decksDownloadingLarge
+        )
+    }
+
+    /// The videos and clips `deck` names that this device holds, with their
+    /// sizes; a deck opened from a file keeps its own and lists none.
+    func heldLargeFiles(of entry: PresentationDeckEntry) -> [(name: String, bytes: Int64)] {
+        guard entry.origin == .synced else { return [] }
+        return LampPresentationLargeAssets.held(by: entry.deck, in: syncedStore.assetsDirectoryURL)
+    }
+
+    /// Stops downloading `deckID`'s videos and clips and deletes this
+    /// device's copies, short of those another deck still wants. Nothing
+    /// synced is touched: the next device to want them still finds them.
+    func removeDownloadedLargeFiles(forDeck deckID: String) throws {
+        setDownloadsLargeFiles(false, forDeck: deckID)
+        try PresentationDeckSync.pruneAfterDownloadChange(self)
+        Task { @MainActor in
+            NotificationCenter.default.post(name: .presentationDecksDidChange, object: nil)
+        }
     }
 }
 

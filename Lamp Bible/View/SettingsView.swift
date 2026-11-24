@@ -489,6 +489,12 @@ struct SettingsView: View {
                     hasLoadedSettings = true
                 }
 
+                // Kept while it's on without sync, so videos downloaded
+                // before can still be let go.
+                if syncBackend != .none || UserDefaults.standard.bool(forKey: PresentationDeckStorage.downloadsLargeFilesKey) {
+                    SlideDeckDownloadSettingsSection()
+                }
+
                 // Notes panel (iPad only)
                 if horizontalSizeClass != .compact {
                     Section {
@@ -1822,6 +1828,50 @@ extension UIDevice {
 /// Whether a turn asked for from here tells when it ends, as the Mac's
 /// setting does for its own windows. Asked of the system when turned on,
 /// not at launch; left on if refused, so allowing it later is all it takes.
+/// Whether slide decks' videos and clips come down with sync. One deck can
+/// still ask for its own from its menu in Slide Decks.
+private struct SlideDeckDownloadSettingsSection: View {
+    @AppStorage(PresentationDeckStorage.downloadsLargeFilesKey) private var downloads = false
+
+    var body: some View {
+        Section {
+            Toggle(isOn: $downloads) {
+                Label {
+                    Text("Download Large Presentation Files")
+                } icon: {
+                    LampIconTile(systemName: "film.stack", color: .orange)
+                }
+            }
+            .tint(.accentColor)
+        } header: {
+            Text("Slide Decks").lampSectionHeader()
+        } footer: {
+            Text("Videos and clips on slides can run to hundreds of megabytes, so they stay on your server unless this is on, and a slide shows its picture instead. To download them for one deck, touch and hold it in Slide Decks.")
+                .foregroundStyle(LampTheme.caption)
+        }
+        .textCase(nil)
+        .onChange(of: downloads) { _, isOn in
+            if isOn {
+                // Fetched by the next pull: one now, or after the one running.
+                SyncCoordinator.shared.syncAfterChange()
+            } else {
+                // Only this device's copies go, short of those a deck still
+                // asks for; the server keeps them all.
+                let onICloud = SyncCoordinator.shared.settings.backend == .icloudDrive
+                Task.detached(priority: .utility) {
+                    try? PresentationDeckSync.pruneAfterDownloadChange()
+                    if onICloud, let icloud = ICloudModuleStorage.shared.libraryEndpoint() {
+                        PresentationDeckSync.evictUnwantedICloudCopies(root: icloud.store.root)
+                    }
+                    await MainActor.run {
+                        NotificationCenter.default.post(name: .presentationDecksDidChange, object: nil)
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct AgentTurnNotificationSettingsSection: View {
     @AppStorage(AgentTurnNotifications.enabledKey) private var enabled = false
     @AppStorage(AgentTurnNotifications.showsReplyKey) private var showsReply = true

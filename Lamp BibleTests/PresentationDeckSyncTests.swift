@@ -15,17 +15,22 @@ import XCTest
 final class PresentationDeckSyncTests: XCTestCase {
     private var root: URL!
     private var decks: PresentationDeckStorage!
+    private var defaults: UserDefaults!
+    private var defaultsSuite: String!
 
     override func setUpWithError() throws {
         try super.setUpWithError()
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("deck-sync-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        decks = PresentationDeckStorage(documentsURL: root)
+        defaultsSuite = "deck-sync-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: defaultsSuite)
+        decks = PresentationDeckStorage(documentsURL: root, defaults: defaults)
     }
 
     override func tearDownWithError() throws {
         if let root { try? FileManager.default.removeItem(at: root) }
+        if let defaultsSuite { defaults?.removePersistentDomain(forName: defaultsSuite) }
         try super.tearDownWithError()
     }
 
@@ -390,6 +395,87 @@ final class PresentationDeckSyncTests: XCTestCase {
         let changed = try await PresentationDeckSync.pull(from: storage, into: decks)
         XCTAssertTrue(changed)
         XCTAssertEqual(storedAsset("photo.jpg"), "image bytes")
+    }
+
+    // MARK: - Large files
+
+    /// A deck with a picture whose video is `video`, and a clip from `clip`.
+    private func videoDeck(id: String, video: String, clip: String) -> LampPresentationDeck {
+        var deck = self.deck(id: id, title: "Moving Pictures")
+        let folder = LampPresentationDeckStore.assetsDirectoryName
+        var picture = LampPresentationBlock(kind: .image, assetPath: "\(folder)/still.jpg", altText: "A still")
+        picture.video = "\(folder)/\(video)"
+        var played = LampPresentationBlock(kind: .image, assetPath: "\(folder)/poster.jpg", altText: "A poster")
+        played.clip = LampPresentationClip(source: "\(folder)/\(clip)")
+        deck.slides.append(LampPresentationSlide(layout: .image, blocks: [picture]))
+        deck.slides.append(LampPresentationSlide(layout: .image, blocks: [played]))
+        return deck
+    }
+
+    private func videoArchive(deckAt: TimeInterval = 100) throws -> LampSyncArchive {
+        LampSyncArchive(entries: [
+            try deckEntry(videoDeck(id: "a", video: "drift.mov", clip: "talk.mp4"), modifiedAt: .init(timeIntervalSince1970: deckAt)),
+            assetEntry("still.jpg", "still", modifiedAt: .init(timeIntervalSince1970: 100)),
+            assetEntry("poster.jpg", "poster", modifiedAt: .init(timeIntervalSince1970: 100)),
+            assetEntry("drift.mov", "video", modifiedAt: .init(timeIntervalSince1970: 100)),
+            assetEntry("talk.mp4", "clip", modifiedAt: .init(timeIntervalSince1970: 100)),
+        ])
+    }
+
+    func testVideosAndClipsStayOnTheServerByDefault() async throws {
+        try await PresentationDeckSync.pull(from: try videoArchive(), into: decks)
+
+        XCTAssertEqual(storedAsset("still.jpg"), "still")
+        XCTAssertEqual(storedAsset("poster.jpg"), "poster")
+        XCTAssertNil(storedAsset("drift.mov"))
+        XCTAssertNil(storedAsset("talk.mp4"))
+    }
+
+    func testTheSettingDownloadsEveryDecksVideos() async throws {
+        defaults.set(true, forKey: PresentationDeckStorage.downloadsLargeFilesKey)
+        try await PresentationDeckSync.pull(from: try videoArchive(), into: decks)
+
+        XCTAssertEqual(storedAsset("drift.mov"), "video")
+        XCTAssertEqual(storedAsset("talk.mp4"), "clip")
+    }
+
+    func testOneDeckCanDownloadItsOwnVideos() async throws {
+        decks.setDownloadsLargeFiles(true, forDeck: "a")
+        try await PresentationDeckSync.pull(from: try videoArchive(), into: decks)
+
+        XCTAssertEqual(storedAsset("drift.mov"), "video")
+        XCTAssertEqual(storedAsset("talk.mp4"), "clip")
+    }
+
+    func testRemovingADecksVideosKeepsItsPicturesAndStopsTheDownload() async throws {
+        decks.setDownloadsLargeFiles(true, forDeck: "a")
+        try await PresentationDeckSync.pull(from: try videoArchive(), into: decks)
+        let entry = try XCTUnwrap(decks.entries().first)
+        XCTAssertEqual(decks.heldLargeFiles(of: entry).map(\.name), ["drift.mov", "talk.mp4"])
+
+        try decks.removeDownloadedLargeFiles(forDeck: "a")
+
+        XCTAssertFalse(decks.downloadsLargeFiles(forDeck: "a"))
+        XCTAssertNil(storedAsset("drift.mov"))
+        XCTAssertNil(storedAsset("talk.mp4"))
+        XCTAssertEqual(storedAsset("still.jpg"), "still")
+        XCTAssertTrue(decks.heldLargeFiles(of: entry).isEmpty)
+
+        // The next pull leaves them on the server.
+        try await PresentationDeckSync.pull(from: try videoArchive(deckAt: 200), into: decks)
+        XCTAssertNil(storedAsset("drift.mov"))
+    }
+
+    func testTurningTheSettingOffDropsVideosOnTheNextPull() async throws {
+        defaults.set(true, forKey: PresentationDeckStorage.downloadsLargeFilesKey)
+        try await PresentationDeckSync.pull(from: try videoArchive(), into: decks)
+        XCTAssertEqual(storedAsset("drift.mov"), "video")
+
+        defaults.set(false, forKey: PresentationDeckStorage.downloadsLargeFilesKey)
+        try await PresentationDeckSync.pull(from: try videoArchive(), into: decks)
+
+        XCTAssertNil(storedAsset("drift.mov"))
+        XCTAssertEqual(storedAsset("still.jpg"), "still")
     }
 
     func testADeckNamingAFileOutsideTheLibraryIsRejected() async throws {

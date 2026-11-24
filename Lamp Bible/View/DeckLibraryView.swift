@@ -29,6 +29,9 @@ struct DeckLibraryView: View {
     @State private var pendingDeckID: String?
     /// The slide to open the deck at, from its outline.
     @State private var pendingSlideIndex = 0
+    /// Each synced deck's videos and clips, by deck, read with the list.
+    @State private var largeFiles: [String: DeckLargeFiles] = [:]
+    @AppStorage(PresentationDeckStorage.downloadsLargeFilesKey) private var downloadsAllLargeFiles = false
 
     static let deckContentType: UTType = UTType("com.neus.lamp-bible.presentation-deck")
         ?? UTType(filenameExtension: "lampdeck", conformingTo: .json)
@@ -167,9 +170,20 @@ struct DeckLibraryView: View {
                     pendingSlideIndex = 0
                     pendingDeckID = entry.id
                 } label: {
-                    DeckLibraryCard(entry: entry, listed: deck)
+                    DeckLibraryCard(
+                        entry: entry,
+                        listed: deck,
+                        videosLeftOnServer: largeFiles[entry.id]?.isMissing == true
+                    )
                 }
                 .buttonStyle(DeckCardButtonStyle())
+                .contextMenu {
+                    // With every deck's downloading, there's nothing for one
+                    // to ask.
+                    if !downloadsAllLargeFiles, let files = largeFiles[entry.id] {
+                        largeFilesMenu(entry, files)
+                    }
+                }
                 .swipeActions(edge: .trailing) {
                     // Sync owns a published deck, so removing it here would
                     // only invite the next pull to bring it back.
@@ -309,6 +323,46 @@ struct DeckLibraryView: View {
         }
     }
 
+    /// A deck's videos and clips: download them for this deck, or delete
+    /// this device's copies.
+    @ViewBuilder
+    private func largeFilesMenu(_ entry: PresentationDeckEntry, _ files: DeckLargeFiles) -> some View {
+        Toggle("Download Videos", systemImage: "arrow.down.circle", isOn: Binding(
+            get: { files.isDownloading },
+            set: { downloads in
+                PresentationDeckStorage.shared.setDownloadsLargeFiles(downloads, forDeck: entry.id)
+                largeFiles[entry.id]?.isDownloading = downloads
+                // Fetched by the next pull: one now, or after the one running.
+                if downloads { SyncCoordinator.shared.syncAfterChange() }
+            }
+        ))
+        if files.heldBytes > 0 {
+            Button(role: .destructive) {
+                let onICloud = SyncCoordinator.shared.settings.backend == .icloudDrive
+                // Off the main actor: the prune reads every deck.
+                Task {
+                    let failure = await Task.detached(priority: .userInitiated) {
+                        do {
+                            try PresentationDeckStorage.shared.removeDownloadedLargeFiles(forDeck: entry.id)
+                            if onICloud, let icloud = ICloudModuleStorage.shared.libraryEndpoint() {
+                                PresentationDeckSync.evictUnwantedICloudCopies(root: icloud.store.root)
+                            }
+                            return nil as String?
+                        } catch {
+                            return error.localizedDescription
+                        }
+                    }.value
+                    if let failure { importError = failure }
+                }
+            } label: {
+                Label(
+                    "Remove Downloaded Videos (\(files.heldBytes.formatted(.byteCount(style: .file))))",
+                    systemImage: "trash"
+                )
+            }
+        }
+    }
+
     // MARK: - Actions
 
     /// Reads and decodes every deck file, so off the main actor, as the
@@ -317,7 +371,7 @@ struct DeckLibraryView: View {
     private func reload() async {
         loadGeneration &+= 1
         let generation = loadGeneration
-        let (loaded, listed) = await Task.detached(priority: .userInitiated) {
+        let (loaded, listed, large) = await Task.detached(priority: .userInitiated) {
             let decks = PresentationDeckStorage.shared
             let titles = try? DevotionalStorage.shared.getAllWritingTitles()
             // Unable to read the writings, list every deck rather than hide one.
@@ -328,11 +382,29 @@ struct DeckLibraryView: View {
                     titles?[$0.uppercased()]
                 }
             })
-            return (entries, shelf)
+            // Which synced decks have videos or clips, whether they're asked
+            // for, and how much of them is here, for the decks' menus.
+            // Every stored synced deck, as the prune weighs them, shown or not.
+            let synced = entries.filter { $0.origin == .synced }
+            let stored = decks.revisions(in: decks.syncedStore).map(\.deck)
+            let large = synced.reduce(into: [String: DeckLargeFiles]()) { large, entry in
+                let names = LampPresentationLargeAssets.largeNames(in: [entry.deck])
+                guard !names.isEmpty else { return }
+                let held = decks.heldLargeFiles(of: entry)
+                // What removing would free: not a file another deck keeps.
+                let keptByOthers = decks.wantedSyncedAssets(of: stored.filter { $0.id != entry.id })
+                large[entry.id] = DeckLargeFiles(
+                    isDownloading: decks.decksDownloadingLarge.contains(entry.id),
+                    heldBytes: held.filter { !keptByOthers.contains($0.name) }.reduce(0) { $0 + $1.bytes },
+                    isMissing: held.count < names.count
+                )
+            }
+            return (entries, shelf, large)
         }.value
         guard generation == loadGeneration else { return }
         entries = loaded
         shelf = listed
+        largeFiles = large
         if let pendingDeckID, !entries.contains(where: { $0.id == pendingDeckID }) {
             self.pendingDeckID = nil
         }
@@ -360,6 +432,16 @@ struct DeckLibraryView: View {
             importError = error.localizedDescription
         }
     }
+}
+
+/// A synced deck's videos and clips on this device.
+private struct DeckLargeFiles {
+    /// Asked for for this deck alone.
+    var isDownloading: Bool
+    /// What this device holds of them that no other deck keeps.
+    var heldBytes: Int64
+    /// Some aren't here, whether or not they've been asked for.
+    var isMissing: Bool
 }
 
 /// A card's press: it settles a little under the finger.
@@ -413,6 +495,9 @@ private struct DeckFilterChip: View {
 private struct DeckLibraryCard: View {
     let entry: PresentationDeckEntry
     let listed: LampPresentationShelf.Deck
+    /// Some of its videos and clips aren't on this device, so those slides
+    /// show their pictures instead.
+    var videosLeftOnServer = false
 
     var body: some View {
         let slides = entry.visibleSlides
@@ -487,6 +572,9 @@ private struct DeckLibraryCard: View {
         }
         if entry.origin == .imported {
             parts.append("On this device")
+        }
+        if videosLeftOnServer {
+            parts.append("Videos not downloaded")
         }
         return parts.joined(separator: " · ")
     }

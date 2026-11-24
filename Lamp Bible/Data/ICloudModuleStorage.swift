@@ -360,7 +360,22 @@ struct ICloudLibraryStorage: LibraryEndpoint, LampSyncVersionedStore {
     func listFiles(path: String) async throws -> [StoredFileListing] {
         (try await store.list(directory: path) ?? [])
             .filter { !$0.isDirectory }
-            .map { StoredFileListing(name: $0.name, modificationDate: $0.modifiedAt, size: $0.size) }
+            .map { entry in
+                // Core's folder listing leaves dates and sizes out. Read off a
+                // file that's here, so the deck pull needn't fetch an unchanged
+                // video to learn it's unchanged; an evicted one has only its
+                // placeholder, and is fetched as before.
+                let values = entry.modifiedAt == nil
+                    ? try? store.root.appendingPathComponent(entry.path)
+                        .resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey])
+                    : nil
+                let here = values?.isRegularFile == true
+                return StoredFileListing(
+                    name: entry.name,
+                    modificationDate: entry.modifiedAt ?? (here ? values?.contentModificationDate : nil),
+                    size: entry.size ?? (here ? values?.fileSize.map(Int64.init) : nil)
+                )
+            }
     }
     func directoryURL(for type: ModuleType) -> URL? {
         store.root.appendingPathComponent(directoryName(for: type), isDirectory: true)
