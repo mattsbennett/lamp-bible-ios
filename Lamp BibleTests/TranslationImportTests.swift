@@ -54,6 +54,17 @@ final class TranslationImportTests: XCTestCase {
         let second = try XCTUnwrap(TranslationDatabase.shared.getVerse(translationId: destination.moduleID, ref: 19_023_002))
         XCTAssertEqual(second.annotations?.map(\.type), [.selah])
 
+        // And it is findable. The import takes its rows in with the search
+        // index's insert trigger off and indexes them in one statement
+        // afterwards, which is two and a half times faster and would lose the
+        // whole translation from search if it ever indexed the wrong rows
+        // (`ExternalContentSearchIndex.acrossABulkImport`).
+        let found = try ModuleSearch.shared.search(query: "shepherd", limit: 20)
+        XCTAssertTrue(
+            found.contains { $0.moduleId == destination.moduleID },
+            "the imported translation is not searchable: \(found.map(\.moduleId))"
+        )
+
         let again = try ModuleSyncManager.shared.translationImportLibrary().destination(abbreviation: abbreviation)
         XCTAssertEqual(again.replacedModuleID, destination.moduleID)
         XCTAssertEqual(again.moduleID, destination.moduleID)
