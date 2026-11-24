@@ -406,23 +406,14 @@ class ModuleSyncManager: ObservableObject {
 
                     // Retire the previous module inside the same transaction
                     // as the replacement. A failed source copy rolls back both.
-                    //
-                    // The rows go in with the search index's insert trigger
-                    // off, and what they added is indexed in one statement
-                    // afterwards — two and a half times faster for a Bible,
-                    // and all of it inside this transaction, so a crash rolls
-                    // back to the old rows, the old index and the old
-                    // triggers alike
-                    // (`ExternalContentSearchIndex.acrossABulkImport`).
-                    try ExternalContentSearchIndex.acrossABulkImport(in: db) {
-                        try prepareModuleReplacement(
-                            id: fileInfo.id, type: type,
-                            filePath: fileInfo.filePath, in: db
-                        )
-                        try copySQLiteModuleRows(
-                            fileInfo: fileInfo, type: type, dbAlias: dbAlias, in: db
-                        )
-                    }
+                    try prepareModuleReplacement(
+                        id: fileInfo.id, type: type,
+                        filePath: fileInfo.filePath, in: db
+                    )
+
+                    try copySQLiteModuleRows(
+                        fileInfo: fileInfo, type: type, dbAlias: dbAlias, in: db
+                    )
                     try saveImportedModuleMetadata(
                         fileInfo: fileInfo, type: type, dbAlias: dbAlias, in: db
                     )

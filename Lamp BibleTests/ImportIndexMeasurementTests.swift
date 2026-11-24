@@ -169,6 +169,100 @@ final class ImportIndexMeasurementTests: XCTestCase {
         try? Data((line + "\n").utf8).write(to: file)
     }
 
+    /// Item 3b: the writing list draws the meta and an excerpt, and used to
+    /// parse every writing's body twice over to get there.
+    ///
+    /// What this holds is the pair of claims the change rests on: a row has
+    /// what it draws, and a reader opening one gets the whole writing.
+    func testTheListCarriesWhatARowDrawsAndNoMore() throws {
+        let database = ModuleDatabase.shared
+        let moduleID = "list-\(UUID().uuidString.prefix(6))"
+        try database.saveModule(Module(
+            id: moduleID, type: .devotional, name: "Writings", filePath: "writings.lamp"
+        ))
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: moduleID)
+            try? database.deleteModule(id: moduleID)
+        }
+
+        // A Markdown writing, which is the ordinary kind, with the fields a
+        // list never draws.
+        let id = UUID().uuidString.lowercased()
+        var meta = DevotionalMeta(id: id, title: "Living Hope", subtitle: "A study")
+        meta.tags = ["hope", "peter"]
+        let whole = Devotional(
+            meta: meta,
+            content: .blocks([]),
+            footnotes: [DevotionalFootnote(id: "f1", content: .plain("A note"))],
+            markdownContent: "# Living Hope\n\nBlessed be the God and Father of our Lord."
+        )
+        try database.saveDevotionalEntry(DevotionalEntry(from: whole, moduleId: moduleID))
+
+        let listed = try XCTUnwrap(
+            try DevotionalStorage.shared.getDevotionalsForList(moduleId: moduleID).first
+        )
+        // What a row draws.
+        XCTAssertEqual(listed.meta.id, id)
+        XCTAssertEqual(listed.meta.title, "Living Hope")
+        XCTAssertEqual(listed.meta.subtitle, "A study")
+        XCTAssertEqual(listed.meta.tags, ["hope", "peter"])
+        XCTAssertEqual(
+            listed.markdownContent,
+            "# Living Hope\n\nBlessed be the God and Father of our Lord.",
+            "the row needs the body's text to quote an excerpt from it"
+        )
+        // And no more: these are the decoders the list no longer runs.
+        XCTAssertNil(listed.footnotes)
+        XCTAssertNil(listed.media)
+        XCTAssertNil(listed.summary)
+
+        // A reader opening it gets the whole writing.
+        let opened = try XCTUnwrap(try DevotionalStorage.shared.getDevotional(id: id))
+        XCTAssertEqual(opened.footnotes?.map(\.plainText), ["A note"])
+        XCTAssertEqual(opened.meta.title, "Living Hope")
+    }
+
+    /// A writing kept as blocks rather than Markdown still has something for
+    /// a row to quote: those are sniffed and decoded as before, because a
+    /// block schema has to be converted before it can be excerpted.
+    func testABlockSchemaWritingStillHasTextForItsRow() throws {
+        let database = ModuleDatabase.shared
+        let moduleID = "blocks-\(UUID().uuidString.prefix(6))"
+        try database.saveModule(Module(
+            id: moduleID, type: .devotional, name: "Writings", filePath: "writings.lamp"
+        ))
+        defer {
+            try? database.deleteAllEntriesForModule(moduleId: moduleID)
+            try? database.deleteModule(id: moduleID)
+        }
+        let id = UUID().uuidString.lowercased()
+        try database.saveDevotionalEntry(DevotionalEntry(
+            from: Devotional(
+                meta: DevotionalMeta(id: id, title: "As Blocks"),
+                content: .blocks([.paragraph("The opening of the writing.")])
+            ),
+            moduleId: moduleID
+        ))
+
+        let listed = try XCTUnwrap(
+            try DevotionalStorage.shared.getDevotionalsForList(moduleId: moduleID).first
+        )
+        XCTAssertEqual(listed.meta.title, "As Blocks")
+        let quotable = listed.markdownContent
+            ?? MarkdownDevotionalConverter.contentToMarkdown(listed)
+        XCTAssertTrue(
+            quotable.contains("The opening of the writing."),
+            "a block-schema row has nothing to quote: \(quotable)"
+        )
+        // And it is prose, not the stored JSON. Handing the raw column
+        // straight through would also "contain" the words, while a row drew
+        // `{"blocks":[{"type":"paragraph"...` at the reader.
+        XCTAssertFalse(
+            quotable.contains("\"type\"") || quotable.hasPrefix("{") || quotable.hasPrefix("["),
+            "a row would quote the stored JSON: \(quotable.prefix(120))"
+        )
+    }
+
     private func fileBytes() throws -> Int64 {
         var total: Int64 = 0
         for suffix in ["", "-wal"] {

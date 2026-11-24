@@ -904,6 +904,70 @@ struct DevotionalEntry: Codable, FetchableRecord, PersistableRecord, Identifiabl
         )
     }
 
+    /// The writing as a list draws it, without parsing its body.
+    ///
+    /// `toDevotional()` costs two full passes over the body — a
+    /// `JSONSerialization` parse purely to decide whether it is the block
+    /// schema or Markdown, then a `JSONDecoder` parse of the same bytes —
+    /// plus four more `JSONDecoder` instantiations for key scriptures, the
+    /// summary, footnotes and media. A list of titles paid all of that for
+    /// every writing in the library, and drew none of it
+    /// (`lamp-bible-core/Documentation/ScalabilityPlan.md`, 3b).
+    ///
+    /// What a row actually draws is the meta and an excerpt of the opening
+    /// prose. So: the four unused decoders are skipped, and the body is only
+    /// parsed where it has to be. A JSON document begins with `{` or `[`, so
+    /// anything else is Markdown with certainty and is handed over as the
+    /// string it already is. A body that *does* begin that way may still be
+    /// Markdown — one starting with a link, or quoting a JSON example — and
+    /// those few are sniffed and decoded exactly as before, because a block
+    /// schema has to be converted before a row can quote it.
+    ///
+    /// The writing this returns is **not** the whole writing: it has no
+    /// footnotes, media, summary or key scriptures. A reader opening one
+    /// fetches it by id.
+    func toListDevotional() -> Devotional? {
+        let content: DevotionalContent
+        var markdownContent: String? = nil
+        let firstCharacter = contentJson.first { !$0.isWhitespace }
+        if firstCharacter == "{" || firstCharacter == "[" {
+            guard let full = toDevotional() else { return nil }
+            // Keep what that decided about the body, and drop the rest.
+            content = full.content
+            markdownContent = full.markdownContent
+        } else {
+            markdownContent = contentJson
+            content = .blocks([])
+        }
+
+        let series: DevotionalSeriesInfo? = {
+            guard seriesId != nil || seriesName != nil || seriesOrder != nil else { return nil }
+            return DevotionalSeriesInfo(id: seriesId, name: seriesName, order: seriesOrder)
+        }()
+        var meta = DevotionalMeta(
+            id: id,
+            title: title,
+            subtitle: subtitle,
+            author: author,
+            date: date,
+            tags: tags?.split(separator: ",").map { String($0) },
+            series: series,
+            keyScriptures: nil,
+            created: created,
+            lastModified: lastModified
+        )
+        meta.categoryValue = category
+        return Devotional(
+            meta: meta,
+            summary: nil,
+            content: content,
+            footnotes: nil,
+            relatedDevotionals: relatedIds?.split(separator: ",").map { String($0) },
+            media: nil,
+            markdownContent: markdownContent
+        )
+    }
+
     /// Get tags as array
     var tagsArray: [String] {
         tags?.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } ?? []

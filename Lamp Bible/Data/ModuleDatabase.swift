@@ -4541,52 +4541,6 @@ struct ExternalContentSearchIndex: Equatable {
         return columns.allSatisfy { present.contains($0) && indexed.contains($0) }
     }
 
-    /// Takes a bulk import out of the per-row trigger and indexes what it
-    /// added in one statement afterwards.
-    ///
-    /// A full Bible's 31 000 verses cost **918–936 ms** inserted with the
-    /// insert trigger attached, against **~380 ms** without it and **26–58 ms**
-    /// to index the new rows — two and a half times, and the saving does not
-    /// shrink as the library grows.
-    ///
-    /// Only the **insert** trigger is dropped. A replacement deletes the old
-    /// module's rows in the same transaction, and those deletions have to
-    /// reach the index or it would keep entries for rows that are gone.
-    ///
-    /// What gets indexed afterwards is "every row the index does not have",
-    /// read from the index's own `_docsize` shadow table — not "every row
-    /// added since a high-water mark". A content table without
-    /// `AUTOINCREMENT` can reuse a rowid the replacement's delete just
-    /// freed, and such a row lands *below* the mark and would never be
-    /// indexed: search would miss it for good, silently.
-    ///
-    /// `'rebuild'` was the other candidate and is rejected: it reindexes the
-    /// whole content table, so it costs 23 ms with nothing installed and
-    /// 280 ms with six translations — it grows with the library where this
-    /// does not. See `lamp-bible-core/Documentation/ScalabilityPlan.md`, 3d.
-    static func acrossABulkImport<T>(in db: Database, _ body: () throws -> T) throws -> T {
-        let present = try all.filter { try $0.exists(in: db) }
-        for index in present {
-            try db.execute(sql: "DROP TRIGGER IF EXISTS \(index.name)_insert")
-        }
-        let result = try body()
-        for index in present {
-            try index.indexRowsItDoesNotHave(in: db)
-            try index.installTriggers(in: db)
-        }
-        return result
-    }
-
-    /// Indexes every row of the content table the index has no entry for.
-    func indexRowsItDoesNotHave(in db: Database) throws {
-        let columnList = columns.joined(separator: ", ")
-        try db.execute(sql: """
-            INSERT INTO \(name)(rowid, \(columnList))
-            SELECT \(rowid), \(columnList) FROM \(content)
-            WHERE \(rowid) NOT IN (SELECT rowid FROM \(name)_docsize)
-            """)
-    }
-
     func installTriggers(in db: Database) throws {
         let target = name
         let columnList = columns.joined(separator: ", ")

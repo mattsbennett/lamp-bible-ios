@@ -54,16 +54,29 @@ final class TranslationImportTests: XCTestCase {
         let second = try XCTUnwrap(TranslationDatabase.shared.getVerse(translationId: destination.moduleID, ref: 19_023_002))
         XCTAssertEqual(second.annotations?.map(\.type), [.selah])
 
-        // And it is findable. The import takes its rows in with the search
-        // index's insert trigger off and indexes them in one statement
-        // afterwards, which is two and a half times faster and would lose the
-        // whole translation from search if it ever indexed the wrong rows
-        // (`ExternalContentSearchIndex.acrossABulkImport`).
-        let found = try ModuleSearch.shared.search(query: "shepherd", limit: 20)
-        XCTAssertTrue(
-            found.contains { $0.moduleId == destination.moduleID },
-            "the imported translation is not searchable: \(found.map(\.moduleId))"
-        )
+        // And its verses are in the search index. Asked of the index for
+        // this translation rather than through a ranked search across the
+        // library: with other Bibles installed, "shepherd" fills any limit
+        // long before reaching a psalter imported a moment ago, so that
+        // assertion passed alone and failed in the suite.
+        //
+        // Kept from a reverted change to how the index is filled on import:
+        // whatever fills it, an imported translation has to be findable, and
+        // nothing asserted that before.
+        let indexed = try ModuleDatabase.shared.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT count(*) FROM translation_verses
+                    WHERE translation_id = ? AND id IN (
+                        SELECT rowid FROM translation_verses_fts
+                        WHERE translation_verses_fts MATCH ?
+                    )
+                    """,
+                arguments: [destination.moduleID, "shepherd"]
+            ) ?? 0
+        }
+        XCTAssertEqual(indexed, 1, "the imported verse is not in the search index")
 
         let again = try ModuleSyncManager.shared.translationImportLibrary().destination(abbreviation: abbreviation)
         XCTAssertEqual(again.replacedModuleID, destination.moduleID)

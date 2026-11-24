@@ -158,6 +158,40 @@ class DevotionalStorage {
     }
 
     /// Get devotionals by date (exact match)
+    /// The writings a list draws, without parsing each one's body.
+    ///
+    /// The same rows and the same order as `getDevotionals` with no filter —
+    /// which is what the picker asks for — built through
+    /// `toListDevotional()`. See `lamp-bible-core/Documentation/ScalabilityPlan.md`,
+    /// 3b: a list of titles was parsing every writing's body twice over.
+    ///
+    /// What comes back has no footnotes, media, summary or key scriptures. A
+    /// reader opening one fetches it whole by id.
+    func getDevotionalsForList(
+        moduleId: String,
+        sort: DevotionalSortOption = .dateNewest
+    ) throws -> [Devotional] {
+        try db.read { db in
+            var query = DevotionalEntry.filter(Column("module_id") == moduleId)
+            switch sort {
+            case .dateNewest:
+                query = query.order(SQL("COALESCE(date, '') DESC"), Column("title"))
+            case .dateOldest:
+                query = query.order(
+                    SQL("CASE WHEN date IS NULL OR date = '' THEN 0 ELSE 1 END"),
+                    Column("date"), Column("title")
+                )
+            case .titleAZ:
+                query = query.order(Column("title").collating(.localizedCaseInsensitiveCompare))
+            case .titleZA:
+                query = query.order(Column("title").collating(.localizedCaseInsensitiveCompare).desc)
+            case .lastModified:
+                query = query.order(Column("last_modified").desc)
+            }
+            return try query.fetchAll(db).compactMap { $0.toListDevotional() }
+        }
+    }
+
     func getDevotionalsByDate(moduleId: String, date: String) throws -> [Devotional] {
         try db.read { db in
             let entries = try DevotionalEntry

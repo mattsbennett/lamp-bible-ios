@@ -656,7 +656,7 @@ struct DevotionalPickerView: View {
                         if let onSelect = onSelect {
                             // When used with onSelect callback (e.g., in ToolPanel)
                             Button {
-                                onSelect(devotional)
+                                onSelect(whole(devotional))
                             } label: {
                                 DevotionalListRow(devotional: devotional, hasSlides: hasSlides(devotional))
                             }
@@ -672,7 +672,7 @@ struct DevotionalPickerView: View {
                                     // re-encodes the writing.
                                     DeferredDestination {
                                         DevotionalView(
-                                            devotional: devotional,
+                                            devotional: whole(devotional),
                                             moduleId: selectedModuleId,
                                             initialMode: .read,
                                             onBack: {
@@ -734,6 +734,20 @@ struct DevotionalPickerView: View {
 
     // MARK: - Actions
 
+    /// The whole writing, for a reader opening it.
+    ///
+    /// The list carries what a row draws and no more — no footnotes, media,
+    /// summary or key scriptures — so a writing on its way to the reader is
+    /// fetched by id. One row, read where the push is already deferred
+    /// because the writing view's init converts and re-encodes
+    /// (`lamp-bible-core/Documentation/ScalabilityPlan.md`, 3b).
+    ///
+    /// The list's own copy is the fallback: a writing deleted from under the
+    /// list opens as the list last saw it rather than not at all.
+    private func whole(_ devotional: Devotional) -> Devotional {
+        (try? DevotionalStorage.shared.getDevotional(id: devotional.meta.id)) ?? devotional
+    }
+
     private func hasSlides(_ devotional: Devotional) -> Bool {
         writingIDsWithSlides.contains(devotional.meta.id.uppercased())
     }
@@ -780,10 +794,12 @@ struct DevotionalPickerView: View {
                     return LoadedWritings(
                         modules: modules,
                         moduleId: moduleId,
-                        devotionals: try DevotionalStorage.shared.getDevotionals(
-                            moduleId: moduleId,
-                            filter: DevotionalFilterOptions(),
-                            sort: sort
+                        // The list, not the whole writings: a row draws the
+                        // meta and an excerpt, and parsing every body to
+                        // find that was the cost item 3b names. A reader
+                        // opening one fetches it whole by id, below.
+                        devotionals: try DevotionalStorage.shared.getDevotionalsForList(
+                            moduleId: moduleId, sort: sort
                         ),
                         tags: try DevotionalStorage.shared.getAllTags(moduleId: moduleId),
                         categories: try DevotionalStorage.shared.getUsedCategories(moduleId: moduleId)
