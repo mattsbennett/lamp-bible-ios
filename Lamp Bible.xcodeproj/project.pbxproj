@@ -114,6 +114,7 @@
 		B89229652F05FE5B00A58F81 /* ModuleSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */; };
 		B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */; };
 		D9BA20FA077BADFF0AB7A744 /* TranslationImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30C12C21B9AF1748ECBF8362 /* TranslationImportTests.swift */; };
+		6A5B0ADBA571373CE2DB022F /* ImportIndexMeasurementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67E2963852F5BFE919CC9279 /* ImportIndexMeasurementTests.swift */; };
 		AA11C0DE2F0600000000A002 /* PlanMetaDataResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11C0DE2F0600000000A001 /* PlanMetaDataResolutionTests.swift */; };
 		B892298F2F097B5700A58F81 /* ModuleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */; };
 		B89229912F0B2BD800A58F81 /* CommentaryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */; };
@@ -312,6 +313,7 @@
 		B89229642F05FE5B00A58F81 /* ModuleSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSyncManager.swift; sourceTree = "<group>"; };
 		B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceParsingTests.swift; sourceTree = "<group>"; };
 		30C12C21B9AF1748ECBF8362 /* TranslationImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslationImportTests.swift; sourceTree = "<group>"; };
+		67E2963852F5BFE919CC9279 /* ImportIndexMeasurementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportIndexMeasurementTests.swift; sourceTree = "<group>"; };
 		AA11C0DE2F0600000000A001 /* PlanMetaDataResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanMetaDataResolutionTests.swift; sourceTree = "<group>"; };
 		B892298E2F097B5700A58F81 /* ModuleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleSettingsView.swift; sourceTree = "<group>"; };
 		B89229902F0B2BD800A58F81 /* CommentaryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommentaryRenderer.swift; sourceTree = "<group>"; };
@@ -632,6 +634,7 @@
 				B885E4272ADB47ED0066F0A0 /* Lamp_BibleTests.swift */,
 				B89229662F062ACD00A58F81 /* ReferenceParsingTests.swift */,
 				30C12C21B9AF1748ECBF8362 /* TranslationImportTests.swift */,
+				67E2963852F5BFE919CC9279 /* ImportIndexMeasurementTests.swift */,
 				AA11C0DE2F0600000000A001 /* PlanMetaDataResolutionTests.swift */,
 				B8922A002F062ACD00A58F82 /* DevotionalSharingTests.swift */,
 				C1A100182FE1000000000001 /* PresentationDeckSyncTests.swift */,
@@ -968,6 +971,7 @@
 			files = (
 				B89229672F062ACD00A58F81 /* ReferenceParsingTests.swift in Sources */,
 				D9BA20FA077BADFF0AB7A744 /* TranslationImportTests.swift in Sources */,
+				6A5B0ADBA571373CE2DB022F /* ImportIndexMeasurementTests.swift in Sources */,
 				AA11C0DE2F0600000000A002 /* PlanMetaDataResolutionTests.swift in Sources */,
 				B8922A012F062ACD00A58F82 /* DevotionalSharingTests.swift in Sources */,
 				C1A1000B2FE1000000000001 /* PresentationDeckSyncTests.swift in Sources */,
