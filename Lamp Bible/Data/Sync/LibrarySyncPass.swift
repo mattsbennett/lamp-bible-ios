@@ -736,9 +736,18 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         for (path, url) in localMedia() {
             guard manifest.entry(at: path) != nil
                     || LibrarySyncPass.modulePath(forMedia: path).map(libraryModules.contains) == true,
-                  let kind = LampSyncFolderLayout.kind(of: path),
-                  let digest = PhonePassLibrary.digest(forFileAt: url, kind: kind, cache: mediaDigests)
+                  let kind = LampSyncFolderLayout.kind(of: path)
             else { continue }
+            // A file that is here and cannot be read is said so, rather than
+            // left out: a path missing from the locals reads as one this
+            // device does not hold, so the plan would fetch the server's copy
+            // and install it over the file
+            // (`lamp-bible-core/Documentation/decisions/0013`).
+            guard let digest = PhonePassLibrary.digest(forFileAt: url, kind: kind, cache: mediaDigests)
+            else {
+                gathered.refused[path] = "its file could not be read"
+                continue
+            }
             gathered.local.append(LampSyncLocalFile(path: path, kind: kind, url: url, digest: digest))
         }
 
@@ -767,7 +776,10 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         for file in pictures.files {
             guard let digest = PhonePassLibrary.digest(
                 forFileAt: file.url, kind: .bookMedia, cache: mediaDigests
-            ) else { continue }
+            ) else {
+                gathered.refused[file.remotePath] = "its file could not be read"
+                continue
+            }
             gathered.local.append(LampSyncLocalFile(
                 path: file.remotePath, kind: .bookMedia, url: file.url, digest: digest
             ))
