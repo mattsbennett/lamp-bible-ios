@@ -1228,30 +1228,46 @@ final class PhonePassLibrary: LampSyncPassLibrary {
     /// again rather than publishing bytes that miss it.
     private func exportedBytes(_ module: Module) throws -> Data {
         let changes = try? database.devotionalCollectionChanges(moduleID: module.id)
+        let generation = database.generation
         if let changes {
             Self.collectionExports.lock()
             let kept = Self.collectionExportsByID[module.id]
             Self.collectionExports.unlock()
-            if let kept, kept.changes == changes { return kept.bytes }
+            if let kept, kept.changes == changes, kept.generation == generation {
+                return kept.bytes
+            }
         }
-        let bytes: Data = switch module.type {
-        case .notes: try modules.exportNoteModuleToSQLite(module)
-        case .devotional: try modules.exportDevotionalModuleToSQLite(module)
-        case .highlights: try modules.exportHighlightModuleToSQLite(module)
-        default: throw ModuleSyncError.moduleNotEditable(module.id)
+        // The module's own row read **after** the count, not before: the row
+        // carries the name, description, author and version that go into the
+        // file, and a local import can change those between the two reads —
+        // which would cache this collection's entries with the metadata they
+        // had beforehand, under the new count, and keep it. Found by a Codex
+        // review. The caller's copy was fetched earlier still.
+        let current = (try? database.getModule(id: module.id)) ?? module
+        let bytes: Data = switch current.type {
+        case .notes: try modules.exportNoteModuleToSQLite(current)
+        case .devotional: try modules.exportDevotionalModuleToSQLite(current)
+        case .highlights: try modules.exportHighlightModuleToSQLite(current)
+        default: throw ModuleSyncError.moduleNotEditable(current.id)
         }
         if let changes {
             Self.collectionExports.lock()
-            Self.collectionExportsByID[module.id] = (changes, bytes)
+            Self.collectionExportsByID[module.id] = (generation, changes, bytes)
             Self.collectionExports.unlock()
         }
         return bytes
     }
 
     /// Each collection's compiled bytes, with the change count they were
-    /// built at.
+    /// built at and which database that count came from.
+    ///
+    /// The generation matters because the counters start again from zero with
+    /// a new database file — a reset from Settings, a recovery — and the same
+    /// few writes reproduce the same count, so a count alone would let this
+    /// hand back a collection from before the reset.
     nonisolated private static let collectionExports = NSLock()
-    nonisolated(unsafe) private static var collectionExportsByID: [String: (changes: Int64, bytes: Data)] = [:]
+    nonisolated(unsafe) private static var collectionExportsByID:
+        [String: (generation: UUID, changes: Int64, bytes: Data)] = [:]
 
     /// Digests of the files whose bytes do not change at a path — media and
     /// book pictures — kept for as long as the app runs, and only where the

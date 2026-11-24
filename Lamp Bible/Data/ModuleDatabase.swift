@@ -14,6 +14,14 @@ class ModuleDatabase {
     static let shared = ModuleDatabase()
 
     private var dbQueue: DatabaseQueue!
+    /// Which database this is. Changed whenever the file behind it is made
+    /// again — first open, a recovery, a reset from Settings — so that
+    /// anything keeping an answer about its contents can tell that the
+    /// contents are not merely different but from another database
+    /// altogether. The change counters start again from zero with the file,
+    /// and the same few writes reproduce the same count, so a count alone
+    /// cannot tell a caller that. Found by a Codex review.
+    private(set) var generation = UUID()
 
     private init() {
         do {
@@ -52,6 +60,7 @@ class ModuleDatabase {
 
         // Try to open the database
         do {
+                generation = UUID()
             dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
 
             // Set PRAGMAs after database is open (must be outside transaction)
@@ -87,6 +96,7 @@ class ModuleDatabase {
             try? FileManager.default.removeItem(at: databaseURL.appendingPathExtension("shm"))
 
             // Create fresh database
+                generation = UUID()
             dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
 
             // Set PRAGMAs on fresh database too (must be outside transaction)
@@ -143,7 +153,8 @@ class ModuleDatabase {
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
         }
 
-        dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
+            generation = UUID()
+            dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
 
         print("[ModuleDatabase] Database recovered - data may have been lost")
     }
@@ -220,7 +231,8 @@ class ModuleDatabase {
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
         }
 
-        dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
+            generation = UUID()
+            dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: config)
         try migrator.migrate(dbQueue)
 
         lastCorruptionError = nil
