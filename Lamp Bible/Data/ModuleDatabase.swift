@@ -1645,6 +1645,49 @@ class ModuleDatabase {
             }
         }
 
+        // The same count for the other two editable collections, so a pass
+        // exports a collection only when something in it moved. Notes carry
+        // their module; a highlight and a theme name a set, which carries
+        // one. See `LibrarySyncPass.exportedBytes` and
+        // `lamp-bible-core/Documentation/decisions/0002`, which is the Mac's
+        // side of the same thing.
+        migrator.registerMigration("v45_note_and_highlight_collection_changes") { db in
+            func bump(_ id: String) -> String {
+                """
+                INSERT INTO devotional_collection_changes (module_id, changes) VALUES (\(id), 1)
+                    ON CONFLICT(module_id) DO UPDATE SET changes = changes + 1;
+                """
+            }
+            func bumpSet(_ setID: String) -> String {
+                """
+                INSERT INTO devotional_collection_changes (module_id, changes)
+                    SELECT module_id, 1 FROM highlight_sets WHERE id = \(setID)
+                    ON CONFLICT(module_id) DO UPDATE SET changes = changes + 1;
+                """
+            }
+            let triggers = [
+                ("note_changes_insert", "AFTER INSERT ON note_entries", bump("new.module_id")),
+                ("note_changes_update", "AFTER UPDATE ON note_entries",
+                 bump("new.module_id") + bump("old.module_id")),
+                ("note_changes_delete", "AFTER DELETE ON note_entries", bump("old.module_id")),
+                ("highlight_set_changes_insert", "AFTER INSERT ON highlight_sets", bump("new.module_id")),
+                ("highlight_set_changes_update", "AFTER UPDATE ON highlight_sets",
+                 bump("new.module_id") + bump("old.module_id")),
+                ("highlight_set_changes_delete", "AFTER DELETE ON highlight_sets", bump("old.module_id")),
+                ("highlight_changes_insert", "AFTER INSERT ON highlights", bumpSet("new.set_id")),
+                ("highlight_changes_update", "AFTER UPDATE ON highlights",
+                 bumpSet("new.set_id") + bumpSet("old.set_id")),
+                ("highlight_changes_delete", "AFTER DELETE ON highlights", bumpSet("old.set_id")),
+                ("highlight_theme_changes_insert", "AFTER INSERT ON highlight_themes", bumpSet("new.set_id")),
+                ("highlight_theme_changes_update", "AFTER UPDATE ON highlight_themes",
+                 bumpSet("new.set_id") + bumpSet("old.set_id")),
+                ("highlight_theme_changes_delete", "AFTER DELETE ON highlight_themes", bumpSet("old.set_id")),
+            ]
+            for (name, event, body) in triggers {
+                try db.execute(sql: "CREATE TRIGGER \(name) \(event) BEGIN \(body) END")
+            }
+        }
+
         return migrator
     }
 
@@ -4167,8 +4210,12 @@ extension ModuleDatabase {
         }
     }
 
-    /// How many times a collection's writings or its own row have changed,
+    /// How many times a collection's rows or its own row have changed,
     /// counted by triggers: equal counts mean nothing in it has.
+    ///
+    /// Writings since v44, notes and highlights since v45 — so this answers
+    /// for any of the three editable collections, under the name the first
+    /// of them gave the table.
     func devotionalCollectionChanges(moduleID: String) throws -> Int64 {
         try read { db in
             try Int64.fetchOne(

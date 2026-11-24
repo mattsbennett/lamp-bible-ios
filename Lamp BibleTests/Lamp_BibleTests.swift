@@ -10243,6 +10243,107 @@ extension WritingConditionalSaveTests {
         try database.deleteDevotionalEntry(id: id)
         try XCTAssertCounted("a writing removed")
     }
+
+    /// The same count for the other two editable collections, so a pass
+    /// compiles one only when something in it moved (v45).
+    ///
+    /// Written in SQL rather than through the models: what is under test is
+    /// the triggers, and a note carries its module while a highlight and a
+    /// theme name a set, which carries one — so the set's trigger has to look
+    /// the module up.
+    func testNotesAndHighlightsAreCountedForTheirOwnCollection() throws {
+        let notesID = "note-changes-\(UUID().uuidString)"
+        let highlightsID = "highlight-changes-\(UUID().uuidString)"
+        let noteID = "note-\(UUID().uuidString)"
+        let setID = "set-\(UUID().uuidString)"
+        try database.saveModule(Module(
+            id: notesID, type: .notes, name: "Notes", filePath: "\(notesID).lamp", isEditable: true
+        ))
+        try database.saveModule(Module(
+            id: highlightsID, type: .highlights, name: "Highlights",
+            filePath: "\(highlightsID).lamp", isEditable: true
+        ))
+        addTeardownBlock {
+            try? ModuleDatabase.shared.write { db in
+                try db.execute(sql: "DELETE FROM note_entries WHERE id = ?", arguments: [noteID])
+                try db.execute(sql: "DELETE FROM highlight_sets WHERE id = ?", arguments: [setID])
+            }
+            try? ModuleDatabase.shared.deleteModule(id: notesID)
+            try? ModuleDatabase.shared.deleteModule(id: highlightsID)
+        }
+
+        func changes(_ moduleID: String) throws -> Int64 {
+            try database.devotionalCollectionChanges(moduleID: moduleID)
+        }
+
+        var lastNotes = try changes(notesID)
+        func XCTAssertNotesCounted(_ what: String) throws {
+            let now = try changes(notesID)
+            XCTAssertGreaterThan(now, lastNotes, what)
+            lastNotes = now
+        }
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO note_entries (id, module_id, verse_id, book, chapter, verse, content)
+                VALUES (?, ?, 1001001, 1, 1, 1, 'A note.')
+                """, arguments: [noteID, notesID])
+        }
+        try XCTAssertNotesCounted("a note added")
+        try database.write { db in
+            try db.execute(
+                sql: "UPDATE note_entries SET content = 'Edited.' WHERE id = ?",
+                arguments: [noteID]
+            )
+        }
+        try XCTAssertNotesCounted("a note changed")
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM note_entries WHERE id = ?", arguments: [noteID])
+        }
+        try XCTAssertNotesCounted("a note removed")
+
+        var lastHighlights = try changes(highlightsID)
+        func XCTAssertHighlightsCounted(_ what: String) throws {
+            let now = try changes(highlightsID)
+            XCTAssertGreaterThan(now, lastHighlights, what)
+            lastHighlights = now
+        }
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO highlight_sets
+                    (id, module_id, name, translation_id, created, last_modified)
+                VALUES (?, ?, 'A set', 'kjv', 100, 100)
+                """, arguments: [setID, highlightsID])
+        }
+        try XCTAssertHighlightsCounted("a set added")
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO highlights (set_id, ref, sc, ec, style, color)
+                VALUES (?, 1001001, 0, 5, 0, '#FFEE88')
+                """, arguments: [setID])
+        }
+        try XCTAssertHighlightsCounted("a highlight added, which names its set")
+        try database.write { db in
+            try db.execute(sql: """
+                INSERT INTO highlight_themes (set_id, color, style, name)
+                VALUES (?, '#FFEE88', 0, 'Promise')
+                """, arguments: [setID])
+        }
+        try XCTAssertHighlightsCounted("a theme added, which names its set")
+
+        // And neither collection's changes are the other's.
+        let notesNow = try changes(notesID)
+        try database.write { db in
+            try db.execute(
+                sql: "UPDATE highlight_sets SET name = 'A set, renamed' WHERE id = ?",
+                arguments: [setID]
+            )
+        }
+        try XCTAssertHighlightsCounted("the set renamed")
+        XCTAssertEqual(
+            try changes(notesID), notesNow,
+            "a highlight set's change is not the notes collection's"
+        )
+    }
 }
 
 /// The writer's ✓ clears, made in the page's text when it's a moment ahead

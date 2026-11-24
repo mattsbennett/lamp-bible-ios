@@ -97,21 +97,28 @@ struct PresentationDeckStorage: Sendable {
 
     /// Every deck this device can show, newest-looking name order, with a
     /// synced copy winning over an imported one of the same deck.
+    /// Through `LampPresentationDeckStore.decks()`, which reads only the deck
+    /// files that have changed since this process last read them
+    /// (`lamp-bible-core/Documentation/decisions/0003`). This used to decode
+    /// and validate every deck in both directories — and
+    /// `linkedWritingIDs()` and `entries(forWriting:)` each ask again, so the
+    /// writings list paid for it to answer whether one writing had a deck.
+    ///
+    /// `revisions(in:)` is still the way to the bytes, which a sync merge
+    /// needs; a listing does not.
     func entries() -> [PresentationDeckEntry] {
         var byID: [String: PresentationDeckEntry] = [:]
-        for revision in revisions(in: importedStore) {
-            byID[revision.id] = PresentationDeckEntry(
-                deck: revision.deck,
-                origin: .imported,
-                modifiedAt: revision.modifiedAt
-            )
-        }
-        for revision in revisions(in: syncedStore) {
-            byID[revision.id] = PresentationDeckEntry(
-                deck: revision.deck,
-                origin: .synced,
-                modifiedAt: revision.modifiedAt
-            )
+        for (origin, store) in [
+            (PresentationDeckOrigin.imported, importedStore),
+            (PresentationDeckOrigin.synced, syncedStore),
+        ] {
+            for deck in (try? store.decks()) ?? [] {
+                byID[deck.id] = PresentationDeckEntry(
+                    deck: deck,
+                    origin: origin,
+                    modifiedAt: store.modificationDate(ofDeck: deck.id)
+                )
+            }
         }
         return byID.values.sorted {
             $0.deck.title.localizedStandardCompare($1.deck.title) == .orderedAscending

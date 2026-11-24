@@ -730,11 +730,15 @@ final class PhonePassLibrary: LampSyncPassLibrary {
 
         // Media only for modules in the library.
         let libraryModules = Set(heldModules.keys).union(manifest.members.map(\.path))
+        let mediaDigests = PhonePassLibrary.digestCache(
+            forLibraryAt: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        )
         for (path, url) in localMedia() {
             guard manifest.entry(at: path) != nil
                     || LibrarySyncPass.modulePath(forMedia: path).map(libraryModules.contains) == true,
                   let kind = LampSyncFolderLayout.kind(of: path),
-                  let digest = try? LampSyncContentRevision.digest(forFileAt: url) else { continue }
+                  let digest = PhonePassLibrary.digest(forFileAt: url, kind: kind, cache: mediaDigests)
+            else { continue }
             gathered.local.append(LampSyncLocalFile(path: path, kind: kind, url: url, digest: digest))
         }
 
@@ -761,7 +765,9 @@ final class PhonePassLibrary: LampSyncPassLibrary {
             folders: ModuleMediaStorage.shared.bookFolders(for:)
         )
         for file in pictures.files {
-            guard let digest = try? LampSyncContentRevision.digest(forFileAt: file.url) else { continue }
+            guard let digest = PhonePassLibrary.digest(
+                forFileAt: file.url, kind: .bookMedia, cache: mediaDigests
+            ) else { continue }
             gathered.local.append(LampSyncLocalFile(
                 path: file.remotePath, kind: .bookMedia, url: file.url, digest: digest
             ))
@@ -1206,13 +1212,80 @@ final class PhonePassLibrary: LampSyncPassLibrary {
         "\(storage.directoryName(for: type))/\(fileName)"
     }
 
+    /// A collection compiled for publishing, built once per change to it
+    /// rather than once per pass.
+    ///
+    /// Compiling means a database built row by row, `ANALYZE`, `VACUUM` and
+    /// zlib. A pass runs whenever anything changed, and an edit to one
+    /// collection had all three recompiled — on the phone, where that is
+    /// battery. The Mac's side of this is
+    /// `lamp-bible-core/Documentation/decisions/0002`.
+    ///
+    /// Keyed on the count the database keeps of changes to that collection
+    /// (`devotionalCollectionChanges`, triggers since v44 for writings and
+    /// v45 for notes and highlights), read **before** the rows: a change made
+    /// while this compiles counts as after it, so the next pass compiles
+    /// again rather than publishing bytes that miss it.
     private func exportedBytes(_ module: Module) throws -> Data {
-        switch module.type {
+        let changes = try? database.devotionalCollectionChanges(moduleID: module.id)
+        if let changes {
+            Self.collectionExports.lock()
+            let kept = Self.collectionExportsByID[module.id]
+            Self.collectionExports.unlock()
+            if let kept, kept.changes == changes { return kept.bytes }
+        }
+        let bytes: Data = switch module.type {
         case .notes: try modules.exportNoteModuleToSQLite(module)
         case .devotional: try modules.exportDevotionalModuleToSQLite(module)
         case .highlights: try modules.exportHighlightModuleToSQLite(module)
         default: throw ModuleSyncError.moduleNotEditable(module.id)
         }
+        if let changes {
+            Self.collectionExports.lock()
+            Self.collectionExportsByID[module.id] = (changes, bytes)
+            Self.collectionExports.unlock()
+        }
+        return bytes
+    }
+
+    /// Each collection's compiled bytes, with the change count they were
+    /// built at.
+    nonisolated private static let collectionExports = NSLock()
+    nonisolated(unsafe) private static var collectionExportsByID: [String: (changes: Int64, bytes: Data)] = [:]
+
+    /// Digests of the files whose bytes do not change at a path — media and
+    /// book pictures — kept for as long as the app runs, and only where the
+    /// filesystem maintains an identity worth trusting
+    /// (`lamp-bible-core/Documentation/decisions/0007`). The phone's library
+    /// is on its own APFS volume, so this is the trusted case; a library
+    /// somewhere else reads every file every pass, as it always did.
+    nonisolated private static let digestCacheLock = NSLock()
+    nonisolated(unsafe) private static var heldDigestCache: (root: String, cache: LampSyncDigestCache?)?
+
+    nonisolated static func digestCache(forLibraryAt root: URL) -> LampSyncDigestCache? {
+        let path = root.standardizedFileURL.path
+        digestCacheLock.lock()
+        defer { digestCacheLock.unlock() }
+        if let held = heldDigestCache, held.root == path { return held.cache }
+        let trusted = LampSyncIdentityTrust.trustsIdentity(ofVolumeAt: root)
+        let cache = trusted ? LampSyncDigestCache() : nil
+        heldDigestCache = (path, cache)
+        return cache
+    }
+
+    /// A file's digest, from the cache where its kind and the filesystem
+    /// allow it, and from its bytes otherwise.
+    nonisolated private static func digest(
+        forFileAt url: URL, kind: LampSyncFileKind, cache: LampSyncDigestCache?
+    ) -> String? {
+        guard let cache, kind.keepsDigestAgainstIdentity,
+              let identity = try? LampFileIdentity(url: url) else {
+            return try? LampSyncContentRevision.digest(forFileAt: url)
+        }
+        if let held = cache.digest(at: url, identity: identity) { return held }
+        guard let read = try? LampSyncContentRevision.digest(forFileAt: url) else { return nil }
+        cache.remember(read, at: url, identity: identity)
+        return read
     }
 
     private func installedReadOnlyModules() throws -> [(ModuleType, String, String, String?)] {
