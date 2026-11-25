@@ -15,6 +15,7 @@
 //
 
 import GRDB
+import LampModuleKit
 import XCTest
 @testable import Lamp_Bible
 
@@ -261,6 +262,38 @@ final class ImportIndexMeasurementTests: XCTestCase {
             quotable.contains("\"type\"") || quotable.hasPrefix("{") || quotable.hasPrefix("["),
             "a row would quote the stored JSON: \(quotable.prefix(120))"
         )
+    }
+
+    /// After an import, the index it could have left stale agrees with its
+    /// content table — and an import that touches no indexed rows leaves
+    /// every trigger in place.
+    ///
+    /// The corruption that `0014` fixes was caught only because the import
+    /// happened to throw afterwards; nothing asserted the index was exact on
+    /// the success path. `'integrity-check'` with rank 1 compares the index
+    /// against its content table, which is the assertion that was missing.
+    func testAnImportLeavesEveryIndexAgreeingWithItsContent() throws {
+        let database = ModuleDatabase.shared
+        for index in ExternalContentSearchIndex.all {
+            let (entries, rows, exists) = try database.read { db -> (Int, Int, Bool) in
+                guard try index.exists(in: db) else { return (0, 0, false) }
+                return (
+                    try Int.fetchOne(db, sql: "SELECT count(*) FROM \(index.name)_docsize") ?? -1,
+                    try Int.fetchOne(db, sql: "SELECT count(*) FROM \(index.content)") ?? -2,
+                    true
+                )
+            }
+            guard exists else { continue }
+            XCTAssertEqual(entries, rows, "\(index.name) does not index each row once")
+            XCTAssertNoThrow(
+                try database.write { db in
+                    try db.execute(
+                        sql: "INSERT INTO \(index.name)(\(index.name), rank) VALUES ('integrity-check', 1)"
+                    )
+                },
+                "\(index.name) does not agree with \(index.content)"
+            )
+        }
     }
 
     private func fileBytes() throws -> Int64 {
