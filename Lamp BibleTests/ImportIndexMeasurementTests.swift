@@ -296,6 +296,34 @@ final class ImportIndexMeasurementTests: XCTestCase {
         }
     }
 
+    /// A kind that touches no indexed rows has nothing rebuilt for it.
+    ///
+    /// The version that nearly shipped rebuilt *every* index for an unmapped
+    /// kind, on the reasoning that it was "slow rather than wrong". It had it
+    /// backwards — an index whose triggers were never dropped is exact — and
+    /// it was not merely slow: rebuilding every index during a book or plan
+    /// import, while another module's rows were mid-replacement, failed the
+    /// module-landing tests outright. `decisions/0014`.
+    func testAKindThatTouchesNoIndexedRowsRebuildsNothing() throws {
+        for kind in [ModuleType.plan, .book, .highlights, .quiz, .notes, .devotional] {
+            XCTAssertTrue(
+                ExternalContentSearchIndex.indexes(touchedBy: kind).isEmpty,
+                "\(kind.rawValue) would rebuild an index it cannot have changed"
+            )
+        }
+        XCTAssertEqual(
+            ExternalContentSearchIndex.indexes(touchedBy: .translation).map(\.name),
+            ["translation_verses_fts"]
+        )
+        XCTAssertEqual(
+            ExternalContentSearchIndex.indexes(touchedBy: .dictionary).map(\.name),
+            ["dictionary_fts"]
+        )
+        // Out until measured: a commentary index can run to hundreds of
+        // megabytes and is rebuilt off the launch path for that reason.
+        XCTAssertTrue(ExternalContentSearchIndex.indexes(touchedBy: .commentary).isEmpty)
+    }
+
     private func fileBytes() throws -> Int64 {
         var total: Int64 = 0
         for suffix in ["", "-wal"] {

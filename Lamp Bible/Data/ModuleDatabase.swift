@@ -4541,6 +4541,49 @@ struct ExternalContentSearchIndex: Equatable {
         return columns.allSatisfy { present.contains($0) && indexed.contains($0) }
     }
 
+    /// The indexes a module of this kind can leave stale. An index whose
+    /// triggers were never dropped is exact, so a kind that touches no
+    /// indexed rows rebuilds nothing. Exhaustive on purpose: a new kind
+    /// should be a compile error here.
+    static func indexes(touchedBy kind: LampModuleKind) -> [ExternalContentSearchIndex] {
+        switch kind {
+        case .translation: all.filter { $0.content == "translation_verses" }
+        case .dictionary: all.filter { $0.content == "dictionary_entries" }
+        // Commentary stays out until measured: its index can run to hundreds
+        // of megabytes, and a rebuild inside the import's transaction is the
+        // long main-thread write `SearchIndexRepair` exists to avoid.
+        case .commentary: []
+        case .book, .plan, .highlights, .quiz: []
+        // Reconciled as records, never copied: they do not reach this path.
+        case .notes, .devotional: []
+        }
+    }
+
+    /// Takes a bulk import out of the per-row triggers and rebuilds once.
+    ///
+    /// All three triggers, not only the insert one: dropping that alone
+    /// leaves rows the index never received, and the update trigger then
+    /// tells FTS5 to delete an entry it does not have, which corrupts an
+    /// external-content index.
+    static func acrossABulkImport<T>(
+        in db: Database,
+        touching indexes: [ExternalContentSearchIndex],
+        _ body: () throws -> T
+    ) throws -> T {
+        let present = try indexes.filter { try $0.exists(in: db) }
+        for index in present {
+            for suffix in ["insert", "update", "delete"] {
+                try db.execute(sql: "DROP TRIGGER IF EXISTS \(index.name)_\(suffix)")
+            }
+        }
+        let result = try body()
+        for index in present {
+            try db.execute(sql: "INSERT INTO \(index.name)(\(index.name)) VALUES ('rebuild')")
+            try index.installTriggers(in: db)
+        }
+        return result
+    }
+
     func installTriggers(in db: Database) throws {
         let target = name
         let columnList = columns.joined(separator: ", ")

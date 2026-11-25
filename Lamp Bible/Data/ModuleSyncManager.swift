@@ -411,9 +411,13 @@ class ModuleSyncManager: ObservableObject {
                         filePath: fileInfo.filePath, in: db
                     )
 
-                    try copySQLiteModuleRows(
-                        fileInfo: fileInfo, type: type, dbAlias: dbAlias, in: db
-                    )
+                    try ExternalContentSearchIndex.acrossABulkImport(
+                        in: db, touching: ExternalContentSearchIndex.indexes(touchedBy: type)
+                    ) {
+                        try copySQLiteModuleRows(
+                            fileInfo: fileInfo, type: type, dbAlias: dbAlias, in: db
+                        )
+                    }
                     try saveImportedModuleMetadata(
                         fileInfo: fileInfo, type: type, dbAlias: dbAlias, in: db
                     )
