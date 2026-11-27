@@ -45,7 +45,11 @@ final class AIFeatures: ObservableObject {
     }
 
     static func isEnabled(in settings: UserSettings) -> Bool {
-        settings.aiEnabled ?? LampPreferenceDefaults.aiFeaturesEnabled
+        #if DEBUG
+        // The chat panel's demos are for looking at it, whatever the setting.
+        if UserDefaults.standard.string(forKey: "AgentRemoteDemo") != nil { return true }
+        #endif
+        return settings.aiEnabled ?? LampPreferenceDefaults.aiFeaturesEnabled
     }
 
     static func reviewMarksChosen(in settings: UserSettings) -> Bool {

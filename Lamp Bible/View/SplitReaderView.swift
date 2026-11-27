@@ -103,6 +103,13 @@ struct SplitReaderView: View {
     /// keyboard is too little for both panes, and the notes take it.
     @ObservedObject private var noteEditorFocus = NoteEditorFocus.shared
     @State private var keyboardHeight: CGFloat = 0
+    /// A request in the chat waits on the reader (`AgentRequestWaitingKey`):
+    /// the bottom panel is raised for its card while it does.
+    @State private var requestWaits = false
+    /// The bottom panel's height before a waiting request raised it, and the
+    /// height it was raised to: put back once nothing waits, unless dragged
+    /// since.
+    @State private var raisedForRequest: (from: CGFloat, to: CGFloat)?
 
     /// The bottom panel takes the whole space above the keyboard: the split
     /// then lays itself out around the keyboard, so the panel inside it does
@@ -308,6 +315,40 @@ struct SplitReaderView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.25), value: notesTakeTheSpace)
+            .onPreferenceChange(AgentRequestWaitingKey.self) { requestWaits = $0 }
+            .onChange(of: requestWaits, initial: true) { _, waits in
+                makeRoomForRequest(waits, containerHeight: geometry.size.height)
+            }
+            // The height lent for a request is a share of the space: turned
+            // to landscape, a portrait share would run the card's buttons off
+            // the screen.
+            .onChange(of: geometry.size.height) { _, height in
+                // Not raised yet (the panel had its share already, in a
+                // shorter space): raised now if the new space leaves it short.
+                if raisedForRequest == nil, requestWaits {
+                    makeRoomForRequest(true, containerHeight: height)
+                    return
+                }
+                guard let raised = raisedForRequest, bottomPanelHeight == raised.to, height > 0 else { return }
+                let share = max(minPanelSize, height * 0.6)
+                raisedForRequest = (raised.from, share)
+                bottomPanelHeight = share
+            }
+            .onChange(of: effectiveOrientation) { _, orientation in
+                // Leaving the bottom layout, the height lent for a request goes
+                // back, or it would stay when the panel came back to the bottom;
+                // coming back to it with one still waiting, it's lent again.
+                if orientation == "right", let raised = raisedForRequest {
+                    raisedForRequest = nil
+                    if bottomPanelHeight == raised.to {
+                        bottomPanelHeight = min(max(raised.from, minPanelSize), geometry.size.height * maxPanelRatio)
+                    }
+                } else if orientation != "right", requestWaits {
+                    // A panel new to the bottom has no height yet to raise.
+                    if bottomPanelHeight < minPanelSize { settleBottomPanelHeight(in: geometry.size.height) }
+                    makeRoomForRequest(true, containerHeight: geometry.size.height)
+                }
+            }
             .coordinateSpace(name: "splitContainer")
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
                 guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
@@ -376,6 +417,26 @@ struct SplitReaderView: View {
             : stored >= minPanelSize ? stored
             : containerHeight / 3
         bottomPanelHeight = min(max(wanted, minPanelSize), containerHeight * maxPanelRatio)
+    }
+
+    /// A request's card needs more than a short bottom panel: raised to most
+    /// of the space while it waits, and put back after. Not remembered as the
+    /// panel's height.
+    private func makeRoomForRequest(_ waits: Bool, containerHeight: CGFloat) {
+        guard effectiveOrientation != "right", containerHeight > 0 else { return }
+        if waits {
+            let wanted = containerHeight * 0.6
+            guard raisedForRequest == nil, bottomPanelHeight >= minPanelSize, bottomPanelHeight < wanted else { return }
+            raisedForRequest = (bottomPanelHeight, wanted)
+            withAnimation(.easeInOut(duration: 0.25)) { bottomPanelHeight = wanted }
+        } else if let raised = raisedForRequest {
+            raisedForRequest = nil
+            guard bottomPanelHeight == raised.to else { return }
+            // Within what the space is now: turned since, a portrait height
+            // would leave the reader none.
+            let back = min(max(raised.from, minPanelSize), containerHeight * maxPanelRatio)
+            withAnimation(.easeInOut(duration: 0.25)) { bottomPanelHeight = back }
+        }
     }
 
     /// The panel's size as it opens: a right-hand panel the width last

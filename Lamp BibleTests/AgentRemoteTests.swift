@@ -236,6 +236,173 @@ final class AgentRemoteTests: XCTestCase {
         XCTAssertTrue(chat.isRunning)
     }
 
+    // MARK: - Requests the turn waits on
+
+    private func request(_ id: String = "codex-0", canAllow: Bool = true, kind: String = LampAgentRemoteApproval.command) -> LampAgentRemoteApproval {
+        LampAgentRemoteApproval(
+            id: id, provider: "codex", kind: kind, title: "Codex asks to run a command",
+            command: "git log --oneline -5", folder: "~/Writings", canAllow: canAllow
+        )
+    }
+
+    private func waiting(_ approvals: [LampAgentRemoteApproval]) -> AgentRemoteChat {
+        var snapshot = snapshot()
+        snapshot.summary.isRunning = true
+        snapshot.approvals = approvals
+        return AgentRemoteChat(snapshot)
+    }
+
+    func testADenyOnlyRequestOffersNoAllow() {
+        XCTAssertTrue(AgentRemoteApprovalAnswer.offersAllow(request()))
+        XCTAssertFalse(AgentRemoteApprovalAnswer.offersAllow(request(canAllow: false)))
+        // Another tool call is never allowed here, whatever it says.
+        XCTAssertFalse(AgentRemoteApprovalAnswer.offersAllow(request(kind: LampAgentRemoteApproval.tool)))
+        var empty = request()
+        empty.command = nil
+        XCTAssertFalse(AgentRemoteApprovalAnswer.offersAllow(empty))
+        // An earlier Mac could allow a command without saying where it runs.
+        var nowhere = request()
+        nowhere.folder = nil
+        XCTAssertFalse(AgentRemoteApprovalAnswer.offersAllow(nowhere))
+    }
+
+    /// A backslash before a trailing space is no line continuation: what
+    /// the shell reads and the eye can't is marked, the command itself kept.
+    func testACommandsTabsAndTrailingSpacesAreMarked() {
+        XCTAssertEqual(String(AgentApprovalCard.showingWhitespace("rm -rf \\ ").characters), "rm·-rf·\\·")
+        XCTAssertEqual(String(AgentApprovalCard.showingWhitespace("a\tb").characters), "a⇥\u{00A0}\u{00A0}\u{00A0}b")
+        // Every space drawn: one and two can't read alike at a wrap.
+        XCTAssertEqual(String(AgentApprovalCard.showingWhitespace("'a  b'").characters), "'a··b'")
+    }
+
+    /// Come back to a chat where another turn has begun: a notice about
+    /// the last turn's answer isn't about the new turn's requests.
+    func testANoticeGoesOnceAnotherTurnHasBegun() {
+        var chat = waiting([request()])
+        chat.approvalNotice = answer(request(), in: chat).unheard
+        chat.approvalNoticeTurn = chat.lastQuestion
+        chat.dropNoticeFromAnotherTurn()
+        XCTAssertNotNil(chat.approvalNotice)
+        var later = snapshot()
+        later.messages.append(LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "Again?", date: Date()))
+        chat.apply(later)
+        chat.dropNoticeFromAnotherTurn()
+        XCTAssertNil(chat.approvalNotice)
+    }
+
+    func testAnEmptyApprovalsEventTakesTheCardAway() {
+        var chat = waiting([request()])
+        XCTAssertEqual(chat.approvals.count, 1)
+        chat.apply(LampAgentRemoteChatEvent(chatID: "chat", kind: LampAgentRemoteChatEvent.approvals, approvals: []))
+        XCTAssertTrue(chat.approvals.isEmpty)
+        XCTAssertTrue(chat.isRunning)
+    }
+
+    func testAMacOlderThanApprovalsShowsNoCard() {
+        // Its snapshot has no list at all.
+        var snapshot = snapshot()
+        snapshot.summary.isRunning = true
+        XCTAssertNil(snapshot.approvals)
+        XCTAssertTrue(AgentRemoteChat(snapshot).approvals.isEmpty)
+    }
+
+    func testAnswerTakenOrGoneDropsTheCardQuietly() {
+        var chat = waiting([request(), request("codex-1")])
+        let denied = answer(request(), in: chat)
+        XCTAssertEqual(denied.settle(answered: true, errorCode: nil, message: nil), .drop(notice: nil))
+        // Gone: the card goes too, but saying which answer wasn't the one
+        // taken, so a later one taken can't be read as it.
+        let gone = denied.settle(answered: false, errorCode: LampAgentRemoteFailure.approvalGone, message: "Answered on the Mac.")
+        XCTAssertEqual(gone, .drop(notice: denied.notTaken))
+        XCTAssertTrue(denied.notTaken.contains("Deny of “git log --oneline -5”"))
+        chat.drop(answered: answer(request(), in: chat))
+        XCTAssertEqual(chat.approvals.map(\.id), ["codex-1"])
+    }
+
+    private func answer(_ approval: LampAgentRemoteApproval, in chat: AgentRemoteChat) -> AgentRemoteApprovalAnswer {
+        AgentRemoteApprovalAnswer(
+            requestID: UUID(), chatID: chat.id, digest: chat.digest(of: approval), turnID: chat.view.turnID,
+            decision: LampAgentRemoteApprovalAnswer.deny, label: AgentRemoteApprovalAnswer.label(of: approval)
+        )
+    }
+
+    /// Two spellings of an accent are equal to Swift, not to the Mac: an
+    /// answer to one leaves the other, which the Mac still waits on.
+    func testAnAnswerDropsOnlyTheRequestByteForByte() {
+        var composed = request()
+        composed.agentReason = "caf\u{E9}"
+        var decomposed = request()
+        decomposed.agentReason = "cafe\u{301}"
+        XCTAssertEqual(composed, decomposed)
+        var chat = waiting([decomposed])
+        chat.drop(answered: answer(composed, in: chat))
+        XCTAssertEqual(chat.approvals.count, 1)
+    }
+
+    /// What a card answers is the request in the turn it was drawn in: the
+    /// same request in the next turn is another.
+    func testTheSameRequestInAnotherTurnIsAnotherAnswer() {
+        var chat = waiting([request()])
+        let shown = chat.digest(of: request())
+        chat.apply(LampAgentRemoteChatEvent(
+            chatID: "chat", kind: LampAgentRemoteChatEvent.turnStarted,
+            message: LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "Again?", date: Date())
+        ))
+        chat.apply(LampAgentRemoteChatEvent(chatID: "chat", kind: LampAgentRemoteChatEvent.approvals, approvals: [request()]))
+        XCTAssertNotEqual(chat.digest(of: request()), shown)
+    }
+
+    /// Codex numbers requests afresh each turn: a reply to the last turn's
+    /// `codex-0`, arriving once the next turn has asked the same again,
+    /// leaves the new one's card.
+    func testAReplyFromAnEarlierTurnLeavesTheSameRequestInTheNext() {
+        var chat = waiting([request()])
+        let earlier = answer(request(), in: chat)
+        chat.apply(LampAgentRemoteChatEvent(chatID: "chat", kind: LampAgentRemoteChatEvent.turnEnded))
+        chat.apply(LampAgentRemoteChatEvent(
+            chatID: "chat", kind: LampAgentRemoteChatEvent.turnStarted,
+            message: LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "Again?", date: Date())
+        ))
+        chat.apply(LampAgentRemoteChatEvent(chatID: "chat", kind: LampAgentRemoteChatEvent.approvals, approvals: [request()]))
+                chat.drop(answered: earlier)
+        XCTAssertEqual(chat.approvals, [request()])
+    }
+
+    func testNotAllowedKeepsTheCardSayingItsTheMacs() {
+        XCTAssertEqual(
+            answer(request(), in: waiting([request()])).settle(answered: false, errorCode: LampAgentRemoteFailure.notAllowed, message: nil),
+            .keep(problem: AgentRemoteApprovalAnswer.onlyOnTheMac)
+        )
+    }
+
+    /// Codex numbers requests afresh: a request the Mac changed under the
+    /// same id isn't the one answered, and stays.
+    func testDroppingAnAnswerKeepsARequestChangedUnderTheSameID() {
+        var changed = request()
+        changed.command = "git log --oneline -50"
+        var chat = waiting([changed])
+        chat.drop(answered: answer(request(), in: chat))
+        XCTAssertEqual(chat.approvals, [changed])
+    }
+
+    func testTheAnswerNamesTheTurnAndTheRequestAsShown() {
+        let chat = waiting([request()])
+        let turn = chat.view.turnID
+        XCTAssertEqual(turn, chat.messages.last?.id)
+        let message = LampAgentRemoteMessage.answerApproval(
+            request(), in: chat.id, turnID: turn, decision: LampAgentRemoteApprovalAnswer.allowOnce
+        )
+        XCTAssertEqual(message.approvalID, "codex-0")
+        XCTAssertEqual(message.turnID, turn)
+        XCTAssertEqual(
+            LampAgentRemoteApprovalAnswer.decide(
+                decision: message.decision, approvalID: message.approvalID, digest: message.approvalDigest,
+                shownTurn: message.turnID, chatID: chat.id, currentTurn: turn, waiting: [request()]
+            ),
+            .allowOnce
+        )
+    }
+
     // MARK: - Which message arrived
 
     private let asked = LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "And grace?", date: Date())

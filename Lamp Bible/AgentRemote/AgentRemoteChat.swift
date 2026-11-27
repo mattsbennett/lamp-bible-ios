@@ -25,8 +25,58 @@ struct AgentRemoteChat: Equatable {
     var partialReply: String? { view.partialReply }
     var activity: LampAgentRemoteActivity? { view.activity }
     var isRunning: Bool { view.isRunning }
+    /// What's said about an answer given here to a request the turn waited
+    /// on, when it may not have been the one taken: a line of its own, so
+    /// it hides neither this device's request problem nor the Mac's account
+    /// of the turn.
+    var approvalNotice: String?
+    /// The request it's about, as shown (`digest(of:)`): an answer taken to
+    /// that request, and no other, settles it.
+    var approvalNoticeDigest: String?
+    /// The turn it's about, by its question: a later one's requests aren't
+    /// what it speaks of.
+    var approvalNoticeTurn: UUID?
+
+    /// The question the latest turn answers, running or not.
+    var lastQuestion: UUID? {
+        messages.last { $0.role == LampAgentRemoteChatMessage.user }?.id
+    }
+
+    /// A notice about an earlier turn's answer goes once another turn has
+    /// begun, however that's learned: an event, or a snapshot on coming back.
+    mutating func dropNoticeFromAnotherTurn() {
+        guard approvalNotice != nil, approvalNoticeTurn != lastQuestion else { return }
+        approvalNotice = nil
+        approvalNoticeDigest = nil
+        approvalNoticeTurn = nil
+    }
     /// The one problem line: this device's request, or the last turn's.
     var problem: String? { requestProblem ?? view.notice }
+    /// What the running turn waits on the person for, oldest first: none
+    /// from a Mac older than this, which takes no answer from a device.
+    var approvals: [LampAgentRemoteApproval] { view.approvals }
+
+    /// What a request is answered by, as shown in this chat's running turn
+    /// (`LampAgentRemoteApproval.digest`): its every field byte for byte,
+    /// which `==` isn't (it takes two spellings of an accent as one), with
+    /// the chat and the turn, so the same request in a later turn is another.
+    func digest(of approval: LampAgentRemoteApproval) -> String {
+        LampAgentRemoteApproval.digest(chatID: id, turnID: view.turnID, approval: approval)
+    }
+
+    /// Takes a request answered here out of the list, as the Mac's reply
+    /// says it's no longer waiting: the one shown, exactly, in the turn it
+    /// was shown in. A request the Mac has changed meanwhile under the same
+    /// id stays, and so does the same request in a later turn: Codex numbers
+    /// its requests afresh each turn, and a reply can arrive after the next
+    /// turn has begun.
+    mutating func drop(answered answer: AgentRemoteApprovalAnswer) {
+        guard answer.chatID == id else { return }
+        let (chatID, turnID) = (id, view.turnID)
+        view.approvals.removeAll {
+            LampAgentRemoteApproval.digest(chatID: chatID, turnID: turnID, approval: $0) == answer.digest
+        }
+    }
 
     mutating func apply(_ snapshot: LampAgentRemoteChatSnapshot) {
         view.apply(snapshot)
@@ -38,7 +88,14 @@ struct AgentRemoteChat: Equatable {
     mutating func apply(_ event: LampAgentRemoteChatEvent) {
         guard event.chatID == view.id else { return }
         view.apply(event)
-        if event.kind == LampAgentRemoteChatEvent.turnStarted { requestProblem = nil }
+        // A question can arrive as a `reply`, a turn stopped before it began.
+        dropNoticeFromAnotherTurn()
+        if event.kind == LampAgentRemoteChatEvent.turnStarted {
+            requestProblem = nil
+            approvalNotice = nil
+            approvalNoticeDigest = nil
+            approvalNoticeTurn = nil
+        }
     }
 
     /// What a running turn is doing, in a few words.
@@ -137,4 +194,78 @@ enum AgentRemoteFailureText {
             return message ?? "Your Mac couldn’t do that."
         }
     }
+}
+
+/// This device's answer to a request a turn waits on (`decisions/0040`):
+/// Allow Once or Deny, never a remembered rule, and Allow only for what the
+/// Mac says can be shown whole here.
+struct AgentRemoteApprovalAnswer: Equatable {
+    let requestID: UUID
+    let chatID: String
+    /// The request as shown, in its chat and turn (`AgentRemoteChat.digest`).
+    let digest: String
+    /// That turn, by its question.
+    let turnID: UUID?
+    let decision: String
+    /// The request in a few words, for what's said of the answer: two
+    /// requests waiting, a notice must say which answer it's about.
+    let label: String
+
+    /// A short name for a request: its command's first line, cut short, or
+    /// its title.
+    static func label(of approval: LampAgentRemoteApproval) -> String {
+        let line = approval.command?.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+        let words = line.isEmpty ? approval.title : line
+        return words.count > 40 ? String(words.prefix(40)) + "…" : words
+    }
+
+    /// The answer, as its button named it.
+    var decisionName: String {
+        decision == LampAgentRemoteApprovalAnswer.allowOnce ? "Allow Once" : "Deny"
+    }
+
+    var unheard: String {
+        "The connection ended before your Mac said whether it took your \(decisionName) of “\(label)”. Check the chat on your Mac."
+    }
+
+    var notTaken: String {
+        "Your \(decisionName) of “\(label)” wasn’t taken: the request had already been answered on your Mac or another device, had changed since it was shown here, or had ended."
+    }
+
+    var noReply: String {
+        "Your Mac hasn’t said whether it took your \(decisionName) of “\(label)”. Check the chat on your Mac."
+    }
+
+    /// Whether a request can be allowed from this device: the Mac says so
+    /// (`canAllow`) of a command it sent whole, and only then.
+    static func offersAllow(_ approval: LampAgentRemoteApproval) -> Bool {
+        // The Mac's word, and this device's own check of what it was sent:
+        // the command and the folder its relative paths are read from, both
+        // there and both drawable whole. An earlier Mac could say yes to a
+        // command with no folder.
+        approval.canAllow && approval.kind == LampAgentRemoteApproval.command
+            && LampAgentRemoteApproval.mayAllow(command: approval.command, folder: approval.folder)
+    }
+
+    /// What the Mac's reply to an answer means for the card.
+    enum Settled: Equatable {
+        /// Taken, or no longer waiting as shown (answered on the Mac or by
+        /// another device, ended, timed out): the card goes. One not taken
+        /// says so, since the first answer anywhere is the one taken and it
+        /// may have been the other: a command denied here may be running.
+        case drop(notice: String?)
+        /// Not taken, and still waiting: the card stays, saying why.
+        case keep(problem: String)
+    }
+
+    /// `answered` for an `approval-answered`; else the failure's code and
+    /// words.
+    func settle(answered: Bool, errorCode: String?, message: String?) -> Settled {
+        if answered { return .drop(notice: nil) }
+        if errorCode == LampAgentRemoteFailure.approvalGone { return .drop(notice: notTaken) }
+        if errorCode == LampAgentRemoteFailure.notAllowed { return .keep(problem: Self.onlyOnTheMac) }
+        return .keep(problem: AgentRemoteFailureText.text(code: errorCode, message: message))
+    }
+
+    static let onlyOnTheMac = "This can only be allowed on your Mac."
 }

@@ -65,6 +65,28 @@ final class AgentRemoteClient: ObservableObject {
     @Published var choicesProblem: String?
     @Published private(set) var choicesProblemChatID: String?
     private var choicesRequestChatID: String?
+    /// An answer to a request a turn waits on, on its way to the Mac: one at
+    /// a time, until the Mac says it was taken or refused.
+    @Published private(set) var approvalAnswer: AgentRemoteApprovalAnswer?
+    /// Why an answer given here wasn't taken, and the request it answered,
+    /// on whose card alone it's shown.
+    @Published private(set) var approvalProblem: (digest: String, text: String)?
+    /// Notices about answers given here, by chat, for a chat closed before
+    /// its answer was settled (`tell(_:inChat:)`).
+    private var approvalNotices: [String: (text: String, digest: String, turn: UUID?)] = [:]
+    /// Requests whose answer timed out, by digest, with their chat: not
+    /// answered again until the chat, asked for afresh, shows them still
+    /// waiting, or the late reply comes. A second answer then could undo
+    /// nothing the first had done.
+    @Published private(set) var lockedApprovals: [String: (chatID: String, refresh: UUID?)] = [:]
+    /// Answers whose reply didn't come in time (`approvalReplyWait`): no
+    /// longer holding the buttons, but a reply that comes late still says
+    /// what became of them.
+    private var lateApprovalAnswers: [UUID: AgentRemoteApprovalAnswer] = [:]
+    private var approvalDeadline: Task<Void, Never>?
+    /// How long an answer waits for the Mac's word before it's taken as
+    /// unknown: long enough for Claude's hook to read it.
+    static let approvalReplyWait: Duration = .seconds(30)
     /// What a new chat of each kind (`LampAgentRemoteChatSummary.reader`,
     /// `.writing`) is to start with, as chosen here before it has begun:
     /// what isn't chosen is what the Mac would open it on.
@@ -341,6 +363,16 @@ final class AgentRemoteClient: ObservableObject {
         }
         // A question still on its way: the Mac may begin its turn yet, so the
         // connection waits for its answer, a while at most.
+        // An answer to a request on its way holds it too, until the Mac's
+        // word on it or its time runs out (`approvalReplyWait`), whatever
+        // the notifications: cut off, it might not arrive, or not be heard
+        // of.
+        if approvalAnswer != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                MainActor.assumeIsolated { self?.stopIfUnneeded() }
+            }
+            return
+        }
         let asking = startRequest != nil || !sendRequests.isEmpty
         if asking, AgentTurnNotifications.isEnabledNow, Date().timeIntervalSince(lastNeeded) < Self.askingWait {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
@@ -423,7 +455,7 @@ final class AgentRemoteClient: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.stopIfUnneeded()
-                if self.awaited.isEmpty { self.releaseBackgroundTime() }
+                self.releaseBackgroundTimeIfUnneeded()
             }
         }
     }
@@ -543,7 +575,7 @@ final class AgentRemoteClient: ObservableObject {
                 self.dropStaleAwaited()
                 guard !self.awaited.isEmpty else {
                     self.followAwaited()
-                    self.releaseBackgroundTime()
+                    self.releaseBackgroundTimeIfUnneeded()
                     self.stopIfUnneeded()
                     return
                 }
@@ -574,7 +606,7 @@ final class AgentRemoteClient: ObservableObject {
         guard !summaries.isEmpty, !gone.isEmpty else { return }
         for chatID in gone { awaited[chatID] = nil }
         followAwaited()
-        if awaited.isEmpty { releaseBackgroundTime() }
+        releaseBackgroundTimeIfUnneeded()
         stopIfUnneeded()
     }
 
@@ -585,7 +617,9 @@ final class AgentRemoteClient: ObservableObject {
         dropStaleAwaited()
         // A question still on its way may begin a turn to wait for.
         let asking = AgentTurnNotifications.isEnabledNow && (startRequest != nil || !sendRequests.isEmpty)
-        if !awaited.isEmpty || asking { holdForAwaited() }
+        // And an answer to a request, until the Mac's word on it, whatever
+        // the notifications: suspended, it would never be heard of.
+        if !awaited.isEmpty || asking || approvalAnswer != nil { holdForAwaited() }
     }
 
     /// Back in Lamp with a turn still waited for: to hear how it ended, the
@@ -595,6 +629,10 @@ final class AgentRemoteClient: ObservableObject {
     static let lossRetryInterval: TimeInterval = 30
 
     private func becameActive() {
+        #if DEBUG
+        // A demo has no Mac to look for again.
+        if UserDefaults.standard.string(forKey: "AgentRemoteDemo") != nil { return }
+        #endif
         releaseBackgroundTime()
         dropStaleAwaited()
         // Back in Lamp with a chat on screen or a turn waited for: the
@@ -778,6 +816,14 @@ final class AgentRemoteClient: ObservableObject {
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Agent turn") { [weak self] in
             MainActor.assumeIsolated { self?.releaseBackgroundTime() }
         }
+    }
+
+    /// Gives the background time back once nothing it's held for is left:
+    /// no turn waited for, no question on its way that may begin one (as
+    /// `enteredBackground` holds it for), no answer to a request unheard of.
+    private func releaseBackgroundTimeIfUnneeded() {
+        let asking = AgentTurnNotifications.isEnabledNow && (startRequest != nil || !sendRequests.isEmpty)
+        if awaited.isEmpty && approvalAnswer == nil && !asking { releaseBackgroundTime() }
     }
 
     private func releaseBackgroundTime() {
@@ -1291,6 +1337,23 @@ final class AgentRemoteClient: ObservableObject {
         // opened afresh on coming back, under whatever the Mac kept.
         choicesRequest = nil
         isChangingChoices = false
+        // An answer not heard back about may or may not have been taken: the
+        // chat's snapshot, on coming back, says what still waits, but a card
+        // gone from it doesn't say whose answer took it.
+        if let answer = approvalAnswer {
+            tell(answer.unheard, inChat: answer.chatID, about: answer)
+        }
+        approvalDeadline?.cancel()
+        lateApprovalAnswers = [:]
+        // The chat's snapshot on coming back says what still waits: until it
+        // comes, nothing the chat showed before is answered.
+        lockedApprovals = [:]
+        if let chat {
+            // Any snapshot after coming back is fresh.
+            for approval in chat.approvals { lockedApprovals[chat.digest(of: approval)] = (chat.id, nil) }
+        }
+        approvalAnswer = nil
+        approvalProblem = nil
     }
 
     private func perform(_ effects: [LampAgentRemoteDeviceConnection.Effect]) {
@@ -1519,6 +1582,24 @@ final class AgentRemoteClient: ObservableObject {
                 chat?.apply(snapshot)
             } else {
                 chat = AgentRemoteChat(snapshot)
+                // Said about an answer given here while the chat was closed:
+                // kept, until its answer is heard of or another turn begins.
+                if let notice = approvalNotices[Self.noticeKey(host: chatsHostSecret, chat: snapshot.summary.id)] {
+                    chat?.approvalNotice = notice.text
+                    chat?.approvalNoticeDigest = notice.digest
+                    chat?.approvalNoticeTurn = notice.turn
+                }
+            }
+            chat?.dropNoticeFromAnotherTurn()
+            if chat?.approvalNotice == nil {
+                approvalNotices[Self.noticeKey(host: chatsHostSecret, chat: snapshot.summary.id)] = nil
+            }
+            // The chat as it stands now: what waits in it can be answered.
+            // One sent before a timed-out answer could arrive after it: only
+            // the snapshot asked for since unlocks that answer's request.
+            lockedApprovals = lockedApprovals.filter {
+                $0.value.chatID != snapshot.summary.id
+                    || $0.value.refresh != nil && $0.value.refresh != message.requestID
             }
             followAwaited()
             if let turn = awaited[snapshot.summary.id],
@@ -1579,6 +1660,11 @@ final class AgentRemoteClient: ObservableObject {
         case .event:
             guard let event = message.event else { return }
             chat?.apply(event)
+            // Another turn: what was said of the last turn's answers is done.
+            if event.kind == LampAgentRemoteChatEvent.turnStarted
+                || chat?.id == event.chatID && chat?.approvalNotice == nil {
+                approvalNotices[Self.noticeKey(host: chatsHostSecret, chat: event.chatID)] = nil
+            }
             // The Mac began the turn with the question: it arrived.
             // A turn stopped before it showed anything brings its question
             // as a `reply`.
@@ -1636,6 +1722,8 @@ final class AgentRemoteClient: ObservableObject {
             }
         case .setup:
             if let setup = message.setup { self.setup = setup }
+        case .approvalAnswered:
+            settleApprovalAnswer(message, answered: true)
         case .failed:
             failed(message)
         case .pong:
@@ -1653,7 +1741,91 @@ final class AgentRemoteClient: ObservableObject {
         }
     }
 
+    /// What's to be said about an answer given here that may not have been
+    /// the one taken: in its chat, now if it's open, else when it's opened
+    /// again. A card gone from the chat doesn't say whose answer took it.
+    private func tell(_ notice: String, inChat chatID: String, about answer: AgentRemoteApprovalAnswer) {
+        if let chat, chat.id == chatID {
+            // A late word about an earlier turn's answer isn't this turn's,
+            // and leaves what's said of this one.
+            guard answer.turnID == chat.lastQuestion else { return }
+            self.chat?.approvalNotice = notice
+            self.chat?.approvalNoticeDigest = answer.digest
+            self.chat?.approvalNoticeTurn = answer.turnID
+        }
+        // Kept too, the open chat's included: closing the last panel lets
+        // the chat go before anyone has read it.
+        approvalNotices[Self.noticeKey(host: chatsHostSecret, chat: chatID)] = (notice, answer.digest, answer.turnID)
+    }
+
+    /// By Mac and chat: two Macs may have a chat of the same id, the same
+    /// writing's, and an answer went to one of them.
+    private static func noticeKey(host: String?, chat: String) -> String {
+        "\(host ?? "")|\(chat)"
+    }
+
+    /// The Mac's reply to an answer given here: taken, or no longer waiting
+    /// as shown, the card goes; refused, it stays, saying why.
+    private func settleApprovalAnswer(_ message: LampAgentRemoteMessage, answered: Bool) {
+        let answer: AgentRemoteApprovalAnswer
+        if let current = approvalAnswer, message.requestID == current.requestID {
+            answer = current
+            approvalAnswer = nil
+            approvalDeadline?.cancel()
+            releaseBackgroundTimeIfUnneeded()
+        } else if let requestID = message.requestID, let late = lateApprovalAnswers.removeValue(forKey: requestID) {
+            answer = late
+            lockedApprovals[late.digest] = nil
+        } else {
+            return
+        }
+        switch answer.settle(answered: answered, errorCode: message.errorCode, message: message.errorMessage) {
+        case .drop(let notice):
+            chat?.drop(answered: answer)
+            if let notice {
+                // Said in the chat, where it stays once the card has gone.
+                tell(notice, inChat: answer.chatID, about: answer)
+            } else {
+                // Taken: what was said of this request's answer, one sent
+                // before a connection ended or not heard back about, is
+                // settled now. Another request's stays.
+                if chat?.id == answer.chatID, chat?.approvalNoticeDigest == answer.digest {
+                    chat?.approvalNotice = nil
+                    chat?.approvalNoticeDigest = nil
+                }
+                let key = Self.noticeKey(host: chatsHostSecret, chat: answer.chatID)
+                if approvalNotices[key]?.digest == answer.digest { approvalNotices[key] = nil }
+            }
+        case .keep(let problem):
+            approvalProblem = (answer.digest, problem)
+        }
+    }
+
+    /// Asks again for a chat whose timed-out answer's request is locked, the
+    /// refresh having failed or not come: the answer isn't sent again.
+    func recheckLocked(inChat chatID: String) {
+        guard chat?.id == chatID else { return }
+        let refresh = LampAgentRemoteMessage.openChat(chatID)
+        for (digest, lock) in lockedApprovals where lock.chatID == chatID {
+            lockedApprovals[digest] = (chatID, refresh.requestID)
+            approvalProblem = nil
+        }
+        seal(refresh)
+    }
+
     private func failed(_ message: LampAgentRemoteMessage) {
+        // The refresh a locked request waits for, refused: said on its card,
+        // which offers to ask again; it stays locked meanwhile.
+        if let requestID = message.requestID,
+           let (digest, _) = lockedApprovals.first(where: { $0.value.refresh == requestID }) {
+            approvalProblem = (digest, AgentRemoteFailureText.text(code: message.errorCode, message: message.errorMessage))
+            return
+        }
+        if let requestID = message.requestID,
+           requestID == approvalAnswer?.requestID || lateApprovalAnswers[requestID] != nil {
+            settleApprovalAnswer(message, answered: false)
+            return
+        }
         let text = AgentRemoteFailureText.text(code: message.errorCode, message: message.errorMessage)
         if let requestID = message.requestID, requestID == choicesRequest {
             choicesRequest = nil
@@ -1826,6 +1998,11 @@ final class AgentRemoteClient: ObservableObject {
         chat = nil
         let request = LampAgentRemoteMessage.openChat(chatID)
         openRequest = request.requestID
+        // Asked for afresh: its answer is the refresh a timed-out answer's
+        // request waits for.
+        for (digest, lock) in lockedApprovals where lock.chatID == chatID {
+            lockedApprovals[digest] = (chatID, request.requestID)
+        }
         seal(request)
     }
 
@@ -1927,11 +2104,65 @@ final class AgentRemoteClient: ObservableObject {
         return unsent[key]
     }
 
+    /// Answers the request a turn waits on, as shown: `shown` is its digest
+    /// when its card was drawn (`AgentRemoteChat.digest`), so a card left
+    /// over from an earlier turn, or a request changed since, answers
+    /// nothing. Allow Once only where the Mac lets this device allow it. The
+    /// first answer anywhere is the one taken; the Mac's reply settles it.
+    func answer(_ approval: LampAgentRemoteApproval, shown: String, decision: String) {
+        guard let chat, approvalAnswer == nil, lockedApprovals[shown] == nil,
+              chat.approvals.contains(where: { $0 == approval && chat.digest(of: $0) == shown }) else { return }
+        switch decision {
+        case LampAgentRemoteApprovalAnswer.allowOnce:
+            guard AgentRemoteApprovalAnswer.offersAllow(approval) else { return }
+        case LampAgentRemoteApprovalAnswer.deny:
+            break
+        default:
+            return
+        }
+        approvalProblem = nil
+        let request = LampAgentRemoteMessage.answerApproval(approval, in: chat.id, turnID: chat.view.turnID, decision: decision)
+        guard let requestID = request.requestID, sealAndSend(request) else {
+            approvalProblem = (shown, Self.unsealable)
+            return
+        }
+        approvalAnswer = AgentRemoteApprovalAnswer(
+            requestID: requestID, chatID: chat.id, digest: shown, turnID: chat.view.turnID, decision: decision,
+            label: AgentRemoteApprovalAnswer.label(of: approval)
+        )
+        approvalDeadline?.cancel()
+        approvalDeadline = Task { [weak self] in
+            try? await Task.sleep(for: Self.approvalReplyWait)
+            guard !Task.isCancelled else { return }
+            self?.approvalReplyTimedOut(requestID)
+        }
+    }
+
+    /// No word from the Mac on an answer: neither taken nor refused, so
+    /// it's said to be unknown, never resent, and the chat asked for afresh
+    /// to show what still waits. The buttons are free again.
+    private func approvalReplyTimedOut(_ requestID: UUID) {
+        guard let answer = approvalAnswer, answer.requestID == requestID else { return }
+        approvalAnswer = nil
+        lateApprovalAnswers[requestID] = answer
+        tell(answer.noReply, inChat: answer.chatID, about: answer)
+        if chat?.id == answer.chatID {
+            let refresh = LampAgentRemoteMessage.openChat(answer.chatID)
+            lockedApprovals[answer.digest] = (answer.chatID, refresh.requestID)
+            seal(refresh)
+        } else {
+            // Closed: opening it again asks for it afresh (`open(_:)`).
+            lockedApprovals[answer.digest] = (answer.chatID, nil)
+        }
+        releaseBackgroundTimeIfUnneeded()
+        stopIfUnneeded()
+    }
+
     func cancel() {
         guard let chat else { return }
         // Stopped here: its reader was there, and isn't told.
         awaited[chat.id] = nil
-        if awaited.isEmpty { releaseBackgroundTime() }
+        releaseBackgroundTimeIfUnneeded()
         followAwaited()
         seal(.cancel(chat.id))
     }
@@ -1993,6 +2224,41 @@ final class AgentRemoteClient: ObservableObject {
                 ],
                 partialReply: "Chapter 6 opens with the question this raises: “Are we to continue in sin that grace may abound?”",
                 activity: LampAgentRemoteActivity(kind: LampAgentRemoteActivity.tool, name: "read passage", summary: "Romans 6:1-4")
+            ))
+        case "approval", "approval-long", "approval-deny":
+            phase = .connected("Study Mac")
+            let summary = LampAgentRemoteChatSummary(
+                id: "demo-a", title: "Romans 5 commentaries", subtitle: "Romans 5:20", kind: LampAgentRemoteChatSummary.reader,
+                provider: "codex", providerName: "Codex", updatedAt: now.addingTimeInterval(-60), isRunning: true, acceptsMessages: true
+            )
+            chats = summaries + [summary]
+            openChatID = "demo-a"
+            let long = (1...14).map { "  --include 'Sources/LampCore/File\($0).swift' \\" }.joined(separator: "\n")
+            let first: LampAgentRemoteApproval = demo == "approval-deny"
+                ? LampAgentRemoteApproval(
+                    id: "claude-0", provider: "codex", kind: LampAgentRemoteApproval.tool, title: "Codex asks to edit a file",
+                    command: "Edit Writings/John 10.md", folder: "~/Library/Application Support/Lamp Bible/Writings",
+                    note: "Lamp sends you only part of this edit.", canAllow: false
+                )
+                : LampAgentRemoteApproval(
+                    id: "codex-0", provider: "codex", kind: LampAgentRemoteApproval.command, title: "Codex asks to run a command",
+                    command: demo == "approval-long"
+                        ? "rg --line-number \\\n\(long)\n  'LampAgentRemoteApproval' ."
+                        : "rg --count 'Rom(ans)? 5:20' ~/Library/Lamp/Commentaries",
+                    folder: "~/Library/Lamp",
+                    agentReason: "I need to search the commentary files to see which of them cite Romans 5:20.",
+                    note: "It runs outside Codex's sandbox, with your access.", canAllow: true
+                )
+            chat = AgentRemoteChat(LampAgentRemoteChatSnapshot(
+                summary: summary,
+                messages: [
+                    LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "Which commentaries in my library cite this verse?", date: now.addingTimeInterval(-90)),
+                ],
+                activity: LampAgentRemoteActivity(kind: LampAgentRemoteActivity.tool, name: "Waiting for your answer on the Mac"),
+                approvals: [first, LampAgentRemoteApproval(
+                    id: "codex-1", provider: "codex", kind: LampAgentRemoteApproval.command, title: "Codex asks to run a command",
+                    command: "ls", canAllow: true
+                )]
             ))
         case "writing-start":
             phase = .connected("Study Mac")

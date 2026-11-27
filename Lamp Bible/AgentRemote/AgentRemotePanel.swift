@@ -167,6 +167,10 @@ struct AgentRemotePanel: View {
     @State private var stampingSend = false
     /// The panel's height, which the opened setup takes at most a part of.
     @State private var panelHeight: CGFloat = 0
+    /// The room a waiting request's card has.
+    @State private var approvalPaneHeight: CGFloat = 0
+    /// A request's card in a sheet, where the panel is too short for it.
+    @State private var showingApprovalSheet = false
     /// How far up the screen the onscreen keyboard reaches, nothing with a
     /// hardware keyboard: focus alone leaves the reader's bottom bar where it
     /// was, and the composer clear of it.
@@ -628,6 +632,10 @@ struct AgentRemotePanel: View {
     @ViewBuilder
     private var chatView: some View {
         if let chat = client.chat {
+            Group {
+            if let approval = chat.approvals.first {
+                approvalPane(approval, in: chat)
+            } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
@@ -654,7 +662,9 @@ struct AgentRemotePanel: View {
                         if let partial = chat.partialReply, !partial.isEmpty {
                             assistantText(partial)
                         }
-                        if chat.isRunning {
+                        // A card asking the person stands for the step it
+                        // waits on ("Waiting for your answer on the Mac").
+                        if chat.isRunning && chat.approvals.isEmpty {
                             HStack(spacing: 8) {
                                 ProgressView()
                                     .controlSize(.small)
@@ -663,6 +673,9 @@ struct AgentRemotePanel: View {
                                     .foregroundStyle(LampTheme.caption)
                                     .lineLimit(2)
                             }
+                        }
+                        if let notice = chat.approvalNotice {
+                            problemText(notice)
                         }
                         if let problem = chat.problem {
                             problemText(problem)
@@ -678,6 +691,17 @@ struct AgentRemotePanel: View {
                 .onChange(of: chat.messages.count) { proxy.scrollTo(Self.chatEnd, anchor: .bottom) }
                 .onChange(of: chat.partialReply) { proxy.scrollTo(Self.chatEnd, anchor: .bottom) }
                 .onChange(of: chat.sending) { proxy.scrollTo(Self.chatEnd, anchor: .bottom) }
+                // Said once the card has gone: in view, or a vanished card
+                // could pass for an answer taken.
+                .onChange(of: chat.approvalNotice) { proxy.scrollTo(Self.chatEnd, anchor: .bottom) }
+            }
+            }
+            }
+            // Says so to the reader's split, which makes room for the card.
+            .preference(key: AgentRequestWaitingKey.self, value: !chat.approvals.isEmpty)
+            .sheet(isPresented: $showingApprovalSheet) { approvalSheet }
+            .onChange(of: chat.approvals.isEmpty) { _, empty in
+                if empty { showingApprovalSheet = false }
             }
             .modifier(ChatHeader(shown: writing == nil) {
                 chatHeader(chat)
@@ -688,6 +712,10 @@ struct AgentRemotePanel: View {
             })
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
+                    // While a request waits its card stands in the chat's
+                    // place, with the room the composer had: nothing can be
+                    // sent while a turn runs, and the card has Stop.
+                    if chat.approvals.isEmpty {
                     AgentChatSetupBar(
                         client: client, kind: chat.summary.kind, summary: chat.summary,
                         about: chat.summary.writingID != nil ? (writing?.title ?? chat.summary.subtitle ?? "This writing") : referenceLabel,
@@ -707,6 +735,7 @@ struct AgentRemotePanel: View {
                         onSend: { sendInOpenChat(chat.summary) },
                         onStop: { client.cancel() }
                     )
+                    }
                 }
             }
         } else {
@@ -715,6 +744,155 @@ struct AgentRemotePanel: View {
     }
 
     private static let chatEnd = "chat-end"
+
+    /// A request the turn waits on, in the chat's place until it's answered:
+    /// the reader's panel may be short, and the card needs all of it. The
+    /// oldest first; what it holds scrolls in whatever room is left.
+    private func approvalPane(_ approval: LampAgentRemoteApproval, in chat: AgentRemoteChat) -> some View {
+        // Its buttons kept in view, and the command scrolling between, where
+        // there's room for some of it; else, a landscape phone's short panel,
+        // a line that opens the card in a sheet of its own, where all of it
+        // can be read and both its buttons reached.
+        return Group {
+            if approvalFits {
+                VStack(alignment: .leading, spacing: 8) {
+                    // An answer given here that wasn't the one taken: said
+                    // over the next request too, or it would pass unseen.
+                    if let problem = chat.approvalNotice {
+                        problemText(problem)
+                    }
+                    approvalCard(approval, in: chat, scrollsWhole: false)
+                }
+            } else {
+                // The way to the card first, whatever the notice's size.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        approvalLine(approval, count: chat.approvals.count)
+                        if let problem = chat.approvalNotice {
+                            problemText(problem)
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        // Clear of the reader's bottom bar, as the composer it stands for is.
+        .padding(.bottom, bottomObstruction + 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { approvalPaneHeight = $0 }
+    }
+
+    /// Room for a card's heading, a few lines of command and its buttons.
+    @ScaledMetric(relativeTo: .body) private var approvalPinnedHeight: CGFloat = 260
+
+    /// Whether a waiting request's card fits the panel; else a line, and a
+    /// button in the chat's heading, open it in a sheet.
+    private var approvalFits: Bool {
+        // What's left inside the pane's own margins and the reader's bar.
+        approvalPaneHeight == 0 || approvalPaneHeight - bottomObstruction - 16 >= approvalPinnedHeight
+    }
+
+    /// A waiting request where the panel has no room for its card.
+    private func approvalLine(_ approval: LampAgentRemoteApproval, count: Int) -> some View {
+        Button {
+            showingApprovalSheet = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.raised.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                Text(approval.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color(uiColor: .label))
+                    .lineLimit(1)
+                if count > 1 {
+                    Text("1 of \(count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(LampTheme.caption)
+                }
+                Spacer(minLength: 8)
+                Text("Review")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous)
+                    .fill(LampTheme.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous)
+                    .strokeBorder(Color.orange.opacity(0.45), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens the request to allow or deny it.")
+    }
+
+    /// The card in a sheet of its own, the whole of it scrolling: for a panel
+    /// too short to show it. It goes when nothing waits any more.
+    @ViewBuilder
+    private var approvalSheet: some View {
+        NavigationStack {
+            Group {
+                if let chat = client.chat, let approval = chat.approvals.first {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            // An answer given here that wasn't the one taken,
+                            // said over the next request, as in the panel.
+                            if let problem = chat.approvalNotice {
+                                problemText(problem)
+                            }
+                            approvalCard(approval, in: chat, scrollsWhole: true)
+                        }
+                        .padding(16)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    // The next request starts at its top, not where the last
+                    // was scrolled to: Allow waits for all of each.
+                    .id(chat.digest(of: approval))
+                } else {
+                    Color.clear
+                        .onAppear { showingApprovalSheet = false }
+                }
+            }
+            .navigationTitle(client.chat?.summary.title ?? "")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { showingApprovalSheet = false }
+                }
+            }
+        }
+        .presentationDetents([.large])
+    }
+
+    private func approvalCard(_ approval: LampAgentRemoteApproval, in chat: AgentRemoteChat, scrollsWhole: Bool) -> some View {
+        // The request as this card shows it: what its buttons answer, and
+        // nothing else, if the turn or the request changes under them.
+        let shown = chat.digest(of: approval)
+        return AgentApprovalCard(
+            approval: approval,
+            count: chat.approvals.count,
+            // The reader's panel heads the chat with its title already.
+            chatTitle: writing == nil ? nil : chat.summary.title,
+            providerName: chat.summary.provider == approval.provider
+                ? chat.summary.providerName : approval.provider.capitalized,
+            // One answer at a time, whichever chat it was given in.
+            // One answer at a time; and none again to a request whose
+            // answer went unheard, until the chat shows it still waiting.
+            isAnswering: client.approvalAnswer != nil || client.lockedApprovals[shown] != nil,
+            problem: client.approvalProblem.flatMap { $0.digest == shown ? $0.text : nil },
+            onAnswer: { client.answer(approval, shown: shown, decision: $0) },
+            onRecheck: client.lockedApprovals[shown] == nil ? nil : { client.recheckLocked(inChat: chat.id) },
+            onStop: { client.cancel() },
+            scrollsWhole: scrollsWhole
+        )
+        // A request of its own: Allow waits again for the end of its command.
+        .id(shown)
+    }
 
     /// What the opened setup may take of the panel: in the reader's short
     /// split it scrolls rather than push its own row out of the panel.
@@ -917,6 +1095,16 @@ struct AgentRemotePanel: View {
                     .font(.subheadline.weight(.medium))
             }
             .buttonStyle(.borderless)
+            // While a request waits: the heading is always on screen, where
+            // the card's buttons, in a short or narrow panel, may not be.
+            if !chat.approvals.isEmpty {
+                Button("Review") { showingApprovalSheet = true }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .controlSize(.small)
+                    .accessibilityLabel("Review the request waiting")
+            }
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
                 Text(chat.summary.subtitle.flatMap { chat.summary.writingID != nil ? $0 : nil } ?? chat.summary.title)
@@ -1570,5 +1758,255 @@ struct AgentChatSetupBar: View {
             RoundedRectangle(cornerRadius: LampTheme.Radius.tile, style: .continuous)
                 .strokeBorder(LampTheme.hairline)
         }
+    }
+}
+
+/// A request the running turn waits on the person for, answered from the
+/// phone Allow Once or Deny, never a remembered rule (`decisions/0040`).
+///
+/// The command is shown whole, never cut short, scrolling where it's long;
+/// Allow waits until its end has been on screen. What the agent says is
+/// shown as the agent's, then what Lamp says. A request the Mac can't let
+/// this device allow offers Deny alone.
+struct AgentApprovalCard: View {
+    let approval: LampAgentRemoteApproval
+    let count: Int
+    let chatTitle: String?
+    let providerName: String
+    let isAnswering: Bool
+    let problem: String?
+    let onAnswer: (String) -> Void
+    /// Where this request's answer went unheard: asks the Mac for the chat
+    /// again, to see whether it still waits. Never resends the answer.
+    var onRecheck: (() -> Void)? = nil
+    let onStop: () -> Void
+    /// Laid out inside a scroll view of its own, the whole card scrolling:
+    /// what it holds isn't scrolled again.
+    var scrollsWhole = false
+
+    @State private var seenEnd = false
+
+    private var offersAllow: Bool { AgentRemoteApprovalAnswer.offersAllow(approval) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "hand.raised.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                Text(approval.title)
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if count > 1 {
+                    Text("1 of \(count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(LampTheme.caption)
+                        .accessibilityLabel("First of \(count) waiting")
+                }
+                // The composer's Stop, which the card takes the place of.
+                Button(action: onStop) {
+                    Image(systemName: "stop.circle")
+                        .imageScale(.large)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Stop Reply")
+            }
+            if let chatTitle {
+                Text(chatTitle)
+                    .font(.caption)
+                    .foregroundStyle(LampTheme.caption)
+                    .lineLimit(1)
+            }
+            if scrollsWhole {
+                details(scrolls: true)
+            } else {
+            // Whole where it fits; else it scrolls in the room there is.
+            ViewThatFits(in: .vertical) {
+                details(scrolls: false)
+                ScrollView {
+                    details(scrolls: true)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .overlay(alignment: .bottomTrailing) {
+                    // What Allow waits for, over the command so it takes no
+                    // room from it.
+                    if offersAllow && !seenEnd {
+                        Label("More below", systemImage: "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.thinMaterial, in: Capsule())
+                            .padding(6)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+            }
+            if let problem {
+                Label(problem, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let onRecheck {
+                Button("Check Again", action: onRecheck)
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .accessibilityHint("Asks your Mac whether this request still waits. Your answer isn’t sent again.")
+            }
+            if !offersAllow {
+                Text(approval.kind == LampAgentRemoteApproval.command
+                     ? "This command can’t be shown in full here, so it can only be allowed on your Mac."
+                     : "This can only be allowed on your Mac.")
+                    .font(.footnote)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 10) {
+                Button(role: .destructive) {
+                    onAnswer(LampAgentRemoteApprovalAnswer.deny)
+                } label: {
+                    Text("Deny").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                if offersAllow {
+                    Button {
+                        onAnswer(LampAgentRemoteApprovalAnswer.allowOnce)
+                    } label: {
+                        Text("Allow Once").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!seenEnd)
+                    .accessibilityHint(seenEnd ? "" : "Scroll to the end of the command first.")
+                }
+            }
+            .disabled(isAnswering)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous)
+                .fill(LampTheme.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: LampTheme.Radius.card, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.45), lineWidth: 1)
+        )
+    }
+
+    /// The command as it runs: where it has more than one line, each is
+    /// numbered and wraps under its own number, so a line the shell runs on
+    /// its own can't be read as the last one going on.
+    @ViewBuilder
+    private func commandText(_ command: String) -> some View {
+        let lines = command.split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.count == 1 {
+            Text(Self.showingWhitespace(command))
+                .font(.system(.footnote, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            let width = String(lines.count).count
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(verbatim: String(repeating: " ", count: width - String(index + 1).count) + String(index + 1))
+                            .foregroundStyle(LampTheme.caption)
+                            .accessibilityLabel("Line \(index + 1)")
+                        Text(Self.showingWhitespace(String(line)))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.system(.footnote, design: .monospaced))
+                }
+            }
+        }
+    }
+
+    /// A line of the command, or its folder, with every space and tab
+    /// drawn: a space as a faint ·, a tab as ⇥. A space drawn as nothing,
+    /// at the end of a line or where the text wraps, would let one space
+    /// read as two or none, and a backslash before a trailing space as a
+    /// line continuation; a command the phone may allow is ASCII, so the
+    /// marks can't be its own. Only for reading, not copying: the answer is
+    /// to the command as sent.
+    static func showingWhitespace(_ line: String) -> AttributedString {
+        var shown = AttributedString()
+        for character in line {
+            switch character {
+            case " ":
+                var mark = AttributedString("·")
+                mark.foregroundColor = .secondary
+                shown += mark
+            case "\t":
+                var mark = AttributedString("⇥\u{00A0}\u{00A0}\u{00A0}")
+                mark.foregroundColor = .secondary
+                shown += mark
+            default:
+                shown += AttributedString(String(character))
+            }
+        }
+        return shown
+    }
+
+    private func details(scrolls: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let command = approval.command, !command.isEmpty {
+                commandText(command)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color(uiColor: .tertiarySystemFill))
+                    )
+            }
+            if let folder = approval.folder, !folder.isEmpty {
+                Label {
+                    // Marked as the command is: a trailing space makes
+                    // another folder.
+                    Text(Self.showingWhitespace(folder))
+                        .font(.caption.monospaced())
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "folder")
+                }
+                .font(.caption)
+                .foregroundStyle(Color(uiColor: .secondaryLabel))
+            }
+            if let reason = approval.agentReason, !reason.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(providerName) says")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(LampTheme.caption)
+                    Text(verbatim: reason)
+                        .font(.footnote)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if let note = approval.note, !note.isEmpty {
+                Text(verbatim: note)
+                    .font(.footnote)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // The end of all of it: the command, the folder that gives its
+            // relative paths their meaning, why the agent asks and what Lamp
+            // warns of. Once this has been on screen, all of it has been.
+            Color.clear
+                .frame(height: 1)
+                .onScrollVisibilityChange(threshold: 0.5) { visible in
+                    if visible { seenEnd = true }
+                }
+                // Shown whole, without scrolling: its end is on screen.
+                .onAppear { if !scrolls { seenEnd = true } }
+        }
+    }
+}
+
+/// Whether the open chat's turn waits on a request the panel shows a card
+/// for: the reader's split raises a short bottom panel to make room for it.
+struct AgentRequestWaitingKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
     }
 }
