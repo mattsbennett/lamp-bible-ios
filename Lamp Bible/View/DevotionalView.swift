@@ -2303,11 +2303,14 @@ struct DevotionalView: View {
 
         let bookName = (try? BundledModuleDatabase.shared.getBook(id: bookId))?.name ?? "?"
 
-        if let ev = endVerseId {
-            let endVerse = ev % 1000
-            if endVerse != verse {
-                return "\(bookName) \(chapter):\(verse)-\(endVerse)"
+        // Across chapters or books too: John 2:23–3:21, not John 2:23-21.
+        if let ev = endVerseId, ev != sv {
+            let endBook = ev / 1_000_000
+            var names = [bookId: bookName]
+            if endBook != bookId, let name = (try? BundledModuleDatabase.shared.getBook(id: endBook))?.name {
+                names[endBook] = name
             }
+            return LampBibleReferenceFormatter.describeRange(from: sv, to: ev, bookNames: names)
         }
         return "\(bookName) \(chapter):\(verse)"
     }

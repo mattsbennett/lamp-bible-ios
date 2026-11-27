@@ -48,6 +48,34 @@ final class Lamp_BibleTests: XCTestCase {
         XCTAssertTrue(external)
     }
 
+    /// A commentary's note opens at its passage until the reader can open
+    /// the note itself; its front matter, which has no passage, opens
+    /// nothing yet, nor does a malformed link.
+    func testCommentaryLinksOpenTheirPassageForNow() throws {
+        let note = try XCTUnwrap(URL(string: "lampbible://commentary?module=esvsb&sv=45005020&ev=45005021&unit=a&anchor=n1"))
+        guard case .verse(let start, let end, let translation) = LampbibleURL.parse(note) else {
+            return XCTFail("A commentary note's link should open its passage")
+        }
+        XCTAssertEqual(start, 45_005_020)
+        XCTAssertEqual(end, 45_005_021)
+        XCTAssertNil(translation)
+
+        // A note on Psalm 3's title: verse 0, opened at verse 1 under it.
+        let psalmTitle = try XCTUnwrap(URL(string: "lampbible://commentary?module=esvsb&sv=19003000"))
+        guard case .verse(let titleStart, let titleEnd, _) = LampbibleURL.parse(psalmTitle) else {
+            return XCTFail("A note on a psalm's title should open the psalm")
+        }
+        XCTAssertEqual(titleStart, 19_003_001)
+        XCTAssertNil(titleEnd)
+
+        let frontMatter = try XCTUnwrap(URL(string: "lampbible://commentary?module=esvsb&book=45&section=intro"))
+        XCTAssertNil(LampbibleURL.parse(frontMatter))
+        let malformed = try XCTUnwrap(URL(string: "lampbible://commentary?sv=45005020"))
+        XCTAssertNil(LampbibleURL.parse(malformed))
+        let anchored = try XCTUnwrap(URL(string: "lampbible://book?module=library&section=s1&anchor=fig2"))
+        XCTAssertNil(LampbibleURL.parse(anchored))
+    }
+
     func testDevotionalMarkdownRetainsNestedFrontmatter() throws {
         let markdown = """
         ---

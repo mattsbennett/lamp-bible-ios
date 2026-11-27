@@ -42,7 +42,14 @@ enum LampbibleURL {
             return .writing(id: id)
         case .reader(let reference?, let translationID):
             return .verse(verseId: reference, endVerseId: nil, translationId: installed(translationID))
-        case .reader, .book, .section, .moduleFile, .dataFile:
+        case .commentaryPassage(_, let reference, let endReference, _, _, _):
+            // Until the reader can open a commentary's note, its passage, as
+            // a scripture link between notes opens. A note on a psalm's title
+            // names verse 0, which translations keep as a heading over verse
+            // 1, not a verse: it opens at verse 1, under that heading.
+            let title = { (reference: Int) in reference % 1_000 == 0 ? reference + 1 : reference }
+            return .verse(verseId: title(reference), endVerseId: endReference.map(title), translationId: nil)
+        case .reader, .book, .commentaryFrontMatter, .section, .moduleFile, .dataFile:
             return nil
         }
     }
