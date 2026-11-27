@@ -211,56 +211,35 @@ private struct ContentBootstrapView: View {
     }
 }
 
-/// Shown while the library opens, as the Mac's is: the launch screen's flame,
-/// at the same size and place, in the app's accent, with the name, a hairline
-/// with a gleam of the accent passing along it, and the verse the app is named
-/// for. The gleam is Core Animation's, run by the render server, so it keeps
-/// moving while the main thread is busy opening the library. With Reduce
-/// Motion it rests, brightening and dimming.
+/// Shown while the library opens, as the Mac's is: the app's icon, small, with
+/// the name, a hairline with a gleam of the accent passing along it, and the
+/// verse the app is named for. The gleam is Core Animation's, run by the
+/// render server, so it keeps moving while the main thread is busy opening the
+/// library. With Reduce Motion it rests, brightening and dimming.
 private struct LampSplashView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isShowingSlowStartMessage = false
-    /// The words' height, which sets how far the group's centre is from the
-    /// flame's.
-    @State private var wordsHeight: CGFloat = 0
-    /// Whether the flame has moved from the launch image's place to its own.
-    @State private var hasSettled = false
-
-    /// The launch image's height, at which it is drawn.
-    private static let flameHeight: CGFloat = 100
 
     var body: some View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
             GeometryReader { proxy in
-                // The flame and the words centred on the screen as one group
-                // (owner, Nov 2026); they were the flame centred and the words
-                // hung under it, which sat the whole low. On a short screen —
-                // a small phone on its side — the verse stays out and the
-                // words may shrink, so nothing is pushed off at any text size.
+                // The icon and the words centred on the screen as one group
+                // (owner, Nov 2026). On a short screen — a small phone on its
+                // side — the verse stays out and the words may shrink, so
+                // nothing is pushed off at any text size.
+                //
+                // Still, from the start: the icon no longer rises from the
+                // launch screen's place, which now shows the background
+                // alone (owner, 2026-11-26).
                 let isShort = proxy.size.height < 560
-                let gap: CGFloat = isShort ? 20 : 44
-                VStack(spacing: gap) {
-                    flame
-                        // From where the launch image left it, the screen's
-                        // centre, up to its place in the group.
-                        .offset(y: hasSettled ? 0 : (gap + wordsHeight) / 2)
+                VStack(spacing: isShort ? 14 : 22) {
+                    LampSplashIcon(size: isShort ? 56 : 72)
                     words(includingVerse: !isShort, isCompact: isShort)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { wordsHeight = $0 }
-                        .opacity(hasSettled ? 1 : 0)
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
             }
-            // The launch image is centred on the whole screen.
             .ignoresSafeArea()
-        }
-        .task {
-            // Once the words are measured, so the flame starts where the
-            // launch image was.
-            for _ in 0..<30 where wordsHeight == 0 {
-                try? await Task.sleep(for: .milliseconds(16))
-            }
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.45)) { hasSettled = true }
         }
         // The bundled modules are unpacked and verified on a first run or after
         // an update, which takes long enough to be worth explaining.
@@ -322,14 +301,33 @@ private struct LampSplashView: View {
         .padding(.top, 24)
         .accessibilityElement(children: .combine)
     }
+}
 
-    /// The launch image used as the mask of the accent, so the flame is the
-    /// launch screen's shape in the launch screen's place.
-    private var flame: some View {
-        Color.accentColor
-            .mask(Image("lampsplash").resizable().scaledToFit())
-            .aspectRatio(0.5, contentMode: .fit)
-            .frame(height: Self.flameHeight)
+/// The app's icon, small, as a tile with the system's rounded corners.
+///
+/// It was the launch screen's flame alone, in the accent, at 100 points with
+/// 44 above the name: large, far from the words, and plain (owner,
+/// 2026-11-26, who chose this from seven static options, as on the Mac). The
+/// artwork is the icon's own (`lampicon`, the 128 to 512 pixel icon images),
+/// clipped as the system clips an icon.
+private struct LampSplashIcon: View {
+    let size: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous)
+        Image("lampicon")
+            .resizable()
+            .interpolation(.high)
+            .frame(width: size, height: size)
+            .clipShape(shape)
+            // A hairline in the dark, where the icon's dark spine would
+            // otherwise run into the screen.
+            .overlay(shape.strokeBorder(.white.opacity(colorScheme == .dark ? 0.08 : 0), lineWidth: 1))
+            .shadow(
+                color: colorScheme == .dark ? .black.opacity(0.45) : Color(red: 0.47, green: 0.04, blue: 0.06).opacity(0.22),
+                radius: 10, y: 8
+            )
             .accessibilityHidden(true)
     }
 }
