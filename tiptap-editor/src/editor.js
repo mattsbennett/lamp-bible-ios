@@ -963,13 +963,27 @@ function editedRegion(tr, ranges) {
   return { from, to }
 }
 
-function reviewClearButton() {
+// A review button as the page holds it: a span, which the editor makes
+// uneditable as it does every widget, with the button inside it. Not the
+// button itself: an uneditable <button> in a paragraph stops WebKit's smart
+// dashes, quotes and text replacements for the whole paragraph, so "--"
+// stayed "--" in every paragraph with a mark (owner, 2026-11-26). The span
+// carries the class, and is what is placed, styled, measured and pressed;
+// the button fills it, for a keyboard's focus and a reader's label.
+function reviewButton(className, label, title) {
+  const holder = document.createElement('span')
+  holder.className = className
   const button = document.createElement('button')
   button.type = 'button'
-  button.className = 'review-clear'
-  button.contentEditable = 'false'
-  button.title = 'Mark as reviewed'
-  button.setAttribute('aria-label', 'Mark this paragraph as reviewed')
+  button.title = title
+  button.setAttribute('aria-label', label)
+  button.style.cssText = 'appearance: none; position: absolute; inset: 0; margin: 0; padding: 0; border: 0; border-radius: inherit; background: transparent; color: inherit; font: inherit; cursor: pointer;'
+  holder.appendChild(button)
+  return holder
+}
+
+function reviewClearButton() {
+  const button = reviewButton('review-clear', 'Mark this paragraph as reviewed', 'Mark as reviewed')
   // Pressed rather than clicked, so the caret does not move into the block
   // first, and the block is found again at press time: the widget's own
   // positions are only as good as the last redraw. On the pointer's first
@@ -1116,12 +1130,7 @@ function textblocks(doc) {
 // `restoreWording`, so the page makes the edit itself and it undoes like
 // any other.
 function reviewRestoreButton() {
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = 'review-restore'
-  button.contentEditable = 'false'
-  button.title = 'Restore Original Wording'
-  button.setAttribute('aria-label', 'Restore Original Wording')
+  const button = reviewButton('review-restore', 'Restore Original Wording', 'Restore Original Wording')
   // On the pointer's first event, as the clear button is, so the caret
   // stays where it was and the keyboard down. What the block offers is read
   // at press time, from the marks as they stand: the widget is kept across

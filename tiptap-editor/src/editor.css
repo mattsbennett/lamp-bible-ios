@@ -590,7 +590,10 @@ body.mode-present .review-mark-block {
    it at the left, where it was cut off by the screen's edge. Sized for a
    finger, its mark drawn small inside. */
 .ProseMirror .review-clear {
+  position: relative;
   float: right;
+  /* A span, not the button it holds: centred as a button centred it. */
+  text-align: center;
   width: 32px;
   height: 32px;
   margin: -5px -8px 0 6px;
@@ -629,7 +632,9 @@ body.dark {
    replaced, after showing both (reviewRestoreButton). Only in editing,
    where the change is saved. */
 .ProseMirror .review-restore {
+  position: relative;
   float: right;
+  text-align: center;
   width: 32px;
   height: 32px;
   margin: -5px 0 0 2px;
