@@ -10416,6 +10416,52 @@ final class WritingReviewSessionTests: XCTestCase {
         XCTAssertEqual(sent.count, count, "nothing sent for the selection's no-op")
     }
 
+    /// The owner's footnote (2026-11-26), as on the Mac: a passage reaching
+    /// into a footnote through its label, and the footnote opening with
+    /// bold, are cleared whole by the footnote's ✓, which the page asks from
+    /// inside the `**`, after the label it draws apart. The same ask as a
+    /// selection doesn't reach over the label.
+    @MainActor
+    func testAFootnotesCheckClearsItsLabelAndOpeningEmphasis() async throws {
+        let before = "Body here."
+        let saved = "Body here.\n\n[^1]: **Note** on it."
+        let line = (saved as NSString).range(of: "[^1]: **Note** on it.")
+        let start = String(LampWritingReview.markStart), end = String(LampWritingReview.markEnd)
+        // What the page sends for the footnote's block: its words, from
+        // inside the bold.
+        let pressed = "Body here.\n\n[^1]: **\(start)Note** on it.\(end)"
+        let store = LibrarySyncPass.reviewStore
+
+        func marksLeftOnTheLine(wholeBlock: Bool) async throws -> [NSRange] {
+            let id = "review-footnote-\(UUID().uuidString)"
+            defer { try? store.remove(writingID: id) }
+            try store.save(LampWritingReview(writingID: id).markingAssistantChange(from: before, to: saved))
+            let session = WritingReviewSession()
+            var answers = 0
+            session.onMarksChanged = { _, _ in answers += 1 }
+            let following = Task { await session.follow(writingID: id, text: saved, isShown: true) }
+            defer { following.cancel() }
+            for _ in 0..<50 where session.count == 0 { try await Task.sleep(for: .milliseconds(50)) }
+            XCTAssertEqual(session.count, 1)
+            let answered = answers
+            session.clear(markedMarkdown: pressed, pageText: saved, answersPage: true, wholeBlock: wholeBlock)
+            for _ in 0..<60 where answers == answered { try await Task.sleep(for: .milliseconds(50)) }
+            XCTAssertGreaterThan(answers, answered, "the clear was answered")
+            func left() throws -> [NSRange] {
+                try store.review(writingID: id).highlightedRanges(in: saved)
+                    .filter { NSIntersectionRange($0, line).length > 0 }
+            }
+            // The record is written off the main actor: given a moment.
+            for _ in 0..<40 where try !left().isEmpty && wholeBlock { try await Task.sleep(for: .milliseconds(50)) }
+            return try left()
+        }
+
+        let afterCheck = try await marksLeftOnTheLine(wholeBlock: true)
+        XCTAssertEqual(afterCheck, [], "the footnote's ✓ leaves nothing on its line")
+        let afterSelection = try await marksLeftOnTheLine(wholeBlock: false)
+        XCTAssertFalse(afterSelection.isEmpty, "a selection doesn't reach over the label")
+    }
+
     func testClearsAheadOfTheirTextLandAsTypingGoesOn() async throws {
         let id = "review-session-\(UUID().uuidString)"
         let store = LibrarySyncPass.reviewStore

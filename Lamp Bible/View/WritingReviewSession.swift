@@ -614,14 +614,29 @@ final class WritingReviewSession: ObservableObject {
     /// (a ✓ pressed there), so the clear is answered with the marks as they
     /// stand however it goes (`resendMarks`). Not for the selection's
     /// action, which takes nothing off the page.
-    func clear(markedMarkdown marked: String, pageText: String? = nil, answersPage: Bool = false) {
+    ///
+    /// `wholeBlock`: a block's own ✓, as against a selection. The page
+    /// draws a line's syntax apart from the block's words, so its ✓ asks for
+    /// the words alone; it reaches to the line's ends over that syntax, a
+    /// footnote's `[^1]:` and the emphasis the words open and close with, or
+    /// a passage running through the label kept a sliver no ✓ could clear
+    /// (owner, 2026-11-26; core's `wholeBlock`). A selection never reaches.
+    /// As on the Mac.
+    func clear(
+        markedMarkdown marked: String, pageText: String? = nil, answersPage: Bool = false, wholeBlock: Bool = false
+    ) {
         guard let writingID else { return }
+        func asked(_ range: NSRange, of text: String) -> NSRange {
+            wholeBlock
+                ? LampWritingReviewMarkdown.wholeBlock(range, of: text)
+                : LampWritingReviewMarkdown.takingInSyntax(range, of: text)
+        }
         if let range = LampWritingReview.markedRange(in: marked, of: text) {
             // Answered in the page's own text where it sent one: matched
             // here across markup it wrote differently, it can still be
             // ahead.
             clear(
-                range: LampWritingReviewMarkdown.takingInSyntax(range, of: text), in: text, writingID: writingID,
+                range: asked(range, of: text), in: text, writingID: writingID,
                 answersPage: answersPage, answerIn: pageText
             )
         } else if let pageText, let range = LampWritingReview.markedRange(in: marked, of: pageText) {
@@ -629,7 +644,7 @@ final class WritingReviewSession: ObservableObject {
             // the answer is drawn in it, so marks the page moved for typing
             // not yet reported aren't put back where they were. The text
             // held stays the editor's last report.
-            clear(range: LampWritingReviewMarkdown.takingInSyntax(range, of: pageText), in: pageText, writingID: writingID, answersPage: answersPage)
+            clear(range: asked(range, of: pageText), in: pageText, writingID: writingID, answersPage: answersPage)
         } else if answersPage {
             // Placed nowhere: the page has already taken the passage's
             // marks off, so it's sent back what stands, in its own text
