@@ -182,7 +182,11 @@ enum AgentRemoteFailureText {
         case LampAgentRemoteFailure.notFound:
             return "That chat is no longer on your Mac."
         case LampAgentRemoteFailure.needsSetup:
-            return "The AI provider needs setting up on your Mac. Open Lamp Bible there to finish."
+            // The Mac's words are a failed preparation's own, not written for
+            // a phone: told after, as what went wrong there.
+            let setUp = "The AI provider needs setting up on your Mac. Open Lamp Bible there to finish."
+            guard let said = message?.trimmingCharacters(in: .whitespacesAndNewlines), !said.isEmpty else { return setUp }
+            return "\(setUp) Your Mac said: \u{201C}\(said)\u{201D}"
         case LampAgentRemoteFailure.writingBehind:
             // The Mac says why, as when the writing is open there.
             return message ?? "Your Mac doesn’t have your latest edits to this writing yet. Try again once it has synced."

@@ -403,6 +403,18 @@ final class AgentRemoteTests: XCTestCase {
         )
     }
 
+    /// A setup failure says what to do, then the Mac's own words, which
+    /// are a failed preparation's and may be the system's.
+    func testASetupFailureKeepsTheMacsWordsAsDetail() {
+        let setUp = "The AI provider needs setting up on your Mac. Open Lamp Bible there to finish."
+        XCTAssertEqual(AgentRemoteFailureText.text(code: LampAgentRemoteFailure.needsSetup, message: nil), setUp)
+        XCTAssertEqual(AgentRemoteFailureText.text(code: LampAgentRemoteFailure.needsSetup, message: "  "), setUp)
+        XCTAssertEqual(
+            AgentRemoteFailureText.text(code: LampAgentRemoteFailure.needsSetup, message: "Lamp couldn\u{2019}t open this writing\u{2019}s folder."),
+            setUp + " Your Mac said: \u{201C}Lamp couldn\u{2019}t open this writing\u{2019}s folder.\u{201D}"
+        )
+    }
+
     // MARK: - Which message arrived
 
     private let asked = LampAgentRemoteChatMessage(role: LampAgentRemoteChatMessage.user, text: "And grace?", date: Date())
