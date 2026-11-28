@@ -560,13 +560,15 @@ final class AgentRemoteTests: XCTestCase {
     }
 
     func testAPushLeadsBackToItsChat() throws {
-        func push(_ fields: [String: Any], subscription: String = "agent-turn-ended.X") -> [AnyHashable: Any] {
+        func push(
+            _ fields: [String: Any], subscription: String = "agent-turn-ended.X", record: String = "turn.d1.c1"
+        ) -> [AnyHashable: Any] {
             [
                 "aps": ["alert": ["title": "Reader Chat", "body": "Replied."]],
                 "ck": [
                     "ce": 2, "cid": AgentTurnPush.containerIdentifier, "nid": UUID().uuidString,
                     "qry": [
-                        "dbs": 2, "fo": 2, "rid": "turn.d1.c1", "sid": subscription,
+                        "dbs": 2, "fo": 2, "rid": record, "sid": subscription,
                         "zid": "_defaultZone", "zoid": "_defaultOwner", "af": fields,
                     ],
                 ],
@@ -589,6 +591,40 @@ final class AgentRemoteTests: XCTestCase {
         XCTAssertNil(AgentTurnPush.parts(ofRecordName: "turn..c1"))
         XCTAssertNil(AgentTurnPush.parts(ofRecordName: "other.d1.c1"))
         XCTAssertNil(AgentTurnPush.turn(fromPush: ["aps": ["alert": "Reading time"]]))
+        XCTAssertFalse(reader.isWait)
+    }
+
+    /// A request waiting is pushed under `wait.`, never heard as the turn's
+    /// end, which comes under `turn.` with the turn's own id.
+    func testAWaitingRequestsPushIsNotTheTurnsEnd() throws {
+        let fields: [String: Any] = ["chatID": "writing:w1", "turnID": "W1", "deviceID": "d1"]
+        let push: [AnyHashable: Any] = [
+            "aps": ["alert": ["title": "Sermon", "body": "Codex is waiting for your answer."]],
+            "ck": [
+                "ce": 2, "cid": AgentTurnPush.containerIdentifier, "nid": UUID().uuidString,
+                "qry": [
+                    "dbs": 2, "fo": 1, "rid": "wait.d1.writing:w1", "sid": "agent-turn-ended.X",
+                    "zid": "_defaultZone", "zoid": "_defaultOwner", "af": fields,
+                ],
+            ],
+        ]
+        let wait = try XCTUnwrap(AgentTurnPush.turn(fromPush: push))
+        XCTAssertTrue(wait.isWait)
+        XCTAssertEqual(wait.route, .writing("w1"))
+        XCTAssertEqual(wait.chatID, "writing:w1")
+        let named = try XCTUnwrap(AgentTurnPush.parts(ofRecordName: "wait.d1.c.1"))
+        XCTAssertEqual(named.deviceID, "d1")
+        XCTAssertEqual(named.chatID, "c.1")
+        XCTAssertTrue(named.isWait)
+        XCTAssertEqual(AgentTurnPush.parts(ofRecordName: "turn.d1.c1")?.isWait, false)
+        XCTAssertNil(AgentTurnPush.parts(ofRecordName: "wait..c1"))
+        XCTAssertNil(AgentTurnPush.parts(ofRecordName: "waits.d1.c1"))
+        XCTAssertEqual(wait.recordName, "wait.d1.writing:w1", "Looked up to see if it still waits")
+        XCTAssertEqual(wait.turnID, "W1")
+        XCTAssertFalse(AgentTurnPush.isOver(alert: "W1", current: "w1"), "The same wait")
+        XCTAssertTrue(AgentTurnPush.isOver(alert: "W1", current: "W2"), "A later request's record")
+        XCTAssertFalse(AgentTurnPush.isOver(alert: nil, current: "W2"))
+        XCTAssertFalse(AgentTurnPush.isOver(alert: "W1", current: nil))
     }
 
     /// A turn's events are matched by the turn they name, and a later

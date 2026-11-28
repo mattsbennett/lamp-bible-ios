@@ -184,7 +184,7 @@ final class AgentTurnNotificationDelegate: NSObject, UNUserNotificationCenterDel
             MainActor.assumeIsolated {
                 if content.categoryIdentifier == AgentTurnNotifications.categoryIdentifier {
                     let pushed = AgentTurnPush.turn(fromPush: content.userInfo)
-                    if let pushed { AgentTurnPush.notePushSeen(from: pushed.deviceID) }
+                    if let pushed, !pushed.isWait { AgentTurnPush.notePushSeen(from: pushed.deviceID) }
                     if let route = AgentTurnRoute(userInfo: content.userInfo) ?? pushed?.route {
                         DeepLinkManager.shared.show(route)
                     }
@@ -197,13 +197,21 @@ final class AgentTurnNotificationDelegate: NSObject, UNUserNotificationCenterDel
     /// iCloud's push: not shown here for another device's turn, one this
     /// device heard end, or one on screen; and, shown, it's heard, so the
     /// phone's own word of the same turn isn't given again.
+    /// A request waiting is shown unless its chat is on screen, where its
+    /// card is, and is never heard: the turn's end is still to tell.
     @MainActor
     private static func presentation(of content: UNNotificationContent) -> UNNotificationPresentationOptions {
         guard content.categoryIdentifier == AgentTurnNotifications.categoryIdentifier else { return [] }
         guard let pushed = AgentTurnPush.turn(fromPush: content.userInfo) else { return [.banner, .sound, .list] }
-        AgentTurnPush.notePushSeen(from: pushed.deviceID)
+        // Only a turn's end says the Mac's push of an end will come.
+        if !pushed.isWait { AgentTurnPush.notePushSeen(from: pushed.deviceID) }
+        if pushed.isWait {
+            guard AgentTurnNotifications.isEnabledNow, AgentTurnPush.belongsHere(pushed),
+                  !AgentRemoteClient.shared.isWatching(chatID: pushed.chatID, deviceID: pushed.deviceID) else { return [] }
+            return [.banner, .sound, .list]
+        }
         guard AgentTurnNotifications.isEnabledNow, AgentTurnPush.belongsHere(pushed),
-              !AgentRemoteClient.shared.hasHeard(chatID: pushed.chatID, turnID: pushed.turnID) else { return [] }
+              !AgentRemoteClient.shared.hasHeard(chatID: pushed.chatID, turnID: pushed.turnID, deviceID: pushed.deviceID) else { return [] }
         AgentRemoteClient.shared.noteHeard(chatID: pushed.chatID, turnID: pushed.turnID)
         return [.banner, .sound, .list]
     }

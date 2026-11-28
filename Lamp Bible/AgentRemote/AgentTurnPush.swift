@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import LampCore
 import UIKit
+import UserNotifications
 
 /// The notification of a finished turn when Lamp isn't running to hear it:
 /// a push through the person's own iCloud, with no server of ours.
@@ -192,6 +193,12 @@ enum AgentTurnPush {
         /// The pairing the turn was asked under: this device's, or another's
         /// signed in to the same iCloud.
         var deviceID: String?
+        /// A request the turn waits on the person for, not its end
+        /// (`decisions/0045`): named `wait.` where an end is `turn.`, with a
+        /// `turnID` of its own, so it's never heard as the turn's end.
+        var isWait = false
+        /// The record it tells of, by name.
+        var recordName: String?
     }
 
     /// A writing's chat is the Mac's `writing:<id>`.
@@ -213,18 +220,91 @@ enum AgentTurnPush {
         let writingID = chatID.hasPrefix(writingChatPrefix) ? String(chatID.dropFirst(writingChatPrefix.count)) : ""
         return PushedTurn(
             route: writingID.isEmpty ? .readerChat(chatID) : .writing(writingID),
-            chatID: chatID, turnID: text(Field.turnID), deviceID: text(Field.deviceID) ?? named?.deviceID
+            chatID: chatID, turnID: text(Field.turnID), deviceID: text(Field.deviceID) ?? named?.deviceID,
+            isWait: named?.isWait ?? false, recordName: notification.recordID?.recordName
         )
     }
 
-    /// The pairing and the chat a record is named for.
-    static func parts(ofRecordName name: String) -> (deviceID: String, chatID: String)? {
-        guard name.hasPrefix("turn.") else { return nil }
-        let rest = name.dropFirst("turn.".count)
+    private static let endPrefix = "turn."
+    private static let waitPrefix = "wait."
+
+    /// The pairing and the chat a record is named for, and whether it's of
+    /// a request waiting rather than the turn's end.
+    static func parts(ofRecordName name: String) -> (deviceID: String, chatID: String, isWait: Bool)? {
+        let isWait = name.hasPrefix(waitPrefix)
+        guard isWait || name.hasPrefix(endPrefix) else { return nil }
+        let rest = name.dropFirst((isWait ? waitPrefix : endPrefix).count)
         guard let dot = rest.firstIndex(of: "."), dot != rest.startIndex else { return nil }
         let chatID = rest[rest.index(after: dot)...]
         guard !chatID.isEmpty else { return nil }
-        return (String(rest[..<dot]), String(chatID))
+        return (String(rest[..<dot]), String(chatID), isWait)
+    }
+
+    @MainActor private static var sweep: Task<Void, Never>?
+
+    /// Looks again, shortly, at the alerts of requests waiting: when the
+    /// Mac says nothing waits in a chat, and on coming back to Lamp. Again
+    /// a while later for any still standing, as the Mac's deletion of the
+    /// record may land after its word to the phone.
+    @MainActor
+    static func sweepWaitsSoon() {
+        sweep?.cancel()
+        sweep = Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, await sweepWaits() else { return }
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            _ = await sweepWaits()
+        }
+    }
+
+    /// Takes away the alerts of requests no longer waiting. The Mac deletes
+    /// a wait's record once nothing waits in its chat, or the turn ends, but
+    /// can't recall an alert already shown: each is kept while its record
+    /// stands as the same wait, by the `turnID` each wait has its own of. A
+    /// record that can't be looked at keeps its alert. Whether any alert of
+    /// a request waiting is left.
+    static func sweepWaits() async -> Bool {
+        let center = UNUserNotificationCenter.current()
+        var shown: [String: [(id: String, wait: String?)]] = [:]
+        for alert in await center.deliveredNotifications() {
+            guard let pushed = turn(fromPush: alert.request.content.userInfo), pushed.isWait,
+                  let name = pushed.recordName else { continue }
+            shown[name, default: []].append((alert.request.identifier, pushed.turnID))
+        }
+        guard !shown.isEmpty else { return false }
+        let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
+        guard let results = try? await database.records(
+            for: shown.keys.map { CKRecord.ID(recordName: $0) }, desiredKeys: [Field.turnID]
+        ) else { return true }
+        var over: [String] = []
+        var left = 0
+        for (id, result) in results {
+            let alerts = shown[id.recordName] ?? []
+            switch result {
+            case .success(let record):
+                let current = record[Field.turnID] as? String
+                let (stale, standing) = alerts.reduce(into: ([String](), 0)) { sorted, alert in
+                    if Self.isOver(alert: alert.wait, current: current) { sorted.0.append(alert.id) } else { sorted.1 += 1 }
+                }
+                over += stale
+                left += standing
+            case .failure(let error as CKError) where error.code == .unknownItem:
+                over += alerts.map(\.id)
+            case .failure:
+                left += alerts.count
+            }
+        }
+        if !over.isEmpty { center.removeDeliveredNotifications(withIdentifiers: over) }
+        return left > 0
+    }
+
+    /// Whether an alert of the wait `alert` is over, its record standing for
+    /// the wait `current`: another wait's, a later request's, when both are
+    /// known. One that names none is kept while the record stands.
+    static func isOver(alert: String?, current: String?) -> Bool {
+        guard let alert, let current else { return false }
+        return alert.caseInsensitiveCompare(current) != .orderedSame
     }
 
     /// Whether a pushed turn was asked under one of this device's pairings.

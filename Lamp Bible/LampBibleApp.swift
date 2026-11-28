@@ -492,6 +492,8 @@ struct LampBibleApp: App {
                 WidgetDataService.shared.refreshWidget()
                 // The subscription that tells of a finished turn by iCloud.
                 AgentTurnPush.refresh()
+                // And alerts of requests answered since, on the Mac.
+                AgentTurnPush.sweepWaitsSoon()
                 // Start debounce + polling for user settings
                 UserSettingsSyncManager.shared.startSync()
                 // Full sync from remote on foreground

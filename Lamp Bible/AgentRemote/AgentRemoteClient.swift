@@ -503,7 +503,9 @@ final class AgentRemoteClient: ObservableObject {
         let release: @Sendable () -> Void = { hold.end() }
         UNUserNotificationCenter.current().getDeliveredNotifications { [weak self] delivered in
             for shown in delivered {
-                if let pushed = AgentTurnPush.turn(fromPush: shown.request.content.userInfo) {
+                // A turn's end, not a request waiting: only that says the
+                // Mac's push of an end will come.
+                if let pushed = AgentTurnPush.turn(fromPush: shown.request.content.userInfo), !pushed.isWait {
                     AgentTurnPush.notePushSeen(from: pushed.deviceID)
                 }
             }
@@ -512,7 +514,7 @@ final class AgentRemoteClient: ObservableObject {
             let pushed = delivered.contains { shown in
                 guard shown.date >= turn.since,
                       let pushed = AgentTurnPush.turn(fromPush: shown.request.content.userInfo),
-                      pushed.chatID == chatID else { return false }
+                      pushed.chatID == chatID, !pushed.isWait else { return false }
                 // A late push of the chat's turn before isn't this one's.
                 guard let mine = turn.turnID?.uuidString, let theirs = pushed.turnID else { return true }
                 return mine.caseInsensitiveCompare(theirs) == .orderedSame
@@ -541,16 +543,23 @@ final class AgentRemoteClient: ObservableObject {
 
     /// Whether a push telling of a turn in `chatID` says nothing new: the
     /// turn was heard ending here, or the chat is on screen now.
-    func hasHeard(chatID: String, turnID: String?) -> Bool {
-        if UIApplication.shared.applicationState == .active, panelsShowing > 0, chat?.id == chatID,
-           case .connected = phase {
-            return true
-        }
+    func hasHeard(chatID: String, turnID: String?, deviceID: String? = nil) -> Bool {
+        if isWatching(chatID: chatID, deviceID: deviceID) { return true }
         guard let last = heard[chatID] else { return false }
         if let turnID, let heardID = last.turnID {
             return turnID.caseInsensitiveCompare(heardID) == .orderedSame
         }
         return Date().timeIntervalSince(last.at) < Self.heardWindow
+    }
+
+    /// Whether the chat is on screen, with the Mac connected to keep it so:
+    /// the one `deviceID` pairs with, when it's named, since two Macs' chats
+    /// of the same writing have the same id.
+    func isWatching(chatID: String, deviceID: String? = nil) -> Bool {
+        // A connection come back to isn't known to be there until it answers.
+        guard UIApplication.shared.applicationState == .active, panelsShowing > 0, chat?.id == chatID,
+              case .connected = phase, probe == nil else { return false }
+        return deviceID == nil || deviceID == rememberedHosts.first(where: { $0.hostSecret == chatsHostSecret })?.deviceID
     }
 
     private func dropStaleAwaited() {
@@ -1308,6 +1317,8 @@ final class AgentRemoteClient: ObservableObject {
     /// Ends the connection. Anything still waiting on an answer is kept as
     /// not sent, since whether the Mac had it can't be known.
     private func teardown() {
+        // A ping on this connection is no question of the next one's.
+        probe = nil
         connection?.cancel()
         connection = nil
         session = nil
@@ -1547,6 +1558,9 @@ final class AgentRemoteClient: ObservableObject {
             chats = message.chats ?? []
             noteWritings(chats)
             checkAwaited(against: chats)
+            // A chat not running has nothing waiting: an alert of a request
+            // there may be over.
+            if chats.contains(where: { !$0.isRunning }) { AgentTurnPush.sweepWaitsSoon() }
         case .snapshot:
             guard let snapshot = message.snapshot else { return }
             let started = message.requestID != nil && message.requestID == startRequest?.id
@@ -1590,6 +1604,7 @@ final class AgentRemoteClient: ObservableObject {
                     chat?.approvalNoticeTurn = notice.turn
                 }
             }
+            if snapshot.approvals?.isEmpty ?? true { AgentTurnPush.sweepWaitsSoon() }
             chat?.dropNoticeFromAnotherTurn()
             if chat?.approvalNotice == nil {
                 approvalNotices[Self.noticeKey(host: chatsHostSecret, chat: snapshot.summary.id)] = nil
@@ -1660,6 +1675,10 @@ final class AgentRemoteClient: ObservableObject {
         case .event:
             guard let event = message.event else { return }
             chat?.apply(event)
+            if event.kind == LampAgentRemoteChatEvent.turnEnded
+                || (event.kind == LampAgentRemoteChatEvent.approvals && (event.approvals ?? []).isEmpty) {
+                AgentTurnPush.sweepWaitsSoon()
+            }
             // Another turn: what was said of the last turn's answers is done.
             if event.kind == LampAgentRemoteChatEvent.turnStarted
                 || chat?.id == event.chatID && chat?.approvalNotice == nil {
