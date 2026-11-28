@@ -7606,6 +7606,27 @@ final class CommentaryEncodedSpanTests: XCTestCase {
         XCTAssertEqual(text.text, "xx oJ yy θεού zz")
     }
 
+    func testAnOffsetFarPastTheTextDoesNotTrapWhenAReadingIsLonger() throws {
+        let longer = "\u{5E9}\u{5C1}\u{5B8}\u{5DC}\u{5D5}\u{5B9}\u{5DD}"
+        let text = try decoded(
+            "see vDlUwM here",
+            [span("hebrew", 4, 10, "vDlUwM", reads: longer),
+             ["type": "scripture", "start": Int.max - 1, "end": Int.max, "data": ["sv": 43_001_001]]],
+            footnoteRefs: [["id": "1", "offset": Int.max]]
+        )
+
+        XCTAssertEqual(text.text, "see \(longer) here")
+        XCTAssertEqual(text.annotations?.last?.end, Int.max)
+        XCTAssertEqual(text.footnoteRefs?.first?.offset, Int.max)
+        // Nor does drawing it, or setting it after another paragraph.
+        XCTAssertEqual(CommentaryRenderer.renderUIKit(text).string.hasPrefix("see \(longer) here"), true)
+        let list = AnnotatedText.joined([try decoded("first", []), text])
+        XCTAssertEqual(list.text, "first\n\nsee \(longer) here")
+        XCTAssertEqual(list.annotations?.first?.start, 11)
+        XCTAssertEqual(list.annotations?.last?.end, Int.max)
+        XCTAssertEqual(list.footnoteRefs?.first?.offset, Int.max)
+    }
+
     func testTextWithNoEncodedSpansIsUntouched() throws {
         // Greek already in Unicode has no sourceEncoding, even with a reading.
         let text = try decoded(

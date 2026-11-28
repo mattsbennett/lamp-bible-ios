@@ -1599,7 +1599,7 @@ struct AnnotatedText: Codable {
             var moved = offset
             for span in spans {
                 if offset >= span.end {
-                    moved = offset - span.end + span.readEnd
+                    moved = (offset - span.end).addingClamped(span.readEnd)
                 } else if offset > span.start {
                     return roundingUp ? span.readEnd : span.readStart
                 } else {
@@ -1622,6 +1622,15 @@ struct AnnotatedText: Codable {
     }
 }
 
+private extension Int {
+    /// An annotation's offset moved along: one a module wrote far past its
+    /// text stays far past it, rather than trapping as `+` would.
+    func addingClamped(_ other: Int) -> Int {
+        let (sum, overflowed) = addingReportingOverflow(other)
+        return overflowed ? (other > 0 ? .max : .min) : sum
+    }
+}
+
 extension AnnotatedText {
     /// Texts a module gives as a list, set one after another with a blank
     /// line between, their annotations and footnote markers moved along with
@@ -1639,13 +1648,13 @@ extension AnnotatedText {
             if let partAnnotations = part.annotations {
                 annotations = (annotations ?? []) + partAnnotations.map { annotation in
                     var moved = annotation
-                    moved.start += shift
-                    moved.end += shift
+                    moved.start = moved.start.addingClamped(shift)
+                    moved.end = moved.end.addingClamped(shift)
                     return moved
                 }
             }
             if let partRefs = part.footnoteRefs {
-                footnoteRefs = (footnoteRefs ?? []) + partRefs.map { FootnoteRef(id: $0.id, offset: $0.offset + shift) }
+                footnoteRefs = (footnoteRefs ?? []) + partRefs.map { FootnoteRef(id: $0.id, offset: $0.offset.addingClamped(shift)) }
             }
         }
         return AnnotatedText(text: text, annotations: annotations, footnoteRefs: footnoteRefs)
